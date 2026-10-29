@@ -13,7 +13,10 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
+
+	"stask/internal/pgnum"
 )
 
 type ColType uint8
@@ -25,7 +28,55 @@ const (
 	TText   ColType = 4 // free text, eligible for full-text indexing
 	TTime   ColType = 5 // unix milliseconds
 	TBool   ColType = 6 // stored as 0/1 in Value.I
+
+	// PostgreSQL-faithful types (docs/09 section 4). Timestamps hold unix
+	// microseconds in Value.I; the others are held in Value.S.
+	TTimestamp   ColType = 7  // timestamp without time zone: varint, microseconds
+	TTimestamptz ColType = 8  // timestamp with time zone: varint, microseconds
+	TNumeric     ColType = 9  // numeric: arbitrary-precision decimal, S is its text
+	TUUID        ColType = 10 // uuid: 16 bytes, S is its canonical text
+	TBytea       ColType = 11 // bytea: uvarint len, bytes; S is the raw bytes
+	TJSON        ColType = 12 // json: uvarint len, text as given
+	TJSONB       ColType = 13 // jsonb: uvarint len, normalized text
+	TArray       ColType = 14 // one-dimensional array: uvarint len, PostgreSQL text form
 )
+
+// IsInt reports whether values of the type are held in Value.I (stored as
+// a varint).
+func (c ColType) IsInt() bool {
+	switch c {
+	case TInt, TTime, TBool, TTimestamp, TTimestamptz:
+		return true
+	}
+	return false
+}
+
+// IsBlob reports whether values are stored with a length prefix (the
+// types held as bytes in Value.S, other than uuid, which is fixed).
+func (c ColType) IsBlob() bool {
+	switch c {
+	case TString, TText, TNumeric, TBytea, TJSON, TJSONB, TArray:
+		return true
+	}
+	return false
+}
+
+// IsTime reports whether the type is a timestamp (legacy millisecond time
+// included).
+func (c ColType) IsTime() bool { return c == TTime || c == TTimestamp || c == TTimestamptz }
+
+// Store is the type under which the derived views (columnar, series)
+// hold a column: they have only integers, floats and strings. Numeric has
+// no such form (it is refused for columnar tables).
+func (c ColType) Store() ColType {
+	switch c {
+	case TTimestamp, TTimestamptz:
+		return TInt
+	case TUUID, TBytea, TJSON, TJSONB, TArray:
+		return TString
+	}
+	return c
+}
 
 // ParseType maps a schema type name to its ColType.
 func ParseType(s string) (ColType, error) { return parseType(s) }
@@ -44,8 +95,55 @@ func parseType(s string) (ColType, error) {
 		return TTime, nil
 	case "bool":
 		return TBool, nil
+	case "timestamp":
+		return TTimestamp, nil
+	case "timestamptz":
+		return TTimestamptz, nil
+	case "numeric":
+		return TNumeric, nil
+	case "uuid":
+		return TUUID, nil
+	case "bytea":
+		return TBytea, nil
+	case "json":
+		return TJSON, nil
+	case "jsonb":
+		return TJSONB, nil
+	}
+	if _, _, ok := NumericMod(s); ok {
+		return TNumeric, nil
+	}
+	if e, ok := ElemType(s); ok {
+		if et, err := parseType(e); err == nil && et != TArray && et != TBytea && et != TJSON && et != TJSONB {
+			return TArray, nil
+		}
 	}
 	return 0, fmt.Errorf("unknown column type %q", s)
+}
+
+// NumericMod reads the type name "numeric(precision,scale)".
+func NumericMod(s string) (precision, scale int, ok bool) {
+	rest, found := strings.CutPrefix(s, "numeric(")
+	if !found || !strings.HasSuffix(rest, ")") {
+		return 0, 0, false
+	}
+	a, b, two := strings.Cut(rest[:len(rest)-1], ",")
+	p, err := strconv.Atoi(a)
+	if err != nil || p < 1 || p > 1000 {
+		return 0, 0, false
+	}
+	if two {
+		if scale, err = strconv.Atoi(b); err != nil || scale < 0 || scale > p {
+			return 0, 0, false
+		}
+	}
+	return p, scale, true
+}
+
+// ElemType is the element type name of an array type name ("int[]").
+func ElemType(s string) (string, bool) {
+	e, ok := strings.CutSuffix(s, "[]")
+	return e, ok && e != ""
 }
 
 type Column struct {
@@ -67,8 +165,13 @@ type Column struct {
 	Num int `json:"num,omitempty"`
 	// DroppedLSN (a column of Table.Dropped) is the LSN of the ALTER TABLE
 	// DROP COLUMN: rows stored before it still hold the column.
-	DroppedLSN uint64  `json:"dropped_lsn,omitempty"`
-	T          ColType `json:"-"`
+	DroppedLSN uint64 `json:"dropped_lsn,omitempty"`
+	// PrevType and TypeLSN: ALTER COLUMN TYPE converted the column at
+	// TypeLSN; rows stored before it are encoded as PrevType.
+	PrevType string  `json:"prev_type,omitempty"`
+	TypeLSN  uint64  `json:"type_lsn,omitempty"`
+	T        ColType `json:"-"`
+	prevT    ColType
 }
 
 // Check is a CHECK constraint: Expr is its SQL text.
@@ -131,8 +234,40 @@ type layout struct {
 }
 
 type slot struct {
-	dst int // index in Columns; -1 for a dropped column
-	t   ColType
+	dst int     // index in Columns; -1 for a dropped column
+	t   ColType // type the value is stored as
+	to  ColType // type of the column now (differs after ALTER COLUMN TYPE)
+}
+
+// convertible reports whether ALTER COLUMN TYPE can read values stored as
+// from as to.
+func convertible(from, to ColType) bool {
+	switch from {
+	case TTime:
+		return to == TTimestamp || to == TTimestamptz
+	case TInt, TFloat:
+		return to == TNumeric
+	}
+	return false
+}
+
+// ConvertibleTypes is convertible for the SQL layer.
+func ConvertibleTypes(from, to ColType) bool { return convertible(from, to) }
+
+// ConvertValue maps a value of type from to type to (see convertible).
+func ConvertValue(from, to ColType, v Value) Value {
+	if v.Null {
+		return v
+	}
+	switch {
+	case from == TTime:
+		return Value{I: v.I * 1000}
+	case from == TInt && to == TNumeric:
+		return Value{S: strconv.FormatInt(v.I, 10)}
+	case from == TFloat && to == TNumeric:
+		return Value{S: pgnum.FromFloat64(v.F).String()}
+	}
+	return v
 }
 
 // OID is the table's identity for clients, stable across TRUNCATE.
@@ -176,10 +311,26 @@ func (t *Table) Init() error {
 			return err
 		}
 		c.T = ct
+		c.prevT = 0
+		if c.PrevType != "" {
+			pt, err := parseType(c.PrevType)
+			if err != nil {
+				return err
+			}
+			if c.TypeLSN == 0 || !convertible(pt, ct) {
+				return fmt.Errorf("column %q: bad type conversion %s -> %s", c.Name, c.PrevType, c.Type)
+			}
+			c.prevT = pt
+		}
 		if _, dup := t.idx[c.Name]; dup {
 			return fmt.Errorf("duplicate column %q", c.Name)
 		}
 		t.idx[c.Name] = i
+	}
+	for _, c := range t.Columns {
+		if c.prevT != 0 {
+			t.lastDrop = max(t.lastDrop, c.TypeLSN)
+		}
 	}
 	if err := t.initDropped(); err != nil {
 		return err
@@ -188,8 +339,8 @@ func (t *Table) Init() error {
 	if !ok {
 		return fmt.Errorf("key column %q not found", t.Key)
 	}
-	if kt := t.Columns[k].T; kt != TString && kt != TInt {
-		return errors.New("key column must be string or int")
+	if kt := t.Columns[k].T; kt != TString && kt != TInt && kt != TUUID {
+		return errors.New("key column must be string, int or uuid")
 	}
 	for _, s := range t.Search {
 		i, ok := t.idx[s]
@@ -200,9 +351,16 @@ func (t *Table) Init() error {
 	if err := t.initIndexes(); err != nil {
 		return err
 	}
+	if t.Columnar {
+		for _, c := range t.Columns {
+			if c.T == TNumeric {
+				return fmt.Errorf("column %q: numeric is not supported on columnar tables", c.Name)
+			}
+		}
+	}
 	if t.TimeColumn != "" {
 		i, ok := t.idx[t.TimeColumn]
-		if !ok || t.Columns[i].T != TTime {
+		if !ok || !t.Columns[i].T.IsTime() {
 			return fmt.Errorf("time_column %q must be a time column", t.TimeColumn)
 		}
 		if !t.AppendOnly {
@@ -221,7 +379,7 @@ func (t *Table) Init() error {
 // initDropped builds the layouts of the rows stored before the newest
 // DROP COLUMN.
 func (t *Table) initDropped() error {
-	if len(t.Dropped) == 0 {
+	if len(t.Dropped) == 0 && t.lastDrop == 0 {
 		return nil
 	}
 	type pc struct {
@@ -239,6 +397,7 @@ func (t *Table) initDropped() error {
 			return fmt.Errorf("dropped column %q has no number or drop LSN", c.Name)
 		}
 		c.T = ct
+		c.prevT = 0
 		t.lastDrop = max(t.lastDrop, c.DroppedLSN)
 		all = append(all, pc{c, -1})
 	}
@@ -254,7 +413,7 @@ func (t *Table) initDropped() error {
 		if i > 0 && x.c.AddedLSN < all[i-1].c.AddedLSN {
 			return fmt.Errorf("column %q added before the columns preceding it", x.c.Name)
 		}
-		events = append(events, x.c.AddedLSN, x.c.DroppedLSN)
+		events = append(events, x.c.AddedLSN, x.c.DroppedLSN, x.c.TypeLSN)
 	}
 	slices.Sort(events)
 	events = slices.Compact(events)
@@ -268,7 +427,11 @@ func (t *Table) initDropped() error {
 			if x.c.AddedLSN > at || x.c.DroppedLSN != 0 && x.c.DroppedLSN <= at {
 				continue
 			}
-			l.slots = append(l.slots, slot{x.dst, x.c.T})
+			sl := slot{dst: x.dst, t: x.c.T, to: x.c.T}
+			if x.c.prevT != 0 && at < x.c.TypeLSN {
+				sl.t = x.c.prevT
+			}
+			l.slots = append(l.slots, sl)
 			if x.dst >= 0 {
 				stored[x.dst] = true
 			}
@@ -285,7 +448,7 @@ func (t *Table) initDropped() error {
 
 // Altered reports whether the table's columns changed since it was
 // created: a row of another width was built for an older schema.
-func (t *Table) Altered() bool { return t.lastAdd != 0 || len(t.Dropped) > 0 }
+func (t *Table) Altered() bool { return t.lastAdd != 0 || len(t.Dropped) > 0 || t.lastDrop != 0 }
 
 func (t *Table) Col(name string) (int, bool) {
 	i, ok := t.idx[name]
@@ -326,16 +489,54 @@ func (t *Table) Encode(dst []byte, r Row) []byte {
 			continue
 		}
 		switch c.T {
-		case TInt, TTime, TBool:
+		case TInt, TTime, TBool, TTimestamp, TTimestamptz:
 			dst = binary.AppendVarint(dst, v.I)
 		case TFloat:
 			dst = binary.LittleEndian.AppendUint64(dst, math.Float64bits(v.F))
-		case TString, TText:
+		case TString, TText, TBytea, TJSON, TJSONB, TArray:
 			dst = binary.AppendUvarint(dst, uint64(len(v.S)))
 			dst = append(dst, v.S...)
+		case TNumeric:
+			d, err := pgnum.Parse(v.S)
+			if err != nil {
+				d = pgnum.NaN
+			}
+			e := d.Encode(nil)
+			dst = binary.AppendUvarint(dst, uint64(len(e)))
+			dst = append(dst, e...)
+		case TUUID:
+			u, _ := UUIDBytes(v.S) // coerced on input; a bad value stores zeros
+			dst = append(dst, u[:]...)
 		}
 	}
 	return dst
+}
+
+// readSpecial reads a numeric or uuid value at b[p:] into v and returns
+// the position after it.
+func readSpecial(b []byte, p int, ct ColType, v *Value, keep bool) (int, error) {
+	if ct == TUUID {
+		if len(b)-p < 16 {
+			return 0, ErrCorruptRow
+		}
+		if keep {
+			v.S = UUIDString(b[p : p+16])
+		}
+		return p + 16, nil
+	}
+	n, k := binary.Uvarint(b[p:])
+	if k <= 0 || uint64(len(b)-p-k) < n {
+		return 0, ErrCorruptRow
+	}
+	p += k
+	if keep {
+		d, err := pgnum.Decode(b[p : p+int(n)])
+		if err != nil {
+			return 0, ErrCorruptRow
+		}
+		v.S = d.String()
+	}
+	return p + int(n), nil
 }
 
 var ErrCorruptRow = errors.New("corrupt row encoding")
@@ -387,7 +588,7 @@ func (t *Table) decodeLayout(b []byte, lsn uint64, r Row, need []bool) error {
 			v.Null = true
 		} else {
 			switch sl.t {
-			case TInt, TTime, TBool:
+			case TInt, TTime, TBool, TTimestamp, TTimestamptz:
 				x, k := binary.Varint(b[p:])
 				if k <= 0 {
 					return ErrCorruptRow
@@ -400,7 +601,7 @@ func (t *Table) decodeLayout(b []byte, lsn uint64, r Row, need []bool) error {
 				}
 				v.F = math.Float64frombits(binary.LittleEndian.Uint64(b[p:]))
 				p += 8
-			case TString, TText:
+			case TString, TText, TBytea, TJSON, TJSONB, TArray:
 				n, k := binary.Uvarint(b[p:])
 				if k <= 0 || uint64(len(b)-p-k) < n {
 					return ErrCorruptRow
@@ -410,6 +611,15 @@ func (t *Table) decodeLayout(b []byte, lsn uint64, r Row, need []bool) error {
 					v.S = string(b[p : p+int(n)])
 				}
 				p += int(n)
+			case TNumeric, TUUID:
+				np, err := readSpecial(b, p, sl.t, &v, sl.dst >= 0 && (need == nil || need[sl.dst]))
+				if err != nil {
+					return err
+				}
+				p = np
+			}
+			if sl.t != sl.to {
+				v = ConvertValue(sl.t, sl.to, v)
 			}
 		}
 		if sl.dst >= 0 {
@@ -480,7 +690,7 @@ func (t *Table) decodeN(b []byte, n int, r Row) (Row, error) {
 			continue
 		}
 		switch c.T {
-		case TInt, TTime, TBool:
+		case TInt, TTime, TBool, TTimestamp, TTimestamptz:
 			v, k := binary.Varint(b[p:])
 			if k <= 0 {
 				return nil, ErrCorruptRow
@@ -493,7 +703,7 @@ func (t *Table) decodeN(b []byte, n int, r Row) (Row, error) {
 			}
 			r[i].F = math.Float64frombits(binary.LittleEndian.Uint64(b[p:]))
 			p += 8
-		case TString, TText:
+		case TString, TText, TBytea, TJSON, TJSONB, TArray:
 			l, k := binary.Uvarint(b[p:])
 			if k <= 0 || uint64(len(b)-p-k) < l {
 				return nil, ErrCorruptRow
@@ -501,6 +711,12 @@ func (t *Table) decodeN(b []byte, n int, r Row) (Row, error) {
 			p += k
 			r[i].S = string(b[p : p+int(l)])
 			p += int(l)
+		case TNumeric, TUUID:
+			np, err := readSpecial(b, p, c.T, &r[i], true)
+			if err != nil {
+				return nil, err
+			}
+			p = np
 		}
 	}
 	return r, nil
@@ -535,7 +751,7 @@ func (t *Table) DecodeInto(b []byte, lsn uint64, r Row, need []bool) (Row, error
 		}
 		skip := need != nil && !need[i]
 		switch c.T {
-		case TInt, TTime, TBool:
+		case TInt, TTime, TBool, TTimestamp, TTimestamptz:
 			v, k := binary.Varint(b[p:])
 			if k <= 0 {
 				return nil, ErrCorruptRow
@@ -548,7 +764,7 @@ func (t *Table) DecodeInto(b []byte, lsn uint64, r Row, need []bool) (Row, error
 			}
 			r[i].F = math.Float64frombits(binary.LittleEndian.Uint64(b[p:]))
 			p += 8
-		case TString, TText:
+		case TString, TText, TBytea, TJSON, TJSONB, TArray:
 			l, k := binary.Uvarint(b[p:])
 			if k <= 0 || uint64(len(b)-p-k) < l {
 				return nil, ErrCorruptRow
@@ -558,6 +774,12 @@ func (t *Table) DecodeInto(b []byte, lsn uint64, r Row, need []bool) (Row, error
 				r[i].S = string(b[p : p+int(l)])
 			}
 			p += int(l)
+		case TNumeric, TUUID:
+			np, err := readSpecial(b, p, c.T, &r[i], !skip)
+			if err != nil {
+				return nil, err
+			}
+			p = np
 		}
 	}
 	return r, nil
@@ -639,6 +861,83 @@ func setValue(dst *Value, ct ColType, v any) error {
 			dst.I = 1
 		}
 		return nil
+	case TTimestamp, TTimestamptz:
+		if s, ok := v.(string); ok {
+			tm, err := time.Parse(time.RFC3339Nano, s)
+			if err != nil {
+				return err
+			}
+			dst.I = tm.UnixMicro()
+			return nil
+		}
+		i, err := toInt(v) // a number is microseconds since the epoch
+		dst.I = i
+		return err
+	case TNumeric:
+		var s string
+		switch x := v.(type) {
+		case json.Number:
+			s = x.String()
+		case string:
+			s = x
+		case float64:
+			s = strconv.FormatFloat(x, 'f', -1, 64)
+		case int64:
+			s = strconv.FormatInt(x, 10)
+		case int:
+			s = strconv.Itoa(x)
+		default:
+			return fmt.Errorf("expected number, got %T", v)
+		}
+		d, err := pgnum.Parse(s)
+		if err != nil {
+			return err
+		}
+		dst.S = d.String()
+		return nil
+	case TUUID:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("expected uuid string, got %T", v)
+		}
+		c, err := ParseUUID(s)
+		dst.S = c
+		return err
+	case TBytea:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("expected bytea string, got %T", v)
+		}
+		raw, err := ParseBytea(s)
+		dst.S = raw
+		return err
+	case TJSON, TJSONB:
+		// a JSON string holds the document's text; any other JSON value
+		// is the document itself
+		var text string
+		if s, ok := v.(string); ok {
+			text = s
+		} else {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			text = string(b)
+		}
+		if ct == TJSON {
+			dst.S = text
+			return ValidJSON(text)
+		}
+		n, err := NormalizeJSONB(text)
+		dst.S = n
+		return err
+	case TArray:
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("expected array text, got %T", v)
+		}
+		dst.S = s
+		return nil
 	}
 	return errors.New("bad column type")
 }
@@ -678,6 +977,18 @@ func (t *Table) ToJSON(r Row) map[string]any {
 		switch c.T {
 		case TInt, TTime:
 			m[c.Name] = v.I
+		case TTimestamp, TTimestamptz:
+			m[c.Name] = time.UnixMicro(v.I).UTC().Format("2006-01-02T15:04:05.999999Z07:00")
+		case TBytea:
+			m[c.Name] = FormatBytea(v.S)
+		case TJSON, TJSONB:
+			m[c.Name] = json.RawMessage(v.S)
+		case TNumeric:
+			if d, err := pgnum.Parse(v.S); err == nil && d.IsFinite() {
+				m[c.Name] = json.Number(v.S)
+			} else {
+				m[c.Name] = v.S // NaN and Infinity have no JSON number
+			}
 		case TBool:
 			m[c.Name] = v.I != 0
 		case TFloat:

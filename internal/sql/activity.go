@@ -282,14 +282,14 @@ func nsOrNull(ns int64) Datum {
 	if ns == 0 {
 		return Null
 	}
-	return TimeD(ns / 1e6)
+	return TimeD(ns / 1e3)
 }
 
 func timeOrNull(t time.Time) Datum {
 	if t.IsZero() {
 		return Null
 	}
-	return TimeD(t.UnixMilli())
+	return TimeD(t.UnixMicro())
 }
 
 func init() {

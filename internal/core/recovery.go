@@ -440,7 +440,7 @@ func (e *Engine) loadCheckpoint(path string) (*ckptHeader, int, error) {
 // compressed with s2 as one block per chunk. Version 3: as 2, without the
 // commit time and the previous-version location, which the index no longer
 // keeps (they are in the log record at Loc; see Engine.fill).
-const ckptVersion = 3
+const ckptVersion = 4
 
 func decodeChunk(b []byte, version int) (uint32, []entry, []string, error) {
 	p := 0

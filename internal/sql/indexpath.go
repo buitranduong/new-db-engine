@@ -63,6 +63,13 @@ func indexValue(ct schema.ColType, d Datum) (schema.Value, bool) {
 	switch {
 	case d.K == k:
 	case k == KFloat && d.K == KInt && d.I < 1<<53 && d.I > -(1<<53):
+	case k == KFloat && d.K == KNumeric:
+		// float8 = numeric compares as float8 in PostgreSQL: the literal is cast to the column type
+		c, err := coerce(d, k)
+		if err != nil {
+			return schema.Value{}, false
+		}
+		d = c
 	case d.K == KText && k != KText:
 		c, err := coerce(d, k)
 		if err != nil {

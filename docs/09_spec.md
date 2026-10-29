@@ -111,8 +111,18 @@ Một payload hợp lệ phải được đọc **vừa hết**. Thừa hoặc t
 | `float` | 2 | u64 (bit IEEE-754) |
 | `string` | 3 | uvarint len, bytes |
 | `text` | 4 | uvarint len, bytes |
-| `time` | 5 | varint, mili giây Unix |
+| `time` | 5 | varint, mili giây Unix (**cũ**: bảng tạo trước P1.1; vẫn đọc và ghi như cũ, `CREATE TABLE` không tạo nó nữa) |
 | `bool` | 6 | varint 0/1 |
+| `timestamp` | 7 | varint, **micro giây** Unix (không múi giờ) |
+| `timestamptz` | 8 | varint, **micro giây** Unix (UTC) |
+| `numeric` | 9 | uvarint len, rồi `len` byte: cờ (bit 4 = âm; byte thấp 0 hữu hạn, 1 NaN, 2 +Inf, 3 −Inf), `uvarint scale`, hệ số tuyệt đối dạng big-endian (không có byte đầu thừa). Giá trị = hệ số × 10^−scale; scale là số chữ số sau dấu phẩy khi in (`1.50` và `1.5` là hai mã hoá khác nhau, bằng nhau khi so sánh) |
+| `uuid` | 10 | đúng 16 byte, không có độ dài |
+| `bytea` | 11 | uvarint len, bytes |
+| `json` | 12 | uvarint len, văn bản đã kiểm tra cú pháp, giữ nguyên |
+| `jsonb` | 13 | uvarint len, văn bản đã chuẩn hoá (khoá xếp theo độ dài rồi byte, không trùng, `": "` và `", "`, số in như `numeric`) |
+| mảng (`int[]`, `text[]`…) | 14 | uvarint len, dạng văn bản của PG (`{1,2,3}`); tên kiểu trong JSON của bảng là `<kiểu phần tử>[]` |
+
+`numeric(p,s)` được ghi trong JSON của bảng là `"numeric(10,2)"` (cùng mã 9); phần ràng buộc chỉ được áp dụng khi ghi (làm tròn về scale `s`, báo `22003` khi tràn) và không đổi cách mã hoá.
 
 **Dòng:**
 - Bitmap NULL trước: `ceil(ncol / 8)` byte, bit `i % 8` của byte `i / 8` bật nếu cột i là NULL.
@@ -135,7 +145,7 @@ Bản ghi `DDL` chứa JSON của bảng, cũng là phần tử của `tables` t
 ```
 
 - Các trường có `omitempty` (`not_null`, `search`, `columnar`, `append_only`, `time_column`, `series_column`) bị bỏ khi mang giá trị rỗng.
-- Kiểm tra hợp lệ ở `schema.Table.Init`: khoá là `int` hoặc `string`; cột search là `text`/`string`; `time_column` là `time` và đòi hỏi `append_only`; `series_column` là `string`.
+- Kiểm tra hợp lệ ở `schema.Table.Init`: khoá là `int`, `string` hoặc `uuid` (khoá `uuid` lưu dạng chữ thường 36 ký tự, nên thứ tự byte của khoá cũng là thứ tự byte của uuid); cột search là `text`/`string`; `time_column` là `time`, `timestamp` hoặc `timestamptz` (ms hay µs tuỳ kiểu) và đòi hỏi `append_only`; `series_column` là `string`; bảng `columnar` không có cột `numeric`.
 - **DROP TABLE và TRUNCATE** (thêm 2026-10-29) dùng chính bản ghi `DDL`, với ba trường tuỳ chọn:
   - `dropped_lsn`: bản ghi của DROP TABLE là JSON của bảng bị drop (cùng `id`), có `dropped_lsn` bằng LSN của chính bản ghi.
   - `replaces`: bản ghi của TRUNCATE là một bảng **mới** (ID mới, cùng tên và cột) với `replaces` là ID bảng cũ. Khi phát lại, bảng cũ bị coi là drop tại LSN của bản ghi này. Một bản ghi duy nhất nên không thể chỉ ghi được một nửa.
@@ -152,7 +162,8 @@ Bản ghi `DDL` chứa JSON của bảng, cũng là phần tử của `tables` t
   - `indexes`: `[{"name":"orders_cust_idx","columns":["cust","created"],"unique":true,"constraint":"orders_uq","internal":true}]`. `constraint` có khi index là của một ràng buộc UNIQUE; `internal` khi do khoá ngoại tạo cho cột con.
   - `foreign_keys`: `[{"name":"orders_cust_fkey","columns":["cust"],"ref_table":"customers","ref_columns":["id"],"on_delete":"cascade"}]`; `on_delete` là `no action` (mặc định, có thể vắng), `restrict`, `cascade` hoặc `set null`. `ref_table` là tên bảng cha.
   - **Entry của index không nằm trong log hay checkpoint**: chỉ định nghĩa. Entry có dạng `Enc(cột 1) ‖ ... ‖ khoá chính` (mã hoá ở `schema/indexkey.go`, mô tả ở docs/05 §18) và được dựng lại từ các đầu của index chính khi khởi động, khi replica nhận DDL, hoặc khi `CREATE INDEX`. Bản Rust cần cùng mã hoá thứ tự nếu muốn so khớp với bản Go qua `pg_index`, nhưng định dạng đĩa không phụ thuộc vào nó.
-- Catalog **chỉ** gồm các bảng này. Tầng SQL không lưu gì thêm: kiểu PostgreSQL (`bigint`, `timestamptz`, …) được ánh xạ sang 6 kiểu ở trên khi `CREATE TABLE`, và `WITH (...)` thành các cờ ở trên.
+  - **ALTER COLUMN TYPE** (P1.1): cột đổi kiểu mang `prev_type` (kiểu trước đó) và `type_lsn` (LSN của bản ghi DDL). Dòng lưu trước `type_lsn` được mã hoá theo `prev_type` và được đọc ra rồi đổi sang kiểu mới: `time`→`timestamp`/`timestamptz` nhân 1000, `int`→`numeric` in thập phân, `float`→`numeric` (15 chữ số có nghĩa); dòng từ `type_lsn` trở đi mã hoá theo kiểu mới. Đây là một sự kiện bố cục như ADD/DROP COLUMN: Init thêm `type_lsn` vào dãy mốc bố cục, `lastDrop` (LSN cuối cùng cần bố cục riêng) tính cả nó. Mỗi cột đổi tối đa một lần (đổi lại phải viết lại bảng).
+- Catalog **chỉ** gồm các bảng này. Tầng SQL không lưu gì thêm: kiểu PostgreSQL (`bigint`, `timestamptz`, `numeric`, …) được ánh xạ sang các kiểu ở §4 khi `CREATE TABLE`, và `WITH (...)` thành các cờ ở trên.
 
 ## 6. Segment nén (`.walz`)
 
@@ -178,13 +189,13 @@ footer (33 byte): u64 rawLen | u32 blockSize | u8 codec | u32 n | u64 tableOff
 - ghi checkpoint v4 bằng `s2.EncodeSnappy` (Snappy chuẩn, mọi bản Snappy đều đọc được);
 - dùng zstd cho `.walz`.
 
-## 7. Checkpoint (phiên bản 3)
+## 7. Checkpoint (phiên bản 4)
 
 ```
 u32 hdrLen | header JSON[hdrLen]
 chunk*     : u32 len | u32 crc32c(payload) | payload
 u32 0      (kết thúc)
-header     = {"version":3,"start_lsn":L,"start_seg":S,"start_off":O,"last_ts":T,
+header     = {"version":4,"start_lsn":L,"start_seg":S,"start_off":O,"last_ts":T,
               "next_table_id":N,"tables":[<bảng như mục 5>...]}
 payload    = uvarint tableID | uvarint n | S2-block(entries)
 entry      = uvarint klen | key | uvarint zigzag(lsn − lsnTrước) | uvarint seg
@@ -201,6 +212,7 @@ entry      = uvarint klen | key | uvarint zigzag(lsn − lsnTrước) | uvarint 
   - recovery tải checkpoint rồi phát lại log từ `start`, bỏ qua bản ghi không mới hơn đầu đã tải của khoá;
   - vì đầu của một khoá chỉ tiến, kết quả bằng trạng thái ở cuối log.
 - Ghi checkpoint: ghi ra `ckpt.tmp`, fsync, đổi tên thành tên cuối, fsync thư mục, rồi xoá checkpoint cũ.
+- **v4** (P1.1) có chunk giống hệt v3; chỉ khác là JSON của bảng trong header có thể dùng các kiểu mới của §4 (mã 7–14) và các trường `prev_type`/`type_lsn` của §5. Bản cũ hơn sẽ không mở được checkpoint v4 có dùng chúng (nó báo kiểu cột không biết). Giao thức nhân bản (`STASKREPL2`) không đổi khung; replica phải cùng phiên bản với leader khi bảng dùng kiểu mới (DDL mang JSON của bảng).
 - Đọc phiên bản cũ: v1 không delta và không nén; v2 giống v3 nhưng mỗi entry có thêm `varint ts` sau lsn, và `flags` bit 1 báo có thêm 3 uvarint `prev`. Bản Rust chỉ cần đọc v3, trừ khi phải mở dữ liệu cũ.
 
 ## 7a. Tệp view cột (`columnar.view`)
@@ -344,5 +356,6 @@ Bản Rust chỉ được dùng thay bản Go khi qua **toàn bộ** các mục 
 | A11 | Vai trò và quyền | `TestRolesAndGrants`, `TestRolesSurviveRestart` (`internal/sql`), `TestRolesOverWire`, `TestRolesOnlyClosesSharedPassword`, `TestReplicationNeedsPrivilege` (`internal/pgwire`), `TestReplicaRoles` (`internal/repl`) chạy với server Rust, thư mục do Go ghi có bảng `__stask_roles` | cùng kết quả; đọc đúng dòng `__stask_roles` (cột `name` string, `flags` int: bit 0 superuser, 1 login, 2 replication; `verifier` text `SCRAM-SHA-256$iters:salt$stored:server` base64; `grants` text: bản ghi `bits\x01bảng` cách nhau NUL) |
 | A12 | Scrub và metrics | `TestScrub`, `TestScrubTailGarbage` (`internal/core`), `TestMetricsAndScrubEndpoints` (`internal/server`) | lật 1 byte trong segment/checkpoint thì báo đúng một lỗi; `/metrics` đúng định dạng Prometheus |
 | A15 | Index phụ và ràng buộc | `go test ./internal/core -run 'SecIndex|UniqueIndex|ForeignKey'`, `./internal/sql -run 'SQLIndex|SQLUnique|SQLConcurrentConstraints'`, `./internal/repl -run SecondaryIndex` với server Rust | cùng truy vấn trước/sau `CREATE INDEX` ra cùng dòng và index được đọc; đúng một người thắng khi chèn đồng thời một giá trị UNIQUE; không có con mồ côi khi chèn con đua với xoá cha; replica khởi động lại vẫn đọc được index |
+| A14 | Kiểu dữ liệu (P1.1) | `sqlcorpus` mục `type-*` (so với PG16 từng chuỗi ký tự in ra, không làm tròn), `TestType*`, `TestPgxTypes`, `TestNumericBinary` | 100% khớp; OID trong RowDescription, Relation của pgoutput và wal2json/test_decoding đúng; bảng `time` cũ đọc được, `ALTER COLUMN TYPE` giữ dòng cũ |
 
 Từ giờ, mọi thay đổi định dạng ở bản Go đều phải tăng số phiên bản (header checkpoint, magic `STZ1`/`STASKREPL1`) và cập nhật tài liệu này trong cùng thay đổi.

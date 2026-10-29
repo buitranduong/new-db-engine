@@ -36,7 +36,7 @@ func numericInfo(oid int64) (prec, radix, scale, dt Datum) {
 	case 701:
 		prec, radix = IntD(53), IntD(2)
 	case 1184, 1114:
-		dt = IntD(3) // milliseconds
+		dt = IntD(6) // microseconds
 	case 1082:
 		dt = IntD(0)
 	}

@@ -3,6 +3,9 @@ package sql
 import (
 	"strconv"
 	"strings"
+
+	"stask/internal/pgnum"
+	"stask/internal/schema"
 )
 
 // Parse parses a string holding zero or more ';'-separated statements.
@@ -655,15 +658,20 @@ func (p *parser) typeName() (string, error) {
 	case "int", "integer", "int2", "int4", "int8", "bigint", "smallint", "serial", "bigserial", "smallserial",
 		"int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "tinyint", "signed", "unsigned":
 		out = "int"
-	case "float32", "float64", "decimal32", "decimal64", "decimal128", "double_precision":
+	case "float32", "float64", "double_precision":
 		skipMods()
 		out = "float"
-	case "fixedstring", "json", "jsonb", "enum8", "enum16", "ipv4", "ipv6", "bpchar":
+	case "decimal32", "decimal64", "decimal128":
+		skipMods()
+		out = "numeric"
+	case "fixedstring", "enum8", "enum16", "ipv4", "ipv6", "bpchar":
 		skipMods()
 		out = "string"
+	case "json", "jsonb", "bytea", "uuid":
+		out = t.s
 	case "datetime", "datetime64":
 		skipMods()
-		out = "time"
+		out = "timestamptz"
 	case "date32":
 		out = "date"
 	case "interval":
@@ -674,9 +682,26 @@ func (p *parser) typeName() (string, error) {
 			}
 		}
 		out = "interval"
-	case "float", "float4", "float8", "real", "numeric", "decimal":
+	case "float", "float4", "float8", "real":
 		skipMods()
 		out = "float"
+	case "numeric", "decimal":
+		out = "numeric"
+		if p.acceptOp("(") { // numeric(precision[, scale])
+			pr, sc := p.next(), "0"
+			if p.acceptOp(",") {
+				sc = p.next().s
+			}
+			if err := p.expectOp(")"); err != nil {
+				return "", err
+			}
+			if pr.k == tNumber {
+				out = "numeric(" + pr.s + "," + sc + ")"
+				if _, _, ok := schema.NumericMod(out); !ok {
+					return "", errf("22023", "NUMERIC precision %s, scale %s must be between 0 and precision (1 to 1000)", pr.s, sc)
+				}
+			}
+		}
 	case "double":
 		p.acceptKw("precision")
 		out = "float"
@@ -686,17 +711,22 @@ func (p *parser) typeName() (string, error) {
 		out = t.s
 	case "int2vector", "oidvector":
 		out = "array"
-	case "varchar", "char", "character", "string", "uuid", "name":
+	case "varchar", "char", "character", "string", "name":
 		p.acceptKw("varying")
 		skipMods()
 		out = "string"
 	case "timestamp", "timestamptz":
 		skipMods()
-		if p.acceptKw("with") || p.acceptKw("without") {
+		out = t.s
+		if p.acceptKw("with") {
 			p.acceptKw("time")
 			p.acceptKw("zone")
+			out = "timestamptz"
+		} else if p.acceptKw("without") {
+			p.acceptKw("time")
+			p.acceptKw("zone")
+			out = "timestamp"
 		}
-		out = "time"
 	case "date":
 		out = "date"
 	case "bool", "boolean":
@@ -707,6 +737,9 @@ func (p *parser) typeName() (string, error) {
 	if p.acceptOp("[") {
 		if err := p.expectOp("]"); err != nil {
 			return "", err
+		}
+		if et, err := schema.ParseType(out); err == nil && et != schema.TArray && et != schema.TBytea && et != schema.TJSON && et != schema.TJSONB {
+			return out + "[]", nil
 		}
 		return "array", nil
 	}
@@ -1201,6 +1234,8 @@ func (p *parser) unary() (Expr, error) {
 				return &Lit{IntD(-lit.V.I)}, nil
 			case KFloat:
 				return &Lit{FloatD(-lit.V.F)}, nil
+			case KNumeric:
+				return &Lit{NumericD(numOf(lit.V).Neg())}, nil
 			}
 		}
 		return &Unary{"-", x}, err
@@ -1250,6 +1285,9 @@ func (p *parser) primary() (Expr, error) {
 			if i, err := strconv.ParseInt(t.s, 10, 64); err == nil {
 				return &Lit{IntD(i)}, nil
 			}
+		}
+		if x, err := pgnum.Parse(t.s); err == nil { // as PostgreSQL, a decimal literal is numeric
+			return &Lit{NumericD(x)}, nil
 		}
 		f, err := strconv.ParseFloat(t.s, 64)
 		if err != nil {
@@ -1419,7 +1457,7 @@ func (p *parser) funcCall(name string) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Func{Name: "date_part", Args: []Expr{&Lit{TextD(strings.ToLower(field))}, x}}, p.expectOp(")")
+		return &Func{Name: "extract", Args: []Expr{&Lit{TextD(strings.ToLower(field))}, x}}, p.expectOp(")")
 	case "position":
 		a, err := p.addExpr()
 		if err != nil {
@@ -1865,13 +1903,12 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				act.Kind = "drop_not_null"
 			case p.acceptKw("set", "data", "type"), p.acceptKw("type"):
 				act.Kind = "set_type"
-				if _, err := p.typeName(); err != nil {
+				var err error
+				if act.Type, err = p.typeName(); err != nil {
 					return nil, err
 				}
 				if p.acceptKw("using") {
-					if _, err := p.expr(); err != nil {
-						return nil, err
-					}
+					return nil, errf(codeFeature, "ALTER COLUMN TYPE ... USING is not supported")
 				}
 			default:
 				return nil, p.errHere("syntax error at or near %q", p.peek().s)

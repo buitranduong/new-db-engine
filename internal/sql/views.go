@@ -64,7 +64,7 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 		}
 		ci, ok := col(g)
 		if !ok || t.Columns[ci].T == schema.TFloat || slices.Contains(gcols, ci) ||
-			unit != "" && (t.Columns[ci].T != schema.TTime || !onlyTruncated(st, ci, unit, col)) {
+			unit != "" && (!t.Columns[ci].T.IsTime() || !onlyTruncated(st, ci, unit, col)) {
 			return nil, nil, false, nil
 		}
 		gcols = append(gcols, ci)
@@ -78,6 +78,7 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 	names := make([]string, len(aggs))
 	distinct := -1                    // column of the count(DISTINCT) aggregates: one only
 	isTime := make([]bool, len(aggs)) // min / max of a timestamp column
+	tcol := make([]schema.ColType, len(aggs))
 	for i, f := range aggs {
 		names[i] = "a" + strconv.Itoa(i)
 		a := proj.Agg{Fn: f.Name, As: names[i], Distinct: f.Distinct}
@@ -97,7 +98,8 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 				return nil, nil, false, nil
 			}
 			ty := t.Columns[ci].T
-			isTime[i] = ty == schema.TTime && (f.Name == "min" || f.Name == "max")
+			isTime[i] = ty.IsTime() && (f.Name == "min" || f.Name == "max")
+			tcol[i] = ty
 			if f.Name != "count" && ty != schema.TInt && ty != schema.TFloat && !isTime[i] {
 				return nil, nil, false, nil
 			}
@@ -161,7 +163,7 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 				return nil, nil, false, fmt.Errorf("view group value %T", x)
 			}
 			g.rep[ci] = v
-			g.keys = append(g.keys, fromValue(t.Columns[ci].T, v))
+			g.keys = append(g.keys, fromCol(&t.Columns[ci], v))
 		}
 		for i, f := range aggs {
 			var d Datum
@@ -170,7 +172,7 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 			case int64:
 				d = IntD(x)
 				if isTime[i] {
-					d = TimeD(x)
+					d = fromValue(tcol[i], schema.Value{I: x})
 				}
 			case float64:
 				d = FloatD(x)
@@ -384,13 +386,23 @@ func viewValue(ty schema.ColType, d Datum) (any, bool) {
 	switch {
 	case d.K == KNull:
 		return nil, false
-	case k == d.K && (k == KInt || k == KTime):
+	case ty == schema.TTime && isTime(d.K): // the column holds milliseconds
+		if d.I%1000 != 0 {
+			return nil, false
+		}
+		return d.I / 1000, true
+	case k == d.K && (k == KInt || isTime(k)):
 		return d.I, true
-	case k == KFloat && d.K == KInt:
-		return float64(d.I), true
+	case isTime(k) && isTime(d.K):
+		return d.I, true
+	case k == KFloat && (d.K == KInt || d.K == KNumeric):
+		f, _ := coerce(d, KFloat)
+		return f.F, true
 	case k == KFloat && d.K == KFloat:
 		return d.F, true
 	case k == KText && d.K == KText:
+		return d.S, true
+	case (k == KUUID || k == KBytea) && k == d.K:
 		return d.S, true
 	case k == KBool && d.K == KBool:
 		return d.I != 0, true

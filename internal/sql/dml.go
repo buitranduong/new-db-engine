@@ -84,7 +84,7 @@ func (s *Session) targetRows(tx *core.Tx, t *schema.Table, table, alias string, 
 	for _, r := range res.Rows {
 		row := make(schema.Row, nc)
 		for i, c := range t.Columns {
-			if row[i], err = toValue(c.T, r[i]); err != nil {
+			if row[i], err = toValueCol(&c, r[i]); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -114,7 +114,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 		return nil, err
 	}
 	sc := &scope{t: t}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
@@ -123,7 +123,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 	for ri, old := range rows {
 		upd := append(schema.Row(nil), old...)
 		for i, ci := range cols {
-			if upd[ci], err = toValue(t.Columns[ci].T, vals[ri][i]); err != nil {
+			if upd[ci], err = toValueCol(&t.Columns[ci], vals[ri][i]); err != nil {
 				return nil, err
 			}
 		}
@@ -147,7 +147,7 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 		return nil, err
 	}
 	sc := &scope{t: t}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {

@@ -115,8 +115,15 @@ func (c *evalCtx) callPre(f *Func, args []Datum) (Datum, bool, error) {
 	case "array":
 		return arrayD(args), true, nil
 	case "length", "array_length", "cardinality":
+		if f.Name == "length" && len(args) >= 1 && args[0].K == KBytea {
+			return IntD(int64(len(args[0].S))), true, nil
+		}
 		if len(args) >= 1 && args[0].K == KArray {
-			return IntD(int64(len(parseArrayText(args[0])))), true, nil
+			n := len(parseArrayText(args[0]))
+			if n == 0 && f.Name == "array_length" {
+				return Null, true, nil
+			}
+			return IntD(int64(n)), true, nil
 		}
 	case "format":
 		if len(args) == 0 || args[0].IsNull() {
@@ -505,6 +512,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			return Null, err
 		}
 		return datePart(strings.ToLower(str(0)), args[1])
+	case "extract": // numeric, as in PostgreSQL 14 and later
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		return extractNumeric(strings.ToLower(str(0)), args[1])
 	case "make_date":
 		if err := nargs(3, 3); err != nil {
 			return Null, err
@@ -521,7 +533,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
-		return DateD(time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).UnixMilli()), nil
+		return DateD(time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).UnixMicro()), nil
 	case "make_timestamp", "make_timestamptz":
 		if err := nargs(6, 7); err != nil {
 			return Null, err
@@ -539,7 +551,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			return Null, err
 		}
 		t := time.Date(int(p[0]), time.Month(p[1]), int(p[2]), int(p[3]), int(p[4]), 0, 0, time.UTC)
-		return TimeD(t.UnixMilli() + int64(s*1000)), nil
+		return tsD(map[bool]Kind{true: KTimestamp, false: KTime}[f.Name == "make_timestamp"], t.UnixMicro()+int64(math.Round(s*usPerSec))), nil
 	case "age":
 		if err := nargs(1, 2); err != nil {
 			return Null, err
@@ -567,12 +579,12 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		var ms int64
 		switch f.Name {
 		case "tostartoffiveminutes":
-			ms = floorDiv(t, 300_000) * 300_000
+			ms = floorDiv(t, 300*usPerSec) * 300 * usPerSec
 		case "tostartoffifteenminutes":
-			ms = floorDiv(t, 900_000) * 900_000
+			ms = floorDiv(t, 900*usPerSec) * 900 * usPerSec
 		case "tostartofweek": // ClickHouse mode 0: weeks start on Sunday
-			d := floorDiv(t, msPerDay)
-			ms = (d - (d+4)%7) * msPerDay
+			d := floorDiv(t, usPerDay)
+			ms = (d - (d+4)%7) * usPerDay
 		default:
 			if ms, err = proj.TruncTime(unit, t); err != nil {
 				return Null, errf(codeInvalidParameter, "%v", err)
@@ -589,7 +601,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
-		u := time.UnixMilli(t).UTC()
+		u := goTime(t)
 		switch f.Name {
 		case "toyear":
 			return IntD(int64(u.Year())), nil
@@ -617,13 +629,13 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			_, w := u.ISOWeek()
 			return IntD(int64(w)), nil
 		}
-		return IntD(floorDiv(t, 1000)), nil
+		return IntD(floorDiv(t, usPerSec)), nil
 	case "todate", "todate32":
 		return coerce(args[0], KDate)
 	case "todatetime", "todatetime64", "parsedatetimebesteffort", "parsedatetime64besteffort":
 		if args[0].K == KInt || args[0].K == KFloat {
 			x, _ := coerce(args[0], KFloat)
-			return TimeD(int64(x.F * 1000)), nil
+			return TimeD(int64(math.Round(x.F * usPerSec))), nil
 		}
 		return coerce(args[0], KTime)
 	case "formatdatetime":
@@ -634,7 +646,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
-		return TextD(chFormat(time.UnixMilli(t).UTC(), str(1))), nil
+		return TextD(chFormat(goTime(t), str(1))), nil
 	case "datediff", "date_diff", "timestampdiff":
 		if err := nargs(3, 4); err != nil {
 			return Null, err
@@ -679,7 +691,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 	case "today":
 		return DateD(c.now), nil
 	case "yesterday":
-		return DateD(c.now - msPerDay), nil
+		return DateD(c.now - usPerDay), nil
 	// ---- type conversion (ClickHouse) ----
 	case "toint8", "toint16", "toint32", "toint64", "toint128", "touint8", "touint16", "touint32", "touint64":
 		if args[0].K == KBool {
@@ -692,7 +704,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		return TextD(args[0].String()), nil
 	// ---- arrays ----
 	case "array_length", "cardinality", "length_array":
-		return IntD(int64(len(parseArrayText(args[0])))), nil
+		n := len(parseArrayText(args[0]))
+		if n == 0 && f.Name == "array_length" {
+			return Null, nil
+		}
+		return IntD(int64(n)), nil
 	case "has":
 		for _, e := range parseArrayText(args[0]) {
 			if c, err := compare(e, args[1]); err == nil && c == 0 {
@@ -713,7 +729,10 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		}
 		return TextD(strings.Join(parts, sep)), nil
 	case "pg_typeof", "totypename":
-		return TextD(strings.ToLower(args[0].K.String())), nil
+		if args[0].K == KArray {
+			return TextD(pgKindName(Kind(args[0].I)) + "[]"), nil
+		}
+		return TextD(pgKindName(args[0].K)), nil
 	}
 	return Null, errf(codeUndefinedFunction, "function %s does not exist", f.Name)
 }
@@ -759,19 +778,74 @@ func compileRegex(p string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
+// pgKindName is the type's name as pg_typeof and format_type print it.
+func pgKindName(k Kind) string {
+	switch k {
+	case KTime:
+		return "timestamp with time zone"
+	case KTimestamp:
+		return "timestamp without time zone"
+	}
+	return k.String()
+}
+
+// extractNumeric is EXTRACT: numeric, with the scales PostgreSQL gives
+// (seconds 6 digits, milliseconds 3, epoch 6; the other fields are whole
+// numbers), exact to the microsecond.
+func extractNumeric(field string, v Datum) (Datum, error) {
+	if isTime(v.K) || v.K == KText || v.K == KDate {
+		t, err := coerce(v, KTime)
+		if err != nil {
+			return Null, err
+		}
+		us := t.I
+		secUs := us - floorDiv(us, 60*usPerSec)*60*usPerSec
+		var s string
+		switch field {
+		case "epoch":
+			a := us
+			if us < 0 {
+				a = -us
+			}
+			s = fmt.Sprintf("%d.%06d", a/usPerSec, a%usPerSec)
+			if us < 0 {
+				s = "-" + s
+			}
+		case "second", "seconds", "sec":
+			s = fmt.Sprintf("%d.%06d", secUs/usPerSec, secUs%usPerSec)
+		case "milliseconds":
+			s = fmt.Sprintf("%d.%03d", secUs/1000, secUs%1000)
+		case "microseconds":
+			s = strconv.FormatInt(secUs, 10)
+		default:
+			f, err := datePart(field, v)
+			if err != nil {
+				return Null, err
+			}
+			return coerce(IntD(int64(f.F)), KNumeric)
+		}
+		return coerce(TextD(s), KNumeric)
+	}
+	f, err := datePart(field, v)
+	if err != nil || f.IsNull() {
+		return f, err
+	}
+	return coerce(f, KNumeric)
+}
+
 // datePart is PostgreSQL's date_part / EXTRACT.
 func datePart(field string, v Datum) (Datum, error) {
 	if v.K == KInterval {
 		ms := intervalMs(v)
 		switch field {
 		case "epoch":
-			return FloatD(float64(ms) / 1000), nil
+			return FloatD(float64(ms) / usPerSec), nil
 		case "day", "days":
-			return FloatD(float64(v.I / msPerDay)), nil
+			return FloatD(float64(v.I / usPerDay)), nil
 		case "hour":
-			return FloatD(float64(v.I % msPerDay / 3_600_000)), nil
+			return FloatD(float64(v.I % usPerDay / (3600 * usPerSec))), nil
 		case "minute":
-			return FloatD(float64(v.I % 3_600_000 / 60_000)), nil
+			return FloatD(float64(v.I % (3600 * usPerSec) / (60 * usPerSec))), nil
 		case "month":
 			return FloatD(float64(int64(v.F) % 12)), nil
 		case "year":
@@ -783,7 +857,7 @@ func datePart(field string, v Datum) (Datum, error) {
 	if err != nil {
 		return Null, err
 	}
-	u := time.UnixMilli(t.I).UTC()
+	u := goTime(t.I)
 	var x float64
 	switch field {
 	case "year", "years":
@@ -799,9 +873,9 @@ func datePart(field string, v Datum) (Datum, error) {
 	case "second", "seconds", "sec":
 		x = float64(u.Second()) + float64(u.Nanosecond())/1e9
 	case "milliseconds":
-		x = float64(u.Second()*1000) + float64(u.Nanosecond()/1e6)
+		x = float64(u.Second()*1000) + float64(u.Nanosecond())/1e6
 	case "microseconds":
-		x = float64(u.Second()*1_000_000) + float64(u.Nanosecond()/1e3)
+		x = float64(u.Second()*1_000_000) + float64(u.Nanosecond())/1e3
 	case "dow":
 		x = float64(u.Weekday())
 	case "isodow":
@@ -823,7 +897,7 @@ func datePart(field string, v Datum) (Datum, error) {
 	case "millennium":
 		x = math.Ceil(float64(u.Year()) / 1000)
 	case "epoch":
-		x = float64(t.I) / 1000
+		x = float64(t.I) / usPerSec
 	case "timezone", "timezone_hour", "timezone_minute":
 		x = 0
 	default:
@@ -834,20 +908,20 @@ func datePart(field string, v Datum) (Datum, error) {
 
 // dateDiff is ClickHouse's dateDiff: unit boundaries crossed from a to b.
 func dateDiff(unit string, a, b int64) (int64, error) {
-	ua, ub := time.UnixMilli(a).UTC(), time.UnixMilli(b).UTC()
+	ua, ub := goTime(a), goTime(b)
 	months := func(t time.Time) int64 { return int64(t.Year())*12 + int64(t.Month()) - 1 }
 	switch unit {
 	case "second", "seconds", "ss", "s":
-		return floorDiv(b, 1000) - floorDiv(a, 1000), nil
+		return floorDiv(b, usPerSec) - floorDiv(a, usPerSec), nil
 	case "minute", "minutes", "mi", "n":
-		return floorDiv(b, 60_000) - floorDiv(a, 60_000), nil
+		return floorDiv(b, 60*usPerSec) - floorDiv(a, 60*usPerSec), nil
 	case "hour", "hours", "hh", "h":
-		return floorDiv(b, 3_600_000) - floorDiv(a, 3_600_000), nil
+		return floorDiv(b, 3600*usPerSec) - floorDiv(a, 3600*usPerSec), nil
 	case "day", "days", "dd", "d":
-		return floorDiv(b, msPerDay) - floorDiv(a, msPerDay), nil
+		return floorDiv(b, usPerDay) - floorDiv(a, usPerDay), nil
 	case "week", "weeks", "wk", "ww":
 		// weeks start on Monday
-		wk := func(ms int64) int64 { return floorDiv(floorDiv(ms, msPerDay)+3, 7) }
+		wk := func(ms int64) int64 { return floorDiv(floorDiv(ms, usPerDay)+3, 7) }
 		return wk(b) - wk(a), nil
 	case "month", "months", "mm", "m":
 		return months(ub) - months(ua), nil
@@ -923,8 +997,8 @@ func chFormat(t time.Time, f string) string {
 // patterns).
 func toChar(v Datum, f string) (Datum, error) {
 	switch v.K {
-	case KTime, KDate:
-		t := time.UnixMilli(v.I).UTC()
+	case KTime, KTimestamp, KDate:
+		t := goTime(v.I)
 		var b strings.Builder
 		fm := false
 		pats := []struct {
@@ -1205,15 +1279,25 @@ func funcKind(name string, args []Kind) Kind {
 		if (name == "round" || name == "floor" || name == "ceil" || name == "ceiling" || name == "trunc") && arg(0) == KInt && len(args) == 1 {
 			return KInt
 		}
+		if arg(0) == KNumeric && name != "extract_epoch" && name != "epoch" && name != "date_part" &&
+			(name == "avg" || name == "avgif" || name == "round" || name == "floor" || name == "ceil" || name == "ceiling" || name == "trunc") {
+			return KNumeric
+		}
 		return KFloat
 	case "sign", "abs", "mod", "modulo", "div":
 		if arg(0) == KInt && (len(args) < 2 || arg(1) == KInt) {
 			return KInt
 		}
+		if arg(0) == KNumeric && (len(args) < 2 || arg(1) == KNumeric || arg(1) == KInt) {
+			return KNumeric
+		}
 		return KFloat
 	case "sum", "sumif":
 		if arg(0) == KInt || arg(0) == KBool {
 			return KInt
+		}
+		if arg(0) == KNumeric {
+			return KNumeric
 		}
 		if arg(0) == KInterval {
 			return KInterval
@@ -1244,12 +1328,19 @@ func funcKind(name string, args []Kind) Kind {
 				return KDate
 			}
 		}
+		if arg(0) == KTimestamp || name == "date_trunc" && arg(1) == KTimestamp || name == "make_timestamp" {
+			return KTimestamp
+		}
 		return KTime
 	case "make_date", "todate", "todate32", "tostartofmonth", "tostartofyear", "tostartofquarter", "tostartofweek",
 		"tomonday", "today", "yesterday":
 		return KDate
 	case "age":
 		return KInterval
+	case "extract":
+		return KNumeric
+	case "gen_random_uuid", "uuid_generate_v4", "generateuuidv4":
+		return KUUID
 	case "array", "array_agg", "grouparray", "groupuniqarray":
 		return KArray
 	}

@@ -641,7 +641,7 @@ func (ci *CopyIn) store(f []copyField) error {
 		if f[i].null {
 			continue
 		}
-		v, err := toValue(t.Columns[ci2].T, TextD(f[i].s))
+		v, err := toValueCol(&t.Columns[ci2], TextD(f[i].s))
 		if err != nil {
 			e := AsError(err)
 			return ci.lineErr(e.Code, e.Msg, i)
@@ -650,13 +650,13 @@ func (ci *CopyIn) store(f []copyField) error {
 		size += int64(len(v.S))
 	}
 	if len(ci.defCols) > 0 {
-		now := nowMillis()
+		now := nowMicros()
 		for _, c := range ci.defCols {
 			d, err := ci.s.columnDefault(t, c, now)
 			if err != nil {
 				return err
 			}
-			if row[c], err = toValue(t.Columns[c].T, d); err != nil {
+			if row[c], err = toValueCol(&t.Columns[c], d); err != nil {
 				return err
 			}
 		}
@@ -1085,7 +1085,7 @@ func (s *Session) copyScan(tx *core.Tx, t *schema.Table, cols []int, cs *CopyStm
 			if t.Columns[c].T == schema.TText {
 				w.value(i, v.S, len(cols))
 			} else {
-				w.value(i, fromValue(t.Columns[c].T, v).String(), len(cols))
+				w.value(i, fromCol(&t.Columns[c], v).String(), len(cols))
 			}
 		}
 		if werr = w.end(); werr != nil {

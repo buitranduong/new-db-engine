@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"stask/internal/pgnum"
 	"stask/internal/proj"
 	"stask/internal/schema"
 )
@@ -115,7 +116,7 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if row == nil {
 			return Null, errf(codeUndefinedColumn, "column %q cannot be used here", e.Name)
 		}
-		return fromValue(c.sc.t.Columns[i].T, row[i]), nil
+		return fromCol(&c.sc.t.Columns[i], row[i]), nil
 	case *Unary:
 		v, err := c.eval(e.X)
 		if err != nil || v.IsNull() {
@@ -132,6 +133,10 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return IntD(-v.I), nil
 		case KFloat:
 			return FloatD(-v.F), nil
+		case KNumeric:
+			return NumericD(numOf(v).Neg()), nil
+		case KInterval:
+			return IntervalD(-int64(v.F), -v.I), nil
 		case KText:
 			if f, err := coerce(v, KFloat); err == nil {
 				return FloatD(-f.F), nil
@@ -224,7 +229,21 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if k == KInt && v.K == KFloat && !math.IsNaN(v.F) && math.Abs(v.F) < 9.2e18 {
 			return IntD(int64(math.RoundToEven(v.F))), nil
 		}
-		return coerce(v, k)
+		d, err := coerce(v, k)
+		if err != nil {
+			return Null, err
+		}
+		switch k {
+		case KNumeric:
+			return applyTypmod(e.Type, d)
+		case KArray:
+			if ek, ok := schema.ElemType(e.Type); ok {
+				if et, err := schema.ParseType(ek); err == nil {
+					return coerceArray(d, kindOf(et))
+				}
+			}
+		}
+		return d, nil
 	case *Case:
 		var op Datum
 		if e.Operand != nil {
@@ -275,12 +294,30 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 }
 
 func kindOfType(t string) Kind {
+	if _, _, ok := schema.NumericMod(t); ok {
+		return KNumeric
+	}
+	if _, ok := schema.ElemType(t); ok {
+		return KArray
+	}
 	switch t {
 	case "int", "regclass", "regtype", "oid", "regproc", "regnamespace":
 		return KInt
 	case "float":
 		return KFloat
-	case "time":
+	case "numeric":
+		return KNumeric
+	case "uuid":
+		return KUUID
+	case "bytea":
+		return KBytea
+	case "json":
+		return KJSON
+	case "jsonb":
+		return KJSONB
+	case "timestamp":
+		return KTimestamp
+	case "time", "timestamptz":
 		return KTime
 	case "date":
 		return KDate
@@ -369,8 +406,68 @@ func (c *evalCtx) evalBool(x Expr) (Datum, error) {
 	return coerce(v, KBool)
 }
 
+// numArith is arithmetic on numeric: an operand of kind double makes the
+// result double, an integer is widened to numeric.
+func numArith(op string, l, r Datum) (Datum, bool, error) {
+	if l.K != KNumeric && r.K != KNumeric {
+		return Null, false, nil
+	}
+	ok := func(d Datum) bool { return d.K == KInt || d.K == KFloat || d.K == KNumeric }
+	if !ok(l) || !ok(r) {
+		return Null, false, nil
+	}
+	if l.K == KFloat || r.K == KFloat {
+		lf, _ := coerce(l, KFloat)
+		rf, _ := coerce(r, KFloat)
+		d, err := arith(op, lf, rf)
+		return d, true, err
+	}
+	l, _ = coerce(l, KNumeric)
+	r, _ = coerce(r, KNumeric)
+	a, b := numOf(l), numOf(r)
+	var x pgnum.Dec
+	var err error
+	switch op {
+	case "+":
+		x = pgnum.Add(a, b)
+	case "-":
+		x = pgnum.Sub(a, b)
+	case "*":
+		x = pgnum.Mul(a, b)
+	case "/":
+		x, err = pgnum.Div(a, b)
+	case "%":
+		x, err = pgnum.Mod(a, b)
+	case "^":
+		n, ok := b.Int64()
+		if !ok || n < 0 || n > 10000 || b.Scale() != 0 && pgnum.Cmp(b, pgnum.FromInt64(n)) != 0 {
+			f := math.Pow(a.Float64(), b.Float64())
+			return NumericD(pgnum.FromFloat64(f)), true, nil
+		}
+		x = pgnum.Pow(a, int(n))
+	default:
+		return Null, false, nil
+	}
+	if err == pgnum.ErrDivZero {
+		return Null, true, errf(codeDivisionByZero, "division by zero")
+	}
+	return NumericD(x), true, err
+}
+
 func arith(op string, l, r Datum) (Datum, error) {
 	// untyped literals: text that looks numeric takes the other side's kind
+	if l.K == KText && r.K == KNumeric || r.K == KText && l.K == KNumeric {
+		var err error
+		if l, err = coerce(l, KNumeric); err != nil {
+			return Null, err
+		}
+		if r, err = coerce(r, KNumeric); err != nil {
+			return Null, err
+		}
+	}
+	if d, ok, err := numArith(op, l, r); ok {
+		return d, err
+	}
 	if l.K == KText && (r.K == KInt || r.K == KFloat) {
 		var err error
 		if l, err = coerce(l, r.K); err != nil {
@@ -382,12 +479,6 @@ func arith(op string, l, r Datum) (Datum, error) {
 		if r, err = coerce(r, l.K); err != nil {
 			return Null, err
 		}
-	}
-	if l.K == KTime && r.K == KInt && (op == "+" || op == "-") {
-		if op == "+" {
-			return TimeD(l.I + r.I), nil
-		}
-		return TimeD(l.I - r.I), nil
 	}
 	if d, ok, err := timeArith(op, l, r); ok {
 		return d, err
@@ -490,7 +581,7 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		var b [16]byte
 		rand.Read(b[:])
 		b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80 // version 4, RFC 4122 variant
-		return TextD(fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])), nil
+		return Datum{K: KUUID, S: fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])}, nil
 	case "current_database":
 		return TextD("stask"), nil
 	case "current_schema":
@@ -555,6 +646,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		if err := nargs(1, 1); err != nil {
 			return Null, err
 		}
+		if args[0].K == KNumeric {
+			return NumericD(numOf(args[0]).Abs()), nil
+		}
 		if args[0].K == KInt {
 			if args[0].I < 0 {
 				return IntD(-args[0].I), nil
@@ -569,6 +663,27 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		}
 		if args[0].K == KInt && len(args) == 1 {
 			return args[0], nil
+		}
+		if args[0].K == KNumeric {
+			x, n := numOf(args[0]), 0
+			if len(args) == 2 {
+				d, err := coerce(args[1], KInt)
+				if err != nil {
+					return Null, err
+				}
+				n = int(d.I)
+			}
+			switch f.Name {
+			case "round":
+				x = x.Round(n)
+			case "floor":
+				x = x.Floor()
+			case "ceil", "ceiling":
+				x = x.Ceil()
+			default:
+				x = x.Trunc(n)
+			}
+			return NumericD(x), nil
 		}
 		v, err := coerce(args[0], KFloat)
 		if err != nil {
@@ -599,7 +714,7 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			return Null, err
 		}
 		v, err := coerce(args[0], KFloat)
-		return TimeD(int64(v.F * 1000)), err
+		return TimeD(int64(math.Round(v.F * usPerSec))), err
 	case "date_trunc":
 		if err := nargs(2, 2); err != nil {
 			return Null, err
@@ -611,14 +726,14 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
-		ms, err := proj.TruncTime(args[0].S, v.I)
+		us, err := proj.TruncTime(args[0].S, v.I)
 		if err != nil {
 			return Null, errf(codeInvalidParameter, "%v", err)
 		}
-		return TimeD(ms), nil
+		return tsD(args[1].K, us), nil
 	case "extract_epoch", "epoch":
 		v, err := coerce(args[0], KTime)
-		return FloatD(float64(v.I) / 1000), err
+		return FloatD(float64(v.I) / usPerSec), err
 	case "current_setting":
 		return TextD(""), nil
 	case "set_config": // set_config(name, value, is_local): accepted, not applied
@@ -659,4 +774,4 @@ func likeMatch(s, p string) bool {
 	return m(0, 0)
 }
 
-func nowMillis() int64 { return time.Now().UnixMilli() }
+func nowMicros() int64 { return time.Now().UnixMicro() }

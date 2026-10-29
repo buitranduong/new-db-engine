@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"stask/internal/core"
 	"stask/internal/schema"
@@ -229,25 +228,68 @@ func (o *PgOutput) relation(t *schema.Table, ident byte) []byte {
 		}
 		b = append(b, flags)
 		b = append(append(b, col.Name...), 0)
-		b = binary.BigEndian.AppendUint32(b, PgTypeOID(col.T))
+		b = binary.BigEndian.AppendUint32(b, PgTypeOID(col))
 		b = binary.BigEndian.AppendUint32(b, math.MaxUint32) // typmod -1
 	}
 	return b
 }
 
-// PgTypeOID is the PostgreSQL type of a column type.
-func PgTypeOID(ct schema.ColType) uint32 {
-	switch ct {
+// PgTypeOID is the PostgreSQL type of a column.
+func PgTypeOID(c schema.Column) uint32 {
+	switch c.T {
 	case schema.TInt:
 		return 20 // int8
 	case schema.TFloat:
 		return 701 // float8
 	case schema.TBool:
 		return 16
-	case schema.TTime:
+	case schema.TTime, schema.TTimestamptz:
 		return 1184 // timestamptz
+	case schema.TTimestamp:
+		return 1114
+	case schema.TNumeric:
+		return 1700
+	case schema.TUUID:
+		return 2950
+	case schema.TBytea:
+		return 17
+	case schema.TJSON:
+		return 114
+	case schema.TJSONB:
+		return 3802
+	case schema.TArray:
+		return arrayOID(elemKindOf(c), c.Type)
 	}
 	return 25 // text
+}
+
+// arrayOID is the array type of an array column's element type.
+func arrayOID(ek Kind, typ string) uint32 {
+	switch ek {
+	case KInt:
+		return 1016
+	case KFloat:
+		return 1022
+	case KBool:
+		return 1000
+	case KTime:
+		return 1185
+	case KTimestamp:
+		return 1115
+	case KNumeric:
+		return 1231
+	case KUUID:
+		return 2951
+	}
+	return 1009
+}
+
+// elemOID is the element type of an array type.
+func elemOID(arr uint32) uint32 {
+	if t, ok := pgTypeByOID[int64(arr)]; ok && t.elem != 0 {
+		return uint32(t.elem)
+	}
+	return 25
 }
 
 func (o *PgOutput) tuple(b []byte, t *schema.Table, row schema.Row) []byte {
@@ -260,39 +302,21 @@ func (o *PgOutput) tuple(b []byte, t *schema.Table, row schema.Row) []byte {
 		}
 		if o.binary {
 			var val []byte
-			switch col.T {
-			case schema.TInt:
-				val = binary.BigEndian.AppendUint64(nil, uint64(v.I))
-			case schema.TFloat:
-				val = binary.BigEndian.AppendUint64(nil, math.Float64bits(v.F))
-			case schema.TBool:
-				val = []byte{byte(v.I)}
-			case schema.TTime:
-				val = binary.BigEndian.AppendUint64(nil, uint64((v.I-946684800000)*1000))
-			default:
-				val = []byte(v.S)
+			ok := false
+			d := fromCol(&col, v)
+			if d.K == KArray {
+				val, ok = ArrayBinary(d, elemKindOf(col), elemOID(PgTypeOID(col)))
+			} else {
+				val, ok = BinaryValue(d)
 			}
-			b = append(b, 'b')
-			b = binary.BigEndian.AppendUint32(b, uint32(len(val)))
-			b = append(b, val...)
-			continue
-		}
-		var s string
-		switch col.T {
-		case schema.TInt:
-			s = strconv.FormatInt(v.I, 10)
-		case schema.TFloat:
-			s = FloatD(v.F).String()
-		case schema.TBool:
-			s = "f"
-			if v.I != 0 {
-				s = "t"
+			if ok {
+				b = append(b, 'b')
+				b = binary.BigEndian.AppendUint32(b, uint32(len(val)))
+				b = append(b, val...)
+				continue
 			}
-		case schema.TTime:
-			s = time.UnixMilli(v.I).UTC().Format("2006-01-02 15:04:05.999-07")
-		default:
-			s = v.S
 		}
+		s := fromCol(&col, v).String()
 		b = append(b, 't')
 		b = binary.BigEndian.AppendUint32(b, uint32(len(s)))
 		b = append(b, s...)

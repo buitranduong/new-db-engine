@@ -531,7 +531,7 @@ func hasCol(t *schema.Table, name string) bool {
 // checkConstraints fails if a CHECK constraint is false for the row (NULL
 // passes, as in SQL).
 func checkConstraints(t *schema.Table, r schema.Row) error {
-	ctx := &evalCtx{sc: &scope{t: t}, row: r, now: nowMillis()}
+	ctx := &evalCtx{sc: &scope{t: t}, row: r, now: nowMicros()}
 	for _, ck := range t.Checks {
 		x, err := parseCheck(ck.Expr)
 		if err != nil {

@@ -63,6 +63,7 @@ type AlterAction struct {
 	Column     string // the column acted on
 	NewName    string // rename_column, rename_table
 	Expr       string // set_default
+	Type       string // set_type: the new type (schema type name)
 	Check      CheckDef
 	Constraint *ConstraintDef // add_constraint (UNIQUE, FOREIGN KEY)
 	IfExists   bool           // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS

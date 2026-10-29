@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"stask/internal/core"
+	"stask/internal/pgnum"
 	"stask/internal/schema"
 )
 
@@ -746,6 +747,8 @@ type aggState struct {
 	count    int64
 	sumI     int64
 	sumF     float64
+	sumN     pgnum.Dec // the numeric values' sum
+	isNum    bool
 	isFloat  bool
 	best     Datum
 	distinct map[string]bool
@@ -776,6 +779,9 @@ func (a *aggState) add(v Datum) error {
 		case KFloat:
 			a.isFloat = true
 			a.sumF += v.F
+		case KNumeric:
+			a.isNum = true
+			a.sumN = pgnum.Add(a.sumN, numOf(v))
 		default:
 			f, err := coerce(v, KFloat)
 			if err != nil {
@@ -812,14 +818,21 @@ func (a *aggState) result() Datum {
 			return Null
 		}
 		if a.isFloat {
-			return FloatD(a.sumF + float64(a.sumI))
+			return FloatD(a.sumF + a.sumN.Float64() + float64(a.sumI))
+		}
+		if a.isNum {
+			return NumericD(pgnum.Add(a.sumN, pgnum.FromInt64(a.sumI)))
 		}
 		return IntD(a.sumI)
 	case "avg":
 		if a.count == 0 {
 			return Null
 		}
-		return FloatD((a.sumF + float64(a.sumI)) / float64(a.count))
+		if a.isNum && !a.isFloat {
+			x, _ := pgnum.Div(pgnum.Add(a.sumN, pgnum.FromInt64(a.sumI)), pgnum.FromInt64(a.count))
+			return NumericD(x)
+		}
+		return FloatD((a.sumF + a.sumN.Float64() + float64(a.sumI)) / float64(a.count))
 	}
 	return a.best
 }
@@ -829,6 +842,8 @@ func (a *aggState) merge(b *aggState) error {
 	a.count += b.count
 	a.sumI += b.sumI
 	a.sumF += b.sumF
+	a.sumN = pgnum.Add(a.sumN, b.sumN)
+	a.isNum = a.isNum || b.isNum
 	a.isFloat = a.isFloat || b.isFloat
 	if b.best.IsNull() {
 		return nil
@@ -1038,7 +1053,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		}
 		sc.t, sc.alias = t, st.Alias
 	}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 
 	plan, err := st.plan(sc)
 	if err != nil {
@@ -1566,7 +1581,7 @@ func (s *Session) buildRow(t *schema.Table, cols []int, vals []Datum) (schema.Ro
 		r[i].Null = true
 	}
 	for i, ci := range cols {
-		v, err := toValue(t.Columns[ci].T, vals[i])
+		v, err := toValueCol(&t.Columns[ci], vals[i])
 		if err != nil {
 			return nil, err
 		}
@@ -1596,7 +1611,7 @@ func (s *Session) returning(sc *scope, ctx *evalCtx, items []SelItem, r schema.R
 	for _, it := range items {
 		if it.Star {
 			for i, c := range sc.t.Columns {
-				vals = append(vals, fromValue(c.T, r[i]))
+				vals = append(vals, fromCol(&c, r[i]))
 			}
 			continue
 		}
@@ -1633,7 +1648,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 		return nil, err
 	}
 	sc := &scope{t: t}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
 	var cols []int
 	if st.Cols == nil {
@@ -1797,7 +1812,7 @@ func (s *Session) applySet(t *schema.Table, ctx *evalCtx, old schema.Row, set []
 		if err != nil {
 			return nil, err
 		}
-		if upd[i], err = toValue(t.Columns[i].T, v); err != nil {
+		if upd[i], err = toValueCol(&t.Columns[i], v); err != nil {
 			return nil, err
 		}
 	}
@@ -1824,7 +1839,7 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 		return s.updateGeneral(tx, t, st, params)
 	}
 	sc := &scope{t: t}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	rows, err := s.matching(tx, t, ctx, st.Where)
 	if err != nil {
 		return nil, err
@@ -1859,7 +1874,7 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 		return s.deleteGeneral(tx, t, st, params)
 	}
 	sc := &scope{t: t}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	rows, err := s.matching(tx, t, ctx, st.Where)
 	if err != nil {
 		return nil, err

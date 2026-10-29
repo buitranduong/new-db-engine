@@ -522,7 +522,7 @@ func (p *trigProg) params(t *schema.Table, old, nw schema.Row) ([]Datum, error) 
 		if !ok {
 			return nil, errf(codeUndefinedColumn, "column %q of relation %q does not exist", r.col, t.Name)
 		}
-		out[i] = fromValue(t.Columns[ci].T, row[ci])
+		out[i] = fromCol(&t.Columns[ci], row[ci])
 	}
 	return out, nil
 }
@@ -611,7 +611,7 @@ func (s *Session) fireTriggers(tx *core.Tx, t *schema.Table, tgs []*core.Trigger
 					if !ok {
 						return nil, errf(codeUndefinedColumn, "column %q of relation %q does not exist", col, t.Name)
 					}
-					if nw[ci], err = toValue(t.Columns[ci].T, res.Rows[0][i]); err != nil {
+					if nw[ci], err = toValueCol(&t.Columns[ci], res.Rows[0][i]); err != nil {
 						return nil, err
 					}
 				}

@@ -66,7 +66,7 @@ func NewSession(e *core.Engine) *Session {
 		"transaction_isolation": "repeatable read", "default_transaction_isolation": "repeatable read",
 		"application_name": "", "search_path": "public", "integer_datetimes": "on", "server_encoding": "UTF8",
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
-		"idle_session_timeout": "0",
+		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
 	}}
 }
 
@@ -100,6 +100,9 @@ const autocommitRetries = 1000
 // Exec runs one statement.
 // exec executes one statement (Exec in cancel.go wraps it).
 func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
+	if err := s.waitMinLSN(st); err != nil {
+		return nil, err
+	}
 	if s.failed {
 		switch st.(type) {
 		case *Commit, *Rollback:
@@ -130,9 +133,11 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return &Result{Tag: "ROLLBACK"}, nil
 		}
 		ops := s.beforeCommit(tx)
-		if _, err := tx.Commit(); err != nil {
+		lsn, err := tx.Commit()
+		if err != nil {
 			return nil, AsError(err)
 		}
+		s.noteCommit(lsn)
 		for _, op := range ops {
 			s.applyListen(op)
 		}
@@ -148,7 +153,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 	case *SetVar:
 		return s.set(st)
 	case *Show:
-		name := strings.ReplaceAll(strings.ToLower(st.Name), " ", "_")
+		name := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(st.Name), " . ", "."), " ", "_")
 		if name == "transaction_isolation_level" {
 			name = "transaction_isolation"
 		}
@@ -258,13 +263,15 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return nil, AsError(err)
 		}
 		s.beforeCommit(tx)
-		if _, err := tx.Commit(); err != nil {
+		lsn, err := tx.Commit()
+		if err != nil {
 			if errors.Is(err, core.ErrConflict) && attempt < autocommitRetries {
 				backoff(attempt)
 				continue
 			}
 			return nil, AsError(err)
 		}
+		s.noteCommit(lsn)
 		return res, nil
 	}
 }
@@ -300,6 +307,16 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		name = "timezone"
 	case "statement_timeout", "idle_in_transaction_session_timeout", "idle_session_timeout":
 		return s.setTimeout(name, st.Value)
+	case MinLSNVar:
+		if _, err := strconv.ParseUint(strings.Trim(st.Value, "'\""), 10, 64); err != nil {
+			return nil, errf(codeInvalidText, "invalid value for %s: %q (want an LSN, a number)", MinLSNVar, st.Value)
+		}
+	case MinLSNTimeoutVar:
+		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
+			return nil, err
+		}
+	case LastLSNVar:
+		return nil, errf("55000", "parameter %q cannot be changed", LastLSNVar)
 	case ReadStalenessVar:
 		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
 			return nil, err

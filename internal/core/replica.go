@@ -39,6 +39,31 @@ var ErrReadOnly = errors.New("read-only replica: writes go to the leader")
 // IsReplica reports whether the engine was opened as a replica.
 func (e *Engine) IsReplica() bool { return e.opts.Replica }
 
+// ReadOnly reports that the engine refuses writes: a replica, or a cluster
+// node that is not (yet) the leader.
+func (e *Engine) ReadOnly() bool { return e.ro.Load() }
+
+// Promote makes a cluster engine (Options.Cluster) writable: the node is
+// the leader and has applied every committed entry. State that a read-only
+// engine does not keep (CDC slots and catalog, sequence cache) is loaded as
+// a restart would. Apply must not run any more.
+func (e *Engine) Promote() error {
+	if !e.opts.Cluster || !e.ro.Load() {
+		return errors.New("promote: not a read-only cluster engine")
+	}
+	e.seqMu.Lock()
+	e.seqs = nil
+	e.seqMu.Unlock()
+	if err := e.loadSlots(); err != nil {
+		return fmt.Errorf("cdc slots: %w", err)
+	}
+	if err := e.loadCDCCatalog(); err != nil {
+		return err
+	}
+	e.ro.Store(false)
+	return nil
+}
+
 // ---- leader side ----
 
 // Shipper reads the log on behalf of one replica. While open it pins the
@@ -217,8 +242,8 @@ type replState struct {
 // in the replica's log and installs it into the index. at must be the
 // replica's write position (or the start of the next segment).
 func (e *Engine) Apply(at wal.Pos, data []byte) error {
-	if !e.opts.Replica {
-		return errors.New("apply: not a replica")
+	if !e.ro.Load() {
+		return errors.New("apply: the engine is not read-only (replica or non-leader cluster node)")
 	}
 	cur := e.log.WritePos()
 	if at != cur {

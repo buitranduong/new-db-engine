@@ -165,7 +165,7 @@ func (e *Engine) loadTriggers() *map[string][]*Trigger {
 		}
 	}
 	e.trig.mu.Lock()
-	if e.trig.gen == gen && !e.opts.Replica { // a replica reads the writes of its leader
+	if e.trig.gen == gen && !e.ro.Load() { // a replica reads the writes of its leader
 		e.trig.m.Store(&m)
 	}
 	e.trig.mu.Unlock()

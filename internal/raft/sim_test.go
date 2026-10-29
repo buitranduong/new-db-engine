@@ -18,11 +18,11 @@ type delivery struct {
 }
 
 type simNode struct {
-	id   uint64
-	st   *MemStorage
-	n    *Node
-	up   bool
-	part int // partition group
+	id       uint64
+	st       *MemStorage
+	n        *Node
+	up       bool
+	part     int    // partition group
 	applied0 uint64 // state-machine position that survives a restart (after a snapshot)
 }
 

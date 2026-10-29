@@ -58,6 +58,8 @@ type pool struct {
 	hand     int
 	inflight map[uint64]*loadWait
 
+	free func() // releases the arena
+
 	misses, evictions, writebacks, reads atomic.Int64
 }
 
@@ -66,8 +68,8 @@ func newPool(f File, bytes int64) *pool {
 	if n < minFrames {
 		n = minFrames
 	}
-	arena := make([]byte, n*PageSize)
-	p := &pool{f: f, frames: make([]frame, n), inflight: map[uint64]*loadWait{}}
+	arena, free := allocArena(n * PageSize)
+	p := &pool{f: f, frames: make([]frame, n), inflight: map[uint64]*loadWait{}, free: free}
 	for i := range p.frames {
 		fr := &p.frames[i]
 		fr.data = arena[i*PageSize : (i+1)*PageSize : (i+1)*PageSize]

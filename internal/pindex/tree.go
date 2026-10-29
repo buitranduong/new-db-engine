@@ -205,11 +205,15 @@ type res struct {
 }
 
 func (t *Tree) Put(key, val []byte) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.putLocked(key, val)
+}
+
+func (t *Tree) putLocked(key, val []byte) error {
 	if len(key) > MaxKey || len(val) > MaxValue || len(key) == 0 {
 		return ErrTooLarge
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.failed != nil {
 		return t.failed
 	}
@@ -437,6 +441,10 @@ func fill(p []byte, cells [][]byte) {
 func (t *Tree) Delete(key []byte) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.deleteLocked(key)
+}
+
+func (t *Tree) deleteLocked(key []byte) (bool, error) {
 	if t.failed != nil {
 		return false, t.failed
 	}
@@ -529,6 +537,25 @@ func (t *Tree) del(id uint64, key []byte) (nid uint64, empty, found bool, err er
 	nid = f2.id.Load()
 	t.pool.unpin(f2)
 	return nid, false, true, nil
+}
+
+// Batch is the writer handle inside Tree.Batch.
+type Batch struct{ t *Tree }
+
+func (b Batch) Put(key, val []byte) error       { return b.t.putLocked(key, val) }
+func (b Batch) Delete(key []byte) (bool, error) { return b.t.deleteLocked(key) }
+func (b Batch) Get(key, dst []byte) ([]byte, bool, error) {
+	return get(b.t.pool, b.t.root, key, dst)
+}
+
+// Batch runs fn with the writer lock held: no Snapshot or Get can observe the
+// tree between two of fn's writes, so a multi-key transaction becomes visible
+// atomically, as the engine's install step needs. There is no rollback: fn
+// should validate before it writes. Do not call other Tree methods from fn.
+func (t *Tree) Batch(fn func(b Batch) error) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return fn(Batch{t})
 }
 
 func (t *Tree) Stats() Stats {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 
 	"stask/internal/pindex"
 	"stask/internal/pindex/bench"
@@ -31,6 +32,7 @@ func (p *pt) Scan(from []byte, max int) (int, error) {
 	}
 	defer s.Close()
 	it := s.Seek(from)
+	defer it.Close()
 	n := 0
 	for n < max && it.Next() {
 		n++
@@ -59,7 +61,13 @@ func main() {
 	dir := flag.String("dir", os.TempDir(), "directory for the index file")
 	mode := flag.String("mode", "both", "seq, rand or both")
 	ckpt := flag.Int("ckpt-each", 0, "checkpoint every N inserts")
+	prof := flag.String("cpuprofile", "", "write a CPU profile")
 	flag.Parse()
+	if *prof != "" {
+		pf, _ := os.Create(*prof)
+		pprof.StartCPUProfile(pf)
+		defer pprof.StopCPUProfile()
+	}
 	cfg := bench.Config{N: *n, Reads: *reads, Scans: *scans, Parallel: *par, CkptEach: *ckpt,
 		Out: func(s string) { fmt.Println(s) }}
 	fmt.Printf("pindex n=%d cache=%d MB GOMAXPROCS=%d\n", *n, *cacheMB, runtime.GOMAXPROCS(0))

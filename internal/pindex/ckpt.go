@@ -269,4 +269,13 @@ func (t *Tree) Checkpoint(user []byte) error {
 
 // Close closes the file. Unflushed changes are dropped: rebuild them by
 // replaying the log from the last checkpoint's position.
-func (t *Tree) Close() error { return t.f.Close() }
+//
+// The caller must have closed all snapshots and iterators and stopped using
+// the tree: the buffer pool memory is unmapped.
+func (t *Tree) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pool.free()
+	t.failed = ErrFailed
+	return t.f.Close()
+}

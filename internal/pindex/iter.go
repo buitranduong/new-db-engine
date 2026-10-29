@@ -1,6 +1,11 @@
 package pindex
 
-import "bytes"
+import (
+	"bytes"
+	"sync"
+)
+
+var leafBufs = sync.Pool{New: func() any { return make([]byte, PageSize) }}
 
 // snap is a frozen root. Its pages are immutable until Close, so reads take
 // no tree lock.
@@ -79,7 +84,7 @@ type iter struct {
 }
 
 func (s *snap) newIter(lo, hi []byte) *iter {
-	it := &iter{s: s, pool: s.t.pool, hi: hi, leaf: make([]byte, PageSize)}
+	it := &iter{s: s, pool: s.t.pool, hi: hi, leaf: leafBufs.Get().([]byte)}
 	if s.root == 0 {
 		it.done = true
 		return it
@@ -162,4 +167,13 @@ func (it *iter) Next() bool {
 func (it *iter) Key() []byte   { return it.k }
 func (it *iter) Value() []byte { return it.v }
 func (it *iter) Err() error    { return it.err }
-func (it *iter) Close()        { it.done = true }
+
+// Close releases the iterator's page buffer; Key and Value become invalid.
+func (it *iter) Close() {
+	it.done = true
+	if it.leaf != nil {
+		leafBufs.Put(it.leaf) //nolint:staticcheck // fixed-size buffer
+		it.leaf = nil
+	}
+	it.k, it.v = nil, nil
+}

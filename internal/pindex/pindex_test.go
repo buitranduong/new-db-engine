@@ -444,3 +444,47 @@ func TestConcurrent(t *testing.T) {
 	default:
 	}
 }
+
+// A Batch is atomic for snapshots taken concurrently.
+func TestBatchAtomic(t *testing.T) {
+	tr := openMem(t, newMemFile(), 4<<20)
+	stop := make(chan struct{})
+	errc := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			s, _ := tr.Snapshot()
+			a, _, _ := s.Get([]byte("a"), nil)
+			b, _, _ := s.Get([]byte("b"), nil)
+			s.Close()
+			if !bytes.Equal(a, b) {
+				errc <- fmt.Errorf("torn batch: a=%q b=%q", a, b)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 20000; i++ {
+		v := []byte(fmt.Sprint(i))
+		tr.Batch(func(b Batch) error {
+			b.Put([]byte("a"), v)
+			for j := 0; j < 5; j++ {
+				b.Put([]byte(fmt.Sprintf("x%d", j)), v)
+			}
+			return b.Put([]byte("b"), v)
+		})
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errc:
+		t.Fatal(err)
+	default:
+	}
+}

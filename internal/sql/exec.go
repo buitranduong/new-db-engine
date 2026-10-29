@@ -52,7 +52,7 @@ type Session struct {
 
 	ctl stmtCtl // cancel and timeouts of the running statement (cancel.go)
 
-	trigDepth int // nesting of row triggers being run (trigger.go)
+	trigDepth int                  // nesting of row triggers being run (trigger.go)
 	role      string               // role the session runs as; "" = bootstrap superuser (roles.go)
 	needCache map[Stmt]cachedNeeds // privileges each statement needs
 	pendingQ  string               // text of the statement about to run (SetQuery)

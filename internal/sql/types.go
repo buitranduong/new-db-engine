@@ -290,6 +290,9 @@ type Description struct {
 
 // Describe types a statement without running it.
 func (s *Session) Describe(st Stmt) (*Description, error) {
+	if err := s.authorize(st); err != nil {
+		return nil, err
+	}
 	d := &Description{}
 	sc := &scope{}
 	var table string

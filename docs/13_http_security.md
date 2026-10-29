@@ -7,7 +7,7 @@ Hạng mục S2 và S3 của `docs/12_plan.md` §P9. Mã nguồn: `internal/serv
 | Hệ thống | Cách xác thực API HTTP | Điều lấy về cho STASK |
 |---|---|---|
 | ClickHouse | Basic auth, hoặc header `X-ClickHouse-User`/`X-ClickHouse-Key`. Tham số `password=` trên URL được hỗ trợ nhưng tài liệu khuyên tránh vì proxy ghi log URL ([HTTP interface](https://clickhouse.com/docs/interfaces/http)) | Nhận credential qua header, không bao giờ qua URL. Basic dùng lại mật khẩu sẵn có |
-| CockroachDB | Cluster API v2: đăng nhập bằng user/mật khẩu SQL, nhận token phiên, gửi lại trong header `X-Cockroach-API-Session`; thiếu hoặc hết hạn thì 401 ([Cluster API](https://www.cockroachlabs.com/docs/v23.2/cluster-api), [`cockroach auth-session`](https://www.cockroachlabs.com/docs/v24.1/cockroach-auth-session)) | Token mờ (opaque) trong header; 401 khi thiếu. STASK chưa có user/role (S4) nên chưa có endpoint đăng nhập: token được cấu hình sẵn |
+| CockroachDB | Cluster API v2: đăng nhập bằng user/mật khẩu SQL, nhận token phiên, gửi lại trong header `X-Cockroach-API-Session`; thiếu hoặc hết hạn thì 401 ([Cluster API](https://www.cockroachlabs.com/docs/v23.2/cluster-api), [`cockroach auth-session`](https://www.cockroachlabs.com/docs/v24.1/cockroach-auth-session)) | Token mờ (opaque) trong header; 401 khi thiếu. STASK chưa có endpoint đăng nhập: token được cấu hình sẵn (user/role đã có ở PG wire từ 2026-10-29, docs/05 §18, nhưng chưa gắn với HTTP) |
 | Elasticsearch | API key gửi trong `Authorization: ApiKey <base64(id:key)>`, có thể giới hạn quyền theo role và đặt hạn; nên dùng một key cho mỗi tích hợp để dễ xoay vòng và thu hồi ([Create API key](https://www.elastic.co/guide/en/elasticsearch/reference/8.17/security-api-create-api-key.html)) | Nhiều token song song (một cho mỗi client), có lớp quyền (đầy đủ / chỉ đọc), xoay vòng không cần tắt server |
 | etcd | TLS cho client; `--client-cert-auth` + `--trusted-ca-file` bắt client trình chứng chỉ do CA tin cậy ký, không có thì từ chối ([Transport security model](https://etcd.io/docs/v3.5/op-guide/security/)) | mTLS: chứng chỉ client hợp lệ tự nó là xác thực |
 | Prometheus exporter-toolkit | Một file `--web.config.file` cho TLS và basic auth, đọc lại khi file đổi, không cần khởi động lại ([web configuration](https://github.com/prometheus/exporter-toolkit/blob/v0.9.1/docs/web-configuration.md)) | File token đọc lại khi đổi (kiểm mtime mỗi giây) và khi nhận SIGHUP |
@@ -23,7 +23,7 @@ Hạng mục S2 và S3 của `docs/12_plan.md` §P9. Mã nguồn: `internal/serv
 - **Token lộ**: thêm token mới vào file, cho client chuyển sang, xoá token cũ; server đọc lại file trong vòng 1 giây (hoặc ngay khi `kill -HUP`). Không cần khởi động lại.
 - **Cấu hình sai** (mở `0.0.0.0` mà quên xác thực): staskd từ chối khởi động. Muốn chấp nhận rủi ro phải ghi rõ `-http-insecure`.
 - **pprof và lỗi giả lập**: pprof rò trạng thái runtime và cho phép làm chậm server; `POST /v1/admin/fault` làm mọi lần ghi thất bại. pprof chỉ được nghe loopback (trừ `-pprof-insecure`), và khi API có xác thực thì pprof đòi cùng credential (quyền đầy đủ). Endpoint lỗi giả lập nằm dưới `/v1/admin/`, cần token đầy đủ; bật `-enable-faults` luôn in cảnh báo khi khởi động.
-- **Ngoài phạm vi**: chưa có user/role và phân quyền theo bảng (S4); chưa giới hạn số lần thử sai (S5); chưa có audit log (S7). Người có quyền đọc file token hoặc file cấu hình trên máy chủ thì có token.
+- **Ngoài phạm vi**: phân quyền theo bảng cho API HTTP (role chỉ áp dụng ở PG wire, docs/05 §18); chưa giới hạn số lần thử sai (S5); chưa có audit log (S7). Người có quyền đọc file token hoặc file cấu hình trên máy chủ thì có token.
 
 ## 3. Cờ
 
@@ -90,10 +90,22 @@ curl --cacert ca.crt --cert client.crt --key client.key https://stask-host:17070
 
 | Giới hạn | Xử lý |
 |---|---|
-| Token cấu hình tĩnh, không có user/role, không phân quyền theo bảng | Hoãn tới S4 (role trong catalog); khi đó thêm endpoint đăng nhập kiểu CockroachDB và token gắn với role |
+| Token cấu hình tĩnh, chưa gắn với role SQL, không phân quyền theo bảng | S4 đã làm cho PG wire (docs/05 §18); còn lại: endpoint đăng nhập kiểu CockroachDB và token gắn với role |
 | Không giới hạn số lần thử token sai | Hoãn, làm cùng S5 (trễ tăng dần theo IP) |
 | Chứng chỉ TLS nạp một lần khi khởi động; đổi chứng chỉ phải restart (file token thì không) | Hoãn: thêm `GetCertificate` đọc lại theo mtime nếu có nhu cầu vận hành thật |
 | pprof không có TLS riêng | Không làm: pprof chỉ nghe loopback; cần từ xa thì dùng SSH tunnel |
-| `-http-basic` dùng chung mật khẩu PG, chỉ một mật khẩu | Không làm thêm trước S4; Basic chỉ là tiện lợi cho curl/công cụ chỉ biết Basic |
+| `-http-basic` dùng chung mật khẩu PG, chỉ một mật khẩu (không dùng mật khẩu của role) | Basic chỉ là tiện lợi cho curl/công cụ chỉ biết Basic; Basic theo role làm cùng endpoint đăng nhập ở trên |
 | Không có audit log cho lời gọi HTTP | Hoãn tới S7 |
 | Cổng nhân bản `-repl-addr` vẫn chưa xác thực | Là S1, hạng mục riêng |
+
+## 7. `/metrics` và `/v1/admin/scrub` (2026-10-29)
+
+Hai endpoint mới dùng chung cơ chế xác thực ở trên; chi tiết ở docs/05 §19.
+
+| Endpoint | Quyền | Ghi chú |
+|---|---|---|
+| `GET /metrics` | token đầy đủ hoặc chỉ đọc (là `GET`); **không** nằm trong danh sách công khai như `/v1/health` | Lộ tên bảng? Không: chỉ có số đếm. Lộ tải, số session, số lần đăng nhập sai, tuổi snapshot cũ nhất. Prometheus cấu hình `authorization: { credentials_file: ... }` (Bearer) trong `scrape_config` |
+| `POST /v1/admin/scrub?rate_mb=&wait=&cancel=` | token đầy đủ (là `POST`, token chỉ đọc nhận 403) | Đọc toàn bộ log và checkpoint với tốc độ giới hạn; gây I/O đọc đáng kể |
+| `GET /v1/admin/scrub` | token chỉ đọc đủ | Trạng thái; thông báo lỗi có tên file/offset |
+
+Test: `TestMetricsAndScrubEndpoints` (`internal/server/metrics_test.go`) kiểm 401 khi thiếu token, token chỉ đọc đọc được `/metrics` nhưng không bắt đầu được scrub (403), định dạng từng dòng mẫu.

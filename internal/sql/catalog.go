@@ -118,7 +118,7 @@ func defCat(name, cols string, rows func(c *catSnap) [][]Datum) {
 	var rc []relCol
 	for _, f := range strings.Fields(cols) {
 		n, k, _ := strings.Cut(f, ":")
-		kind := map[string]Kind{"i": KInt, "t": KText, "b": KBool, "a": KArray, "f": KFloat}[k]
+		kind := map[string]Kind{"i": KInt, "t": KText, "b": KBool, "a": KArray, "f": KFloat, "T": KTime}[k]
 		rc = append(rc, relCol{name: n, kind: kind})
 	}
 	catalogTables[name] = &catRel{cols: rc, rows: rows}

@@ -128,6 +128,10 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 						return err
 					}
 				}
+			case "add_pk":
+				if err := s.addPrimaryKey(oldName, d, a.KeyCols, dropped); err != nil {
+					return err
+				}
 			case "drop_column":
 				// the column is only marked dropped (core.AlterTable): rows
 				// keep its value until rewritten, as in PostgreSQL
@@ -140,8 +144,8 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 					return errf(codeUndefinedColumn, "column %q of relation %q does not exist", a.Column, d.Name)
 				}
 				switch name := d.Columns[i].Name; {
-				case name == d.Key:
-					return errf(codeFeature, "cannot drop column %q: it is the primary key of %q, which every STASK table needs", name, d.Name)
+				case name == d.Key || slices.Contains(d.KeyCols, name):
+					return errf(codeFeature, "cannot drop column %q: it is part of the primary key of %q, which every STASK table needs", name, d.Name)
 				case slices.ContainsFunc(d.Substr, func(x schema.SubstrIndex) bool { return x.Col == name }):
 					return errf(codeFeature, "cannot drop column %q: a trigram index covers it (DROP INDEX first)", name)
 				case slices.Contains(d.Search, name):
@@ -216,6 +220,7 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 					}
 				}
 				ren(&d.Key)
+				d.KeyCols = renameIn(d.KeyCols, a.Column, a.NewName)
 				ren(&d.TimeColumn)
 				ren(&d.SeriesColumn)
 				for j := range d.Search {
@@ -269,7 +274,7 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 				if err != nil {
 					return err
 				}
-				if d.Columns[i].Name == d.Key || d.Columns[i].Identity != "" {
+				if d.Columns[i].Name == d.Key || slices.Contains(d.KeyCols, d.Columns[i].Name) || d.Columns[i].Identity != "" {
 					return errf("42P16", "column %q is in a primary key or an identity column", a.Column)
 				}
 				d.Columns[i].NotNull = false

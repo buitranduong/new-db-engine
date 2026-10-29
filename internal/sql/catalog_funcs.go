@@ -358,10 +358,10 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_get_indexdef":
 		oid := argInt(0)
 		for _, t := range s.catSnap().tables {
-			if indexOID(t) == oid {
+			if t.HasPK() && indexOID(t) == oid {
 				if len(args) > 1 && argInt(1) > 0 {
-					if argInt(1) == 1 {
-						return TextD(quoteIdent(t.Key)), nil
+					if n, pk := int(argInt(1)), t.PKCols(); n <= len(pk) {
+						return TextD(quoteIdent(pk[n-1])), nil
 					}
 					return TextD(""), nil
 				}
@@ -381,8 +381,8 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_get_constraintdef":
 		oid := argInt(0)
 		for _, t := range s.catSnap().tables {
-			if pkeyConOID(t) == oid {
-				return TextD("PRIMARY KEY (" + quoteIdent(t.Key) + ")"), nil
+			if t.HasPK() && pkeyConOID(t) == oid {
+				return TextD("PRIMARY KEY (" + quoteList(t.PKCols()) + ")"), nil
 			}
 			for i, ck := range t.Checks {
 				if checkOID(t, i) == oid {

@@ -253,7 +253,7 @@ func (c *compiler) historyCols(args []Expr) ([]relCol, error) {
 	c.noteDep(l.V.S)
 	cols := []relCol{{name: "_lsn", kind: KInt}, {name: "_ts", kind: KTime}, {name: "_deleted", kind: KBool}}
 	for _, col := range t.Columns {
-		cols = append(cols, relCol{name: col.Name, kind: kindOf(col.T)})
+		cols = append(cols, relCol{name: col.Name, kind: kindOf(col.T), sys: col.Hidden})
 	}
 	return cols, nil
 }

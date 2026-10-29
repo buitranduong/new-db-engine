@@ -200,7 +200,9 @@ func (o *PgOutput) Encode(c *core.Change, emit func(at uint64, msg []byte) error
 			for i := range row {
 				row[i].Null = true
 			}
-			row[t.KeyIndex()] = keyValue(t, c.Key)
+			if t.HasPK() && !t.Composite() {
+				row[t.KeyIndex()] = keyValue(t, c.Key)
+			}
 			b = o.tuple(append(b, 'K'), t, row)
 		}
 	}
@@ -219,12 +221,15 @@ func (o *PgOutput) relation(t *schema.Table, ident byte) []byte {
 	b = append(b, "public\x00"...)
 	b = append(append(b, t.Name...), 0)
 	b = append(b, ident)
-	b = binary.BigEndian.AppendUint16(b, uint16(len(t.Columns)))
+	b = binary.BigEndian.AppendUint16(b, uint16(len(t.VisibleCols())))
 	k := t.KeyIndex()
 	for i, col := range t.Columns {
+		if col.Hidden {
+			continue
+		}
 		var flags byte
-		if i == k {
-			flags = 1
+		if i == k || ident == 'f' && (!t.HasPK() || t.Composite()) {
+			flags = 1 // a table without a visible one-column key is identified by all its columns
 		}
 		b = append(b, flags)
 		b = append(append(b, col.Name...), 0)
@@ -293,8 +298,11 @@ func elemOID(arr uint32) uint32 {
 }
 
 func (o *PgOutput) tuple(b []byte, t *schema.Table, row schema.Row) []byte {
-	b = binary.BigEndian.AppendUint16(b, uint16(len(t.Columns)))
+	b = binary.BigEndian.AppendUint16(b, uint16(len(t.VisibleCols())))
 	for i, col := range t.Columns {
+		if col.Hidden {
+			continue
+		}
 		v := row[i]
 		if v.Null {
 			b = append(b, 'n')

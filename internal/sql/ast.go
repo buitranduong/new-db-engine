@@ -59,12 +59,13 @@ type AlterTable struct {
 // set_not_null, drop_not_null, set_type, add_check, drop_constraint, owner.
 type AlterAction struct {
 	Kind       string
-	Col        ColDef // add_column
-	Column     string // the column acted on
-	NewName    string // rename_column, rename_table
-	Expr       string // set_default
-	Type       string // set_type: the new type (schema type name)
-	Using      bool   // set_type: USING col::type was given
+	Col        ColDef   // add_column
+	Column     string   // the column acted on
+	KeyCols    []string // add_pk: the PRIMARY KEY columns
+	NewName    string   // rename_column, rename_table
+	Expr       string   // set_default
+	Type       string   // set_type: the new type (schema type name)
+	Using      bool     // set_type: USING col::type was given
 	Check      CheckDef
 	Constraint *ConstraintDef    // add_constraint (UNIQUE, FOREIGN KEY)
 	IfExists   bool              // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
@@ -83,6 +84,7 @@ type CreateTable struct {
 	Checks      []CheckDef       // table constraints
 	Constraints []*ConstraintDef // UNIQUE and FOREIGN KEY, table and column constraints
 	Key         string
+	KeyCols     []string // composite PRIMARY KEY (two columns or more); Key is then empty
 	IfNotExists bool
 	Options     map[string]string // WITH (columnar = true, search = 'a,b', ...)
 }

@@ -424,8 +424,11 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		}
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
-	t := schema.Table{Name: c.Name, Key: c.Key}
+	t := schema.Table{Name: c.Name, Key: c.Key, KeyCols: c.KeyCols}
 	for _, cd := range c.Cols {
+		if cd.Name == schema.RowIDCol || cd.Name == schema.KeyCol {
+			return nil, errf("42939", "column name %q is reserved", cd.Name)
+		}
 		ty := cd.Type
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings
@@ -465,6 +468,11 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 	seqs, err := s.columnsWithSequences(c, &t)
 	if err != nil {
 		return nil, err
+	}
+	if q, err := s.hiddenKey(c, &t); err != nil {
+		return nil, err
+	} else if q != nil {
+		seqs = append(seqs, *q)
 	}
 	if t.Checks, err = checksOf(c, &t); err != nil {
 		return nil, err
@@ -1463,7 +1471,9 @@ func (st *Select) plan(sc *scope) (*selectPlan, error) {
 				return nil, errf(codeSyntax, "SELECT * with no tables specified is not valid")
 			}
 			for _, c := range sc.t.Columns {
-				p.items = append(p.items, SelItem{X: &ColRef{Name: c.Name}, Alias: c.Name})
+				if !c.Hidden {
+					p.items = append(p.items, SelItem{X: &ColRef{Name: c.Name}, Alias: c.Name})
+				}
 			}
 			continue
 		}
@@ -1680,7 +1690,7 @@ func (s *Session) buildRow(t *schema.Table, cols []int, vals []Datum) (schema.Ro
 
 func checkRow(t *schema.Table, r schema.Row) error {
 	for i, c := range t.Columns {
-		if r[i].Null && (c.NotNull || i == t.KeyIndex()) {
+		if r[i].Null && (c.NotNull || i == t.KeyIndex()) && !(c.Hidden && t.Composite()) {
 			return errf(codeNotNullViolation, "null value in column %q of relation %q violates not-null constraint", c.Name, t.Name)
 		}
 	}
@@ -1699,7 +1709,9 @@ func (s *Session) returning(sc *scope, ctx *evalCtx, items []SelItem, r schema.R
 	for _, it := range items {
 		if it.Star {
 			for i, c := range sc.t.Columns {
-				vals = append(vals, fromCol(&c, r[i]))
+				if !c.Hidden {
+					vals = append(vals, fromCol(&c, r[i]))
+				}
 			}
 			continue
 		}
@@ -1718,7 +1730,9 @@ func returningCols(sc *scope, items []SelItem, pk map[int]Kind) []Column {
 	for _, it := range items {
 		if it.Star {
 			for _, c := range sc.t.Columns {
-				cols = append(cols, Column{c.Name, kindOf(c.T)})
+				if !c.Hidden {
+					cols = append(cols, Column{c.Name, kindOf(c.T)})
+				}
 			}
 			continue
 		}
@@ -1740,9 +1754,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	tgs := s.E.Triggers(t.Name)
 	var cols []int
 	if st.Cols == nil {
-		for i := range t.Columns {
-			cols = append(cols, i)
-		}
+		cols = t.VisibleCols()
 	} else {
 		seen := map[int]bool{}
 		for _, c := range st.Cols {
@@ -1810,7 +1822,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 		key := t.KeyOf(row)
 		if commitChecks {
 			if inserted[key] {
-				return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, key)
+				return nil, dupKeyErr(t, key)
 			}
 			if err := tx.InsertUniqueAs(t.Name, t, row); err != nil {
 				return nil, err
@@ -1837,7 +1849,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 				if inserted[key] && st.OnConflict != nil {
 					return nil, errf("21000", "ON CONFLICT DO UPDATE command cannot affect row a second time")
 				}
-				return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, key)
+				return nil, dupKeyErr(t, key)
 			case st.OnConflict.DoNothing:
 				continue
 			}

@@ -38,7 +38,9 @@ func init() {
 				ident = "f"
 			}
 			rel(tableOID(t), t.Name, heapAMOID, "r", maxNum(t), len(t.Checks), true, ident, relOptions(t))
-			rel(indexOID(t), pkeyName(t), btreeAMOID, "i", 1, 0, false, "n", Null)
+			if t.HasPK() {
+				rel(indexOID(t), pkeyName(t), btreeAMOID, "i", len(t.PKCols()), 0, false, "n", Null)
+			}
 		}
 		secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
 			rel(secIndexOID(ix.Name), ix.Name, btreeAMOID, "i", len(ix.Columns), 0, false, "n", Null)
@@ -93,8 +95,10 @@ func init() {
 					identityChar(col), col.Missing != nil, a.dropped)
 			}
 			mod = -1
-			k := keyCol(t)
-			att(indexOID(t), k.Name, colTypeOID(k), 1, false, false, "", false, false)
+			for i, name := range t.PKCols() {
+				j, _ := t.Col(name)
+				att(indexOID(t), name, colTypeOID(t.Columns[j]), i+1, false, false, "", false, false)
+			}
 		}
 		secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
 			for i, name := range ix.Columns {
@@ -145,10 +149,14 @@ func init() {
 		func(c *catSnap) [][]Datum {
 			var rows [][]Datum
 			for _, t := range c.tables {
-				k := keyCol(t)
-				rows = append(rows, []Datum{IntD(indexOID(t)), IntD(tableOID(t)), IntD(1), IntD(1), BoolD(true), BoolD(false),
+				if !t.HasPK() {
+					continue
+				}
+				n := len(t.PKCols())
+				zeros := make([]int, n)
+				rows = append(rows, []Datum{IntD(indexOID(t)), IntD(tableOID(t)), IntD(int64(n)), IntD(int64(n)), BoolD(true), BoolD(false),
 					BoolD(true), BoolD(false), BoolD(true), BoolD(false), BoolD(true), BoolD(false), BoolD(true),
-					BoolD(true), BoolD(false), vecText(k.Num), vecText(0), vecText(0), vecText(0), Null, Null})
+					BoolD(true), BoolD(false), vecText(pkNums(t)...), vecText(zeros...), vecText(zeros...), vecText(zeros...), Null, Null})
 			}
 			secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
 				zeros := make([]int, len(ix.Columns))
@@ -171,7 +179,9 @@ func init() {
 				BoolD(true), IntD(0), BoolD(false), key, Null, Null, Null, Null, Null, Null, bin})
 		}
 		for _, t := range c.tables {
-			con(pkeyConOID(t), pkeyName(t), "p", tableOID(t), indexOID(t), i2vec(keyCol(t).Num), Null)
+			if t.HasPK() {
+				con(pkeyConOID(t), pkeyName(t), "p", tableOID(t), indexOID(t), i2vec(pkNums(t)...), Null)
+			}
 			for i, ck := range t.Checks {
 				con(checkOID(t, i), ck.Name, "c", tableOID(t), 0, checkKeys(t, ck.Expr), TextD(ck.Expr))
 			}
@@ -220,8 +230,10 @@ func init() {
 				}
 			}
 			for _, t := range c.tables {
-				rows = append(rows, []Datum{IntD(pgClassOID), IntD(indexOID(t)), IntD(0), IntD(pgConstrOID),
-					IntD(pkeyConOID(t)), IntD(0), TextD("i")})
+				if t.HasPK() {
+					rows = append(rows, []Datum{IntD(pgClassOID), IntD(indexOID(t)), IntD(0), IntD(pgConstrOID),
+						IntD(pkeyConOID(t)), IntD(0), TextD("i")})
+				}
 			}
 			return rows
 		})
@@ -345,7 +357,9 @@ func init() {
 	defCat("pg_indexes", "schemaname:t tablename:t indexname:t tablespace:t indexdef:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, t := range c.tables {
-			rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(pkeyName(t)), Null, TextD(indexDef(t))})
+			if t.HasPK() {
+				rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(pkeyName(t)), Null, TextD(indexDef(t))})
+			}
 			for _, ix := range listedIndexes(t) {
 				rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(ix.Name), Null, TextD(secIndexDef(t, ix))})
 			}
@@ -369,7 +383,7 @@ const roleName = "stask"
 // indexDef is pg_get_indexdef of the primary-key index.
 func indexDef(t *schema.Table) string {
 	return "CREATE UNIQUE INDEX " + quoteIdent(pkeyName(t)) + " ON public." + quoteIdent(t.Name) +
-		" USING btree (" + quoteIdent(t.Key) + ")"
+		" USING btree (" + quoteList(t.PKCols()) + ")"
 }
 
 // checkKeys are the columns a CHECK expression names (pg_constraint.conkey).

@@ -277,6 +277,9 @@ func (s *Session) seqFunc(name string, args []Datum) (rows [][]Datum, ok bool, e
 		return [][]Datum{{IntD(last), IntD(0), BoolD(called)}}, true, nil
 	default: // pg_sequences
 		for _, q := range s.E.Sequences() {
+			if hiddenSequence(q) {
+				continue
+			}
 			last := Null
 			if v, called, err := s.E.SequenceState(q.Name); err == nil && called {
 				last = IntD(v)

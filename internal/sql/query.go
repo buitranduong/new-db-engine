@@ -21,6 +21,7 @@ type relCol struct {
 	qual, name string
 	kind       Kind
 	hidden     bool // the right-hand copy of a USING column: not visible unqualified or in *
+	sys        bool // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
 }
 
 type relation struct {
@@ -589,7 +590,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			}
 		}
 		for _, col := range fs.cols {
-			if col.hidden || qual != "" && col.qual != qual {
+			if col.hidden || col.sys || qual != "" && col.qual != qual {
 				continue
 			}
 			items = append(items, SelItem{X: &ColRef{Table: col.qual, Name: col.name}, Alias: col.name})
@@ -1794,7 +1795,7 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			tp.asOf = &asOfPlan{lsn: f.AsOf.LSN, x: bx}
 		}
 		for i, col := range t.Columns {
-			rc := relCol{qual: qual, name: col.Name, kind: kindOf(col.T)}
+			rc := relCol{qual: qual, name: col.Name, kind: kindOf(col.T), sys: col.Hidden}
 			if i < len(f.ColAliases) {
 				rc.name = f.ColAliases[i]
 			}
@@ -1863,7 +1864,7 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		if f.Natural {
 			for _, lc := range l.cols() {
 				for _, rc := range r.cols() {
-					if lc.name == rc.name && !lc.hidden && !rc.hidden {
+					if lc.name == rc.name && !lc.hidden && !rc.hidden && !lc.sys && !rc.sys {
 						using = append(using, lc.name)
 					}
 				}

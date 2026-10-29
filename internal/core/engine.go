@@ -847,6 +847,12 @@ func (e *KeyExistsError) Error() string {
 	return fmt.Sprintf("%v: %s/%s", ErrExists, e.Table, e.Key)
 }
 
+// keyExists is the error for a duplicate row key of table sch.
+func keyExists(sch *schema.Table, key string) *KeyExistsError {
+	cols, vals := sch.KeyDisplay(key)
+	return &KeyExistsError{Table: sch.Name, Column: cols, Key: vals}
+}
+
 func (e *KeyExistsError) Is(target error) bool { return target == ErrExists }
 
 // getAtHead is GetAt that also returns the head it looked up.
@@ -1380,7 +1386,7 @@ func checkRepeatedKeys(ops []pendingOp) error {
 		if again {
 			if op.ifAbsent {
 				if live {
-					return &KeyExistsError{Table: op.t.Schema().Name, Column: op.t.Schema().Key, Key: op.key}
+					return keyExists(op.t.Schema(), op.key)
 				}
 				op.ifAbsent = false
 			}
@@ -1821,7 +1827,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					break
 				}
 				if op.ifAbsent && c != nil && !c.Deleted {
-					verr = &KeyExistsError{Table: op.t.Schema().Name, Column: op.t.Schema().Key, Key: op.key}
+					verr = keyExists(op.t.Schema(), op.key)
 					break
 				}
 				if len(op.sk) > 0 {

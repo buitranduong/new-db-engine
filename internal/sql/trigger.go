@@ -640,7 +640,7 @@ func (s *Session) updateRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, o
 		if _, exists, err := tx.Get(t.Name, nk); err != nil {
 			return nil, err
 		} else if exists {
-			return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, nk)
+			return nil, dupKeyErr(t, nk)
 		}
 		if err := s.keyChangeAllowed(t); err != nil {
 			return nil, err

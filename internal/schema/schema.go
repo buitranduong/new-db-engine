@@ -168,10 +168,13 @@ type Column struct {
 	DroppedLSN uint64 `json:"dropped_lsn,omitempty"`
 	// PrevType and TypeLSN: ALTER COLUMN TYPE converted the column at
 	// TypeLSN; rows stored before it are encoded as PrevType.
-	PrevType string  `json:"prev_type,omitempty"`
-	TypeLSN  uint64  `json:"type_lsn,omitempty"`
-	T        ColType `json:"-"`
-	prevT    ColType
+	PrevType string `json:"prev_type,omitempty"`
+	TypeLSN  uint64 `json:"type_lsn,omitempty"`
+	// Hidden: an internal key column (RowIDCol, KeyCol, pkey.go), stored
+	// like any column but not part of the table as clients see it.
+	Hidden bool    `json:"hidden,omitempty"`
+	T      ColType `json:"-"`
+	prevT  ColType
 }
 
 // Check is a CHECK constraint: Expr is its SQL text.
@@ -184,11 +187,14 @@ type Check struct {
 // separately owned: Columnar/Search/TimeColumn only ask the platform to
 // maintain a derived view fed from the same log.
 type Table struct {
-	ID           uint32   `json:"id"`
-	Name         string   `json:"name"`
-	Columns      []Column `json:"columns"`
-	Checks       []Check  `json:"checks,omitempty"` // CHECK constraints, checked by SQL writes
-	Key          string   `json:"key"`
+	ID      uint32   `json:"id"`
+	Name    string   `json:"name"`
+	Columns []Column `json:"columns"`
+	Checks  []Check  `json:"checks,omitempty"` // CHECK constraints, checked by SQL writes
+	Key     string   `json:"key"`
+	// KeyCols are the columns of a composite PRIMARY KEY (Key is then the
+	// hidden column KeyCol, pkey.go); empty for a one-column key or none.
+	KeyCols      []string `json:"key_cols,omitempty"`
 	Search       []string `json:"search,omitempty"`
 	Columnar     bool     `json:"columnar,omitempty"`
 	AppendOnly   bool     `json:"append_only,omitempty"`
@@ -229,6 +235,7 @@ type Table struct {
 	lastDrop uint64
 	layouts  []layout
 	ixCols   [][]int // column positions of each index (initIndexes)
+	keyPos   []int   // column positions of KeyCols (initKeyCols)
 }
 
 // layout is how rows stored from LSN from on are encoded, until the next
@@ -358,6 +365,9 @@ func (t *Table) Init() error {
 	if kt := t.Columns[k].T; kt != TString && kt != TInt && kt != TUUID {
 		return errors.New("key column must be string, int or uuid")
 	}
+	if err := t.initKeyCols(); err != nil {
+		return err
+	}
 	for _, s := range t.Search {
 		i, ok := t.idx[s]
 		if !ok || (t.Columns[i].T != TText && t.Columns[i].T != TString) {
@@ -486,6 +496,9 @@ type Value struct {
 type Row []Value
 
 func (t *Table) KeyOf(r Row) string {
+	if t.keyPos != nil {
+		return t.compositeKey(r)
+	}
 	k := t.KeyIndex()
 	if t.Columns[k].T == TInt {
 		return strconv.FormatInt(r[k].I, 10)
@@ -503,6 +516,9 @@ func (t *Table) Encode(dst []byte, r Row) []byte {
 	}
 	for i, c := range t.Columns {
 		v := r[i]
+		if t.keyPos != nil && c.Name == KeyCol {
+			v = Value{S: t.compositeKey(r)} // never taken from the caller
+		}
 		if v.Null {
 			dst[start+i/8] |= 1 << (i % 8)
 			continue
@@ -806,8 +822,15 @@ func (t *Table) DecodeInto(b []byte, lsn uint64, r Row, need []bool) (Row, error
 
 // FromJSON converts a JSON object (decoded with UseNumber) into a row.
 func (t *Table) FromJSON(m map[string]any) (Row, error) {
+	if !t.HasPK() {
+		return nil, fmt.Errorf("table %q has no primary key: write it with SQL", t.Name)
+	}
 	r := make(Row, len(t.Columns))
 	for i, c := range t.Columns {
+		if c.Hidden {
+			r[i].Null = true
+			continue
+		}
 		v, ok := m[c.Name]
 		if !ok || v == nil {
 			if c.Name == t.Key {
@@ -821,7 +844,7 @@ func (t *Table) FromJSON(m map[string]any) (Row, error) {
 		}
 	}
 	for k := range m {
-		if _, ok := t.idx[k]; !ok {
+		if i, ok := t.idx[k]; !ok || t.Columns[i].Hidden {
 			return nil, fmt.Errorf("unknown column %q", k)
 		}
 	}
@@ -988,6 +1011,9 @@ func toInt(v any) (int64, error) {
 func (t *Table) ToJSON(r Row) map[string]any {
 	m := make(map[string]any, len(t.Columns))
 	for i, c := range t.Columns {
+		if c.Hidden {
+			continue
+		}
 		v := r[i]
 		if v.Null {
 			m[c.Name] = nil

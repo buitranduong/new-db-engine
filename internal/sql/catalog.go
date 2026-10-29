@@ -147,9 +147,14 @@ type catSnap struct {
 }
 
 func (s *Session) catSnap() *catSnap {
-	c := &catSnap{s: s, seqs: s.E.Sequences(), views: s.E.Views()}
+	c := &catSnap{s: s, views: s.E.Views()}
+	for _, q := range s.E.Sequences() {
+		if !hiddenSequence(q) {
+			c.seqs = append(c.seqs, q)
+		}
+	}
 	for _, ts := range s.E.UserTables() {
-		c.tables = append(c.tables, ts.Schema())
+		c.tables = append(c.tables, ts.Schema().ClientView()) // without the hidden key columns
 	}
 	sort.Slice(c.tables, func(i, j int) bool { return c.tables[i].Name < c.tables[j].Name })
 	return c
@@ -182,8 +187,8 @@ func typmodOf(c schema.Column) int64 {
 	return -1
 }
 
-// keyCol is the primary-key column.
-func keyCol(t *schema.Table) schema.Column { return t.Columns[t.KeyIndex()] }
+// pkNums are the attribute numbers of the primary key columns.
+func pkNums(t *schema.Table) []int { return attnums(t, t.PKCols()) }
 
 // defaultText is a column default as pg_get_expr shows it: PostgreSQL
 // shows the sequence argument of nextval as a regclass.

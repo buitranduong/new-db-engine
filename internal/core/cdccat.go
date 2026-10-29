@@ -194,7 +194,16 @@ func (e *Engine) SetReplicaIdentityFull(table string, full bool) error {
 }
 
 // ReplicaIdentityFull reports whether table has REPLICA IDENTITY FULL.
+//
+// A table without a visible one-column PRIMARY KEY (none, or composite)
+// always behaves as FULL: its updates and deletes carry the whole old row,
+// since the internal key column is hidden from consumers (docs/05).
 func (e *Engine) ReplicaIdentityFull(table string) bool {
+	if t, err := e.Table(table); err == nil {
+		if sch := t.Schema(); !sch.HasPK() || sch.Composite() {
+			return true
+		}
+	}
 	c := e.cdcCat.Load()
 	return c != nil && slices.Contains(c.IdentityFull, table)
 }

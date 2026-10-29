@@ -49,7 +49,7 @@ URL dùng được với các driver:
 - **Bảng cũ:** cột `time` (mili giây, tạo trước P1.1) vẫn đọc và ghi được như trước (độ phân giải mili giây) và hiện là `timestamptz`. `ALTER TABLE t ALTER COLUMN c TYPE timestamptz` chuyển nó sang micro giây mà không viết lại dòng nào (docs/09 §5); cũng chuyển được `int`/`float` sang `numeric`.
 
 **Câu lệnh:**
-- `CREATE TABLE [IF NOT EXISTS]` với đúng một khoá chính, `NOT NULL`, và `WITH (...)` để bật các view dẫn xuất: `columnar`, `search='cột1,cột2'`, `append_only`, `time_column`, `series_column`.
+- `CREATE TABLE [IF NOT EXISTS]` với khoá chính một cột, **nhiều cột** hoặc **không có khoá chính** (§24), `NOT NULL`, và `WITH (...)` để bật các view dẫn xuất: `columnar`, `search='cột1,cột2'`, `append_only`, `time_column`, `series_column`.
 - **Sequence và giá trị mặc định** (thêm 2026-10-29), theo [PG 16](https://www.postgresql.org/docs/16/sql-createsequence.html):
   - `CREATE SEQUENCE [IF NOT EXISTS] s [AS smallint|integer|bigint] [INCREMENT [BY] n] [MINVALUE n | NO MINVALUE] [MAXVALUE n | NO MAXVALUE] [START [WITH] n] [CACHE n] [[NO] CYCLE]`, `ALTER SEQUENCE [IF EXISTS] s ... [RESTART [WITH n]]`, `DROP SEQUENCE [IF EXISTS] s [, ...]`.
   - Hàm `nextval`, `currval`, `lastval`, `setval(s, v [, is_called])`. Tên viết như regclass: `'s'`, `'public.s'`, `'s'::regclass`. Đọc được `SELECT last_value, log_cnt, is_called FROM s` (cách Jmix đọc giá trị hiện tại) và view `pg_sequences`.
@@ -476,10 +476,10 @@ Hạn chế, kèm cách xử lý:
 |---|---|
 | `ALTER COLUMN TYPE` | Đã làm cho kiểu cơ bản (docs/14 K4): không viết lại dòng, dùng cơ chế bố cục theo LSN, `USING col::type` cho phép ép kiểu tường minh | Thêm các cặp của P1.1: `time`→`timestamp`/`timestamptz`, `int`/`float`→`numeric` (docs/09 §4); chúng không cần `USING` và không kiểm lại từng dòng.
 | DROP COLUMN trên bảng time-series (`0A000`), hoặc chính cột đang được view search đánh chỉ mục | Hoãn: view time-series lưu block theo vị trí cột. Bảng time-series là append-only nên hiếm khi bị đổi. Các cột khác của bảng có search thì xoá được |
-| DROP COLUMN cột khoá chính (`0A000`) | Không làm, vì bảng STASK luôn cần khoá chính. PG cho phép và bỏ luôn ràng buộc |
+| DROP COLUMN cột thuộc khoá chính (`0A000`) | Không làm, vì bảng STASK luôn cần khoá nội bộ. PG cho phép và bỏ luôn ràng buộc |
 | Cột thêm bằng ADD COLUMN không được lưu trong view cột cho tới lần khởi động sau (aggregate trên cột đó chạy trên dòng) | Hoãn: dựng vector ở nền |
 | SET NOT NULL và ADD CHECK kiểm tra trên snapshot. Một dòng vi phạm được ghi đúng lúc ALTER đang kiểm tra có thể lọt | Hoãn tới khi có khoá bảng (P5.2). PG dùng `ACCESS EXCLUSIVE` |
-| Không có `ALTER TABLE ... ADD PRIMARY KEY/UNIQUE/FOREIGN KEY` | Theo P1 (UNIQUE) và P3 (khoá ngoại) |
+| `ALTER TABLE ... ADD PRIMARY KEY` chỉ trên bảng **rỗng** (§24) | Thêm khoá chính cho bảng có dòng phải gắn lại khoá của mọi dòng (viết lại bảng): chưa làm, báo `0A000`. UNIQUE và FOREIGN KEY đã có (§21) |
 
 ## 12. Ngân sách bộ nhớ truy vấn (2026-10-29)
 
@@ -670,7 +670,7 @@ Mã nguồn: `internal/sql/catalog*.go`. Các bảng ảo, dựng từ schema c�
 
 **Cú pháp thêm cho các câu catalog:** `OPERATOR(pg_catalog.~)`, `COLLATE x`, `::pg_catalog.type`, `::"char"`, `x = ANY(mảng)` / `ALL(mảng)`, `ARRAY(SELECT ...)`, `col[i]` (từ 0 cho `int2vector`), toán tử `&`, hàm đặt trong ngoặc kép (`"substring"(...)`), `pg_catalog.generate_series(...) alias(cột)` trong FROM.
 
-**Giới hạn đã biết.** Kiểu hiển thị theo kiểu của engine: `integer`/`smallint` hiện `bigint`, `varchar(n)` hiện `text` (không có độ dài); `timestamp`, `timestamptz`, `numeric(p,s)` (qua `atttypmod`), `uuid`, `bytea`, `json`, `jsonb` và các mảng hiện đúng kiểu từ P1.1. `relpages`/`reltuples` là 0/-1. Mọi index là khoá chính, nên `getIndexInfo` trả đúng một dòng mỗi bảng. `regclass` in ra số. Không có view (`relkind` `v`) cho tới khi `CREATE VIEW` có.
+**Giới hạn đã biết.** Kiểu hiển thị theo kiểu của engine: `integer`/`smallint` hiện `bigint`, `varchar(n)` hiện `text` (không có độ dài); `timestamp`, `timestamptz`, `numeric(p,s)` (qua `atttypmod`), `uuid`, `bytea`, `json`, `jsonb` và các mảng hiện đúng kiểu từ P1.1. `relpages`/`reltuples` là 0/-1. Index khoá chính chỉ có khi bảng có khoá chính (không có dòng nào cho bảng không PK); khoá ghép hiện đúng `indkey = "1 2"`, `conkey = {1,2}`. Cột ẩn `__rowid`/`__pk` (§24) không có trong `pg_attribute`/`information_schema`, và `attnum` của cột thật vẫn bắt đầu từ 1. `regclass` in ra số. Không có view (`relkind` `v`) cho tới khi `CREATE VIEW` có.
 
 **Kiểm chứng.** `internal/sql/catalog_test.go` (từng bảng catalog, `information_schema`, hàm, DDL đổi thì catalog đổi, bảng cột, sequence, `ALTER`/`DROP COLUMN`), `internal/sql/catalog_queries_test.go` (các câu psql 16 `\dt` `\d` `\di` `\ds` `\dn` `\d tbl` `\l` `\dT` `\du`, pgjdbc 42.7 `getTables`/`getColumns`/`getPrimaryKeys`/`getIndexInfo`/`getSchemas`/`getCatalogs`/`getTypeInfo`/`getImportedKeys`, DBeaver, viết lại từ trí nhớ về mã nguồn các client này, chưa đối chiếu với gói tin thật), `internal/pgwire/catalog_wire_test.go` (qua pgx, giao thức mở rộng có tham số và giao thức đơn giản).
 
@@ -836,7 +836,7 @@ Mã nguồn: `internal/core/secindex.go`, `internal/core/fk.go`, `internal/schem
 
 **Catalog.** `pg_class` (`i`), `pg_attribute`, `pg_index`, `pg_indexes`, `pg_constraint` (`u`, `f`, `confdeltype`, `conindid`), `pg_get_indexdef`, `pg_get_constraintdef`, `regclass` tên index, `information_schema.table_constraints`, `key_column_usage`, `referential_constraints`. Chưa có: `pg_depend` cho index phụ, `constraint_column_usage` cho UNIQUE/FK, `COMMENT ON`. Index nội bộ của khoá ngoại không hiện.
 
-**Khác PG.** Không có ràng buộc hoãn; `ON UPDATE` chỉ `NO ACTION`/`RESTRICT`; khoá chính vẫn một cột; `UPDATE` khoá chính của bảng được tham chiếu: `0A000`; `INSERT ... ON CONFLICT` chỉ theo khoá chính (vi phạm UNIQUE khác báo `23505`); `CREATE INDEX` chặn ghi vào bảng; ràng buộc/index áp dụng ngay (như các DDL khác, kể cả trong `BEGIN`); nhiều hành động trong một `ALTER TABLE` có ràng buộc chạy từng cái (không nguyên tử); thông báo lỗi gộp `DETAIL` vào thân.
+**Khác PG.** Không có ràng buộc hoãn; `ON UPDATE` chỉ `NO ACTION`/`RESTRICT`; khoá chính ghép được (§24), khoá ngoại trỏ vào khoá chính ghép được; `UPDATE` khoá chính của bảng được tham chiếu: `0A000`; `INSERT ... ON CONFLICT` chỉ theo khoá chính (vi phạm UNIQUE khác báo `23505`); `CREATE INDEX` chặn ghi vào bảng; ràng buộc/index áp dụng ngay (như các DDL khác, kể cả trong `BEGIN`); nhiều hành động trong một `ALTER TABLE` có ràng buộc chạy từng cái (không nguyên tử); thông báo lỗi gộp `DETAIL` vào thân.
 
 **Tài liệu tham khảo (thiết kế theo cách PG làm; chưa đọc lại mã nguồn trong phiên này, chỉ dựa trên tài liệu và README):** [btree README](https://github.com/postgres/postgres/blob/master/src/backend/access/nbtree/README) và [B-Tree Implementation](https://www.postgresql.org/docs/16/btree-implementation.html) (entry trùng được sắp theo con trỏ heap; index không mang thông tin nhìn thấy được, dòng heap quyết định); [CREATE INDEX](https://www.postgresql.org/docs/16/sql-createindex.html) (khoá ghi, `CONCURRENTLY`); [Explicit Locking](https://www.postgresql.org/docs/16/explicit-locking.html) (`FOR KEY SHARE` dùng cho khoá ngoại); [Index-only scans](https://www.postgresql.org/docs/16/indexes-index-only-scans.html) (recheck dòng heap).
 
@@ -928,3 +928,32 @@ CREATE TABLE sim (...) WITH (history_retention = '60 days');
 **Chưa làm.** `AS OF` cho view, `BETWEEN ... AND ...`/`FROM ... TO ...` của SQL:2011 (dùng `stask_history` + `WHERE _ts`), `CURRENT_TIMESTAMP` thay vì thời gian tường của `AS OF` trong giao dịch (mọi `AS OF` đọc ngoài snapshot của giao dịch, không thấy thay đổi chưa commit của chính nó), bảng ảo `t_history`.
 
 **Kiểm chứng.** `internal/sql/asof_test.go` (`TestSQLAsOf`: AS OF LSN/TIMESTAMP/FOR SYSTEM_TIME, đọc điểm, join với trạng thái hiện tại, `stask_history` kể cả khoá đã xoá, ALTER/RESET, lỗi), probe `claimcheck` `history_*`, `as_of_system_time`.
+
+## 24. Bảng không có khoá chính và khoá chính ghép (2026-10-29, nhánh `nopk`)
+
+**Vì sao.** Liquibase tạo `DATABASECHANGELOG` không có khoá chính, và changelog Jmix/Hibernate dùng `PRIMARY KEY (a, b)` cho bảng liên kết. Trước đó `CREATE TABLE` đòi đúng một cột khoá (`0A000`), nên mọi migration dừng ở bước đầu.
+
+**Thiết kế (không đổi định dạng dòng hay log).** Mỗi bảng vẫn có đúng một *cột khoá nội bộ* (`Table.Key`); chỉ cách chọn nó thay đổi:
+
+| Bảng khai báo | Cột khoá nội bộ | Giá trị khoá |
+|---|---|---|
+| một cột `PRIMARY KEY (id)` | chính cột đó (như cũ) | như cũ (int: số thập phân; string/uuid: chuỗi) |
+| không có `PRIMARY KEY` | cột **ẩn** `__rowid` (`int`, `NOT NULL`) | `nextval` của sequence sở hữu `<bảng>____rowid_seq` (là `DEFAULT` của cột, nên `INSERT`, `COPY`, `INSERT ... SELECT` đều điền được) |
+| `PRIMARY KEY (a, b, ...)` | cột **ẩn** `__pk` (`string`) | mã hoá có thứ tự của các cột khoá, đúng `AppendKeyValue` ở `schema/indexkey.go` (prefix-free, so byte = so tuple), nối theo thứ tự khai báo |
+
+Cột ẩn được lưu như mọi cột (đi qua log, checkpoint, replica, view dẫn xuất không đổi). Với `__pk`, `Table.KeyOf` tính khoá **từ các cột khoá**, và `Table.Encode` ghi giá trị đó vào cột ẩn, không bao giờ lấy từ người gọi: cột ẩn không thể lệch khỏi cột thật. `UPDATE` đổi cột khoá ghép là xoá + chèn như đổi khoá chính một cột (cùng ràng buộc với khoá ngoại tham chiếu, `0A000`).
+
+**Bền vững.** `__rowid` lấy từ sequence nên thừa hưởng tính chất sequence (§2): nhật ký trước (một lần ghi log cho 32 giá trị; riêng sequence của `__rowid` cho 65536, vì mỗi dòng nạp hàng loạt lấy một giá trị: với 32, nạp 1000 dòng vào bảng không PK chậm 5,5 lần), sống qua restart/checkpoint/replica, không cấp hai lần; sau crash có thể thủng tối đa 65536 số (không ai thấy), không trùng. Replica không sinh giá trị: nó áp bản ghi của leader (cột ẩn nằm trong dòng). Sequence là dòng của bảng hệ thống nên đi cùng log; **thăng cấp replica chưa được thử riêng cho tính chất này** (chỉ kiểm restart leader).
+
+**Ẩn với client.** Không có trong `SELECT *`/`t.*`, `RETURNING *`, `INSERT` không liệt kê cột (số giá trị khớp cột thật), `COPY` (cả hai chiều), `information_schema.columns`, `pg_attribute` (`attnum` của cột thật vẫn từ 1, `relnatts` đúng), `pg_publication_tables`, JSON của HTTP API, CDC (test_decoding, wal2json 1 và 2, pgoutput). Sequence `__rowid` không có trong `pg_class`/`pg_sequences`/`information_schema.sequences`. Tên `__rowid`, `__pk` bị dành riêng (`42939`). Có thể viết rõ tên `__rowid` trong truy vấn (như `ctid`), `SELECT *` không bao giờ trả nó. Bảng không PK không có hàng trong `pg_index`/`pg_constraint`/`pg_indexes`/`table_constraints`, như PG.
+
+**CDC và replica identity (chọn: FULL).** PG với bảng không PK chỉ phát `INSERT` (UPDATE/DELETE bị từ chối nếu không có `REPLICA IDENTITY`). STASK chọn **REPLICA IDENTITY FULL ngầm** cho bảng không PK **và** bảng khoá ghép: `UPDATE`/`DELETE` luôn mang cả dòng cũ (không có cột ẩn), `pg_class.relreplident = 'f'`, thông điệp `R` của pgoutput đặt cờ khoá cho mọi cột. Với khoá ghép, PG dùng identity mặc định (chỉ các cột khoá); STASK phát cả dòng cũ, một tập lớn hơn, và `pk` của wal2json liệt kê đủ cột khoá. Đổi khoá ghép trong `UPDATE` phát `DELETE` rồi `INSERT` (như đổi khoá chính hiện nay). Hạn chế: nếu phiên bản cũ của dòng không đọc được (`OldUnknown`), bảng này phát danh tính rỗng thay vì khoá (không có khoá hiển thị để phát).
+
+**Khoá ghép.** Cột khoá phải là kiểu index được (`int`, `float`, `string`/`text`, `time`, `bool`) và tự thành `NOT NULL`. `ON CONFLICT (a, b)` (đích luôn là khoá chính). `FOREIGN KEY (x, y) REFERENCES t (a, b)` (thứ tự cột tuỳ ý) tra thẳng bằng khoá ghép, không qua index phụ. `pg_index.indkey = '1 2'`, `pg_constraint.conkey = {1,2}`, `pg_get_constraintdef = PRIMARY KEY (a, b)`, `key_column_usage` theo thứ tự. Thông điệp trùng khoá: `Key (a, b)=(1, x) already exists`. Tìm theo `WHERE a = 1 AND b = 'x'` hiện **quét bảng** (đường tra khoá điểm của planner chỉ biết khoá một cột); tạo index phụ trên (a, b) để có đường index. Không cho bảng `columnar` (`0A000`).
+
+**`ALTER TABLE ... ADD [CONSTRAINT n] PRIMARY KEY (cols)`** chỉ khi bảng chưa có khoá chính **và không có dòng nào** (mọi dòng sẽ phải đổi khoá: chưa làm, `0A000`); cột khoá một cột phải là `int`/`varchar`/`uuid` (không phải `text`). Cột `__rowid` bị bỏ (như DROP COLUMN) cùng sequence của nó; khoá ghép thêm cột `__pk`. Cột thuộc khoá chính không `DROP COLUMN`/`ALTER TYPE`/`DROP NOT NULL` được.
+
+**Giới hạn đã biết.** Tên constraint khai báo (`CONSTRAINT pk_x`) vẫn bị thay bằng `<bảng>_pkey` (như trước). Bảng không PK: `ON CONFLICT DO NOTHING` không bao giờ thấy xung đột (PG báo `42P10` nếu không có ràng buộc để so); HTTP API ghi dòng (`FromJSON`) từ chối bảng không PK (dùng SQL). Một bản Go cũ đọc được JSON bảng có trường mới nhưng không biết ẩn cột.
+
+**Kiểm chứng.** `internal/sql/nopk_test.go` (không PK: trùng dòng, `*`, UPDATE/DELETE, catalog, TRUNCATE; khoá ghép: trùng, ON CONFLICT, đổi khoá, FK, catalog; ADD PRIMARY KEY; CDC), `nopk_prop_test.go` (so với mô hình map qua checkpoint và restart: 6 seed x 300 bước mỗi loại), `internal/repl/nopk_repl_test.go` (replica = leader qua ghi ngẫu nhiên, restart replica, checkpoint leader), `internal/schema/pkey_test.go` (thứ tự mã hoá, giải mã, JSON cộng thêm), probe `claimcheck` `nopk_*`, `composite_pk_*`, `alter_add_primary_key`, `pd_table_without_pk`, `pd_composite_pk`, `lb_changelog_*`; `scripts/pgdiff/e_liquibase_run.sql` (nhóm e, 74 câu: khởi động Liquibase, 4 changeSet, truy vấn metadata). Số đo: docs/14 Phụ lục D.
+

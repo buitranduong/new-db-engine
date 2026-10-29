@@ -307,10 +307,14 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 			return "", true, nil
 		}
 	}
-	if len(refCols) == 1 && refCols[0] == psch.Key {
+	if len(refCols) == 1 && refCols[0] == psch.Key && psch.HasPK() {
 		k := keyString(psch, vals[0])
 		_, ok, err := tx.Get(psch.Name, k)
 		return k, ok, err
+	}
+	if k, ok := psch.KeyFromValues(refCols, vals); ok {
+		_, found, err := tx.Get(psch.Name, k)
+		return k, found, err
 	}
 	// a unique index on the referenced columns
 	var ixName string

@@ -132,6 +132,7 @@ Một payload hợp lệ phải được đọc **vừa hết**. Thừa hoặc t
 **Khoá:**
 - Là chuỗi byte. Khoá `int` được lưu bằng số thập phân (`strconv.FormatInt`).
 - Index sắp theo **thứ tự byte** của khoá. Vì vậy khoá int không theo thứ tự số, và tầng SQL tự xử lý việc đó.
+- **Khoá của bảng không có PK hoặc có PK ghép** (thêm 2026-10-29): vẫn là một chuỗi byte do **một cột khoá nội bộ** (`key` của bảng, §5) sinh ra; định dạng dòng và log không đổi. Bảng không PK: cột ẩn `__rowid` kiểu `int`, khoá là số thập phân như khoá `int` thường. Bảng PK ghép: cột ẩn `__pk` kiểu `string`, khoá là nối các `AppendKeyValue` (docs/05 §21, `schema/indexkey.go`) của các cột khoá theo thứ tự `key_cols`: mỗi giá trị `0x01` + 8 byte big-endian đảo bit dấu (int/time/bool), hoặc float đảo bit, hoặc chuỗi (`0x00` thành `0x00 0xFF`, kết thúc `0x00 0x01`); NULL là `0xFF` (không xảy ra, cột khoá `NOT NULL`). Giá trị này cũng được ghi vào cột `__pk` của dòng (do `Encode` tính, không do người gọi).
 - `table` trong op là `ID` của bảng.
 
 ## 5. DDL và catalog
@@ -145,6 +146,11 @@ Bản ghi `DDL` chứa JSON của bảng, cũng là phần tử của `tables` t
 ```
 
 - Các trường có `omitempty` (`not_null`, `search`, `columnar`, `append_only`, `time_column`, `series_column`) bị bỏ khi mang giá trị rỗng.
+- **Hai trường thêm 2026-10-29 (nhánh `nopk`), đều `omitempty`**, nên bảng khoá một cột ghi ra đúng JSON cũ và dữ liệu cũ đọc nguyên vẹn (test `TestKeyFieldsAreAdditive`):
+  - cột: `"hidden": true`: cột khoá nội bộ, lưu như mọi cột nhưng không hiện với client (`__rowid` hoặc `__pk`);
+  - bảng: `"key_cols": ["a","b"]`: các cột của PK ghép (>= 2). Khi có nó, `key` là `"__pk"`. Bảng không PK có `"key":"__rowid"` và không có `key_cols`.
+  Ví dụ bảng không PK: `{"id":3,"name":"databasechangelog","columns":[{"name":"__rowid","type":"int","not_null":true,"default":"nextval('\"databasechangelog____rowid_seq\"')","hidden":true},{"name":"id","type":"string","not_null":true}, ...],"key":"__rowid"}`. Sequence `<bảng>____rowid_seq` là sequence thường (owner `<bảng>.__rowid`). Bản Go cũ đọc JSON này (trường lạ bị bỏ qua) nhưng không biết ẩn cột [chưa kiểm bằng binary cũ]; bản mới đọc mọi JSON cũ (có test).
+  - `ADD PRIMARY KEY` trên bảng rỗng là một bản ghi `DDL` kiểu ALTER: cột `__rowid` thành cột đã drop, `key` đổi, `__pk` (nếu ghép) thêm ở cuối. Bảng không có dòng sống nào nên không dòng nào cần gắn lại khoá; các version đã xoá cũ (nếu có) mang khoá kiểu cũ (chưa kiểm cách `AS OF`/`stask_history` đọc chúng).
 - Kiểm tra hợp lệ ở `schema.Table.Init`: khoá là `int`, `string` hoặc `uuid` (khoá `uuid` lưu dạng chữ thường 36 ký tự, nên thứ tự byte của khoá cũng là thứ tự byte của uuid); cột search là `text`/`string`; `time_column` là `time`, `timestamp` hoặc `timestamptz` (ms hay µs tuỳ kiểu) và đòi hỏi `append_only`; `series_column` là `string`; bảng `columnar` không có cột `numeric`.
 - **DROP TABLE và TRUNCATE** (thêm 2026-10-29) dùng chính bản ghi `DDL`, với ba trường tuỳ chọn:
   - `dropped_lsn`: bản ghi của DROP TABLE là JSON của bảng bị drop (cùng `id`), có `dropped_lsn` bằng LSN của chính bản ghi.

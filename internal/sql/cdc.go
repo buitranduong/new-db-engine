@@ -163,9 +163,11 @@ func (s *Session) sessionTableFunc(name string, args []Datum) ([][]Datum, error)
 				if !p.Has(t.Name) {
 					continue
 				}
-				names := make([]string, len(t.Columns))
-				for i, c := range t.Columns {
-					names[i] = c.Name
+				var names []string
+				for _, c := range t.Columns {
+					if !c.Hidden {
+						names = append(names, c.Name)
+					}
 				}
 				rows = append(rows, []Datum{TextD(p.Name), TextD("public"), TextD(t.Name),
 					{K: KArray, S: "{" + strings.Join(names, ",") + "}", I: int64(KText)}, Null})
@@ -576,7 +578,9 @@ func (o *decodeOpts) tdChange(c *core.Change) string {
 		if c.OldRow != nil {
 			b.WriteString(" old-key:")
 			for i, col := range t.Columns {
-				fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.OldRow[i]))
+				if !col.Hidden {
+					fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.OldRow[i]))
+				}
 			}
 			b.WriteString(" new-tuple:")
 		}
@@ -584,16 +588,23 @@ func (o *decodeOpts) tdChange(c *core.Change) string {
 		b.WriteString(": DELETE:")
 		if c.OldRow != nil {
 			for i, col := range t.Columns {
-				fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.OldRow[i]))
+				if !col.Hidden {
+					fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.OldRow[i]))
+				}
 			}
 			return b.String()
+		}
+		if !t.HasPK() || t.Composite() {
+			return b.String() // the old row (FULL identity) was not available
 		}
 		k := t.KeyIndex()
 		fmt.Fprintf(&b, " %s[%s]:%s", t.Columns[k].Name, pgTypeName(t.Columns[k]), tdValue(t.Columns[k], keyValue(t, c.Key)))
 		return b.String()
 	}
 	for i, col := range t.Columns {
-		fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.Row[i]))
+		if !col.Hidden {
+			fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.Row[i]))
+		}
 	}
 	return b.String()
 }
@@ -751,10 +762,15 @@ func (o *decodeOpts) w2Change(c *core.Change) string {
 	k := t.KeyIndex()
 	if c.Kind != core.ChangeDelete {
 		b = append(b, `,"columns":[`...)
+		first := true
 		for i, col := range t.Columns {
-			if i > 0 {
+			if col.Hidden {
+				continue
+			}
+			if !first {
 				b = append(b, ',')
 			}
+			first = false
 			b = o.appendW2Col(b, col, c.Row[i])
 		}
 		b = append(b, ']')
@@ -762,23 +778,36 @@ func (o *decodeOpts) w2Change(c *core.Change) string {
 	if c.Kind != core.ChangeInsert {
 		b = append(b, `,"identity":[`...)
 		if c.OldRow != nil {
+			first := true
 			for i, col := range t.Columns {
-				if i > 0 {
+				if col.Hidden {
+					continue
+				}
+				if !first {
 					b = append(b, ',')
 				}
+				first = false
 				b = o.appendW2Col(b, col, c.OldRow[i])
 			}
-		} else {
+		} else if t.HasPK() && !t.Composite() {
 			b = o.appendW2Col(b, t.Columns[k], keyValue(t, c.Key))
 		}
 		b = append(b, ']')
 	}
 	if o.pk {
-		b = append(b, `,"pk":[{"name":`...)
-		b = appendJSONStr(b, t.Columns[k].Name)
-		b = append(b, `,"type":"`...)
-		b = append(b, pgTypeName(t.Columns[k])...)
-		b = append(b, `"}]`...)
+		b = append(b, `,"pk":[`...)
+		for n, name := range t.PKCols() {
+			i, _ := t.Col(name)
+			if n > 0 {
+				b = append(b, ',')
+			}
+			b = append(b, `{"name":`...)
+			b = appendJSONStr(b, name)
+			b = append(b, `,"type":"`...)
+			b = append(b, pgTypeName(t.Columns[i])...)
+			b = append(b, `"}`...)
+		}
+		b = append(b, ']')
 	}
 	b = append(b, '}')
 	o.buf = b
@@ -812,9 +841,14 @@ func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 		kind := map[core.ChangeKind]string{core.ChangeInsert: "insert", core.ChangeUpdate: "update", core.ChangeDelete: "delete"}[ch.Kind]
 		b.WriteString(`{"kind":"` + kind + `","schema":"public","table":` + jsonStr(t.Name))
 		if ch.Kind != core.ChangeDelete {
-			names, types, vals := make([]string, len(t.Columns)), make([]string, len(t.Columns)), make([]string, len(t.Columns))
+			var names, types, vals []string
 			for j, col := range t.Columns {
-				names[j], types[j], vals[j] = jsonStr(col.Name), `"`+pgTypeName(col)+`"`, jsonValue(col, ch.Row[j])
+				if col.Hidden {
+					continue
+				}
+				names = append(names, jsonStr(col.Name))
+				types = append(types, `"`+pgTypeName(col)+`"`)
+				vals = append(vals, jsonValue(col, ch.Row[j]))
 			}
 			b.WriteString(`,"columnnames":[` + strings.Join(names, ",") + "]")
 			if o.types {
@@ -823,10 +857,17 @@ func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 			b.WriteString(`,"columnvalues":[` + strings.Join(vals, ",") + "]")
 		}
 		if ch.Kind != core.ChangeInsert {
-			cols := []schema.Column{t.Columns[t.KeyIndex()]}
-			vals := []schema.Value{keyValue(t, ch.Key)}
-			if ch.OldRow != nil {
-				cols, vals = t.Columns, ch.OldRow
+			var cols []schema.Column
+			var vals []schema.Value
+			switch {
+			case ch.OldRow != nil:
+				for j, col := range t.Columns {
+					if !col.Hidden {
+						cols, vals = append(cols, col), append(vals, ch.OldRow[j])
+					}
+				}
+			case t.HasPK() && !t.Composite():
+				cols, vals = []schema.Column{t.Columns[t.KeyIndex()]}, []schema.Value{keyValue(t, ch.Key)}
 			}
 			names, types, jv := make([]string, len(cols)), make([]string, len(cols)), make([]string, len(cols))
 			for j, col := range cols {
@@ -839,8 +880,12 @@ func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 			b.WriteString(`,"keyvalues":[` + strings.Join(jv, ",") + "]}")
 		}
 		if o.pk {
-			k := t.Columns[t.KeyIndex()]
-			b.WriteString(`,"pk":{"pknames":[` + jsonStr(k.Name) + `],"pktypes":["` + pgTypeName(k) + `"]}`)
+			var pn, pt []string
+			for _, name := range t.PKCols() {
+				i, _ := t.Col(name)
+				pn, pt = append(pn, jsonStr(name)), append(pt, `"`+pgTypeName(t.Columns[i])+`"`)
+			}
+			b.WriteString(`,"pk":{"pknames":[` + strings.Join(pn, ",") + `],"pktypes":[` + strings.Join(pt, ",") + `]}`)
 		}
 		b.WriteString("}")
 	}

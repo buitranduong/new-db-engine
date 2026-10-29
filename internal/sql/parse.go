@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -473,30 +474,25 @@ func (p *parser) createStmt() (Stmt, error) {
 			}
 			c.Constraints = append(c.Constraints, cd)
 		} else if p.acceptKw("primary", "key") {
-			if err := p.expectOp("("); err != nil {
-				return nil, err
-			}
-			k, err := p.ident()
+			cols, err := p.pkColumns()
 			if err != nil {
 				return nil, err
 			}
-			if p.isOp(",") {
-				return nil, errf(codeFeature, "composite primary keys are not supported")
-			}
-			if err := p.expectOp(")"); err != nil {
-				return nil, err
-			}
-			if c.Key != "" && c.Key != k {
+			if c.Key != "" || c.KeyCols != nil {
 				return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
 			}
-			c.Key = k
+			if len(cols) == 1 {
+				c.Key = cols[0]
+			} else {
+				c.KeyCols = cols
+			}
 		} else {
 			cd, err := p.colDef()
 			if err != nil {
 				return nil, err
 			}
 			if cd.Primary {
-				if c.Key != "" {
+				if c.Key != "" || c.KeyCols != nil {
 					return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
 				}
 				c.Key = cd.Name
@@ -543,10 +539,31 @@ func (p *parser) createStmt() (Stmt, error) {
 			}
 		}
 	}
-	if c.Key == "" {
-		return nil, errf(codeFeature, "table %q needs a single-column PRIMARY KEY", c.Name)
-	}
 	return c, nil
+}
+
+// pkColumns reads the parenthesized column list of PRIMARY KEY (a, b, ...).
+func (p *parser) pkColumns() ([]string, error) {
+	if err := p.expectOp("("); err != nil {
+		return nil, err
+	}
+	var cols []string
+	for {
+		k, err := p.ident()
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(cols, k) {
+			return nil, errf("42701", "column %q appears twice in primary key constraint", k)
+		}
+		cols = append(cols, k)
+		if p.acceptOp(")") {
+			return cols, nil
+		}
+		if err := p.expectOp(","); err != nil {
+			return nil, err
+		}
+	}
 }
 
 func (p *parser) colDef() (ColDef, error) {
@@ -1860,8 +1877,15 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				}
 				break
 			}
-			if cname != "" || p.isKw("primary") {
-				return nil, errf(codeFeature, "only CHECK, UNIQUE and FOREIGN KEY constraints can be added")
+			if p.acceptKw("primary", "key") {
+				act.Kind = "add_pk"
+				if act.KeyCols, err = p.pkColumns(); err != nil {
+					return nil, err
+				}
+				break
+			}
+			if cname != "" {
+				return nil, errf(codeFeature, "only CHECK, UNIQUE, PRIMARY KEY and FOREIGN KEY constraints can be added")
 			}
 			p.acceptKw("column")
 			act.Kind, act.IfExists = "add_column", p.acceptKw("if", "not", "exists")

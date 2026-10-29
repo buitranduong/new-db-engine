@@ -360,7 +360,9 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 					return nil, errf(codeSyntax, "SELECT * with no tables specified is not valid")
 				}
 				for _, c := range sc.t.Columns {
-					d.Cols = append(d.Cols, Column{c.Name, kindOf(c.T)})
+					if !c.Hidden {
+						d.Cols = append(d.Cols, Column{c.Name, kindOf(c.T)})
+					}
 				}
 				continue
 			}

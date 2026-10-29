@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"stask/internal/schema"
 )
@@ -26,6 +27,11 @@ import (
 const (
 	seqTableName = "__stask_sequences"
 	seqLogVals   = 32
+	// the sequence behind a hidden __rowid column (a table without PRIMARY
+	// KEY) reserves far more, as every row of a bulk insert takes a value:
+	// one log write per 32 rows would make such a table 5x slower to load.
+	// After a crash the gap is at most this many ids, which nobody sees.
+	rowIDLogVals = 1 << 16
 )
 
 var (
@@ -241,9 +247,13 @@ func (e *Engine) NextVal(name string) (int64, error) {
 	if !st.called || beyond || cycled {
 		// reserve up to seqLogVals values, not past the bound
 		var hw int64
-		ok := st.Inc <= math.MaxInt64/seqLogVals && st.Inc >= math.MinInt64/seqLogVals
+		ahead := int64(seqLogVals)
+		if strings.HasSuffix(st.Owner, "."+schema.RowIDCol) {
+			ahead = rowIDLogVals
+		}
+		ok := st.Inc <= math.MaxInt64/ahead && st.Inc >= math.MinInt64/ahead
 		if ok {
-			hw, ok = addInt(v, st.Inc*(seqLogVals-1))
+			hw, ok = addInt(v, st.Inc*(ahead-1))
 		}
 		if !ok || hw > st.Max || hw < st.Min {
 			hw = st.Max

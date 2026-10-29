@@ -499,7 +499,7 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	ci := &CopyIn{s: s, cs: cs, t: t, header: cs.Header, line: 0}
 	given := make([]bool, len(t.Columns))
 	if cs.Cols == nil {
-		for i := range t.Columns {
+		for _, i := range t.VisibleCols() {
 			ci.cols = append(ci.cols, i)
 			given[i] = true
 		}
@@ -678,7 +678,7 @@ func (ci *CopyIn) store(f []copyField) error {
 	if ci.own {
 		key := t.KeyOf(row)
 		if _, dup := ci.seen[key]; dup {
-			return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, key)
+			return dupKeyErr(t, key)
 		}
 		ci.seen[key] = struct{}{}
 		ci.qx.chargeN(int64(len(key) + 48))
@@ -694,7 +694,7 @@ func (ci *CopyIn) store(f []copyField) error {
 		if _, exists, err := ci.tx.Get(t.Name, key); err != nil {
 			return err
 		} else if exists {
-			return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, key)
+			return dupKeyErr(t, key)
 		}
 		if err := ci.tx.InsertAs(t, row); err != nil {
 			return err
@@ -1023,9 +1023,7 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	}
 	var cols []int
 	if cs.Cols == nil {
-		for i := range t.Columns {
-			cols = append(cols, i)
-		}
+		cols = t.VisibleCols()
 	} else {
 		for _, c := range cs.Cols {
 			i, ok := t.Col(c)

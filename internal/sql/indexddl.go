@@ -155,7 +155,9 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	}
 	refCols := c.RefCols
 	if len(refCols) == 0 {
-		refCols = []string{parent.Key}
+		if refCols = parent.PKCols(); len(refCols) == 0 {
+			return fk, nil, errf("42830", "there is no primary key for referenced table %q", parent.Name)
+		}
 	}
 	if len(refCols) != len(c.Cols) {
 		return fk, nil, errf(codeInvalidForeignKey, "number of referencing and referenced columns for foreign key disagree")
@@ -171,7 +173,7 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 		}
 	}
 	// the referenced columns must be the primary key or a unique constraint
-	ok := len(refCols) == 1 && refCols[0] == parent.Key
+	ok := parent.IsPK(refCols)
 	for _, ix := range parent.Indexes {
 		ok = ok || ix.Unique && slices.Equal(ix.Columns, refCols)
 	}

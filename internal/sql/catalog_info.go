@@ -146,7 +146,9 @@ func init() {
 				TextD("NO"), TextD("YES"), nd})
 		}
 		for _, t := range c.tables {
-			con(pkeyName(t), t, "PRIMARY KEY", TextD("YES"))
+			if t.HasPK() {
+				con(pkeyName(t), t, "PRIMARY KEY", TextD("YES"))
+			}
 			for _, ck := range t.Checks {
 				con(ck.Name, t, "CHECK", Null)
 			}
@@ -178,7 +180,9 @@ func init() {
 		func(c *catSnap) [][]Datum {
 			var rows [][]Datum
 			for _, t := range c.tables {
-				rows = append(rows, []Datum{cat, pub, TextD(pkeyName(t)), cat, pub, TextD(t.Name), TextD(t.Key), IntD(1), Null})
+				for i, col := range t.PKCols() {
+					rows = append(rows, []Datum{cat, pub, TextD(pkeyName(t)), cat, pub, TextD(t.Name), TextD(col), IntD(int64(i + 1)), Null})
+				}
 				for _, ix := range t.Indexes {
 					if ix.Constraint != "" {
 						for i, col := range ix.Columns {
@@ -199,7 +203,9 @@ func init() {
 		"constraint_catalog:t constraint_schema:t constraint_name:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, t := range c.tables {
-			rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD(t.Key), cat, pub, TextD(pkeyName(t))})
+			for _, col := range t.PKCols() {
+				rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD(col), cat, pub, TextD(pkeyName(t))})
+			}
 			for _, ck := range t.Checks {
 				for _, n := range parseArrayText(checkKeys(t, ck.Expr)) {
 					for _, col := range t.Columns {

@@ -29,18 +29,32 @@ Quyết định đi qua ba cổng:
 
 Phạm vi port là **toàn bộ engine một node, cộng cluster tới giai đoạn B**. Mọi thứ làm thay đổi định dạng trên đĩa, WAL, checkpoint hay giao thức phải xong trong Go trước khi port. Nếu không, phần đó phải thiết kế hai lần mà không có bản mẫu.
 
-### 2.1 Đã có (kiểm kê từ mã nguồn, 2026-10-29)
+### 2.1 Đã có (kiểm kê lại từ mã nguồn và probe `claimcheck`, 2026-10-29; chi tiết và bằng chứng từng mục ở docs/14)
 
 - **Lõi:**
-  - WAL, MVCC (Snapshot Isolation, Serializable cho đọc điểm), group commit dạng đường ống;
-  - GC log, checkpoint, segment nén;
-  - view cột, search và time-series.
-- **SQL qua PG wire:** SELECT/INSERT/UPDATE/DELETE, JOIN, subquery, `ON CONFLICT`, giao dịch, aggregate trên view cột.
+  - WAL phân đoạn có CRC32C, group commit dạng đường ống; MVCC (Snapshot Isolation, Serializable cho đọc điểm);
+  - GC log, checkpoint, segment nén, quét nền CRC (`/v1/admin/scrub`);
+  - view cột, search (BM25) và time-series nuôi từ log; planner theo hợp đồng nhất quán strong/bounded/session/eventual;
+  - kiểm soát tải (`-admission`, ưu tiên đọc), ngân sách bộ nhớ truy vấn (53200).
+- **SQL qua PG wire:**
+  - SELECT/INSERT/UPDATE/DELETE, JOIN, subquery, CTE, window, `ON CONFLICT`, giao dịch, aggregate trên view cột;
+  - schema: `DEFAULT` (cả `now()`), `CHECK`, `NOT NULL`; sequence và `SERIAL`; `DROP`/`TRUNCATE`; `CREATE VIEW`; `ALTER TABLE` ADD/DROP/RENAME COLUMN, SET DEFAULT/NOT NULL, RENAME TO (**chưa** `ALTER COLUMN TYPE`);
+  - `COPY` text/csv (cả hai chiều, `psql \copy` đã chạy với psql 16 thật);
+  - trigger thân SQL `BEFORE/AFTER` mức dòng (cú pháp `BEGIN ... END`, **không** có `EXECUTE FUNCTION`);
+  - vai trò, `GRANT/REVOKE` mức bảng/view, SCRAM theo vai trò;
+  - `pg_catalog`, `information_schema`, `pg_stat_activity`: `psql \dt \d \d+ \di \dn \l` chạy với psql 16 thật (`\dv` còn rỗng vì view chưa vào `pg_class`);
+  - huỷ câu lệnh (CancelRequest), `statement_timeout` (**chưa** áp cho `generate_series`), timeout phiên rảnh.
+- **Bảo mật và vận hành:**
+  - PG wire: TLS (`-pg-tls-require`), SCRAM-SHA-256 hoặc mật khẩu; HTTP: TLS, bearer token đọc-ghi và chỉ-đọc, mTLS; cổng nhân bản: TLS, mTLS, bí mật chung; cổng nghe ngoài loopback không xác thực bị từ chối khi khởi động (PG, HTTP, pprof, nhân bản). Kiểm bằng `accept/security.sh` với psql 16, pgx, curl;
+  - `/metrics` (Prometheus), slow log, `pg_stat_activity`;
+  - backup nóng qua mạng (`-backup-from`, TLS/mTLS), lưu trữ liên tục (`-archive-dir`) và PITR tới thời điểm hoặc LSN: `accept/pitr.sh`;
+  - sống sót `kill -9`: `accept/kill9.sh`, `cmd/staskchaos`.
 - **Interop:**
-  - CDC: slot, test_decoding, wal2json, pgoutput qua walsender;
-  - publication, `REPLICA IDENTITY FULL`;
-  - LISTEN/NOTIFY.
-- **Cluster giai đoạn A:** replica bất đồng bộ, base backup, slot nhân bản.
+  - CDC: slot, test_decoding, wal2json, pgoutput qua walsender (có kịch bản đối chiếu với `pglogrepl` và một subscriber PostgreSQL 16 thật: `accept/logrepl`, `accept/pgsub.sh`; không chạy lại ở đợt này);
+  - publication, `REPLICA IDENTITY FULL`; LISTEN/NOTIFY.
+- **Cluster:**
+  - giai đoạn A: replica bất đồng bộ, base backup, slot nhân bản; đọc-ghi-của-mình qua token LSN và bộ điều hướng (`internal/router`, `cmd/staskroute`);
+  - giai đoạn B một phần: trạng thái slot/publication đi qua log (sống sót failover, có test); `internal/raft` (bầu cử, lease, đa số) mới chạy trong mô phỏng, **chưa nối vào engine** (`core.Quorum` mặc định tắt).
 
 ### 2.2 Còn thiếu, và có phải xong trước khi port không
 

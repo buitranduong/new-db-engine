@@ -108,7 +108,7 @@ func (c *evalCtx) callPre(f *Func, args []Datum) (Datum, bool, error) {
 		var parts []string
 		for _, a := range args[1:] {
 			if !a.IsNull() {
-				parts = append(parts, a.String())
+				parts = append(parts, a.Text())
 			}
 		}
 		return TextD(strings.Join(parts, args[0].String())), true, nil
@@ -689,7 +689,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 	case "tofloat32", "tofloat64", "todecimal32", "todecimal64":
 		return coerce(args[0], KFloat)
 	case "tostring":
-		return TextD(args[0].String()), nil
+		return TextD(args[0].Text()), nil
 	// ---- arrays ----
 	case "array_length", "cardinality", "length_array":
 		return IntD(int64(len(parseArrayText(args[0])))), nil
@@ -1105,7 +1105,7 @@ func pgFormat(f string, args []Datum) (Datum, error) {
 		switch f[i] {
 		case 's':
 			if !a.IsNull() {
-				b.WriteString(a.String())
+				b.WriteString(a.Text())
 			}
 		case 'I':
 			b.WriteString(`"` + strings.ReplaceAll(a.String(), `"`, `""`) + `"`)

@@ -134,7 +134,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 			return FloatD(f), nil
 		}
 	case KText:
-		return TextD(d.String()), nil
+		return TextD(d.Text()), nil
 	case KBool:
 		if d.K == KText {
 			switch strings.ToLower(strings.TrimSpace(d.S)) {
@@ -203,6 +203,19 @@ func parseTime(s string) (int64, error) {
 		}
 	}
 	return 0, fmt.Errorf("bad time %q", s)
+}
+
+// Text renders d as PostgreSQL does when a value becomes a text value
+// (::text, ||, format, string_agg): booleans are true/false. String keeps the
+// wire output form t/f.
+func (d Datum) Text() string {
+	if d.K == KBool {
+		if d.I != 0 {
+			return "true"
+		}
+		return "false"
+	}
+	return d.String()
 }
 
 // String renders d in PostgreSQL text output format.

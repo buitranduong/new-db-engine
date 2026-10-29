@@ -356,7 +356,7 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 		}
 		return BoolD(cmp >= 0), nil
 	case "||":
-		return TextD(l.String() + r.String()), nil
+		return TextD(l.Text() + r.Text()), nil
 	}
 	return arith(e.Op, l, r)
 }

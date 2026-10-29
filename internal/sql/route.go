@@ -37,7 +37,7 @@ func needsGeneral(st *Select) bool {
 				found = true
 			case *Func:
 				if f.Over != nil || f.Filter != nil || f.Order != nil || f.Within != nil || f.Params != nil ||
-					aggNames[f.Name] && !aggFuncs[f.Name] || f.Name == "grouping" || f.Name == "generate_series" || f.Name == "unnest" ||
+					aggNames[f.Name] && !aggFuncs[f.Name] || f.Name == "grouping" || f.Name == "generate_series" || f.Name == "unnest" || isJSONArrSRF(f.Name) || f.Name == "stask_srf" ||
 					sessionFuncs[f.Name] {
 					found = true
 				}

@@ -285,11 +285,7 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		case KNumeric:
 			return applyTypmod(e.Type, d)
 		case KArray:
-			if ek, ok := schema.ElemType(e.Type); ok {
-				if et, err := schema.ParseType(ek); err == nil {
-					return coerceArray(d, kindOf(et))
-				}
-			}
+			return castArray(e, d)
 		}
 		return d, nil
 	case *Case:
@@ -417,6 +413,11 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	r, err := c.eval(e.R)
 	if err != nil {
 		return Null, err
+	}
+	if e.Op == "||" || e.Op == "-" {
+		if d, ok, err := binaryHook(e.Op, l, r); ok {
+			return d, err
+		}
 	}
 	if l.IsNull() || r.IsNull() {
 		return Null, nil
@@ -636,6 +637,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			return Null, err
 		}
 		args[i] = v
+	}
+	if v, ok, err := c.callJSONArr(f, args); ok {
+		return v, err
 	}
 	nargs := func(lo, hi int) error {
 		if len(args) < lo || len(args) > hi {

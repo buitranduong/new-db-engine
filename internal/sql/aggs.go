@@ -45,6 +45,9 @@ func newAgg(a *aggCall) (aggImpl, error) {
 		return nil
 	}
 	var impl aggImpl
+	if i, ok, err := newJSONArrAgg(a); ok {
+		return i, err
+	}
 	switch f.Name {
 	case "count":
 		if f.Star {

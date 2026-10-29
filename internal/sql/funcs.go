@@ -1336,6 +1336,9 @@ func funcKind(name string, args []Kind) Kind {
 		}
 		return KText
 	}
+	if k, ok := jsonarrFuncKind(name, args); ok {
+		return k
+	}
 	if k, ok := catalogFuncKinds[name]; ok {
 		return k
 	}

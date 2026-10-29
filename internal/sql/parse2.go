@@ -844,8 +844,9 @@ func (p *parser) fromItem() (FromNode, error) {
 			return nil, err
 		}
 		f, _ := x.(*Func)
+		ord := p.acceptKw("with", "ordinality")
 		alias, cols, err := p.aliasClause()
-		return &FromFunc{F: f, Alias: alias, ColAliases: cols}, err
+		return &FromFunc{F: f, Alias: alias, ColAliases: cols, Ordinality: ord}, err
 	}
 	name, err := p.qualifiedName()
 	if err != nil {

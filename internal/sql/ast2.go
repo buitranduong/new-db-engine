@@ -24,6 +24,7 @@ type FromValues struct {
 	ColAliases []string
 }
 type FromFunc struct { // generate_series, numbers, ...
+	Ordinality bool // WITH ORDINALITY
 	F          *Func
 	Alias      string
 	ColAliases []string

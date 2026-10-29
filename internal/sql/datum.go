@@ -108,6 +108,9 @@ func kindOfCol(c schema.Column) Kind { return kindOf(c.T) }
 
 // elemKindOf is the element kind of an array column.
 func elemKindOf(c schema.Column) Kind {
+	if c.PG == "date[]" {
+		return KDate
+	}
 	if e, ok := schema.ElemType(c.Type); ok {
 		if et, err := schema.ParseType(e); err == nil {
 			return kindOf(et)
@@ -181,6 +184,9 @@ func toValueCol(c *schema.Column, d Datum) (schema.Value, error) {
 	case KArray:
 		if c.Type != "" {
 			if cd, err = coerceArray(cd, elemKindOf(*c)); err != nil {
+				return schema.Value{}, err
+			}
+			if cd, err = applyPGArray(c.PG, cd); err != nil {
 				return schema.Value{}, err
 			}
 		}
@@ -486,6 +492,11 @@ func (d Datum) String() string {
 
 // compare orders two non-null values (after numeric/text coercion).
 func compare(a, b Datum) (int, error) {
+	if a.K == KArray || b.K == KArray {
+		if (a.K == KArray || looksArrayLit(a)) && (b.K == KArray || looksArrayLit(b)) {
+			return compareArrays(a, b)
+		}
+	}
 	if a.K != b.K {
 		switch {
 		case (isTime(a.K) || a.K == KDate) && (isTime(b.K) || b.K == KDate):

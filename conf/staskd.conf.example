@@ -1,0 +1,85 @@
+# staskd settings: staskd -config /etc/stask/staskd.conf  (or STASK_CONFIG)
+# One "name = value" per line; names are staskd's flags (staskd -h lists
+# them all). Flags given on the command line win over this file. Every
+# value below is the default: running with this file unchanged is the same
+# as running without it.
+#
+# STASK assumes a machine (VM or container) of its own and uses every CPU
+# by default. The CPU settings below only shape how it shares the CPU
+# between foreground statements and background work (full-scan
+# aggregates, bulk writes) when the CPU is saturated.
+
+# ---- storage ----
+# data directory: set it for your machine
+# dir = /var/lib/stask
+segment-mb = 256
+prezero = true
+zero-rate-mb = 150
+checkpoint-min-mb = 512
+
+# ---- commit ----
+max-batch = 512
+commit-wait = 1ms
+
+# ---- log reclamation (GC of old versions) ----
+gc = true
+history-retention = 1h
+gc-interval = 10s
+gc-rate-mb = 64
+gc-max-live = 0.5
+# a stale transaction snapshot older than this stops holding back
+# reclamation; its transaction then fails with snapshot too old (0 = no cap)
+max-snapshot-age = 24h
+
+# ---- network ----
+addr = 127.0.0.1:17070
+pg-addr = 127.0.0.1:17432
+pg-max-conns = 100000
+# pg-password =
+# dead clients: TCP keepalive (0 = system default) and, on Linux,
+# TCP_USER_TIMEOUT for data left unacknowledged (0 = system default)
+pg-tcp-keepalives-idle = 1m
+pg-tcp-keepalives-interval = 10s
+pg-tcp-keepalives-count = 6
+pg-tcp-user-timeout = 0
+
+# ---- sessions (PostgreSQL defaults; sessions may SET their own) ----
+# ms without a unit, or us/ms/s/min/h/d; 0 = off
+statement-timeout = 0
+idle-in-transaction-session-timeout = 0
+idle-session-timeout = 0
+
+# ---- CPU: foreground vs background ----
+# OS threads for heavy statements (-1 = one per usable CPU, 0 = no separate
+# lane); usable CPUs and memory honour container limits (cpu.max, memory.max)
+heavy-workers = -1
+# cgroup v2 groups. Needs a writable cgroup: under systemd, Delegate=yes;
+# in Docker the cgroup is read-only by default (staskd then runs heavy
+# threads at nice heavy-nice instead); --privileged --cgroupns=private makes
+# it writable (verified), but grants far more than this needs.
+# Generate a settings file for the machine with: stasktune -dir <data dir>
+cpu-groups = true
+fg-weight = 1000
+heavy-weight = 50
+heavy-nice = 10
+# overload signal: runnable goroutines per CPU, averaged over 10ms (Go 1.26+)
+runnable-threshold = 4
+# CPUs the background group may use while overloaded (0 = no cap: background
+# work may use every CPU the foreground leaves), enforced per period
+heavy-cap = 0
+heavy-cap-period = 10ms
+# helpers a full-scan aggregate keeps under overload, and at most
+scan-min-helpers = 1
+# 0 = the usable CPUs
+scan-workers = 0
+
+# ---- admission queue (off: measured no gain, reads wait on CPU) ----
+admission = false
+admission-slots = 0
+
+# ---- Go runtime ----
+go-gc = 400
+# 0 = half of the usable memory (RAM or the container's limit)
+mem-limit-mb = 0
+# 0 = number of CPUs
+procs = 0

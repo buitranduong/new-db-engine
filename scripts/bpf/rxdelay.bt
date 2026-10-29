@@ -1,0 +1,32 @@
+#!/usr/bin/env bpftrace
+// Delay from data arriving on a server socket to the server reading it:
+// the wait that the server's own timers cannot see (event loop / netpoll /
+// CPU scheduling). Usage: sudo bpftrace rxdelay.bt <port>   (17432 STASK, 15432 PG)
+#include <net/sock.h>
+
+kprobe:sock_def_readable
+{
+	$sk = (struct sock *)arg0;
+	if ($sk->__sk_common.skc_num == $1 && @arrive[$sk] == 0) {
+		@arrive[$sk] = nsecs;
+	}
+}
+
+kprobe:tcp_recvmsg
+{
+	$sk = (struct sock *)arg0;
+	$t = @arrive[$sk];
+	if ($t != 0) {
+		@delay_us = hist((nsecs - $t) / 1000);
+		@n = count();
+		if (nsecs - $t > 5000000) {
+			@over_5ms = count();
+		}
+		delete(@arrive[$sk]);
+	}
+}
+
+END
+{
+	clear(@arrive);
+}

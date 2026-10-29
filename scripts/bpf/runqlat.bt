@@ -1,0 +1,29 @@
+#!/usr/bin/env bpftrace
+// Time threads of the server and of the benchmark client spend runnable but
+// not running, by process and kernel priority (120 = nice 0, 130 = nice 10).
+// Usage: sudo bpftrace runqlat.bt
+tracepoint:sched:sched_wakeup,
+tracepoint:sched:sched_wakeup_new
+/args->comm == "staskd" || args->comm == "staskmix" || args->comm == "postgres"/
+{
+	@ts[args->pid] = nsecs;
+}
+
+tracepoint:sched:sched_switch
+{
+	// preempted while runnable: waits again from now
+	if (args->prev_state == 0 &&
+	    (args->prev_comm == "staskd" || args->prev_comm == "staskmix" || args->prev_comm == "postgres")) {
+		@ts[args->prev_pid] = nsecs;
+	}
+	$t = @ts[args->next_pid];
+	if ($t != 0) {
+		@runq_us[args->next_comm, args->next_prio] = hist((nsecs - $t) / 1000);
+		delete(@ts[args->next_pid]);
+	}
+}
+
+END
+{
+	clear(@ts);
+}

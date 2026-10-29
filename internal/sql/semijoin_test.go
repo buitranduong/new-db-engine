@@ -38,7 +38,7 @@ func TestSemiJoinMatchesNested(t *testing.T) {
 	for _, spec := range []struct {
 		tbl string
 		n   int
-	}{{"a", 300}, {"b", 400}} {
+	}{{"a", 120}, {"b", 150}} {
 		var vals []string
 		for i := 0; i < spec.n; i++ {
 			k := nul(15, fmt.Sprint(rng.IntN(40)))

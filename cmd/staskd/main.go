@@ -12,6 +12,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"stask/internal/conf"
@@ -27,6 +28,7 @@ import (
 	"stask/internal/proj"
 	"stask/internal/repl"
 	"stask/internal/server"
+	"stask/internal/spill"
 	"stask/internal/sql"
 	"stask/internal/wal"
 )
@@ -123,6 +125,10 @@ func main() {
 	targetTime := flag.String("recovery-target-time", "", "with -restore-archive: stop replay before the first commit after this time (RFC 3339)")
 	targetLSN := flag.Uint64("recovery-target-lsn", 0, "with -restore-archive: stop replay after this LSN")
 	queryMem := flag.Int64("query-mem-mb", 0, "memory one SQL query may hold in rows it materializes (scans, joins) before failing with 53200 (0 = half of -sql-mem-mb, -1 = no limit)")
+	spillOn := flag.Bool("spill", true, "a query past its memory budget spills to temp files in -spill-dir (external sort, Grace hash join, partitioned aggregate and DISTINCT) instead of failing with 53200; false keeps the failure")
+	spillDir := flag.String("spill-dir", "", "directory of temp files of spilling queries (default: <dir>/spill; emptied of leftovers at startup)")
+	spillMax := flag.Int64("spill-max-mb", 0, "temp data one query may write (MB), then 53100 (0 = no limit)")
+	spillOp := flag.Int64("spill-op-mb", 0, "memory one spilling operator (join, aggregate, sort) keeps before it spills (MB; 0 = a sixth of -query-mem-mb)")
 	sqlMem := flag.Int64("sql-mem-mb", 0, "memory all SQL queries together may hold before new allocations fail with 53200 (0 = a quarter of the heap limit, -1 = no limit)")
 	memLimit := flag.Int64("mem-limit-mb", 0, "soft Go heap limit unless GOMEMLIMIT is set (0 = half of the usable memory: RAM or the container's limit)")
 	procs := flag.Int("procs", 0, "GOMAXPROCS (0 = Go default, the number of CPUs)")
@@ -217,6 +223,17 @@ func main() {
 		sql.QueryMemLimit = sql.SQLMemLimit / 2
 	case *queryMem > 0:
 		sql.QueryMemLimit = *queryMem << 20
+	}
+
+	if *spillOn {
+		sql.SpillDir = *spillDir
+		if sql.SpillDir == "" {
+			sql.SpillDir = filepath.Join(*dir, "spill")
+		}
+		if n := spill.CleanStale(sql.SpillDir, true); n > 0 {
+			log.Printf("spill: removed %d leftover temp directories from %s", n, sql.SpillDir)
+		}
+		sql.SpillMaxBytes, sql.SpillOpMem = *spillMax<<20, *spillOp<<20
 	}
 
 	codec, err := wal.ParseCodec(*compress)

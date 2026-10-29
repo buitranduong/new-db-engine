@@ -92,12 +92,13 @@ SELECT key, value FROM jsonb_each('{"b": 1, "a": [1, 2], "ccc": null}'::jsonb) O
 SELECT key, value FROM jsonb_each_text('{"b": 1, "a": [1, 2], "ccc": null, "s": "str"}'::jsonb) ORDER BY key;
 SELECT key, value FROM json_each('{"b": 1, "a": {"x": 1}}'::json);
 SELECT value FROM jsonb_array_elements('[1, "two", null, {"a": 1}, [2]]'::jsonb);
+SELECT e, e::text FROM jsonb_array_elements('[1, "two"]'::jsonb) AS e;
 SELECT value FROM jsonb_array_elements_text('[1, "two", null, {"a": 1}]'::jsonb);
 SELECT value FROM json_array_elements('[1,  "two", {"a":  1}]'::json);
 SELECT jsonb_object_keys('{"b": 1, "a": 2, "aa": 3}'::jsonb);
-SELECT d.id, e.value FROM jdoc d, jsonb_array_elements(d.doc -> 'tags') e WHERE d.id <= 2 ORDER BY d.id, e.value;
+SELECT d.id, e FROM jdoc d, jsonb_array_elements(d.doc -> 'tags') e WHERE d.id <= 2 ORDER BY d.id, e;
 SELECT d.id, e.key FROM jdoc d CROSS JOIN LATERAL jsonb_each(d.doc -> 'o') e WHERE d.id <= 2 ORDER BY d.id, e.key;
-SELECT d.id, count(e.value) FROM jdoc d LEFT JOIN LATERAL jsonb_array_elements_text(d.doc -> 'tags') e ON true WHERE d.id <= 2 GROUP BY d.id ORDER BY d.id;
+SELECT d.id, count(e) FROM jdoc d LEFT JOIN LATERAL jsonb_array_elements_text(d.doc -> 'tags') e ON true WHERE d.id <= 2 GROUP BY d.id ORDER BY d.id;
 SELECT id, jsonb_array_elements(doc) FROM jdoc WHERE id = 3 ORDER BY 1;
 SELECT value, ordinality FROM jsonb_array_elements('["a", "b", "c"]'::jsonb) WITH ORDINALITY ORDER BY ordinality;
 

@@ -993,9 +993,15 @@ func anyArr(args []Datum) (Datum, bool, error) {
 	if args[1].IsNull() {
 		return Null, true, nil
 	}
-	a, err := arrOf(args[1], KText)
-	if err != nil {
-		return Null, true, err
+	var a *arr
+	if args[1].K == KArray || looksArrayLit(args[1]) {
+		var err error
+		if a, err = arrOf(args[1], KText); err != nil {
+			return Null, true, err
+		}
+	} else { // int2vector / oidvector text ("1 2")
+		el, _ := vecElems(args[1])
+		a = oneDim(el, KText)
 	}
 	op, all := args[2].String(), args[3].Bool()
 	x := args[0]

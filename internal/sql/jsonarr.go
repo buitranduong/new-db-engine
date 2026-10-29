@@ -896,6 +896,9 @@ func srfFrom(f *FromFunc) FromNode {
 	var cols []string
 	if d, ok := srfDefs[name]; ok {
 		cols = append(cols, d.cols...)
+		if len(cols) == 1 && f.Alias != "" && len(f.ColAliases) == 0 && !f.Ordinality {
+			cols[0] = f.Alias // a function with one output column: the alias names it, as in PostgreSQL
+		}
 	} else {
 		for range f.F.Args {
 			cols = append(cols, "unnest")

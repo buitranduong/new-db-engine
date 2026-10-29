@@ -18,9 +18,13 @@
 // message transport (Config.Send) and the state machine (Config.Apply) are
 // supplied by the caller.
 //
-// Not done (docs/06 section 5): log compaction and snapshots (the log grows
-// without bound), membership change (the voter set is fixed), leadership
-// transfer, learners, and a network transport.
+// Log compaction: Node.Compact drops the applied prefix of the log, keeping
+// only its (index, term) as the base. A follower that needs entries the
+// leader no longer has gets MsgSnap and Config.NeedSnapshot is called; the
+// state-machine snapshot itself is moved by the caller (internal/cluster).
+//
+// Not done (docs/06 section 5): membership change (the voter set is fixed),
+// leadership transfer and learners.
 package raft
 
 import (
@@ -55,15 +59,27 @@ type HardState struct {
 	Term, Vote uint64
 }
 
+// Snapshot is the base of a compacted log: every entry up to Index is gone
+// (its effect lives in the state machine's snapshot) and Term is the term
+// of entry Index.
+type Snapshot struct {
+	Index, Term uint64
+}
+
 // Storage must make everything durable before it returns: the node answers
 // a vote or acknowledges entries only after the call.
 type Storage interface {
-	// Load returns the saved state and the saved log, entries 1..n.
-	Load() (HardState, []Entry, error)
+	// Load returns the saved state, the base of the log and the saved
+	// entries after it (Snap.Index+1 ...).
+	Load() (HardState, Snapshot, []Entry, error)
 	SetHardState(HardState) error
 	// Append removes every saved entry with Index >= entries[0].Index and
 	// saves entries after the remaining ones.
 	Append(entries []Entry) error
+	// Compact drops every entry with Index <= snap.Index and records snap
+	// as the base. If snap.Index is past the last saved entry the log
+	// becomes empty and continues after snap.Index.
+	Compact(snap Snapshot) error
 }
 
 type MsgType uint8
@@ -77,10 +93,11 @@ const (
 	MsgAppResp
 	MsgHeartbeat
 	MsgHeartbeatResp
+	MsgSnap // leader to follower: the log you need is compacted away (PrevIndex: the leader's base); fetch a snapshot
 )
 
 func (t MsgType) String() string {
-	return [...]string{"", "PreVote", "PreVoteResp", "Vote", "VoteResp", "App", "AppResp", "Heartbeat", "HeartbeatResp"}[t]
+	return [...]string{"", "PreVote", "PreVoteResp", "Vote", "VoteResp", "App", "AppResp", "Heartbeat", "HeartbeatResp", "Snap"}[t]
 }
 
 // Msg is the only thing sent between nodes. A transport may drop, delay,
@@ -117,6 +134,11 @@ type Config struct {
 	// node incarnation. Entries up to Applied are not given again.
 	Apply   func(Entry)
 	Applied uint64
+	// NeedSnapshot is called (under the caller's serialization, it must
+	// not block or call back) when the leader says the entries this node
+	// needs are compacted away. It is called again for each such message
+	// until the log base moves; the callee dedupes.
+	NeedSnapshot func(leader uint64)
 }
 
 var ErrNotLeader = errors.New("raft: not the leader")
@@ -127,7 +149,8 @@ type Node struct {
 	peer []uint64 // other voters
 
 	term, vote uint64
-	log        []Entry // log[i].Index == i; log[0] is a sentinel
+	base       uint64  // index of log[0], the snapshot base
+	log        []Entry // log[i].Index == base+i; log[0] is the base (Index, Term only)
 	role       Role
 	leader     uint64
 	commit     uint64
@@ -142,6 +165,7 @@ type Node struct {
 	// leader state
 	next, match, ack map[uint64]uint64
 	inflight         map[uint64]bool
+	termStart        uint64 // index of this leader's first entry (its no-op)
 }
 
 func NewNode(c Config) (*Node, error) {
@@ -172,18 +196,21 @@ func NewNode(c Config) (*Node, error) {
 	if !self {
 		return nil, errors.New("raft: Peers must include ID")
 	}
-	hs, ents, err := c.Storage.Load()
+	hs, snap, ents, err := c.Storage.Load()
 	if err != nil {
 		return nil, err
 	}
 	for i, e := range ents {
-		if e.Index != uint64(i+1) {
+		if e.Index != snap.Index+uint64(i+1) {
 			return nil, fmt.Errorf("raft: stored log is not contiguous at %d", e.Index)
 		}
 	}
 	n.term, n.vote = hs.Term, hs.Vote
-	n.log = append(n.log, ents...)
-	n.applied = c.Applied
+	n.base = snap.Index
+	n.log = append([]Entry{{Index: snap.Index, Term: snap.Term}}, ents...)
+	// what the state machine has applied is committed
+	n.applied = min(max(c.Applied, n.base), n.lastIndex())
+	n.commit = n.applied
 	n.resetTimeout()
 	return n, nil
 }
@@ -194,8 +221,11 @@ func (n *Node) die(err error) {
 
 func (n *Node) quorum() int { return (len(n.peer)+1)/2 + 1 }
 
-func (n *Node) lastIndex() uint64 { return uint64(len(n.log) - 1) }
+func (n *Node) lastIndex() uint64 { return n.base + uint64(len(n.log)-1) }
 func (n *Node) lastTerm() uint64  { return n.log[len(n.log)-1].Term }
+
+// termAt is the term of entry i, base <= i <= lastIndex.
+func (n *Node) termAt(i uint64) uint64 { return n.log[i-n.base].Term }
 
 // State reports the node's view, for callers and tests.
 func (n *Node) State() (role Role, term, leader, commit uint64) {
@@ -209,10 +239,36 @@ func (n *Node) ID() uint64        { return n.cfg.ID }
 
 // Entry returns the log entry at index, if the node has it.
 func (n *Node) Entry(i uint64) (Entry, bool) {
-	if i == 0 || i > n.lastIndex() {
+	if i <= n.base || i > n.lastIndex() {
 		return Entry{}, false
 	}
-	return n.log[i], true
+	return n.log[i-n.base], true
+}
+
+// FirstIndex is the first entry the log still has (the base is Base).
+func (n *Node) FirstIndex() uint64 { return n.base + 1 }
+func (n *Node) Base() Snapshot     { return Snapshot{n.base, n.log[0].Term} }
+
+// LeaderTermStart is, on a leader, the index of the no-op it appended when
+// it was elected: once that entry is committed, so is everything before.
+func (n *Node) LeaderTermStart() uint64 { return n.termStart }
+
+// Compact drops the log up to and including index, which must have been
+// applied. The caller keeps the state-machine snapshot that covers it.
+func (n *Node) Compact(index uint64) error {
+	if index <= n.base {
+		return nil
+	}
+	if index > n.applied {
+		return fmt.Errorf("raft: compact %d beyond applied %d", index, n.applied)
+	}
+	snap := Snapshot{index, n.termAt(index)}
+	if err := n.cfg.Storage.Compact(snap); err != nil {
+		return err
+	}
+	n.log = append([]Entry{{Index: snap.Index, Term: snap.Term}}, n.log[index-n.base+1:]...)
+	n.base = index
+	return nil
 }
 
 func (n *Node) resetTimeout() {
@@ -285,9 +341,17 @@ func (n *Node) LeaseValid() bool {
 	return n.role == Leader && n.quorumAcked(uint64(n.cfg.LeaseTicks))
 }
 
+// leaseRuleOff removes the rule that a node which heard a leader recently
+// refuses to help elect another. Only the mutation test sets it: it shows
+// that TestLeaseRule notices when the rule is gone.
+var leaseRuleOff bool
+
 // inLease: this node has recently heard from a leader (or is one), so it
 // must not help to elect another.
 func (n *Node) inLease() bool {
+	if leaseRuleOff {
+		return false
+	}
 	return n.role == Leader || n.leader != 0 && n.electionElapsed < n.cfg.ElectionTicks
 }
 
@@ -337,7 +401,7 @@ func (n *Node) becomeLeader() {
 	}
 	n.electionElapsed, n.heartbeatElapsed = 0, 0
 	// an entry of the new term: committing it commits everything before it
-	n.appendLocal(Entry{Noop: true})
+	n.termStart = n.appendLocal(Entry{Noop: true})
 	n.bcastApp()
 }
 
@@ -362,13 +426,26 @@ func (n *Node) Propose(data []byte) (index, term uint64, err error) {
 	if n.role != Leader {
 		return 0, 0, ErrNotLeader
 	}
-	index = n.appendLocal(Entry{Data: data})
+	if len(n.peer) == 0 {
+		return n.appendLocal(Entry{Data: data}), n.term, nil
+	}
+	// The entry goes to the followers while the leader's own copy is being
+	// synced (Raft thesis 10.2.1): the leader counts itself towards the
+	// majority only after its sync (match is set below), so nothing
+	// commits on a copy that is not durable.
+	e := Entry{Data: data, Index: n.lastIndex() + 1, Term: n.term}
+	n.log = append(n.log, e)
 	for _, p := range n.peer {
 		if !n.inflight[p] {
 			n.sendApp(p)
 		}
 	}
-	return index, n.term, nil
+	if err := n.cfg.Storage.Append([]Entry{e}); err != nil {
+		n.die(err)
+	}
+	n.match[n.cfg.ID] = e.Index
+	n.maybeCommit()
+	return e.Index, n.term, nil
 }
 
 func (n *Node) bcastApp() {
@@ -383,13 +460,19 @@ func (n *Node) sendApp(to uint64) {
 		nx = 1
 	}
 	prev := nx - 1
+	if prev < n.base {
+		// what the follower needs is compacted away
+		n.inflight[to] = false
+		n.send(Msg{Type: MsgSnap, To: to, Term: n.term, PrevIndex: n.base, Seq: n.now})
+		return
+	}
 	hi := min(n.lastIndex(), prev+uint64(n.cfg.MaxBatch))
 	var ents []Entry
 	if hi > prev {
-		ents = append(ents, n.log[nx:hi+1]...)
+		ents = append(ents, n.log[nx-n.base:hi-n.base+1]...)
 	}
 	n.inflight[to] = len(ents) > 0
-	n.send(Msg{Type: MsgApp, To: to, Term: n.term, PrevIndex: prev, PrevTerm: n.log[prev].Term,
+	n.send(Msg{Type: MsgApp, To: to, Term: n.term, PrevIndex: prev, PrevTerm: n.termAt(prev),
 		Entries: ents, Commit: n.commit, Seq: n.now})
 }
 
@@ -440,13 +523,13 @@ func (n *Node) Step(m Msg) {
 			return // we hear a live leader: do not let a disruptive candidate in
 		}
 		lead := uint64(0)
-		if m.Type == MsgApp || m.Type == MsgHeartbeat {
+		if m.Type == MsgApp || m.Type == MsgHeartbeat || m.Type == MsgSnap {
 			lead = m.From
 		}
 		n.becomeFollower(m.Term, lead)
 	case m.Term < n.term:
 		switch m.Type {
-		case MsgApp, MsgHeartbeat:
+		case MsgApp, MsgHeartbeat, MsgSnap:
 			// an old leader: tell it the term so that it steps down
 			n.send(Msg{Type: MsgAppResp, To: m.From, Term: n.term, Reject: true, Hint: 0})
 		case MsgVote:
@@ -475,6 +558,15 @@ func (n *Node) Step(m Msg) {
 	case MsgApp:
 		n.stepDownToLeader(m.From)
 		n.handleApp(m)
+	case MsgSnap:
+		n.stepDownToLeader(m.From)
+		if n.commit >= m.PrevIndex {
+			// the state machine is already past the leader's base (a
+			// snapshot was installed): the committed prefix matches
+			n.send(Msg{Type: MsgAppResp, To: m.From, Term: n.term, Hint: n.commit, Seq: m.Seq})
+		} else if n.cfg.NeedSnapshot != nil {
+			n.cfg.NeedSnapshot(m.From)
+		}
 	case MsgHeartbeat:
 		n.stepDownToLeader(m.From)
 		if m.Commit > n.commit {
@@ -508,14 +600,26 @@ func (n *Node) handleApp(m Msg) {
 	rej := func(hint uint64) {
 		n.send(Msg{Type: MsgAppResp, To: m.From, Term: n.term, Reject: true, Hint: hint, Seq: m.Seq})
 	}
+	if m.PrevIndex < n.base {
+		// the leader starts before our base: that part is committed and
+		// identical, skip it
+		skip := min(n.base-m.PrevIndex, uint64(len(m.Entries)))
+		m.PrevIndex += skip
+		m.Entries = m.Entries[skip:]
+		if m.PrevIndex < n.base {
+			n.send(Msg{Type: MsgAppResp, To: m.From, Term: n.term, Hint: m.PrevIndex, Seq: m.Seq})
+			return
+		}
+		m.PrevTerm = n.termAt(n.base)
+	}
 	if m.PrevIndex > n.lastIndex() {
 		rej(n.lastIndex())
 		return
 	}
-	if n.log[m.PrevIndex].Term != m.PrevTerm {
+	if n.termAt(m.PrevIndex) != m.PrevTerm {
 		// skip back over the whole conflicting term
-		t, i := n.log[m.PrevIndex].Term, m.PrevIndex
-		for i > 1 && n.log[i-1].Term == t {
+		t, i := n.termAt(m.PrevIndex), m.PrevIndex
+		for i > n.base+1 && n.termAt(i-1) == t {
 			i--
 		}
 		rej(i - 1)
@@ -523,7 +627,7 @@ func (n *Node) handleApp(m Msg) {
 	}
 	var add []Entry
 	for k, e := range m.Entries {
-		if e.Index <= n.lastIndex() && n.log[e.Index].Term == e.Term {
+		if e.Index <= n.lastIndex() && n.termAt(e.Index) == e.Term {
 			continue
 		}
 		if e.Index <= n.commit {
@@ -536,7 +640,7 @@ func (n *Node) handleApp(m Msg) {
 		if err := n.cfg.Storage.Append(add); err != nil {
 			n.die(err)
 		}
-		n.log = append(n.log[:add[0].Index], add...)
+		n.log = append(n.log[:add[0].Index-n.base], add...)
 	}
 	last := m.PrevIndex + uint64(len(m.Entries))
 	if m.Commit > n.commit {
@@ -581,7 +685,7 @@ func (n *Node) maybeCommit() {
 	}
 	sort.Slice(ms, func(i, j int) bool { return ms[i] > ms[j] })
 	idx := ms[n.quorum()-1]
-	if idx > n.commit && n.log[idx].Term == n.term {
+	if idx > n.commit && n.termAt(idx) == n.term {
 		n.commit = idx
 		n.applyCommitted()
 		for _, p := range n.peer { // followers learn the new commit index
@@ -598,7 +702,7 @@ func (n *Node) applyCommitted() {
 	for n.applied < n.commit {
 		n.applied++
 		if n.cfg.Apply != nil {
-			n.cfg.Apply(n.log[n.applied])
+			n.cfg.Apply(n.log[n.applied-n.base])
 		}
 	}
 }

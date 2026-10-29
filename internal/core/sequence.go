@@ -101,7 +101,7 @@ func (e *Engine) tableExists(name string) bool {
 
 // loadSeq returns a sequence's state; seqMu is held.
 func (e *Engine) loadSeq(name string) (*seqState, error) {
-	if st := e.seqs[name]; st != nil && !e.opts.Replica { // a replica reads the leader's writes
+	if st := e.seqs[name]; st != nil && !e.ro.Load() { // a replica reads the leader's writes
 		return st, nil
 	}
 	if !e.tableExists(seqTableName) {

@@ -74,6 +74,7 @@ func (e *Engine) recover() error {
 	rs := &e.Stats.Recovery
 	startPos := wal.Pos{}
 	var lastLSN uint64
+	cutLSN := e.opts.CutLSN
 	if path, _ := latestCheckpoint(e.ckptDir()); path != "" {
 		hdr, keys, err := e.loadCheckpoint(path)
 		if err != nil {
@@ -83,6 +84,7 @@ func (e *Engine) recover() error {
 		lastLSN = hdr.StartLSN
 		e.gc.ckptStartSeg.Store(hdr.StartSeg)
 		e.lastTS = hdr.LastTS
+		cutLSN = max(cutLSN, hdr.StartLSN) // a checkpoint holds only what was committed
 		if o := e.opts; o.RecoveryTargetLSN != 0 && hdr.StartLSN > o.RecoveryTargetLSN || o.RecoveryTargetTS != 0 && hdr.LastTS > o.RecoveryTargetTS {
 			return fmt.Errorf("the recovery target is before checkpoint %s (lsn %d): restore an older base backup", filepath.Base(path), hdr.StartLSN)
 		}
@@ -127,7 +129,7 @@ func (e *Engine) recover() error {
 			if len(chain) > 0 && r.Kind != wal.KindTx {
 				return errLSNGap // a chain must end in its KindTx frame
 			}
-			if targeted && (o.RecoveryTargetLSN != 0 && r.LSN > o.RecoveryTargetLSN ||
+			if o.Cut && r.LSN > cutLSN || targeted && (o.RecoveryTargetLSN != 0 && r.LSN > o.RecoveryTargetLSN ||
 				o.RecoveryTargetTS != 0 && r.Kind != wal.KindMove && r.TS > o.RecoveryTargetTS) {
 				p := r.Pos
 				if len(chain) > 0 {

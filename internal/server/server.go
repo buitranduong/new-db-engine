@@ -24,6 +24,10 @@ import (
 type Server struct {
 	P     *planner.Platform
 	Fault *Fault
+	// Cluster, if set, answers GET /v1/cluster with the node's role in a
+	// Raft cluster (internal/cluster); clients and the router find the
+	// leader with it.
+	Cluster func() any
 
 	txMu  sync.Mutex
 	txs   map[uint64]*txEntry
@@ -55,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/tx/{id}/{op}", s.txOp)
 	m.HandleFunc("GET /v1/status", s.status)
 	m.HandleFunc("GET /v1/health", s.health)
+	m.HandleFunc("GET /v1/cluster", s.cluster)
 	m.HandleFunc("POST /v1/admin/checkpoint", s.checkpoint)
 	m.HandleFunc("POST /v1/admin/gc", s.gcRound)
 	m.HandleFunc("GET /metrics", s.metrics)
@@ -74,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 // X-Stask-Min-Lsn-Timeout milliseconds (default 5000); after that the
 // answer is 503 with Retry-After and nothing has run.
 const (
+	HeaderNotLeader  = "X-Stask-Not-Leader"
 	HeaderLSN        = "X-Stask-Lsn"
 	HeaderMinLSN     = "X-Stask-Min-Lsn"
 	HeaderMinTimeout = "X-Stask-Min-Lsn-Timeout"
@@ -132,6 +138,10 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, core.ErrSnapshotTooOld):
 		code = http.StatusGone
 	case errors.Is(err, core.ErrUnknownOutcome):
+		code = http.StatusServiceUnavailable
+	case errors.Is(err, core.ErrReadOnly):
+		// nothing ran: not the leader (or not yet), try the leader
+		w.Header().Set(HeaderNotLeader, "1")
 		code = http.StatusServiceUnavailable
 	}
 	reply(w, code, map[string]any{"error": err.Error()})
@@ -692,4 +702,12 @@ func (s *Server) setFault(w http.ResponseWriter, r *http.Request) {
 		s.Fault.syncEIO.Store(*req.SyncEIO)
 	}
 	reply(w, 200, map[string]any{"create_enospc": s.Fault.createENOSPC.Load(), "write_enospc": s.Fault.writeENOSPC.Load(), "sync_eio": s.Fault.syncEIO.Load()})
+}
+
+func (s *Server) cluster(w http.ResponseWriter, r *http.Request) {
+	if s.Cluster == nil {
+		reply(w, http.StatusNotFound, map[string]any{"error": "not a cluster node"})
+		return
+	}
+	reply(w, 200, s.Cluster())
 }

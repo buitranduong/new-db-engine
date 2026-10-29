@@ -18,11 +18,12 @@ type delivery struct {
 }
 
 type simNode struct {
-	id   uint64
-	st   *MemStorage
-	n    *Node
-	up   bool
-	part int // partition group
+	id       uint64
+	st       *MemStorage
+	n        *Node
+	up       bool
+	part     int    // partition group
+	applied0 uint64 // state-machine position that survives a restart (after a snapshot)
 }
 
 type sim struct {
@@ -44,6 +45,23 @@ type sim struct {
 	acked       map[string]uint64  // payload -> index, once applied by its proposer in its term
 	seq         int
 	leaseChecks int
+
+	blocked   map[[2]uint64]bool // directed links that drop everything
+	snapWant  map[uint64]uint64  // node -> leader that told it to fetch a snapshot
+	snapDone  int
+	collect   bool // record the first violation instead of failing the test
+	violation string
+}
+
+// failf reports a violated invariant.
+func (s *sim) failf(format string, args ...any) {
+	if s.collect {
+		if s.violation == "" {
+			s.violation = fmt.Sprintf(format, args...)
+		}
+		return
+	}
+	s.t.Fatalf(format, args...)
 }
 
 type pending struct {
@@ -55,7 +73,8 @@ type pending struct {
 func newSim(t *testing.T, seed int64, nn int) *sim {
 	s := &sim{t: t, rng: rand.New(rand.NewSource(seed)), nodes: map[uint64]*simNode{},
 		chosen: map[uint64]Entry{}, leaderOf: map[uint64]uint64{}, pending: map[string]pending{}, acked: map[string]uint64{},
-		dropP: 0.05, dupP: 0.02, maxDelay: 3, electionTk: 10}
+		dropP: 0.05, dupP: 0.02, maxDelay: 3, electionTk: 10,
+		blocked: map[[2]uint64]bool{}, snapWant: map[uint64]uint64{}}
 	for i := 1; i <= nn; i++ {
 		s.ids = append(s.ids, uint64(i))
 	}
@@ -69,8 +88,10 @@ func newSim(t *testing.T, seed int64, nn int) *sim {
 func (s *sim) start(id uint64, seed int64) {
 	sn := s.nodes[id]
 	n, err := NewNode(Config{ID: id, Peers: s.ids, ElectionTicks: s.electionTk, Seed: seed + int64(s.now), Storage: sn.st,
-		Send:  func(m Msg) { s.send(m) },
-		Apply: func(e Entry) { s.onApply(id, e) }})
+		Send:         func(m Msg) { s.send(m) },
+		Apply:        func(e Entry) { s.onApply(id, e) },
+		Applied:      sn.applied0,
+		NeedSnapshot: func(l uint64) { s.snapWant[id] = l }})
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -91,7 +112,7 @@ func (s *sim) send(m Msg) {
 func (s *sim) onApply(id uint64, e Entry) {
 	if c, ok := s.chosen[e.Index]; ok {
 		if c.Term != e.Term || string(c.Data) != string(e.Data) || c.Noop != e.Noop {
-			s.t.Fatalf("t=%d node %d applied index %d = (term %d %q), another node applied (term %d %q)", s.now, id, e.Index, e.Term, e.Data, c.Term, c.Data)
+			s.failf("t=%d node %d applied index %d = (term %d %q), another node applied (term %d %q)", s.now, id, e.Index, e.Term, e.Data, c.Term, c.Data)
 		}
 	} else {
 		s.chosen[e.Index] = e
@@ -105,7 +126,7 @@ func (s *sim) onApply(id uint64, e Entry) {
 }
 
 func (s *sim) connected(a, b uint64) bool {
-	return s.nodes[a].up && s.nodes[b].up && s.nodes[a].part == s.nodes[b].part
+	return s.nodes[a].up && s.nodes[b].up && s.nodes[a].part == s.nodes[b].part && !s.blocked[[2]uint64{a, b}]
 }
 
 // step: tick every live node (random order), deliver due messages (random
@@ -140,7 +161,32 @@ func (s *sim) step() {
 		}
 		break
 	}
+	s.installSnapshots()
 	s.check()
+}
+
+// installSnapshots plays the part of the state machine's snapshot transfer:
+// a node told to fetch one takes the leader's applied position as its
+// base and restarts there.
+func (s *sim) installSnapshots() {
+	for id, l := range s.snapWant {
+		delete(s.snapWant, id)
+		sn, ln := s.nodes[id], s.nodes[l]
+		if !sn.up || !ln.up || !s.connected(l, id) {
+			continue
+		}
+		a := ln.n.Applied()
+		c, ok := s.chosen[a]
+		if !ok || a <= sn.n.Base().Index {
+			continue
+		}
+		if err := InstallSnapshot(sn.st, Snapshot{a, c.Term}); err != nil {
+			s.t.Fatal(err)
+		}
+		sn.applied0 = a
+		s.start(id, int64(a)+int64(s.now))
+		s.snapDone++
+	}
 }
 
 func (s *sim) check() {
@@ -152,7 +198,7 @@ func (s *sim) check() {
 		role, term, _, _ := sn.n.State()
 		if role == Leader {
 			if l, ok := s.leaderOf[term]; ok && l != id {
-				s.t.Fatalf("t=%d two leaders in term %d: %d and %d", s.now, term, l, id)
+				s.failf("t=%d two leaders in term %d: %d and %d", s.now, term, l, id)
 			}
 			s.leaderOf[term] = id
 			if sn.n.LeaseValid() {
@@ -163,7 +209,7 @@ func (s *sim) check() {
 						continue
 					}
 					if r2, t2, _, _ := on.n.State(); r2 == Leader && t2 > term {
-						s.t.Fatalf("t=%d node %d has a valid lease in term %d while %d leads term %d", s.now, id, term, o, t2)
+						s.failf("t=%d node %d has a valid lease in term %d while %d leads term %d", s.now, id, term, o, t2)
 					}
 				}
 			}
@@ -241,7 +287,7 @@ func (s *sim) settle(seed int64) {
 		}
 	}
 	for p, idx := range s.acked {
-		e, ok := l.n.Entry(idx)
+		e, ok := s.chosen[idx] // every applied entry is recorded; the leader's log may be compacted
 		if !ok || string(e.Data) != p || idx > lc {
 			s.t.Fatalf("acknowledged %q (index %d) is not in the committed log", p, idx)
 		}
@@ -251,12 +297,17 @@ func (s *sim) settle(seed int64) {
 	}
 }
 
-func TestChaos(t *testing.T) {
-	seeds := 150
+func TestChaos(t *testing.T) { chaos(t, 150, false) }
+
+// TestChaosCompaction is TestChaos with log compaction at random nodes and
+// snapshot installs for the nodes that fall behind the compacted log.
+func TestChaosCompaction(t *testing.T) { chaos(t, 100, true) }
+
+func chaos(t *testing.T, seeds int, compact bool) {
 	if testing.Short() {
 		seeds = 20
 	}
-	var acked, leases int
+	var acked, leases, snaps, compactions int
 	for seed := int64(1); seed <= int64(seeds); seed++ {
 		nn := 3 + 2*int(seed%2) // 3 or 5 nodes
 		s := newSim(t, seed, nn)
@@ -264,6 +315,17 @@ func TestChaos(t *testing.T) {
 		for step := 0; step < 3000; step++ {
 			if s.rng.Intn(3) == 0 {
 				s.propose()
+			}
+			if compact && s.rng.Intn(25) == 0 {
+				sn := s.nodes[s.ids[s.rng.Intn(nn)]]
+				if sn.up {
+					if a := sn.n.Applied(); a > sn.n.Base().Index+1 {
+						if err := sn.n.Compact(a - uint64(s.rng.Intn(3))); err != nil {
+							t.Fatal(err)
+						}
+						compactions++
+					}
+				}
 			}
 			if s.rng.Intn(120) == 0 {
 				switch s.rng.Intn(6) {
@@ -295,8 +357,12 @@ func TestChaos(t *testing.T) {
 		s.settle(seed)
 		acked += len(s.acked)
 		leases += s.leaseChecks
+		snaps += s.snapDone
 	}
-	t.Logf("%d seeds: %d acknowledged entries, none lost; %d lease checks, no stale lease", seeds, acked, leases)
+	t.Logf("%d seeds: %d acknowledged entries, none lost; %d lease checks, no stale lease; %d compactions, %d snapshot installs", seeds, acked, leases, compactions, snaps)
+	if compact && snaps == 0 {
+		t.Fatal("no snapshot was installed: the test does not exercise it")
+	}
 }
 
 // TestFailoverTime: kill the leader of a settled cluster and count the
@@ -394,4 +460,95 @@ func TestSingleNode(t *testing.T) {
 	if len(s.acked) != 10 {
 		t.Fatalf("single node acknowledged %d of 10", len(s.acked))
 	}
+}
+
+// leaseScenario: the link from the leader to one follower is cut, the other
+// follower still hears the leader. The cut-off follower times out and asks
+// for votes; the other one heard the leader within the election timeout and
+// must refuse, so no second leader appears while the first holds its lease.
+// The random chaos test almost never makes this exact situation (it cuts
+// whole nodes, not one directed link, while a lease is valid).
+func leaseScenario(t *testing.T, seed int64, collect bool) *sim {
+	s := newSim(t, seed, 3)
+	s.collect = collect
+	s.dropP, s.dupP = 0, 0
+	for i := 0; i < 100 && s.leader() == nil; i++ {
+		s.step()
+	}
+	for i := 0; i < 20; i++ {
+		s.propose()
+		s.step()
+	}
+	for i := 0; i < 30; i++ { // everyone has everything
+		s.step()
+	}
+	l := s.leader()
+	if l == nil {
+		t.Fatal("no leader")
+	}
+	var f uint64
+	for _, id := range s.ids {
+		if id != l.id {
+			f = id
+			break
+		}
+	}
+	// f no longer hears the leader (both directions); the third node does
+	s.blocked[[2]uint64{l.id, f}], s.blocked[[2]uint64{f, l.id}] = true, true
+	_, term0, _, _ := l.n.State()
+	// no proposals while the link is cut: the cut-off follower's log stays
+	// as up to date as the other's, so only the lease rule stops its election
+	for i := 0; i < 400; i++ {
+		s.step()
+		if s.violation != "" {
+			return s
+		}
+	}
+	if r, term, _, _ := l.n.State(); r != Leader || term != term0 {
+		s.failf("the leader changed (role %v, term %d, was %d) although a majority kept hearing it", r, term, term0)
+	}
+	if _, ft, _, _ := s.nodes[f].n.State(); ft != term0 {
+		s.failf("the cut-off follower raised its term to %d (was %d): its votes must not count", ft, term0)
+	}
+	return s
+}
+
+func TestLeaseRule(t *testing.T) {
+	for seed := int64(1); seed <= 60; seed++ {
+		s := leaseScenario(t, seed, false)
+		if s.leaseChecks == 0 {
+			t.Fatal("no lease was checked")
+		}
+		// the leader still commits through the majority that hears it
+		before := len(s.acked)
+		for i := 0; i < 5; i++ {
+			s.propose()
+			s.step()
+			s.step()
+			s.step()
+		}
+		if len(s.acked) == before {
+			t.Fatalf("seed %d: the leader does not commit after the cut", seed)
+		}
+	}
+}
+
+// TestLeaseRuleMutation removes the rule and requires TestLeaseRule's
+// scenario to notice.
+func TestLeaseRuleMutation(t *testing.T) {
+	leaseRuleOff = true
+	defer func() { leaseRuleOff = false }()
+	caught := 0
+	for seed := int64(1); seed <= 60; seed++ {
+		if s := leaseScenario(t, seed, true); s.violation != "" {
+			caught++
+			if caught == 1 {
+				t.Logf("without the rule, seed %d: %s", seed, s.violation)
+			}
+		}
+	}
+	if caught == 0 {
+		t.Fatal("the scenario does not notice that the lease rule is gone")
+	}
+	t.Logf("rule removed: %d of 60 seeds violate an invariant", caught)
 }

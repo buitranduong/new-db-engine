@@ -98,6 +98,18 @@ type Options struct {
 	// committer and no log reclamation of its own.
 	Replica bool
 
+	// Cluster opens the engine for a Raft cluster node (internal/cluster):
+	// it starts read-only, fed by Apply like a replica, but with a committer
+	// so that Promote can make it the leader without reopening it. Log
+	// reclamation is off.
+	Cluster bool
+	// Cut, with CutLSN, discards on open every record after CutLSN (never
+	// below the loaded checkpoint): the tail a deposed leader wrote that the
+	// cluster did not commit. Unlike a recovery target it is not an error if
+	// the log ends before CutLSN.
+	Cut    bool
+	CutLSN uint64
+
 	// Quorum, if set, makes a batch wait after its local fdatasync until a
 	// majority of the cluster holds it (docs/06 section 5). nil, the
 	// default: a single node, no change of behavior or speed.
@@ -222,6 +234,7 @@ type Engine struct {
 	cdcMirrorLSN atomic.Uint64              // highest LSN of a CDC mirror write (cdcmirror.go)
 	cdcCat       atomic.Pointer[cdcCatalog] // publications, replica identities (cdccat.go)
 	opts         Options
+	ro           atomic.Bool // writes refused: a replica, or a cluster node that is not the leader
 	// archived is the newest segment in Options.ArchiveDir (-1: none)
 	archived atomic.Int64
 	log      *wal.Log
@@ -369,9 +382,10 @@ func Open(opts Options) (*Engine, error) {
 		l.Close()
 		return nil, err
 	}
+	e.ro.Store(opts.Replica || opts.Cluster)
 	e.initGC()
 	e.slots = map[string]*slot{}
-	if !opts.Replica {
+	if !e.ro.Load() {
 		// slots and the catalog come from files and from the replicated
 		// CDC table, so a promoted replica has them (cdcmirror.go)
 		if err := e.loadSlots(); err != nil {
@@ -391,7 +405,7 @@ func Open(opts Options) (*Engine, error) {
 		e.wg.Add(1)
 		go e.committer()
 	}
-	if opts.GC && !opts.Replica {
+	if opts.GC && !opts.Replica && !opts.Cluster {
 		e.wg.Add(1)
 		go e.cleaner()
 	}
@@ -1269,7 +1283,7 @@ func (e *Engine) pendingOf(op WriteOp) (pendingOp, error) {
 }
 
 func (e *Engine) submit(r *commitReq) error {
-	if e.opts.Replica {
+	if e.ro.Load() {
 		return ErrReadOnly
 	}
 	if err := e.Failed(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,5 +191,77 @@ func TestSQLMinLSN(t *testing.T) {
 	st, _ := sql.ParseOne("SELECT 1")
 	if _, err := rs.Exec(st, nil); err == nil || !strings.Contains(err.Error(), "55000") && !strings.Contains(err.Error(), "has not reached") {
 		t.Fatalf("expected a timeout error, got %v", err)
+	}
+}
+
+// TestClusterFollowsLeader: three fake nodes; the leader changes while a
+// request is being retried, and a request sent to a dead node is repeated
+// on the new leader, while one that was sent and lost is not.
+func TestClusterFollowsLeader(t *testing.T) {
+	type node struct {
+		srv    *httptest.Server
+		leader atomic.Bool
+		writes atomic.Int64
+	}
+	var ns [3]*node
+	var urls []string
+	for i := range ns {
+		n := &node{}
+		ns[i] = n
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/cluster", func(w http.ResponseWriter, r *http.Request) {
+			role := "follower"
+			if n.leader.Load() {
+				role = "leader"
+			}
+			fmt.Fprintf(w, `{"role":%q,"term":1,"writable":%v}`, role, n.leader.Load())
+		})
+		mux.HandleFunc("/v1/write", func(w http.ResponseWriter, r *http.Request) {
+			if !n.leader.Load() {
+				w.Header().Set("X-Stask-Not-Leader", "1")
+				w.WriteHeader(503)
+				return
+			}
+			n.writes.Add(1)
+			w.Header().Set(headerLSN, "7")
+			fmt.Fprint(w, `{"lsn":7}`)
+		})
+		n.srv = httptest.NewServer(mux)
+		urls = append(urls, n.srv.URL)
+		defer n.srv.Close()
+	}
+	ns[0].leader.Store(true)
+	rt, err := NewCluster(urls...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.FailoverWait = 5 * time.Second
+	front := httptest.NewServer(rt)
+	defer front.Close()
+	post := func() (int, error) {
+		resp, err := http.Post(front.URL+"/v1/write", "application/json", strings.NewReader(`{}`))
+		if err != nil {
+			return 0, err
+		}
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	if c, err := post(); err != nil || c != 200 || ns[0].writes.Load() != 1 {
+		t.Fatalf("first write: %d %v", c, err)
+	}
+	// the leader steps down; node 2 takes over 200 ms later
+	ns[0].leader.Store(false)
+	go func() { time.Sleep(200 * time.Millisecond); ns[2].leader.Store(true) }()
+	if c, err := post(); err != nil || c != 200 || ns[2].writes.Load() != 1 {
+		t.Fatalf("write during the change: %d %v (node 2 wrote %d)", c, err, ns[2].writes.Load())
+	}
+	// the leader's process dies: connection refused, nothing was sent
+	ns[2].srv.Close()
+	ns[1].leader.Store(true)
+	if c, err := post(); err != nil || c != 200 || ns[1].writes.Load() != 1 {
+		t.Fatalf("write after the leader died: %d %v", c, err)
+	}
+	if rt.Rediscovered.Load() < 2 {
+		t.Fatalf("the router rediscovered the leader %d times", rt.Rediscovered.Load())
 	}
 }

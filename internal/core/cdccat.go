@@ -83,7 +83,7 @@ func (e *Engine) loadCDCCatalog() error {
 
 // updateCDCCatalog applies fn to a copy of the catalog and saves it.
 func (e *Engine) updateCDCCatalog(fn func(c *cdcCatalog) error) error {
-	if e.opts.Replica {
+	if e.ro.Load() {
 		return ErrReadOnly
 	}
 	e.slotMu.Lock()
@@ -203,7 +203,7 @@ func (e *Engine) ReplicaIdentityFull(table string) bool {
 // it and from the REPLICA IDENTITY FULL tables. A replica has no catalog.
 func (e *Engine) forgetCDCTable(table string) error {
 	c := e.cdcCat.Load()
-	if c == nil || e.opts.Replica {
+	if c == nil || e.ro.Load() {
 		return nil
 	}
 	used := slices.Contains(c.IdentityFull, table)
@@ -226,7 +226,7 @@ func (e *Engine) forgetCDCTable(table string) error {
 // replica identity settings (kept by name).
 func (e *Engine) renameCDCTable(old, name string) error {
 	c := e.cdcCat.Load()
-	if c == nil || e.opts.Replica {
+	if c == nil || e.ro.Load() {
 		return nil
 	}
 	used := slices.Contains(c.IdentityFull, old)

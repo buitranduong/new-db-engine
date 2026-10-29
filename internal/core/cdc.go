@@ -162,7 +162,7 @@ func syncDirPath(dir string) error {
 // CreateSlot creates a slot whose first change is the first transaction
 // committed after this call.
 func (e *Engine) CreateSlot(name, plugin string) (SlotInfo, error) {
-	if e.opts.Replica {
+	if e.ro.Load() {
 		return SlotInfo{}, ErrReadOnly
 	}
 	if !slotNameRe.MatchString(name) {

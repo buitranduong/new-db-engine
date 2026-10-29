@@ -4,7 +4,9 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"math"
 	"net"
@@ -22,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"stask/internal/cluster"
 	"stask/internal/core"
 	"stask/internal/pgwire"
 	"stask/internal/planner"
@@ -65,6 +68,14 @@ func main() {
 	replTLSClientAuth := flag.Bool("repl-tls-client-auth", false, "leader: require replicas to present a certificate signed by -repl-tls-ca (mTLS); plaintext replicas are then refused")
 	replRequire := flag.Bool("repl-require-secure", false, "leader: refuse replicas that are not both on TLS and authenticated (secret or client certificate); replica: refuse a leader without TLS")
 	replInsecure := flag.Bool("repl-insecure", false, "allow -repl-addr on a non-loopback address without replica authentication")
+	raftID := flag.Uint64("raft-id", 0, "run as a node of a Raft cluster with this id (0 = off: a single node, unchanged). A write is acknowledged when a majority has fsynced it; the leader is elected, and failover needs no operator. Uses the -repl-secret*/-repl-tls-* settings for the node-to-node port (docs/06 section 5)")
+	raftPeers := flag.String("raft-peers", "", "every node of the cluster: id=raftHost:port[@httpHost:port], comma separated, this node included")
+	raftListen := flag.String("raft-listen", "", "address for Raft connections (default: this node's address in -raft-peers)")
+	raftTick := flag.Duration("raft-tick", 50*time.Millisecond, "Raft tick; the election timeout is -raft-election-ticks to twice that many ticks")
+	raftElection := flag.Int("raft-election-ticks", 20, "ticks without a leader before a node asks for votes (at least 4)")
+	raftCompact := flag.Int("raft-compact-entries", 20000, "compact the Raft log when it holds more entries than this")
+	raftKeep := flag.Int("raft-compact-keep", 2000, "entries kept behind the applied one when compacting (followers further behind fetch a snapshot)")
+	raftInsecure := flag.Bool("raft-insecure", false, "allow -raft-listen on a non-loopback address without authentication")
 	pgAddr := flag.String("pg-addr", "127.0.0.1:17432", "PostgreSQL protocol listen address (empty = off)")
 	pgInsecure := flag.Bool("pg-insecure", false, "allow -pg-addr on a non-loopback address without a password (-pg-password)")
 	// Off by default: the lane needs GOMAXPROCS above the CPU count, and the
@@ -274,6 +285,30 @@ func main() {
 		}
 		opts.Replica, opts.SegmentSize, opts.GC = true, segMax, false
 	}
+	var cl *cluster.Cluster
+	if *raftID != 0 {
+		if *replicaOf != "" || *replAddr != "" || *backupFrom != "" || *restoreArchive != "" {
+			log.Fatal("-raft-id cannot be combined with -replica-of, -repl-addr, -backup-from or -restore-archive")
+		}
+		peers, httpAddrs, err := parseRaftPeers(*raftPeers)
+		if err != nil {
+			log.Fatalf("-raft-peers: %v", err)
+		}
+		if *gc {
+			log.Printf("raft: -gc is not supported in a cluster yet (docs/06 section 5.2): log reclamation is off")
+		}
+		if *archiveDir != "" {
+			log.Fatal("-archive-dir is not supported in a cluster yet")
+		}
+		opts.GC = false
+		cl, err = cluster.Prepare(cluster.Config{ID: *raftID, Peers: peers, HTTP: httpAddrs, Listen: *raftListen, Dir: *dir,
+			SegMax: opts.SegmentSize, Settings: replSettings, Insecure: *raftInsecure, TickInterval: *raftTick,
+			ElectionTicks: *raftElection, CompactEntries: *raftCompact, CompactKeep: *raftKeep, Logf: log.Printf})
+		if err != nil {
+			log.Fatalf("raft: %v", err)
+		}
+		opts.Cluster, opts.Cut, opts.CutLSN, opts.Quorum = true, true, cl.CutLSN(), cl.Quorum()
+	}
 	if *backupFrom != "" {
 		sec, err := replSettings.Replica(*backupFrom)
 		if err != nil {
@@ -309,6 +344,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("open: %v", err)
 	}
+	if cl != nil {
+		if err := cl.Start(e); err != nil {
+			log.Fatalf("raft: %v", err)
+		}
+	}
 	replStop := make(chan struct{})
 	if *replicaOf != "" {
 		go repl.Follow(e, *replicaOf, replicaSec, replStop, log.Printf)
@@ -322,7 +362,11 @@ func main() {
 	}
 	p := planner.Start(e)
 	go memoryStats(e, 10*time.Second)
-	srv := &http.Server{Addr: *addr, Handler: httpAuth.Wrap(server.New(p, fault).Handler()), TLSConfig: httpTLS}
+	hsrv := server.New(p, fault)
+	if cl != nil {
+		hsrv.Cluster = func() any { return cl.Status() }
+	}
+	srv := &http.Server{Addr: *addr, Handler: httpAuth.Wrap(hsrv.Handler()), TLSConfig: httpTLS}
 	if *pprofAddr != "" {
 		runtime.SetMutexProfileFraction(20)
 		runtime.SetBlockProfileRate(int(50 * time.Microsecond))
@@ -376,6 +420,9 @@ func main() {
 			pg.Close()
 		}
 		close(replStop)
+		if cl != nil {
+			cl.Close()
+		}
 		if rs != nil {
 			rs.Close()
 		}
@@ -482,4 +529,29 @@ func (p pgTime) Set(v string) error {
 		*p.d = d
 	}
 	return err
+}
+
+// parseRaftPeers reads "1=host:port@httphost:port,2=...".
+func parseRaftPeers(s string) (raft map[uint64]string, http map[uint64]string, err error) {
+	raft, http = map[uint64]string{}, map[uint64]string{}
+	for _, f := range strings.Split(s, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		id, addr, ok := strings.Cut(f, "=")
+		n, perr := strconv.ParseUint(id, 10, 64)
+		if !ok || perr != nil || n == 0 || addr == "" {
+			return nil, nil, fmt.Errorf("%q is not id=host:port[@httphost:port]", f)
+		}
+		r, h, _ := strings.Cut(addr, "@")
+		raft[n] = r
+		if h != "" {
+			http[n] = h
+		}
+	}
+	if len(raft) == 0 {
+		return nil, nil, errors.New("no peers")
+	}
+	return raft, http, nil
 }

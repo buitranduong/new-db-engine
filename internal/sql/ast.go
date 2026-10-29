@@ -61,6 +61,8 @@ type AlterAction struct {
 	Column   string // the column acted on
 	NewName  string // rename_column, rename_table
 	Expr     string // set_default
+	Type     string // set_type: the new type (schema type name)
+	Using    bool   // set_type: USING col::type was given
 	Check    CheckDef
 	IfExists bool // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
 }

@@ -151,6 +151,7 @@ func seqOID(name string) int64 {
 	h.Write([]byte(name))
 	return seqOIDBase + int64(h.Sum32()&0x0fffffff)
 }
+
 // viewOID is a view's OID: a hash of its name above viewOIDBase.
 func viewOID(name string) int64 {
 	h := fnv.New32a()

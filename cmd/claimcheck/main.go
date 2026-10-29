@@ -38,6 +38,12 @@ func main() {
 		os.Exit(2)
 	}
 	defer conn.Close(ctx)
+	var xconn *pgx.Conn // extended protocol (Parse/Bind/Execute), for the ext_ probes
+	defer func() {
+		if xconn != nil {
+			xconn.Close(ctx)
+		}
+	}()
 
 	cs := checks()
 	pass, total := 0, 0
@@ -54,7 +60,17 @@ func main() {
 				os.Exit(2)
 			}
 		}
-		actual, ok := run(ctx, *url, conn, c)
+		use := conn
+		if strings.HasPrefix(c.ID, "ext_") || c.ID == "extended_protocol_param" {
+			if xconn == nil || xconn.IsClosed() {
+				if xconn, err = pgx.Connect(ctx, *url+"&default_query_exec_mode=cache_statement"); err != nil {
+					fmt.Fprintln(os.Stderr, "connect (extended):", err)
+					os.Exit(2)
+				}
+			}
+			use = xconn
+		}
+		actual, ok := run(ctx, *url, use, c)
 		v := "FAIL"
 		if ok {
 			v, pass = "PASS", pass+1
@@ -80,6 +96,7 @@ func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool
 	}
 	// cleanup is best effort so probes do not depend on each other
 	defer func() {
+		conn.Exec(ctx, "DROP SEQUENCE IF EXISTS cc_seq")
 		for _, t := range []string{"cc_t", "cc_p", "cc_c", "cc_v"} {
 			conn.Exec(ctx, "DROP VIEW IF EXISTS "+t)
 			conn.Exec(ctx, "DROP TABLE IF EXISTS "+t+" CASCADE")
@@ -88,11 +105,19 @@ func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool
 		conn.Exec(ctx, "RESET statement_timeout")
 	}()
 	conn.Exec(ctx, "ROLLBACK")
+	conn.Exec(ctx, "RESET ALL")
+	for _, t := range []string{"cc_v"} {
+		conn.Exec(cctx, "DROP VIEW IF EXISTS "+t)
+	}
 	for _, t := range []string{"cc_c", "cc_p", "cc_t"} {
 		conn.Exec(cctx, "DROP TABLE IF EXISTS "+t+" CASCADE")
 	}
 	for i, s := range c.Steps {
 		last := i == len(c.Steps)-1
+		if strings.HasPrefix(s, "~") { // setup step that may fail
+			conn.Exec(cctx, s[1:])
+			continue
+		}
 		if !last || !strings.HasPrefix(c.Want, "val:") && !strings.HasPrefix(c.Want, "has:") {
 			_, err := conn.Exec(cctx, s)
 			if last {
@@ -105,12 +130,22 @@ func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool
 		}
 		var out string
 		err := conn.QueryRow(cctx, "SELECT ("+strings.TrimSuffix(strings.TrimSpace(s), ";")+")::text", c.Args...).Scan(&out)
-		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s)), "SELECT") { // full statement given
+		if fullStatement(s) {
 			err = conn.QueryRow(cctx, s, c.Args...).Scan(&out)
 		}
 		return verdict(c.Want, out, err)
 	}
 	return "no steps", false
+}
+
+func fullStatement(s string) bool {
+	u := strings.ToUpper(strings.TrimSpace(s))
+	for _, p := range []string{"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "SHOW", "VALUES", "EXECUTE"} {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func verdict(want, got string, err error) (string, bool) {
@@ -164,7 +199,9 @@ func runCopy(ctx context.Context, conn *pgx.Conn, c check) (string, bool) {
 
 const T = "CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v TEXT)"
 
-func checks() []check {
+func checks() []check { return append(baseChecks(), compatChecks()...) }
+
+func baseChecks() []check {
 	return []check{
 		// ---- P1.2 ALTER TABLE
 		{"alter_add_default", "P1.2", "05 §11", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "ALTER TABLE cc_t ADD COLUMN w BIGINT DEFAULT 7", "SELECT w FROM cc_t WHERE id=1"}, "val:7", nil},

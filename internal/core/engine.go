@@ -1819,6 +1819,9 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					if d.Columns[i].AddedLSN == math.MaxUint64 {
 						d.Columns[i].AddedLSN = lsn
 					}
+					if d.Columns[i].TypeLSN == math.MaxUint64 {
+						d.Columns[i].TypeLSN = lsn
+					}
 				}
 				for i := range d.Dropped {
 					if d.Dropped[i].DroppedLSN == math.MaxUint64 {

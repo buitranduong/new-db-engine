@@ -1802,13 +1802,22 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				act.Kind = "drop_not_null"
 			case p.acceptKw("set", "data", "type"), p.acceptKw("type"):
 				act.Kind = "set_type"
-				if _, err := p.typeName(); err != nil {
+				if act.Type, err = p.typeName(); err != nil {
 					return nil, err
 				}
 				if p.acceptKw("using") {
-					if _, err := p.expr(); err != nil {
+					// only the cast of the column itself: USING col::type or CAST(col AS type)
+					x, err := p.expr()
+					if err != nil {
 						return nil, err
 					}
+					if c, ok := x.(*Cast); ok {
+						x = c.X
+					}
+					if cr, ok := x.(*ColRef); !ok || cr.Name != act.Column {
+						return nil, errf(codeFeature, "ALTER COLUMN TYPE ... USING supports only the column itself, cast to the new type")
+					}
+					act.Using = true
 				}
 			default:
 				return nil, p.errHere("syntax error at or near %q", p.peek().s)

@@ -237,6 +237,9 @@ type slot struct {
 // convertible reports whether ALTER COLUMN TYPE can read values stored as
 // from as to.
 func convertible(from, to ColType) bool {
+	if BasicConvertible(from, to) {
+		return true
+	}
 	switch from {
 	case TTime:
 		return to == TTimestamp || to == TTimestamptz
@@ -251,6 +254,13 @@ func ConvertibleTypes(from, to ColType) bool { return convertible(from, to) }
 
 // ConvertValue maps a value of type from to type to (see convertible).
 func ConvertValue(from, to ColType, v Value) Value {
+	if BasicConvertible(from, to) {
+		out, err := TryConvert(from, to, v) // checked when the column was altered
+		if err != nil {
+			return Value{Null: true}
+		}
+		return out
+	}
 	if v.Null {
 		return v
 	}

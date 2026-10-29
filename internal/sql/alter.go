@@ -149,7 +149,13 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 				d.Columns = slices.Delete(d.Columns, i, i+1)
 				dropped[a.Column] = true
 			case "set_type":
-				return errf(codeFeature, "ALTER TABLE ... %s is not supported yet", strings.ToUpper(strings.ReplaceAll(a.Kind, "_", " ")))
+				i, err := col(a.Column)
+				if err != nil {
+					return err
+				}
+				if err := s.alterColumnType(oldName, d, i, a); err != nil {
+					return err
+				}
 			case "rename_column":
 				i, err := col(a.Column)
 				if err != nil {

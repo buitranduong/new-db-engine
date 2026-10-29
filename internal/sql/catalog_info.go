@@ -60,6 +60,10 @@ func init() {
 			rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD("BASE TABLE"), Null, Null, Null, Null, Null,
 				TextD("YES"), TextD("NO"), Null})
 		}
+		for _, v := range c.views {
+			rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD("VIEW"), Null, Null, Null, Null, Null,
+				TextD("NO"), TextD("NO"), Null})
+		}
 		return rows
 	})
 
@@ -104,6 +108,15 @@ func init() {
 					Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
 					Null, Null, Null, Null, TextD(itoa(int64(col.Num))), TextD("NO"), TextD(isID), gen, idStart, idInc,
 					idMax, idMin, idCycle, TextD("NEVER"), Null, TextD("YES")})
+			}
+		}
+		for _, v := range c.views { // the output types are not recorded: text
+			for i, name := range v.Cols {
+				rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD(name), IntD(int64(i + 1)), Null, TextD("YES"),
+					TextD("text"), Null, IntD(1073741824), Null, Null, Null, Null,
+					Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, cat, TextD("pg_catalog"), TextD("text"),
+					Null, Null, Null, Null, TextD(itoa(int64(i + 1))), TextD("NO"), TextD("NO"), Null, Null, Null,
+					Null, Null, Null, TextD("NEVER"), Null, TextD("NO")})
 			}
 		}
 		return rows
@@ -201,5 +214,12 @@ func init() {
 		"update_rule:t delete_rule:t", nil)
 	defInfo("views", "table_catalog:t table_schema:t table_name:t view_definition:t check_option:t "+
 		"is_updatable:t is_insertable_into:t is_trigger_updatable:t is_trigger_deletable:t "+
-		"is_trigger_insertable_into:t", nil)
+		"is_trigger_insertable_into:t", func(c *catSnap) [][]Datum {
+		var rows [][]Datum
+		for _, v := range c.views {
+			rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD(" " + v.Query + ";"), TextD("NONE"), TextD("NO"),
+				TextD("NO"), TextD("NO"), TextD("NO"), TextD("NO")})
+		}
+		return rows
+	})
 }

@@ -361,7 +361,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		d.Cols = []Column{{Name: showColumn(st.Name), Kind: KText}}
 		return d, nil
 	default:
-		return d, nil
+		return s.describeExt(st)
 	}
 	if table != "" {
 		t, err := s.table(table)

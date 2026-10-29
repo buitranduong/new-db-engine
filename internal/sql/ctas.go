@@ -501,25 +501,54 @@ func (p *parser) exprListDefault() ([]Expr, error) {
 	}
 }
 
+// mergeSelect is a query with the expressions of a MERGE (to find its parameters).
+func mergeSelect(q *Merge) *Select {
+	items := []SelItem{{X: q.On}}
+	for _, w := range q.Whens {
+		if w.And != nil {
+			items = append(items, SelItem{X: w.And})
+		}
+		for _, a := range w.Set {
+			items = append(items, SelItem{X: a.X})
+		}
+		for _, x := range w.Values {
+			items = append(items, SelItem{X: x})
+		}
+	}
+	return &Select{Items: items, Rel: q.Source}
+}
+
 // maxParamExt is maxParamAny for the statements of this file.
 func maxParamExt(st Stmt) int {
 	switch q := st.(type) {
 	case *CreateAs:
 		return maxParamAny(q.Query)
 	case *Merge:
-		items := []SelItem{{X: q.On}}
-		for _, w := range q.Whens {
-			if w.And != nil {
-				items = append(items, SelItem{X: w.And})
-			}
-			for _, a := range w.Set {
-				items = append(items, SelItem{X: a.X})
-			}
-			for _, x := range w.Values {
-				items = append(items, SelItem{X: x})
-			}
-		}
-		return maxParamDeep(&Select{Items: items, Rel: q.Source})
+		return maxParamDeep(mergeSelect(q))
 	}
 	return 0
+}
+
+// describeExt is Describe for the statements of this file.
+func (s *Session) describeExt(st Stmt) (*Description, error) {
+	d := &Description{}
+	n := maxParamExt(st)
+	if n == 0 {
+		return d, nil
+	}
+	var pk map[int]Kind
+	switch q := st.(type) {
+	case *CreateAs:
+		pk = s.deepKinds(q.Query)
+	case *Merge:
+		pk = s.deepKinds(mergeSelect(q))
+	}
+	d.Params = make([]Kind, n)
+	for i := range d.Params {
+		d.Params[i] = KText
+		if k, ok := pk[i+1]; ok {
+			d.Params[i] = k
+		}
+	}
+	return d, nil
 }

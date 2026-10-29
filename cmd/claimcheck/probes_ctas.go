@@ -12,7 +12,7 @@ func init() {
 	const dp = "~DROP TABLE IF EXISTS cc_pub"
 	extraChecks = append(extraChecks, []check{
 		{"ct_ctas_rows", "ctas", "05 §ctas", []string{T, TS3, "CREATE TABLE cc_c AS SELECT id, v FROM cc_t WHERE id < 3", "SELECT count(*) FROM cc_c"}, "val:2", nil},
-		{"ct_ctas_int4_type", "ctas", "05 §ctas", []string{"CREATE TABLE cc_p (id INTEGER PRIMARY KEY, n NUMERIC(12,2), s VARCHAR(7))", "CREATE TABLE cc_c AS SELECT id, n, s FROM cc_p", "SELECT pg_typeof(id)::text FROM cc_c LIMIT 1"}, "val:integer", nil},
+		{"ct_ctas_int4_type", "ctas", "05 §ctas", []string{"CREATE TABLE cc_p (id INTEGER PRIMARY KEY, n NUMERIC(12,2), s VARCHAR(7))", "INSERT INTO cc_p VALUES (1, 1.00, 'a')", "CREATE TABLE cc_c AS SELECT id, n, s FROM cc_p", "SELECT pg_typeof(id)::text FROM cc_c LIMIT 1"}, "val:integer", nil},
 		{"ct_ctas_numeric_typmod", "ctas", "05 §ctas", []string{"CREATE TABLE cc_p (id INTEGER PRIMARY KEY, n NUMERIC(12,2), s VARCHAR(7))", "CREATE TABLE cc_c AS SELECT id, n, s FROM cc_p", "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'cc_c'::regclass AND attname = 'n'"}, "val:numeric(12,2)", nil},
 		{"ct_ctas_varchar_typmod", "ctas", "05 §ctas", []string{"CREATE TABLE cc_p (id INTEGER PRIMARY KEY, n NUMERIC(12,2), s VARCHAR(7))", "CREATE TABLE cc_c AS SELECT id, n, s FROM cc_p", "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'cc_c'::regclass AND attname = 's'"}, "val:character varying(7)", nil},
 		{"ct_ctas_no_data", "ctas", "05 §ctas", []string{T, TS3, "CREATE TABLE cc_c AS SELECT * FROM cc_t WITH NO DATA", "SELECT count(*) FROM cc_c"}, "val:0", nil},

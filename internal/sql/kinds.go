@@ -176,7 +176,7 @@ func formatInterval(d Datum) string {
 // addInterval adds n times interval iv to time us (months by the calendar).
 func addInterval(us int64, iv Datum, n int64) int64 {
 	if m := int64(iv.F) * n; m != 0 {
-		us = goTime(us).AddDate(0, int(m), 0).UnixMicro()
+		us = addMonths(goTime(us), int(m)).UnixMicro()
 	}
 	return us + iv.I*n
 }
@@ -270,4 +270,23 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 		}
 	}
 	return Null, true, errf(codeUndefinedFunction, "operator does not exist: %s %s %s", l.K, op, r.K)
+}
+
+// addMonths adds n calendar months; the day is clamped to the end of the
+// month, as PostgreSQL does (January 31 plus one month is February 29/28).
+func addMonths(t time.Time, n int) time.Time {
+	y, m, d := t.Date()
+	mi := int(m) - 1 + n
+	y += floorDivInt(mi, 12)
+	mi -= floorDivInt(mi, 12) * 12
+	last := time.Date(y, time.Month(mi+2), 0, 0, 0, 0, 0, time.UTC).Day()
+	return time.Date(y, time.Month(mi+1), min(d, last), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+}
+
+func floorDivInt(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
 }

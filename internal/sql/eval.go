@@ -422,6 +422,8 @@ func numArith(op string, l, r Datum) (Datum, bool, error) {
 		d, err := arith(op, lf, rf)
 		return d, true, err
 	}
+	l, _ = coerce(l, KNumeric)
+	r, _ = coerce(r, KNumeric)
 	a, b := numOf(l), numOf(r)
 	var x pgnum.Dec
 	var err error

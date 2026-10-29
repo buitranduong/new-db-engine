@@ -61,8 +61,8 @@ func init() {
 			if dropped { // PostgreSQL keeps the slot: no type, a placeholder name
 				name, typ, notNull, def, ident, coll = fmt.Sprintf("........pg.dropped.%d........", num), 0, false, false, "", 0
 			}
-			rows = append(rows, []Datum{IntD(rel), TextD(name), IntD(typ), IntD(mod), IntD(ty.len), IntD(int64(num)),
-				IntD(0), IntD(-1), IntD(-1), BoolD(ty.len > 0 && ty.len <= 8), TextD("d"), TextD("p"), TextD(""),
+			rows = append(rows, []Datum{IntD(rel), TextD(name), IntD(typ), IntD(-1), IntD(ty.len), IntD(int64(num)),
+				IntD(0), IntD(-1), IntD(mod), BoolD(ty.len > 0 && ty.len <= 8), TextD("d"), TextD("p"), TextD(""),
 				BoolD(notNull), BoolD(def), BoolD(missing), TextD(ident), TextD(""), BoolD(dropped), BoolD(true), IntD(0),
 				IntD(coll), Null, Null, Null, Null})
 		}

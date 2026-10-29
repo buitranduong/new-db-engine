@@ -116,7 +116,11 @@ func (c *evalCtx) callPre(f *Func, args []Datum) (Datum, bool, error) {
 		return arrayD(args), true, nil
 	case "length", "array_length", "cardinality":
 		if len(args) >= 1 && args[0].K == KArray {
-			return IntD(int64(len(parseArrayText(args[0])))), true, nil
+			n := len(parseArrayText(args[0]))
+			if n == 0 && f.Name == "array_length" {
+				return Null, true, nil
+			}
+			return IntD(int64(n)), true, nil
 		}
 	case "format":
 		if len(args) == 0 || args[0].IsNull() {
@@ -692,7 +696,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		return TextD(args[0].String()), nil
 	// ---- arrays ----
 	case "array_length", "cardinality", "length_array":
-		return IntD(int64(len(parseArrayText(args[0])))), nil
+		n := len(parseArrayText(args[0]))
+		if n == 0 && f.Name == "array_length" {
+			return Null, nil
+		}
+		return IntD(int64(n)), nil
 	case "has":
 		for _, e := range parseArrayText(args[0]) {
 			if c, err := compare(e, args[1]); err == nil && c == 0 {
@@ -713,6 +721,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		}
 		return TextD(strings.Join(parts, sep)), nil
 	case "pg_typeof", "totypename":
+		if args[0].K == KArray {
+			return TextD(strings.ToLower(Kind(args[0].I).String()) + "[]"), nil
+		}
 		return TextD(strings.ToLower(args[0].K.String())), nil
 	}
 	return Null, errf(codeUndefinedFunction, "function %s does not exist", f.Name)

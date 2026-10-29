@@ -6,6 +6,15 @@ package buildinfo
 
 import "runtime/debug"
 
+// Set by scripts/build-bench.sh through -ldflags -X: Go does not stamp vcs.*
+// in linked git worktrees (where benchmarks are built), so the script
+// passes the same facts explicitly. They win over the vcs.* settings.
+var (
+	StampRevision string
+	StampModified string // "true" or "false"
+	StampTime     string
+)
+
 type Info struct {
 	Revision string `json:"revision"`       // vcs.revision, "" when not stamped
 	Modified bool   `json:"modified"`       // vcs.modified: built from a dirty tree
@@ -19,7 +28,7 @@ type Info struct {
 func Read() Info {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
-		return Info{}
+		return Info{Revision: StampRevision, Modified: StampModified == "true"}
 	}
 	in := Info{Go: bi.GoVersion, Path: bi.Path}
 	for _, s := range bi.Settings {
@@ -31,6 +40,9 @@ func Read() Info {
 		case "vcs.time":
 			in.Time = s.Value
 		}
+	}
+	if StampRevision != "" {
+		in.Revision, in.Modified, in.Time = StampRevision, StampModified == "true", StampTime
 	}
 	return in
 }

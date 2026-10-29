@@ -10,13 +10,16 @@ cd "$(dirname "$0")/.."
 OUT=${1:-bin-main}
 mkdir -p "$OUT"
 rm -f "$OUT"/BUILD.json
-for d in cmd/*/; do
-  n=$(basename "$d")
-  go build -buildvcs=true -o "$OUT/$n" "./$d"
-done
 commit=$(git rev-parse HEAD)
 dirty=false
 [ -n "$(git status --porcelain -- '*.go' go.mod go.sum)" ] && dirty=true
+# go build stamps no vcs.* in a linked worktree, so pass the facts explicitly
+B=stask/internal/buildinfo
+LDF="-X $B.StampRevision=$commit -X $B.StampModified=$dirty -X $B.StampTime=$(git show -s --format=%cI HEAD)"
+for d in cmd/*/; do
+  n=$(basename "$d")
+  go build -ldflags "$LDF" -o "$OUT/$n" "./$d"
+done
 cat > "$OUT/BUILD.json" <<J
 {"commit": "$commit",
  "branch": "$(git rev-parse --abbrev-ref HEAD)",

@@ -87,6 +87,10 @@ func (e *Engine) recover() error {
 			return fmt.Errorf("the recovery target is before checkpoint %s (lsn %d): restore an older base backup", filepath.Base(path), hdr.StartLSN)
 		}
 		rs.CheckpointLSN, rs.CheckpointKeys = hdr.StartLSN, keys
+		// the checkpoint holds index definitions only (secindex.go)
+		if err := e.rebuildSec(); err != nil {
+			return fmt.Errorf("rebuild indexes: %w", err)
+		}
 		rs.CheckpointLoad = time.Since(t0)
 	}
 	t1 := time.Now()
@@ -281,7 +285,15 @@ func (e *Engine) replay(r *wal.Record) error {
 		wasLive := had && old.flags&entDeleted == 0
 		v := &Version{LSN: r.LSN, TS: r.TS, Loc: wal.Loc{Ok: true, Seg: r.Pos.Seg, Off: uint32(r.Pos.Off), Idx: uint16(i)},
 			ValOff: op.ValOff, ValLen: uint32(len(op.Val)), Deleted: op.Kind == wal.OpDel, Prev: op.Prev}
+		var oldV *Version
+		if had && len(t.secList()) > 0 {
+			ov := old.version()
+			oldV = &ov
+		}
 		t.index().put(key, v)
+		if len(t.secList()) > 0 {
+			e.secReplay(t, r.LSN, key, op.Val, v.Deleted, oldV)
+		}
 		switch {
 		case !v.Deleted && !wasLive:
 			t.live.Add(1)

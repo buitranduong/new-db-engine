@@ -614,6 +614,7 @@ func (e *Engine) pickVictims() []uint32 {
 	_, dpos, _ := e.DurablePoint()
 	h := e.horizon()
 	e.releaseDropped(h)
+	e.sweepIndexes(h)
 	type cand struct {
 		seg  uint32
 		live int64
@@ -794,6 +795,7 @@ func (e *Engine) releaseDropped(h uint64) {
 		if d := t.droppedLSN.Load(); d != 0 && d <= h && d <= installed && t.index().Len() > 0 {
 			t.idx.Store(newTree(&t.keys))
 			t.live.Store(0)
+			t.sec.Store(nil)
 		}
 	}
 }

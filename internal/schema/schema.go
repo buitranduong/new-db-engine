@@ -106,6 +106,10 @@ type Table struct {
 	// attisdropped attributes: rows are not rewritten, and those stored
 	// before the drop are read past the dropped column's value.
 	Dropped []Column `json:"dropped_columns,omitempty"`
+	// Indexes are the secondary indexes (indexkey.go); ForeignKeys the
+	// REFERENCES constraints of this (child) table.
+	Indexes     []IndexDef   `json:"indexes,omitempty"`
+	ForeignKeys []ForeignKey `json:"foreign_keys,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN
@@ -115,6 +119,7 @@ type Table struct {
 	// with the layout of their LSN (layouts, oldest first)
 	lastDrop uint64
 	layouts  []layout
+	ixCols   [][]int // column positions of each index (initIndexes)
 }
 
 // layout is how rows stored from LSN from on are encoded, until the next
@@ -191,6 +196,9 @@ func (t *Table) Init() error {
 		if !ok || (t.Columns[i].T != TText && t.Columns[i].T != TString) {
 			return fmt.Errorf("search column %q must be text/string", s)
 		}
+	}
+	if err := t.initIndexes(); err != nil {
+		return err
 	}
 	if t.TimeColumn != "" {
 		i, ok := t.idx[t.TimeColumn]

@@ -144,6 +144,14 @@ type TableState struct {
 	dropping   atomic.Bool
 	replaced   atomic.Bool
 	droppedLSN atomic.Uint64
+
+	// secondary indexes (secindex.go); writers counts the writes in
+	// submit, blocked is set while CREATE INDEX builds, ddlMu serializes
+	// index DDL
+	sec     atomic.Pointer[[]*secIndex]
+	writers atomic.Int64
+	blocked atomic.Pointer[chan struct{}]
+	ddlMu   sync.Mutex
 }
 
 // droppedErr is the error for a write to a table dropped meanwhile.
@@ -404,6 +412,13 @@ func (e *Engine) addTable(t *schema.Table) (*TableState, error) {
 	ts.sch.Store(t)
 	ts.durable.Store(t)
 	ts.idx.Store(newTree(&ts.keys))
+	if t.DroppedLSN == 0 {
+		// a new table is empty; a table from a checkpoint gets its
+		// entries from rebuildSec once its rows are loaded
+		for _, def := range t.Indexes {
+			ts.addSec(newSec(def))
+		}
+	}
 	e.tmu.Lock()
 	if t.DroppedLSN != 0 { // from a checkpoint: kept for older changes only
 		ts.dropping.Store(true)
@@ -440,6 +455,9 @@ func (e *Engine) alterTable(ts *TableState, t *schema.Table) (*TableState, error
 		ts.sch.Store(t)
 	}
 	ts.durable.Store(t)
+	if err := e.reconcileSec(ts, t, nil); err != nil {
+		e.logf("alter table %s: indexes: %v", t.Name, err)
+	}
 	e.tmu.Lock()
 	defer e.tmu.Unlock()
 	if e.tables[t.Name] != ts {
@@ -470,6 +488,7 @@ func (e *Engine) AlterTable(name string, f func(*schema.Table) error) error {
 		d.Columns = slices.Clone(base.Columns)
 		d.Search, d.Checks = slices.Clone(base.Search), slices.Clone(base.Checks)
 		d.Dropped = slices.Clone(base.Dropped)
+		d.CloneConstraints()
 		if err := f(&d); err != nil {
 			return err
 		}
@@ -1131,6 +1150,7 @@ type pendingOp struct {
 	ifAbsent bool
 	seen     *Version // head looked up before commit (see seenSeq)
 	seenOk   bool
+	sk       []secKey // index keys of the row, per sch.Indexes (secindex.go)
 }
 
 type readKey struct {
@@ -1158,6 +1178,7 @@ type commitReq struct {
 	alter       *TableState // ALTER TABLE: ddl is its new schema, computed from alterBase
 	alterBase   *schema.Table
 	moves       []moveOp // log reclamation: relocate or drop heads
+	own         *reqOwn  // checkUnique: the request's ops by key
 	lsn         uint64
 	err         error
 	done        chan struct{}
@@ -1208,6 +1229,9 @@ func (e *Engine) pendingOf(op WriteOp) (pendingOp, error) {
 	}
 	p.key = sch.KeyOf(op.Row)
 	p.val = sch.Encode(nil, op.Row)
+	if len(sch.Indexes) > 0 {
+		p.sk = secKeysOf(sch, op.Row)
+	}
 	return p, nil
 }
 
@@ -1239,6 +1263,22 @@ func (e *Engine) submit(r *commitReq) error {
 	if LatDebug {
 		r.enq = time.Now()
 		defer func() { LatSubmit.Add(time.Since(r.enq)) }()
+	}
+	if len(r.ops) > 0 {
+		// CREATE INDEX waits for the writers of its table (secindex.go)
+		var buf [4]*TableState
+		held := buf[:0]
+		for i := range r.ops {
+			if t := r.ops[i].t; !slices.Contains(held, t) {
+				t.enter()
+				held = append(held, t)
+			}
+		}
+		defer func() {
+			for _, t := range held {
+				t.leave()
+			}
+		}()
 	}
 	select {
 	case e.reqCh <- r:
@@ -1342,11 +1382,17 @@ type commitBatch struct {
 	ddlNames map[string]bool
 	drops    []droppedTable
 	remaps   []remapSet
-	buf      []byte // encoded records not yet appended
-	lastLSN  uint64
-	lastTS   int64
-	seq      uint64 // installSeq value once installed (set by the installer)
-	failed   bool   // sync failed: answered with an error, never installed
+	// index keys of the newest version of each indexed key written by this
+	// batch (empty: deleted), for unique checks; adds are the index entries
+	// of the requests prepared since the last flush (secindex.go)
+	sk      map[pk][]secKey
+	adds    []secAdd
+	uq      map[*secIndex]map[string][]string // this prepare call's unique keys
+	buf     []byte                            // encoded records not yet appended
+	lastLSN uint64
+	lastTS  int64
+	seq     uint64 // installSeq value once installed (set by the installer)
+	failed  bool   // sync failed: answered with an error, never installed
 
 	// set at handoff
 	file   *os.File
@@ -1519,6 +1565,7 @@ func (e *Engine) committer() {
 				}
 				// keep only what validation needs
 				b.placed, b.installs, b.ddls, b.remaps, b.buf, b.drops = nil, nil, nil, nil, nil, nil
+				b.sk, b.adds, b.uq = nil, nil, nil
 				recent = append(recent, b)
 			}
 		case <-timerC:
@@ -1540,7 +1587,9 @@ type placedVersion struct {
 	t      *TableState
 	key    string
 	v      *Version
-	expect *Version // drop: remove the head only if it is still this version
+	expect *Version      // drop: remove the head only if it is still this version
+	sch    *schema.Table // the schema sk was computed for (tables with indexes)
+	sk     []secKey
 }
 
 // flushOpen appends the open batch's remaining bytes and records what the
@@ -1697,6 +1746,11 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					verr = &KeyExistsError{Table: op.t.Schema().Name, Column: op.t.Schema().Key, Key: op.key}
 					break
 				}
+				if len(op.sk) > 0 {
+					if verr = e.checkUnique(b, inflight, r, op); verr != nil {
+						break
+					}
+				}
 			}
 			if verr == nil {
 				for _, rk := range r.reads {
@@ -1763,6 +1817,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 				head := m.head != nil && sameVersion(cur(m.t, m.key), m.head)
 				if m.drop && head {
 					b.pending[pk{m.t, m.key}] = nil
+					e.noteMoved(b, m.t, m.key, nil, 0, true)
 					b.installs = append(b.installs, placedVersion{t: m.t, key: m.key, expect: m.head})
 					continue
 				}
@@ -1788,6 +1843,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					v := &Version{LSN: m.lsn, TS: m.ts, Loc: loc, ValOff: pos.Off + int64(valRel[i]),
 						ValLen: uint32(len(m.val)), Deleted: m.del, Prev: m.prev, Full: true}
 					b.pending[pk{m.t, m.key}] = v
+					e.noteMoved(b, m.t, m.key, m.val, m.lsn, m.del)
 					b.installs = append(b.installs, placedVersion{t: m.t, key: m.key, v: v})
 				case m.head != nil:
 					// superseded since the cleaner looked: newer versions reference
@@ -1886,7 +1942,12 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					v := &Version{LSN: lsn, TS: now, Loc: wal.Loc{Ok: true, Seg: pos.Seg, Off: uint32(pos.Off), Idx: uint16(j)},
 						ValOff: pos.Off + int64(valRel[j]), ValLen: uint32(len(op.val)), Deleted: op.del, Prev: walOps[j].Prev, Full: true}
 					b.pending[pk{op.t, op.key}] = v
-					b.installs = append(b.installs, placedVersion{t: op.t, key: op.key, v: v})
+					pv := placedVersion{t: op.t, key: op.key, v: v}
+					if len(op.sch.Indexes) > 0 {
+						pv.sch, pv.sk = op.sch, op.sk
+						e.placeSec(b, op, lsn)
+					}
+					b.installs = append(b.installs, pv)
 					e.Stats.PayloadBytes.Add(int64(len(op.key) + len(op.val)))
 				}
 				lo = hi
@@ -1896,6 +1957,11 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 		lsn++
 		b.placed = append(b.placed, r)
 	}
+	if len(b.adds) > 0 {
+		flushAdds(b.adds)
+		b.adds = b.adds[:0]
+	}
+	b.uq = nil
 	e.nextLSN = lsn
 	e.lastTS = now
 	b.lastLSN, b.lastTS = lsn-1, now
@@ -1983,6 +2049,11 @@ func (e *Engine) installBatch(b *commitBatch) {
 	}
 	var ws []work
 	var cur work
+	type supTask struct {
+		pv  placedVersion
+		old Version
+	}
+	var sups []supTask
 	for _, pv := range b.installs {
 		if cur.t != pv.t {
 			found := false
@@ -2010,6 +2081,9 @@ func (e *Engine) installBatch(b *commitBatch) {
 		en, had := tree.put(pv.key, pv.v)
 		old := en.version()
 		wasLive := had && !old.Deleted
+		if had && pv.sch != nil {
+			sups = append(sups, supTask{pv, old})
+		}
 		if had {
 			e.gc.account(&old, pv.v)
 		} else {
@@ -2026,6 +2100,19 @@ func (e *Engine) installBatch(b *commitBatch) {
 		w.t.idx.Store(w.tree)
 	}
 	e.gc.mu.Unlock()
+	if len(sups) > 0 {
+		// mark the entries of the versions just superseded dead
+		marks := map[*secIndex][]deadRec{}
+		for i := range sups {
+			s := &sups[i]
+			for si, ks := range e.supersede(s.pv.t, s.pv.key, &s.old, s.pv.v.LSN, s.pv.sch, s.pv.sk) {
+				marks[si] = append(marks[si], ks...)
+			}
+		}
+		for si, ks := range marks {
+			si.markDead(ks)
+		}
+	}
 	if len(b.remaps) > 0 {
 		e.gc.remapMu.Lock()
 		for _, r := range b.remaps {

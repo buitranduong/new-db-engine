@@ -309,6 +309,11 @@ func (e *Engine) Apply(at wal.Pos, data []byte) error {
 // replay does during recovery.
 func (e *Engine) applyRecord(r *wal.Record, clones map[*TableState]*tree) error {
 	if r.Kind == wal.KindDDL {
+		// the table indexes are built from the rows applied so far
+		for t, tr := range clones {
+			t.idx.Store(tr)
+			delete(clones, t)
+		}
 		return e.replay(r) // registers the table
 	}
 	for i, op := range r.Ops {
@@ -332,7 +337,15 @@ func (e *Engine) applyRecord(r *wal.Record, clones map[*TableState]*tree) error 
 			wasLive := had && old.flags&entDeleted == 0
 			v := &Version{LSN: r.LSN, TS: r.TS, Loc: loc, ValOff: op.ValOff, ValLen: uint32(len(op.Val)),
 				Deleted: op.Kind == wal.OpDel, Prev: op.Prev}
+			var oldV *Version
+			if had && len(t.secList()) > 0 {
+				ov := old.version()
+				oldV = &ov
+			}
 			tr.put(key, v)
+			if len(t.secList()) > 0 {
+				e.secReplay(t, r.LSN, key, op.Val, v.Deleted, oldV)
+			}
 			switch {
 			case !v.Deleted && !wasLive:
 				t.live.Add(1)

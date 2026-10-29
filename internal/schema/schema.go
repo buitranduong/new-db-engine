@@ -353,13 +353,6 @@ func (t *Table) Init() error {
 			return fmt.Errorf("search column %q must be text/string", s)
 		}
 	}
-	if t.Columnar {
-		for _, c := range t.Columns {
-			if c.T == TNumeric {
-				return fmt.Errorf("column %q: numeric is not supported on columnar tables", c.Name)
-			}
-		}
-	}
 	if t.TimeColumn != "" {
 		i, ok := t.idx[t.TimeColumn]
 		if !ok || !t.Columns[i].T.IsTime() {

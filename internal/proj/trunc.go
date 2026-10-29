@@ -8,14 +8,13 @@ import (
 	"stask/internal/schema"
 )
 
-// date_trunc on timestamps (unix microseconds, UTC: the only time zone
-// STASK sessions use), with PostgreSQL's units. Columns of the legacy
-// "time" type hold milliseconds: forMillis adapts a unit to them. A truncated value is kept
+// date_trunc on timestamps (unix milliseconds, UTC: the only time zone
+// STASK sessions use), with PostgreSQL's units. A truncated value is kept
 // as a bucket number (days, months, ... since the epoch), so that GROUP BY
 // date_trunc('day', t) has a small key range and takes the dense path.
 
 const (
-	msSecond = int64(1_000_000) // in microseconds
+	msSecond = int64(1000)
 	msMinute = 60 * msSecond
 	msHour   = 60 * msMinute
 	msDay    = 24 * msHour
@@ -23,7 +22,7 @@ const (
 )
 
 // truncUnit is a unit: bucket maps a time to its bucket, start a bucket to
-// its first microsecond.
+// its first millisecond.
 type truncUnit struct {
 	bucket func(ms int64) int64
 	start  func(b int64) int64
@@ -52,7 +51,7 @@ func monthUnit(n int64) truncUnit {
 
 var truncUnits = map[string]truncUnit{
 	"microseconds": fixedUnit(1, 0),
-	"milliseconds": fixedUnit(1000, 0),
+	"milliseconds": fixedUnit(1, 0),
 	"second":       fixedUnit(msSecond, 0),
 	"minute":       fixedUnit(msMinute, 0),
 	"hour":         fixedUnit(msHour, 0),
@@ -72,24 +71,7 @@ func lookupUnit(unit string) (truncUnit, error) {
 	return u, nil
 }
 
-// forMillis is u on a column of milliseconds.
-func (u truncUnit) forMillis() truncUnit {
-	return truncUnit{
-		bucket: func(ms int64) int64 { return u.bucket(ms * 1000) },
-		start:  func(b int64) int64 { return floorDiv(u.start(b), 1000) },
-	}
-}
-
-// lookupUnitFor is lookupUnit for a column of type ct.
-func lookupUnitFor(unit string, ct schema.ColType) (truncUnit, error) {
-	u, err := lookupUnit(unit)
-	if err == nil && ct == schema.TTime {
-		u = u.forMillis()
-	}
-	return u, err
-}
-
-// TruncTime is date_trunc(unit, us) on microseconds.
+// TruncTime is date_trunc(unit, ms).
 func TruncTime(unit string, ms int64) (int64, error) {
 	u, err := lookupUnit(unit)
 	if err != nil {
@@ -149,7 +131,7 @@ func daysFromCivil(y, m, d int64) int64 {
 var truncBufs sync.Pool // *[]int64
 
 // truncColumn is a column of the buckets of time column src (same NULLs),
-// whose group values are the buckets' first instants. release returns
+// whose group values are the buckets' first milliseconds. release returns
 // its buffer once the query is done with it.
 func (ct *colTable) truncColumn(src *colVec, u truncUnit, q *AggQuery) (cv colVec, release func()) {
 	bp, _ := truncBufs.Get().(*[]int64)
@@ -169,6 +151,6 @@ func (ct *colTable) truncColumn(src *colVec, u truncUnit, q *AggQuery) (cv colVe
 			out[i] = u.bucket(v)
 		}
 	})
-	return colVec{t: src.t, ints: pvecOver(ints, ct.n), nulls: src.nulls, stored: true, derive: u.start},
+	return colVec{t: schema.TTime, ints: pvecOver(ints, ct.n), nulls: src.nulls, stored: true, derive: u.start},
 		func() { truncBufs.Put(bp) }
 }

@@ -102,7 +102,7 @@ func compileFilters(t *schema.Table, fs []Filter) ([]cfilter, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown column %q", f.Col)
 		}
-		ct := t.Columns[ci].T.Store()
+		ct := t.Columns[ci].T
 		op := map[string]int{"=": opEq, "==": opEq, "!=": opNe, "<": opLt, "<=": opLe, ">": opGt, ">=": opGe,
 			"in": opIn, "not in": opNotIn, "is null": opIsNull, "is not null": opNotNull}
 		o, ok := op[strings.ToLower(f.Op)]
@@ -240,7 +240,7 @@ func compileAggs(t *schema.Table, as []Agg) ([]aggSpec, error) {
 			if !ok {
 				return nil, fmt.Errorf("unknown column %q", a.Col)
 			}
-			ct := t.Columns[ci].T.Store()
+			ct := t.Columns[ci].T
 			if s.fn != "count" && ct != schema.TInt && ct != schema.TFloat && ct != schema.TTime {
 				return nil, fmt.Errorf("%s(%s): column is not numeric", a.Fn, a.Col)
 			}
@@ -651,12 +651,12 @@ func NewRowAggregator(t *schema.Table, q *AggQuery) (*RowAggregator, error) {
 		if unit == "" {
 			continue
 		}
-		if i >= len(ra.gcols) || !t.Columns[ra.gcols[i]].T.IsTime() {
-			return nil, fmt.Errorf("date_trunc(%s) needs a timestamp group column", unit)
-		}
-		u, err := lookupUnitFor(unit, t.Columns[ra.gcols[i]].T)
+		u, err := lookupUnit(unit)
 		if err != nil {
 			return nil, err
+		}
+		if i >= len(ra.gcols) || t.Columns[ra.gcols[i]].T != schema.TTime {
+			return nil, fmt.Errorf("date_trunc(%s) needs a timestamp group column", unit)
 		}
 		ra.truncs[i] = u
 	}
@@ -682,7 +682,7 @@ func (ra *RowAggregator) Add(r schema.Row) {
 		v := gv(i)
 		if v.Null {
 			ra.kb = append(ra.kb, 0)
-		} else if ct := ra.t.Columns[c].T.Store(); ct == schema.TString || ct == schema.TText {
+		} else if ct := ra.t.Columns[c].T; ct == schema.TString || ct == schema.TText {
 			ra.kb = append(ra.kb, 1)
 			ra.kb = append(ra.kb, v.S...)
 		} else {
@@ -695,7 +695,7 @@ func (ra *RowAggregator) Add(r schema.Row) {
 	if g == nil {
 		g = &group{accs: newAccs(len(ra.specs)), sets: make([]map[schema.Value]struct{}, len(ra.specs))}
 		for i, c := range ra.gcols {
-			g.vals = append(g.vals, jsonValue(ra.t.Columns[c].T.Store(), gv(i)))
+			g.vals = append(g.vals, jsonValue(ra.t.Columns[c].T, gv(i)))
 		}
 		ra.groups[string(ra.kb)] = g
 	}
@@ -712,7 +712,7 @@ func (ra *RowAggregator) Add(r schema.Row) {
 			if g.sets[i] == nil {
 				g.sets[i] = map[schema.Value]struct{}{}
 			}
-			g.sets[i][valueKey(ra.t.Columns[s.col].T.Store(), v)] = struct{}{}
+			g.sets[i][valueKey(ra.t.Columns[s.col].T, v)] = struct{}{}
 			g.accs[i].n = int64(len(g.sets[i]))
 			continue
 		}

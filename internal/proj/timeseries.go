@@ -45,7 +45,6 @@ type tsTable struct {
 	mu        sync.RWMutex
 	schema    *schema.Table
 	timeCol   int
-	usTime    bool // the time column holds microseconds (timestamp types)
 	seriesCol int
 	valCols   []int
 	valNames  []string
@@ -81,7 +80,6 @@ func (ts *TimeSeries) ensure(t *schema.Table) *tsTable {
 	if tt == nil {
 		tt = &tsTable{schema: t, seriesCol: -1, dict: dict{m: map[string]uint32{}}}
 		tt.timeCol, _ = t.Col(t.TimeColumn)
-		tt.usTime = t.Columns[tt.timeCol].T != schema.TTime
 		if t.SeriesColumn != "" {
 			tt.seriesCol, _ = t.Col(t.SeriesColumn)
 		}
@@ -98,7 +96,7 @@ func (ts *TimeSeries) ensure(t *schema.Table) *tsTable {
 }
 
 func (tt *tsTable) toRow(table uint32, r schema.Row) tsRow {
-	x := tsRow{table: table, t: tt.millis(r[tt.timeCol].I), vals: make([]float64, len(tt.valCols))}
+	x := tsRow{table: table, t: r[tt.timeCol].I, vals: make([]float64, len(tt.valCols))}
 	if tt.seriesCol >= 0 {
 		x.series = r[tt.seriesCol].S
 	}
@@ -664,13 +662,4 @@ func (ts *TimeSeries) Query(id uint32, q *TSQuery) (*Result, error) {
 		x.add(t, int64(as[i]), names[as[i]], func(c int) float64 { return av[c][i] })
 	}
 	return x.Result(), nil
-}
-
-// millis is a time column value in unix milliseconds, the unit of the
-// series API.
-func (tt *tsTable) millis(v int64) int64 {
-	if tt.usTime {
-		return floorDiv(v, 1000)
-	}
-	return v
 }

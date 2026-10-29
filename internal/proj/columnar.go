@@ -100,13 +100,13 @@ func (c *Columnar) Name() string { return "columnar" }
 
 func newColTable(t *schema.Table) *colTable {
 	ct := &colTable{schema: t, keyPos: map[string]uint32{}, cols: make([]colVec, len(t.Columns)), kcol: -1}
-	if k := t.KeyIndex(); t.Columns[k].T.Store() == schema.TInt {
+	if k := t.KeyIndex(); t.Columns[k].T == schema.TInt {
 		ct.kcol, ct.kidx = k, &intPosIndex{}
 	}
 	for i, c := range t.Columns {
-		ct.cols[i].t = c.T.Store()
+		ct.cols[i].t = c.T
 		ct.cols[i].stored = true
-		if c.T.Store() == schema.TText {
+		if c.T == schema.TText {
 			ct.cols[i].t, ct.cols[i].text = schema.TString, true
 		}
 		if ct.cols[i].t == schema.TString {
@@ -135,7 +135,7 @@ func (ct *colTable) alterLocked(t *schema.Table) {
 		if j >= 0 && j < len(ct.cols) {
 			cols[i] = ct.cols[j]
 		} else {
-			cols[i] = colVec{t: c.T.Store()}
+			cols[i] = colVec{t: c.T}
 		}
 	}
 	ct.cols = cols
@@ -531,11 +531,11 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 		if unit == "" {
 			continue
 		}
-		u, err := lookupUnitFor(unit, ct.schema.Columns[gcols[gi]].T)
+		u, err := lookupUnit(unit)
 		if err != nil {
 			return nil, err
 		}
-		if !ct.schema.Columns[gcols[gi]].T.IsTime() {
+		if ct.cols[gcols[gi]].t != schema.TTime {
 			return nil, fmt.Errorf("date_trunc(%s): %q is not a timestamp column", unit, q.GroupBy[gi])
 		}
 		cv, release := ct.truncColumn(&ct.cols[gcols[gi]], u, q)

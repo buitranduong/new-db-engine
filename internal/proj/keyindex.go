@@ -92,3 +92,12 @@ func (x *intPosIndex) rehash(keyAt *pvec[int64]) {
 		x.used++
 	}
 }
+
+// reserve sizes an empty index for n keys, so loading them never rehashes.
+func (x *intPosIndex) reserve(n int) {
+	sz := 1 << 10
+	for sz*5 < (n+1)*8 {
+		sz *= 2
+	}
+	x.slots, x.used, x.live = make([]uint32, sz), 0, 0
+}

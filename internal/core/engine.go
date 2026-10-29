@@ -60,6 +60,14 @@ type Options struct {
 	ZeroRate           int64
 	Logf               func(string, ...any)
 
+	// Saved views (follow.go): a view that implements Persister is written
+	// next to the log every ViewSaveEvery (0 = 10 min, <0 = only at Close)
+	// and at Close (unless NoViewSaveOnClose), and loaded at start so only
+	// the log after its LSN is replayed. NoViewFile turns this off.
+	ViewSaveEvery     time.Duration
+	NoViewSaveOnClose bool
+	NoViewFile        bool
+
 	// Compression of sealed log segments (wal.CodecNone, CodecS2,
 	// CodecZstd); the newest CompressKeepRaw sealed segments stay raw
 	// (negative = default 1, 0 = compress every sealed segment).
@@ -398,6 +406,9 @@ func (e *Engine) Close() error {
 }
 
 func (e *Engine) Log() *wal.Log { return e.log }
+
+// Dir is the engine's data directory.
+func (e *Engine) Dir() string { return e.opts.Dir }
 
 func (e *Engine) addTable(t *schema.Table) (*TableState, error) {
 	e.tmu.RLock()

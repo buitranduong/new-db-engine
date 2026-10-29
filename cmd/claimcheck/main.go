@@ -226,7 +226,9 @@ func runCopy(ctx context.Context, conn *pgx.Conn, c check) (string, bool) {
 
 const T = "CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v TEXT)"
 
-func checks() []check { return append(baseChecks(), compatChecks()...) }
+func checks() []check {
+	return append(append(baseChecks(), compatChecks()...), supersetChecks()...)
+}
 
 func baseChecks() []check {
 	return []check{

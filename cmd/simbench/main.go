@@ -239,6 +239,7 @@ var c cfg
 var pool *pgxpool.Pool
 var seqOrder atomic.Int64
 var okOrders atomic.Int64
+var ambiguousOrders atomic.Int64 // commit outcome unknown: the run was stopped while the order was committing
 var histSeq atomic.Int64
 
 func main() {
@@ -581,7 +582,7 @@ FROM staging t WHERE sims.number=t.number`, stamp, "t")); err != nil {
 				return
 			}
 			err = exec(ictx, fmt.Sprintf(`INSERT INTO sims (number,carrier,status,price,updated_at)
-SELECT t.number,t.carrier,t.status,t.price,%d FROM staging t WHERE NOT EXISTS (SELECT 1 FROM sims s WHERE s.number=t.number)`, stamp))
+SELECT t.number,t.carrier,t.status,t.price,%d FROM staging t LEFT JOIN sims s ON s.number=t.number WHERE s.number IS NULL`, stamp))
 		}
 	case "batch_upsert":
 		var buf []row
@@ -857,6 +858,9 @@ func orderWorker(ctx context.Context, id int, hot *hotSet, q chan procItem) {
 				return false, nil
 			})
 			committed = err == nil && !lost
+			if err != nil && ctx.Err() != nil {
+				ambiguousOrders.Add(1)
+			}
 			return lost, r, err
 		})
 		if committed {
@@ -1030,7 +1034,7 @@ func invariants(ctx context.Context, expectedNew int64, phases []*phase) []check
 	}
 	var no int64
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM orders`).Scan(&no)
-	add("orders count == committed orders", no == okOrders.Load(), "db %d client %d", no, okOrders.Load())
+	add("orders count == committed orders", no >= okOrders.Load() && no <= okOrders.Load()+ambiguousOrders.Load(), "db %d client %d (+%d with unknown outcome at stop)", no, okOrders.Load(), ambiguousOrders.Load())
 	add("orders were actually committed (workload ran)", okOrders.Load() > 0, "%d committed", okOrders.Load())
 	var s1, s2 int64
 	e1 := pool.QueryRow(ctx, `SELECT coalesce(sum(total),0) FROM orders WHERE status <> 'cancelled'`).Scan(&s1)
@@ -1127,7 +1131,7 @@ func report(phases []*phase, inv []check) {
 	fmt.Println("\n== latency under import vs baseline (p50 / p99 ratio; >1 = slower)")
 	base := stats["baseline"]
 	for _, p := range phases {
-		if !strings.HasPrefix(p.name, "import_") || strings.HasPrefix(p.name, "import_batch_") {
+		if !strings.HasPrefix(p.name, "import_") {
 			continue
 		}
 		fmt.Printf("%s:\n", p.name)

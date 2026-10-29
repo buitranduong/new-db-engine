@@ -489,6 +489,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	if !cs.From || cs.Query != nil {
 		return nil, errf(codeFeature, "not a COPY FROM")
 	}
+	if err := s.checkNeeds([]need{{cs.Table, core.PrivInsert}}, ""); s.role != "" && err != nil {
+		return nil, s.copyFail(err)
+	}
 	t, err := s.table(cs.Table)
 	if err != nil {
 		return nil, s.copyFail(err)
@@ -992,6 +995,12 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	}
 	if s.failed {
 		return 0, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
+	}
+	if s.role != "" {
+		if err := s.checkNeeds([]need{{cs.Table, core.PrivSelect}}, ""); err != nil {
+			s.markFailed()
+			return 0, err
+		}
 	}
 	t, err := s.table(cs.Table)
 	if err != nil {

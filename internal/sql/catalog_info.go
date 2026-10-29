@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"stask/internal/core"
 	"stask/internal/schema"
 )
 
@@ -184,6 +185,23 @@ func init() {
 		for _, t := range c.tables {
 			for _, p := range []string{"INSERT", "SELECT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
 				rows = append(rows, []Datum{TextD(roleName), TextD(roleName), cat, pub, TextD(t.Name), TextD(p), TextD("YES"), TextD("YES")})
+			}
+		}
+		// what GRANT gave the stored roles (core/roles.go)
+		for _, r := range c.s.E.Grants() {
+			grantee := r.Name
+			if grantee == core.PublicRole {
+				grantee = "PUBLIC"
+			}
+			for _, t := range c.tables {
+				for _, p := range []struct {
+					n string
+					b uint8
+				}{{"INSERT", core.PrivInsert}, {"SELECT", core.PrivSelect}, {"UPDATE", core.PrivUpdate}, {"DELETE", core.PrivDelete}} {
+					if r.Grants[t.Name]&p.b != 0 {
+						rows = append(rows, []Datum{TextD(roleName), TextD(grantee), cat, pub, TextD(t.Name), TextD(p.n), TextD("NO"), TextD("NO")})
+					}
+				}
 			}
 		}
 		return rows

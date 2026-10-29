@@ -207,8 +207,6 @@ func init() {
 	defCat("pg_rewrite", "oid:i rulename:t ev_class:i ev_type:t ev_enabled:t is_instead:b ev_qual:t ev_action:t", nil)
 	defCat("pg_enum", "oid:i enumtypid:i enumsortorder:f enumlabel:t", nil)
 	defCat("pg_range", "rngtypid:i rngsubtype:i rngmultitypid:i rngcollation:i rngsubopc:i rngcanonical:t rngsubdiff:t", nil)
-	defCat("pg_stat_activity", "datid:i datname:t pid:i usesysid:i usename:t application_name:t client_addr:t "+
-		"client_port:i backend_start:t state:t query:t", nil)
 	defCat("pg_publication_rel", "oid:i prpubid:i prrelid:i prqual:t prattrs:a", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for i, p := range c.s.E.Publications() {
@@ -260,15 +258,30 @@ func init() {
 
 	roleCols := "rolname:t rolsuper:b rolinherit:b rolcreaterole:b rolcreatedb:b rolcanlogin:b rolreplication:b " +
 		"rolconnlimit:i rolpassword:t rolvaliduntil:t rolbypassrls:b rolconfig:a oid:i"
-	defCat("pg_roles", roleCols, func(c *catSnap) [][]Datum {
-		return [][]Datum{{TextD(roleName), BoolD(true), BoolD(true), BoolD(true), BoolD(true), BoolD(true), BoolD(true),
-			IntD(-1), TextD("********"), Null, BoolD(true), Null, IntD(ownerOID)}}
-	})
-	defCat("pg_authid", roleCols, func(c *catSnap) [][]Datum { return catalogTables["pg_roles"].rows(c) })
+	// roles: the bootstrap superuser (the server's shared password) and
+	// the stored roles (core/roles.go); no password is ever shown
+	roleRow := func(name string, super, login, repl bool, oid int64) []Datum {
+		return []Datum{TextD(name), BoolD(super), BoolD(true), BoolD(super), BoolD(super), BoolD(login), BoolD(repl),
+			IntD(-1), TextD("********"), Null, BoolD(super), Null, IntD(oid)}
+	}
+	roleRows := func(c *catSnap) [][]Datum {
+		rows := [][]Datum{roleRow(roleName, true, true, true, ownerOID)}
+		for i, r := range c.s.E.Roles() {
+			rows = append(rows, roleRow(r.Name, r.Super, r.Login, r.Replication, int64(16400+i)))
+		}
+		return rows
+	}
+	defCat("pg_roles", roleCols, roleRows)
+	defCat("pg_authid", roleCols, roleRows)
 	defCat("pg_user", "usename:t usesysid:i usecreatedb:b usesuper:b userepl:b usebypassrls:b passwd:t "+
 		"valuntil:t useconfig:a", func(c *catSnap) [][]Datum {
-		return [][]Datum{{TextD(roleName), IntD(ownerOID), BoolD(true), BoolD(true), BoolD(true), BoolD(true),
-			TextD("********"), Null, Null}}
+		var rows [][]Datum
+		for _, r := range roleRows(c) {
+			if r[5].Bool() { // rolcanlogin
+				rows = append(rows, []Datum{r[0], r[12], r[4], r[1], r[6], r[10], TextD("********"), Null, Null})
+			}
+		}
+		return rows
 	})
 
 	defCat("pg_settings", "name:t setting:t unit:t category:t short_desc:t extra_desc:t context:t vartype:t "+

@@ -230,6 +230,11 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 	if err != nil {
 		return nil, AsError(err)
 	}
+	if nn := s.currentName(oldName, st); nn != oldName {
+		if err := s.E.MoveGrants(oldName, nn); err != nil { // privileges follow the table
+			return nil, AsError(err)
+		}
+	}
 	// the sequences of SERIAL/IDENTITY columns are dropped with them, or
 	// follow their owner's name
 	for _, q := range s.tableSequences(oldName) {

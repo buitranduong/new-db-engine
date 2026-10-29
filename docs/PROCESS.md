@@ -56,14 +56,14 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 7. **Lỗi thao tác của người điều phối**: heredoc lồng làm file rỗng; `pgrep` tự khớp lệnh của mình rồi vẫn xoá; chờ tuần tự khi có thể song song; dấu nháy thừa làm cả lệnh ghi file thất bại. Biện pháp: kiểm điều kiện thật trước khi xoá; ghi file bằng một lệnh stdin riêng cho từng file; kiểm file sau khi ghi.
 8. **Hệ thống chặn một hành động thì không vòng qua**: báo cáo và xin quyền.
 
-## 4. Hàng việc kế tiếp (thứ tự do người điều phối chốt)
+## 4. Hàng việc kế tiếp (thứ tự do người điều phối chốt; đã cập nhật sau đợt gộp 2)
 
-1. **`fixbatch`** (lỗi B1): gộp ngay khi có kết quả; nếu đúng là lỗi lõi, dừng gộp các nhánh khác đụng `core` cho tới khi xong.
-2. Gộp **`types`** (numeric/uuid/bytea/jsonb/timestamp µs) rồi **`index`** (index phụ, UNIQUE, FK), kiểm `claimcheck` + `pgdiff`; các nhánh khác rebase lên sau.
-3. Gộp **`harness`** (đã xong), **`compat`**, **`e2e`**, **`ci`**, **`spill`**, **`btree`** (nghiên cứu), **`raftwire`**; mỗi lần chạy `merge-gate.sh`.
-4. Chạy **`simbench`** cỡ nhỏ khi cổng/đĩa rảnh; sửa lỗ SQL phát sinh; viết phần đo độ mới.
-5. Viết **`docs/17`** khảo sát tự viết / dùng lại cho từng tầng (parser PG, Raft, cột, search, lưu trữ), có kiểm giấy phép.
-6. Công cụ **chế độ bóng**: nạp PG→STASK (logical replication subscriber) + bộ so sánh kết quả truy vấn theo thời gian thực.
-7. Sửa các diff của `pgdiff` theo mức ảnh hưởng tới bài toán SIM (xem `STATUS §4`); chạy lại `pgdiff` sau mỗi đợt.
-8. Máy đo riêng + benchmark chuẩn công khai (YCSB, ClickBench) + lặp P0.5/P0.6/P0.8 bằng harness tự kiểm; chuyển 38 script đo còn lại sang harness.
+1. **`-race` trên bản gộp** (B11) rồi push; sau đó mỗi lần gộp chạy `merge-gate` với `RACE=1`.
+2. **Khoá ẩn `__rowid` và PK ghép** để Liquibase khởi động được (chặn lớn nhất, pgdiff nhóm a).
+3. **Chạy `simbench` cỡ 1M số** và viết phần đo độ mới (trễ view khi nhập, đọc-sau-ghi, `kill -9` giữa lúc nhập); sửa lỗ SQL phát sinh.
+4. **`history`**: chính sách giữ lịch sử 60 ngày theo thời gian, nén, xoá theo ngày, truy vấn lịch sử từ SQL (agent đã giao, chưa có commit).
+5. Sửa khác biệt `pgdiff` theo mức ảnh hưởng: OID `integer`/`varchar(n)`, ràng buộc kiểu, `$$`, CTE ghi, `SET (a,b)=(...)`, `to_char`, `AT TIME ZONE`; chạy lại `pgdiff` sau mỗi đợt; thêm bộ truy vấn Superset.
+6. Đếm trực tiếp trên view trigram khi view đã tới snapshot (D19); entry index vào checkpoint; giảm chi phí ghi nhiều index.
+7. **Chế độ bóng**: nhận dữ liệu PG→STASK (logical replication subscriber) + bộ so sánh kết quả truy vấn.
+8. Máy đo riêng + benchmark chuẩn (YCSB, ClickBench); chuyển 38 script đo còn lại sang harness; lặp P0.5/P0.6/P0.8.
 9. Chờ người dùng: số lịch sử thật, SLO độ mới, loại truy vấn Superset, ORM thực tế (docs/15 §5).

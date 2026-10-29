@@ -44,9 +44,9 @@ what the code actually does for each task, including where the docs were wrong:
   [docs/05 §14](docs/05_sql_pgwire.md)).
 - **Security and operations**: TLS and SCRAM-SHA-256 on the SQL port, mutual
   TLS and challenge-response authentication on the replication port, TLS and
-  bearer tokens on the HTTP API, cancellation of running table scans and
-  aggregates, `statement_timeout` (not yet applied to set-returning function scans
-  such as `generate_series`), idle-session timeouts, per-query memory budget
+  bearer tokens on the HTTP API, cancellation of running statements and
+  `statement_timeout` (table scans, aggregates, sorts, set-returning functions such
+  as `generate_series`, windows, set operations, recursive CTEs), idle-session timeouts, per-query memory budget
   ([docs/13](docs/13_http_security.md)).
 
 Not there yet: secondary indexes, foreign keys, roles and `GRANT`, exact

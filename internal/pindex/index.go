@@ -4,7 +4,7 @@
 // internal/core and internal/types: keys and values are plain bytes, keys
 // are ordered with bytes.Compare.
 //
-// Design in one paragraph (rationale and alternatives: docs/15_disk_index.md):
+// Design in one paragraph (rationale and alternatives: docs/18_disk_index.md):
 // the log is the source of truth, so the index file needs no write-ahead log
 // of its own. Pages are never overwritten in place while anything durable or
 // any snapshot can reach them. Writers copy a page the first time they touch

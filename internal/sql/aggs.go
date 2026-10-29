@@ -387,24 +387,34 @@ type varAgg struct {
 	pop, sqrt bool
 	n         float64
 	mean, m2  float64
+	nv        numVarState
 }
 
 func (a *varAgg) add(args, _ []Datum) error {
 	if args[0].IsNull() {
 		return nil
 	}
+	if a.addNumeric(args[0]) {
+		return nil
+	}
 	v, err := coerce(args[0], KFloat)
 	if err != nil {
 		return err
 	}
+	// float8_accum of PostgreSQL (Youngs-Cramer): mean holds the running sum, m2 the sum of squares
 	a.n++
-	d := v.F - a.mean
-	a.mean += d / a.n
-	a.m2 += d * (v.F - a.mean)
+	a.mean += v.F
+	if a.n > 1 {
+		tmp := v.F*a.n - a.mean
+		a.m2 += tmp * tmp / (a.n * (a.n - 1))
+	}
 	return nil
 }
 
 func (a *varAgg) result() (Datum, error) {
+	if a.nv.on && a.n == 0 {
+		return a.numResult()
+	}
 	div := a.n - 1
 	if a.pop {
 		div = a.n

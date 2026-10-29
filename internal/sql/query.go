@@ -835,7 +835,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			if len(a.order) > 0 && f.Name != "string_agg" && f.Name != "array_agg" {
 				ak = []Kind{staticKind(a.order[0].x, sk[:p.nFrom])}
 			}
-			sk = append(sk, funcKind(f.Name, ak))
+			sk = append(sk, supfixAggKind(f.Name, a.args, ak, funcKind(f.Name, ak), slotTy))
 			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: a.args}, slotTy).forKind(sk[len(sk)-1]))
 		}
 		gi.setSlot = slot
@@ -886,7 +886,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			for i, x := range w.args {
 				ak[i] = staticKind(x, sk)
 			}
-			sk = append(sk, funcKind(f.Name, ak))
+			sk = append(sk, supfixAggKind(f.Name, w.args, ak, funcKind(f.Name, ak), slotTy))
 			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: w.args, Over: f.Over}, slotTy).forKind(sk[len(sk)-1]))
 		}
 		post = &wb
@@ -1417,6 +1417,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			return KInterval
 		case l == KFloat || r == KFloat:
 			return KFloat
+		case l == KNumeric || r == KNumeric:
+			return KNumeric
 		case l == KInt && r == KInt:
 			return KInt
 		case l == KNull || r == KNull:

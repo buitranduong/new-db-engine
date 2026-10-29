@@ -612,6 +612,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 				return Null, err
 			}
 		}
+		if f.Name == "age" && !c.dialectCH() {
+			return ageInterval(a, b), nil
+		}
 		return IntervalD(0, a-b), nil
 	case "tostartofday", "tostartofhour", "tostartofminute", "tostartofmonth", "tostartofyear",
 		"tostartofquarter", "tostartofweek", "tomonday", "tostartofsecond", "tostartoffiveminutes", "tostartoffifteenminutes":
@@ -784,6 +787,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			return TextD(pgKindName(Kind(args[0].I)) + "[]"), nil
 		}
 		return TextD(pgKindName(args[0].K)), nil
+	}
+	if d, ok, err := c.callMore(f, args); ok {
+		return d, err
 	}
 	return Null, errf(codeUndefinedFunction, "function %s does not exist", f.Name)
 }
@@ -1334,7 +1340,7 @@ func funcKind(name string, args []Kind) Kind {
 		return k
 	}
 	switch name {
-	case "count", "length", "char_length", "strpos", "position", "locate", "ascii", "octet_length", "lengthutf8",
+	case "count", "length", "char_length", "strpos", "position", "locate", "ascii", "octet_length", "lengthutf8", "bit_length",
 		"toyear", "tomonth", "todayofmonth", "tohour", "tominute", "tosecond", "todayofweek", "todayofyear",
 		"toquarter", "toyyyymm", "toyyyymmdd", "tounixtimestamp", "toisoweek", "datediff", "date_diff",
 		"toint8", "toint16", "toint32", "toint64", "toint128", "touint8", "touint16", "touint32", "touint64",
@@ -1432,7 +1438,7 @@ func funcKind(name string, args []Kind) Kind {
 		return KNumeric
 	case "gen_random_uuid", "uuid_generate_v4", "generateuuidv4":
 		return KUUID
-	case "array", "array_agg", "grouparray", "groupuniqarray":
+	case "regexp_match", "regexp_split_to_array", "array", "array_agg", "grouparray", "groupuniqarray":
 		return KArray
 	}
 	return KText

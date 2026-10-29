@@ -185,3 +185,60 @@ func TestOperators(t *testing.T) {
 		}
 	}
 }
+
+func TestPGFormatFunctions(t *testing.T) {
+	s := NewSession(newEngine(t))
+	cases := []struct{ q, want string }{
+		{`SELECT to_char(1234.5, 'FM9999.00'), to_char(0.5, '0.00'), to_char(1234567, 'FM9,999,999'), to_char(-5, 'FM000')`, "1234.50, 0.50,1,234,567,-005"},
+		{`SELECT to_char(12345.678::numeric, 'FM999,999,999.00'), to_char(-12.5, '999.9'), to_char(7, '000')`, "12,345.68, -12.5, 007"},
+		{`SELECT to_timestamp('2026-03-15 10:20:30', 'YYYY-MM-DD HH24:MI:SS')`, "2026-03-15 10:20:30+00"},
+		{`SELECT to_date('15/03/2026', 'DD/MM/YYYY'), to_timestamp('15 Mar 2026 03:04 PM', 'DD Mon YYYY HH12:MI AM')`, "2026-03-15,2026-03-15 15:04:00+00"},
+		{`SELECT '2026-01-15 10:00:00+00'::timestamptz AT TIME ZONE 'Asia/Ho_Chi_Minh', '2026-01-15 10:00:00'::timestamp AT TIME ZONE 'UTC'`, "2026-01-15 17:00:00,2026-01-15 10:00:00+00"},
+		{`SELECT age('2026-03-15'::date, '2025-01-10'::date), age('2026-03-05'::date, '2026-01-10'::date), age('2025-01-10'::date, '2026-03-15'::date)`,
+			"1 year 2 mons 5 days,1 mon 26 days,-1 years -2 mons -5 days"},
+		{`SELECT quote_ident('a b'), quote_literal('a''b'), quote_nullable(NULL), translate('12345', '143', 'ax'), bit_length('a')`, `"a b",'a''b',NULL,a2x5,8`},
+		{`SELECT (regexp_match('foo123bar', '([0-9]+)'))[1], regexp_split_to_array('a1b2c', '[0-9]')`, "123,{a,b,c}"},
+	}
+	for _, c := range cases {
+		if got := render(run(t, s, c.q)); got != c.want {
+			t.Errorf("%s = %q, want %q", c.q, got, c.want)
+		}
+	}
+	for q, code := range map[string]string{
+		`SELECT to_date('xx', 'YYYY')`:                               "22007",
+		`SELECT to_date('2026-13-45', 'YYYY-MM-DD')`:                 "22008",
+		`SELECT '2026-01-01'::timestamp AT TIME ZONE 'Nowhere/City'`: "22023",
+	} {
+		if _, err := tryRun(s, q); err == nil || AsError(err).Code != code {
+			t.Errorf("%s: %v, want %s", q, err, code)
+		}
+	}
+}
+
+func TestUpdateReturningFrom(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE u1 (id INTEGER PRIMARY KEY, n INTEGER)`)
+	run(t, s, `CREATE TABLE u2 (id INTEGER PRIMARY KEY, w TEXT)`)
+	run(t, s, `INSERT INTO u1 VALUES (1, 10), (2, 20), (3, 30)`)
+	run(t, s, `INSERT INTO u2 VALUES (1, 'x'), (3, 'z'), (9, 'q')`)
+	if got := render(run(t, s, `UPDATE u1 t SET n = t.n + 1 FROM u2 s WHERE t.id = s.id RETURNING t.id, t.n, s.w`)); got != "1,11,x;3,31,z" {
+		t.Errorf("update returning from: %s", got)
+	}
+	if got := render(run(t, s, `DELETE FROM u1 a USING u2 b WHERE a.id = b.id RETURNING a.id, b.w`)); got != "1,x;3,z" {
+		t.Errorf("delete returning using: %s", got)
+	}
+	st, _ := ParseOne(`UPDATE u1 t SET n = 1 WHERE t.id = 1 RETURNING t.id, t.n`)
+	d, err := s.Describe(st)
+	if err != nil || len(d.Cols) != 2 || d.Cols[0].OID != 23 {
+		t.Errorf("describe with alias: %+v %v", d, err)
+	}
+	// ON CONFLICT targets
+	if _, err := tryRun(s, `INSERT INTO u1 VALUES (5, 5) ON CONFLICT (n) DO NOTHING`); code(err) != "42P10" {
+		t.Errorf("on conflict non-unique: %v", err)
+	}
+	run(t, s, `INSERT INTO u1 VALUES (5, 5) ON CONFLICT (id) DO UPDATE SET n = excluded.n + 1`)
+	run(t, s, `INSERT INTO u1 VALUES (5, 5) ON CONFLICT (id) DO UPDATE SET n = excluded.n + 1`)
+	if got := render(run(t, s, `SELECT n FROM u1 WHERE id = 5`)); got != "6" {
+		t.Errorf("upsert: %s", got)
+	}
+}

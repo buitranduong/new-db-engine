@@ -631,6 +631,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		}
 		return nil
 	}
+	if f.Name == "quote_nullable" && len(args) == 1 && args[0].IsNull() {
+		return TextD("NULL"), nil
+	}
 	if f.Name == "pg_typeof" && len(args) == 1 && args[0].IsNull() { // NULL has the type unknown, not no value
 		if l, ok := f.Args[0].(*Lit); ok && l.V.IsNull() {
 			return TextD("unknown"), nil

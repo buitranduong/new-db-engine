@@ -269,8 +269,9 @@ func (p *parser) statement() (Stmt, error) {
 				default:
 					return nil, p.errHere("unknown isolation level %q", p.peek().s)
 				}
-			case p.acceptKw("read", "write"), p.acceptKw("read", "only"), p.acceptKw("deferrable"),
-				p.acceptKw("not", "deferrable"):
+			case p.acceptKw("read", "only"):
+				b.ReadOnly = true
+			case p.acceptKw("read", "write"), p.acceptKw("deferrable"), p.acceptKw("not", "deferrable"):
 			case p.acceptOp(","):
 			default:
 				return b, nil
@@ -285,11 +286,16 @@ func (p *parser) statement() (Stmt, error) {
 		p.next()
 		p.acceptKw("transaction")
 		p.acceptKw("work")
+		if p.acceptKw("to") {
+			p.acceptKw("savepoint")
+			name, err := p.ident()
+			return &RollbackToStmt{name}, err
+		}
 		return &Rollback{}, nil
 	case "set":
 		p.next()
 		p.acceptKw("session")
-		p.acceptKw("local")
+		local := p.acceptKw("local")
 		var name []string
 		for {
 			t := p.next()
@@ -309,7 +315,7 @@ func (p *parser) statement() (Stmt, error) {
 		for p.peek().k != tEOF && !p.isOp(";") {
 			val = append(val, p.next().s)
 		}
-		return &SetVar{Name: strings.Join(name, "."), Value: strings.Join(val, " ")}, nil
+		return &SetVar{Name: strings.Join(name, "."), Value: strings.Join(val, " "), Local: local}, nil
 	case "listen":
 		p.next()
 		ch, err := p.ident()
@@ -378,6 +384,12 @@ func (p *parser) statement() (Stmt, error) {
 			name = append(name, p.next().s)
 		}
 		return &Show{Name: strings.Join(name, " ")}, nil
+	}
+	if st, ok, err := p.compatStatement(t.s); ok {
+		return st, err
+	}
+	if !knownStatements[t.s] {
+		return nil, p.errHere("syntax error at or near %q", t.s)
 	}
 	return nil, errf(codeFeature, "statement %q is not supported", strings.ToUpper(t.s))
 }
@@ -822,6 +834,10 @@ func (p *parser) insertStmt() (Stmt, error) {
 					return nil, p.errHere("unterminated conflict target")
 				}
 				p.next()
+			}
+		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
+			if _, err := p.ident(); err != nil {
+				return nil, err
 			}
 		}
 		if err := p.expectKw("do"); err != nil {
@@ -1903,12 +1919,22 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				act.Kind = "drop_not_null"
 			case p.acceptKw("set", "data", "type"), p.acceptKw("type"):
 				act.Kind = "set_type"
-				var err error
 				if act.Type, err = p.typeName(); err != nil {
 					return nil, err
 				}
 				if p.acceptKw("using") {
-					return nil, errf(codeFeature, "ALTER COLUMN TYPE ... USING is not supported")
+					// only the cast of the column itself: USING col::type or CAST(col AS type)
+					x, err := p.expr()
+					if err != nil {
+						return nil, err
+					}
+					if c, ok := x.(*Cast); ok {
+						x = c.X
+					}
+					if cr, ok := x.(*ColRef); !ok || cr.Name != act.Column {
+						return nil, errf(codeFeature, "ALTER COLUMN TYPE ... USING supports only the column itself, cast to the new type")
+					}
+					act.Using = true
 				}
 			default:
 				return nil, p.errHere("syntax error at or near %q", p.peek().s)

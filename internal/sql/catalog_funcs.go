@@ -23,7 +23,7 @@ var catalogFuncKinds = map[string]Kind{
 	"current_catalog": KText, "pg_get_viewdef": KText, "pg_relation_size": KInt, "pg_total_relation_size": KInt,
 	"pg_table_size": KInt, "pg_indexes_size": KInt, "array_lower": KInt, "array_upper": KInt,
 	"stask_subscript": KNull, "stask_field": KInt, "_pg_expandarray": KText, "stask_anyarr": KBool,
-	"current_setting": KText, "to_regclass": KInt, "to_regtype": KInt, "pg_relation_is_publishable": KBool,
+	"current_setting": KText, "set_config": KText, "to_regclass": KInt, "to_regtype": KInt, "pg_relation_is_publishable": KBool,
 	"pg_get_statisticsobjdef_columns": KText, "pg_get_triggerdef": KText, "pg_get_ruledef": KText,
 	"pg_get_partkeydef": KText, "pg_backend_pid": KInt, "pg_database_size": KInt, "pg_my_temp_schema": KInt,
 	"pg_is_other_temp_schema": KBool, "pg_is_in_recovery": KBool, "pg_get_function_arguments": KText, "pg_get_function_result": KText,
@@ -81,6 +81,11 @@ func (s *Session) regclass(name string) (Datum, error) {
 	}
 	if ts, err := s.E.UserTable(n); err == nil {
 		return IntD(tableOID(ts.Schema())), nil
+	}
+	for _, v := range s.E.Views() {
+		if v.Name == n {
+			return IntD(viewOID(n)), nil
+		}
 	}
 	if _, _, err := s.E.SequenceState(n); err == nil {
 		oid := seqOID(n)
@@ -201,6 +206,18 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return IntD(1), nil
 	case "pg_my_temp_schema":
 		return IntD(0), nil
+	case "set_config": // set_config(name, value, is_local)
+		if len(args) < 3 || args[0].IsNull() {
+			return Null, errf(codeInvalidParameter, "set_config needs a name, a value and is_local")
+		}
+		val := ""
+		if !args[1].IsNull() {
+			val = args[1].String()
+		}
+		if _, err := s.set(&SetVar{Name: args[0].String(), Value: val, Local: args[2].Bool()}); err != nil {
+			return Null, err
+		}
+		return TextD(val), nil
 	case "current_setting": // current_setting(name [, missing_ok])
 		if len(args) == 0 || args[0].IsNull() {
 			return Null, nil
@@ -320,7 +337,14 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return TextD(roleName), nil
 	case "pg_get_expr":
 		return arg(0), nil // adbin and conbin hold the expression's text
-	case "obj_description", "col_description", "shobj_description", "pg_get_viewdef":
+	case "pg_get_viewdef":
+		for _, v := range s.E.Views() {
+			if o := arg(0); o.K == KInt && o.I == viewOID(v.Name) || o.K == KText && o.S == v.Name {
+				return TextD(" " + v.Query + ";"), nil
+			}
+		}
+		return Null, nil
+	case "obj_description", "col_description", "shobj_description":
 		return Null, nil
 	case "pg_encoding_to_char":
 		if argInt(0) == 6 {

@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"stask/internal/core"
 	"stask/internal/pgnum"
 	"stask/internal/proj"
 	"stask/internal/schema"
@@ -47,6 +48,8 @@ type evalCtx struct {
 	drow  []Datum  // the working row that Slot reads
 
 	sess *Session // for session functions outside the general executor
+
+	polls uint32 // evaluations in the general executor, to poll for cancel
 }
 
 func (c *evalCtx) session() *Session {
@@ -60,6 +63,13 @@ func (c *evalCtx) session() *Session {
 }
 
 func (c *evalCtx) eval(x Expr) (Datum, error) {
+	if c.qx != nil {
+		// every operator that evaluates an expression per row (filter,
+		// projection, grouping, window, sort keys) polls for cancel here
+		if c.polls++; c.polls&4095 == 0 && c.qx.s.interrupted() {
+			return Null, core.ErrInterrupted
+		}
+	}
 	switch e := x.(type) {
 	case *Lit:
 		return e.V, nil
@@ -393,7 +403,7 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 		}
 		return BoolD(cmp >= 0), nil
 	case "||":
-		return TextD(l.String() + r.String()), nil
+		return TextD(l.Text() + r.Text()), nil
 	}
 	return arith(e.Op, l, r)
 }
@@ -487,11 +497,23 @@ func arith(op string, l, r Datum) (Datum, error) {
 		a, b := l.I, r.I
 		switch op {
 		case "+":
-			return IntD(a + b), nil
+			c := a + b
+			if (a^c)&(b^c) < 0 {
+				return Null, errf(codeNumericOutOfRange, "bigint out of range")
+			}
+			return IntD(c), nil
 		case "-":
-			return IntD(a - b), nil
+			c := a - b
+			if (a^b)&(a^c) < 0 {
+				return Null, errf(codeNumericOutOfRange, "bigint out of range")
+			}
+			return IntD(c), nil
 		case "*":
-			return IntD(a * b), nil
+			c := a * b
+			if a != 0 && (c/a != b || a == -1 && b == math.MinInt64) {
+				return Null, errf(codeNumericOutOfRange, "bigint out of range")
+			}
+			return IntD(c), nil
 		case "&":
 			return IntD(a & b), nil
 		case "/", "%":

@@ -91,6 +91,16 @@ func lex(src string) ([]token, error) {
 			}
 			out = append(out, token{tQuoted, src[i+1 : i+1+end], start})
 			i += end + 2
+		case c == '$' && dollarTagEnd(src, i) > 0:
+			// $$ text $$ or $tag$ text $tag$: no escapes inside
+			start, te := i, dollarTagEnd(src, i)
+			tag := src[i : te+1]
+			end := strings.Index(src[te+1:], tag)
+			if end < 0 {
+				return nil, syntaxErr(i, "unterminated dollar-quoted string")
+			}
+			out = append(out, token{tString, src[te+1 : te+1+end], start})
+			i = te + 1 + end + len(tag)
 		case c == '$' && i+1 < len(src) && isDigit(src[i+1]):
 			start := i
 			i++
@@ -158,3 +168,17 @@ func lex(src string) ([]token, error) {
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// dollarTagEnd is the index of the closing '$' of a dollar-quote tag that
+// starts at src[i] ($$ or $name$), or -1 if there is none ($1 is a parameter).
+func dollarTagEnd(src string, i int) int {
+	j := i + 1
+	for j < len(src) && (src[j] == '_' || src[j] < utf8.RuneSelf && unicode.IsLetter(rune(src[j])) ||
+		j > i+1 && isDigit(src[j]) || src[j] >= utf8.RuneSelf) {
+		j++
+	}
+	if j < len(src) && src[j] == '$' {
+		return j
+	}
+	return -1
+}

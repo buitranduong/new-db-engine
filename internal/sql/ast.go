@@ -64,6 +64,7 @@ type AlterAction struct {
 	NewName    string // rename_column, rename_table
 	Expr       string // set_default
 	Type       string // set_type: the new type (schema type name)
+	Using      bool   // set_type: USING col::type was given
 	Check      CheckDef
 	Constraint *ConstraintDef // add_constraint (UNIQUE, FOREIGN KEY)
 	IfExists   bool           // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
@@ -160,10 +161,16 @@ type Select struct {
 	cached *selectPlan // see Select.plan
 }
 
-type Begin struct{ Iso string }
+type Begin struct {
+	Iso      string
+	ReadOnly bool
+}
 type Commit struct{}
 type Rollback struct{}
-type SetVar struct{ Name, Value string }
+type SetVar struct {
+	Name, Value string
+	Local       bool // SET LOCAL: until the end of the transaction
+}
 type Show struct{ Name string }
 type DropTable struct {
 	Names    []string

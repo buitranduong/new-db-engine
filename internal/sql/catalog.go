@@ -29,6 +29,7 @@ const (
 	databaseOID   = 16383
 	indexOIDBase  = 0x40000000
 	seqOIDBase    = 0x60000000
+	viewOIDBase   = 0x70000000
 	btreeAMOID    = 403
 	heapAMOID     = 2
 	pgClassOID    = 1259
@@ -142,10 +143,11 @@ type catSnap struct {
 	s      *Session
 	tables []*schema.Table
 	seqs   []core.Sequence
+	views  []core.View
 }
 
 func (s *Session) catSnap() *catSnap {
-	c := &catSnap{s: s, seqs: s.E.Sequences()}
+	c := &catSnap{s: s, seqs: s.E.Sequences(), views: s.E.Views()}
 	for _, ts := range s.E.UserTables() {
 		c.tables = append(c.tables, ts.Schema())
 	}
@@ -159,6 +161,13 @@ func seqOID(name string) int64 {
 	h := fnv.New32a()
 	h.Write([]byte(name))
 	return seqOIDBase + int64(h.Sum32()&0x0fffffff)
+}
+
+// viewOID is a view's OID: a hash of its name above viewOIDBase.
+func viewOID(name string) int64 {
+	h := fnv.New32a()
+	h.Write([]byte(name))
+	return viewOIDBase + int64(h.Sum32()&0x0fffffff)
 }
 func pkeyName(t *schema.Table) string { return t.Name + "_pkey" }
 

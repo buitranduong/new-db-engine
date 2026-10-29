@@ -57,3 +57,15 @@ Kiểm thử vi phân với PG trên khối lượng thật; kiểm thử sự c
 **Giảm rủi ro:** thu hẹp phạm vi về bài toán SIM; đặt tiêu chí dừng bằng số; chia cổng (1) hết khác biệt SQL chặn ứng dụng, (2) `simbench` thắng ở quy mô thật, (3) chế độ bóng 4–8 tuần không lệch, (4) chuyển đường đọc, (5) chuyển đường ghi.
 
 **Đánh giá tổng:** làm được engine **chạy tốt cho đúng bài toán kho SIM** trong vài tháng tập trung là khả thi; engine **thay PostgreSQL + ClickHouse + Elasticsearch nói chung** là không thực tế với nguồn lực hiện tại.
+
+## 7. Định vị quy mô (ghi theo trao đổi với người dùng, 2026-10-29)
+
+**Quan điểm của người dùng:** hệ thống cỡ Shopee dùng nhiều tầng service để phân vai và đồng bộ dữ liệu (cluster); không DB đơn lẻ nào chịu nổi tải đó; các công ty lớn tự xây DB riêng. Mục đích ở đây là **gom nhóm thành một engine** (không nhằm đáp ứng toàn bộ), thay vì kiến trúc phân mảnh nhiều hệ ghép.
+
+**Đánh giá của người điều phối (không có kiến thức cụ thể về kiến trúc Shopee; chỉ nói về mô hình chung):**
+
+1. Mô hình chung của các công ty lớn khớp giả thuyết H1: một lớp log/lưu trữ làm nguồn sự thật, các hệ chuyên biệt (tìm kiếm, phân tích, cache) nuôi từ đó. Họ thường tự xây **lớp nhân bản/phân mảnh/phục hồi** trên engine lưu trữ có sẵn, ít khi viết lại toàn bộ.
+2. Khác biệt về quy mô: ở cỡ hàng chục triệu yêu cầu mỗi giây, tiết kiệm nhỏ đã đủ bù cả đội kỹ sư nhiều năm. Bài toán SIM (30-50 triệu dòng) nhỏ hơn nhiều bậc, một máy có thể giữ trạng thái hiện tại trong RAM (ước khoảng 5-10 GB, chưa kiểm chứng). Kiến trúc nhiều tầng và phân mảnh kiểu Shopee là **không cần** ở quy mô này.
+3. Định vị đề xuất: **engine một máy, phân tầng** (log + trạng thái hiện hành, view tìm kiếm/cột, lịch sử, sao lưu), dùng cho hàng chục đến vài trăm triệu dòng. Mở rộng ngang (phân mảnh, giao dịch xuyên shard) là dự án riêng, lớn hơn (P6.5), để sau.
+4. Rủi ro kinh tế: một DB tự xây cần cả đội vận hành. Chỉ đáng nếu engine là sản phẩm lõi; nếu chỉ phục vụ kho SIM thì chi phí duy trì có thể vượt chi phí của stack hiện tại. Đây là quyết định kinh doanh của người dùng.
+5. Gom "một phần" (làm tốt vài tầng, giữ hệ có sẵn cho phần còn lại, ví dụ PostgreSQL cho CRM) là hướng an toàn và khớp con đường triển khai ở §4.

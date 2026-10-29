@@ -336,7 +336,7 @@ func (a *listAgg) result() (Datum, error) {
 			if n > 0 && !a.sep.IsNull() {
 				b.WriteString(a.sep.String())
 			}
-			b.WriteString(a.vals[i].String())
+			b.WriteString(a.vals[i].Text())
 		}
 		return TextD(b.String()), nil
 	}

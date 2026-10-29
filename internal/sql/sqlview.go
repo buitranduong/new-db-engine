@@ -20,10 +20,9 @@ import (
 //
 // DDL is applied at once and not at commit, like CREATE TABLE.
 //
-// TODO(catalog): pg_class (relkind 'v'), pg_views, information_schema.views
-// and information_schema.tables (table_type 'VIEW') must list the views of
-// Engine.Views(), with columns from View.Cols; catalog_*.go is not touched
-// here.
+// The catalogs list views: pg_class (relkind 'v'), pg_attribute (text
+// columns: output types are not recorded), pg_views, information_schema.views,
+// .tables (table_type 'VIEW') and .columns; regclass resolves them.
 
 // CreateView is CREATE [OR REPLACE] VIEW name [(cols)] AS query.
 type CreateView struct {

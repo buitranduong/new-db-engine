@@ -46,6 +46,9 @@ func init() {
 		for _, q := range c.seqs {
 			rel(seqOID(q.Name), q.Name, 0, "S", 3, 0, false, "n", Null)
 		}
+		for _, v := range c.views {
+			rel(viewOID(v.Name), v.Name, 0, "v", len(v.Cols), 0, false, "n", Null)
+		}
 		return rows
 	})
 
@@ -103,6 +106,11 @@ func init() {
 			att(seqOID(q.Name), "last_value", 20, 1, true, false, "", false, false)
 			att(seqOID(q.Name), "log_cnt", 20, 2, true, false, "", false, false)
 			att(seqOID(q.Name), "is_called", 16, 3, true, false, "", false, false)
+		}
+		for _, v := range c.views { // the output types are not recorded: text
+			for i, name := range v.Cols {
+				att(viewOID(v.Name), name, 25, i+1, false, false, "", false, false)
+			}
 		}
 		return rows
 	})
@@ -344,7 +352,13 @@ func init() {
 		}
 		return rows
 	})
-	defCat("pg_views", "schemaname:t viewname:t viewowner:t definition:t", nil)
+	defCat("pg_views", "schemaname:t viewname:t viewowner:t definition:t", func(c *catSnap) [][]Datum {
+		var rows [][]Datum
+		for _, v := range c.views {
+			rows = append(rows, []Datum{TextD("public"), TextD(v.Name), TextD(roleName), TextD(" " + v.Query + ";")})
+		}
+		return rows
+	})
 	defCat("pg_matviews", "schemaname:t matviewname:t matviewowner:t tablespace:t hasindexes:b ispopulated:b "+
 		"definition:t", nil)
 }

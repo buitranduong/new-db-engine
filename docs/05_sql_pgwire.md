@@ -117,7 +117,7 @@ Trong giao dịch tường minh, va chạm trả `40001` (`could not serialize a
 - `CREATE VIEW`, `ARRAY JOIN` của ClickHouse, `FINAL`/`SAMPLE` (được chấp nhận nhưng bỏ qua).
 - Truy vấn nhiều bảng chạy bằng bộ thực thi tổng quát trên dữ liệu đã đưa hết vào bộ nhớ (hash join, không spill ra đĩa). Chỉ aggregate một bảng mới dùng view dạng cột.
 - Index phụ. Mọi truy vấn không theo khoá chính đều quét bảng.
-- `ALTER COLUMN ... TYPE`, khoá ngoại, `UNIQUE` ngoài khoá chính. `ALTER TABLE` đã có, xem §11. `COPY` text/csv đã có, xem §14 (chưa có binary, file/program, `FORCE_*`, giao thức mở rộng).
+- `ALTER COLUMN ... TYPE` giữa kiểu số/chuỗi/bool/thời gian đã có (docs/14 K4); khoá ngoại, `UNIQUE` ngoài khoá chính. `ALTER TABLE` đã có, xem §11. `COPY` text/csv đã có, xem §14 (chưa có binary, file/program, `FORCE_*`, giao thức mở rộng).
 - `pg_catalog` và `information_schema`. Lệnh `\d` của psql, cùng phần duyệt schema của DBeaver và DataGrip, sẽ báo lỗi. Truy vấn dữ liệu thì vẫn chạy.
 - Xác thực bằng chứng chỉ client, GSSAPI (xem §10). Vai trò và `GRANT`/`REVOKE` mức bảng đã có từ 2026-10-29, xem §18; quan sát vận hành (`pg_stat_activity`, `/metrics`, log chậm, scrub) xem §19. (Huỷ câu lệnh và các timeout của session đã có từ 2026-10-29, xem §11.)
 - Chưa truy vấn được time-series, tìm kiếm, `as_of` từ SQL. Các chức năng này vẫn có qua HTTP API.
@@ -474,7 +474,7 @@ Hạn chế, kèm cách xử lý:
 
 | Hạn chế | Xử lý |
 |---|---|
-| `ALTER COLUMN TYPE` (`0A000`) với cặp kiểu khác | Chỉ có `time`→`timestamp`/`timestamptz`, `int`/`float`→`numeric` (P1.1, docs/09 §5); không dùng được cho cột khoá, bảng columnar, time-series và search; chưa có `USING`. Các chuyển đổi khác cần ghi lại dòng ở nền |
+| `ALTER COLUMN TYPE` | Đã làm cho kiểu cơ bản (docs/14 K4): không viết lại dòng, dùng cơ chế bố cục theo LSN, `USING col::type` cho phép ép kiểu tường minh | Thêm các cặp của P1.1: `time`→`timestamp`/`timestamptz`, `int`/`float`→`numeric` (docs/09 §4); chúng không cần `USING` và không kiểm lại từng dòng.
 | DROP COLUMN trên bảng time-series (`0A000`), hoặc chính cột đang được view search đánh chỉ mục | Hoãn: view time-series lưu block theo vị trí cột. Bảng time-series là append-only nên hiếm khi bị đổi. Các cột khác của bảng có search thì xoá được |
 | DROP COLUMN cột khoá chính (`0A000`) | Không làm, vì bảng STASK luôn cần khoá chính. PG cho phép và bỏ luôn ràng buộc |
 | Cột thêm bằng ADD COLUMN không được lưu trong view cột cho tới lần khởi động sau (aggregate trên cột đó chạy trên dòng) | Hoãn: dựng vector ở nền |

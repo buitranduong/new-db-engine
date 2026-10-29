@@ -257,8 +257,9 @@ func (p *parser) statement() (Stmt, error) {
 				default:
 					return nil, p.errHere("unknown isolation level %q", p.peek().s)
 				}
-			case p.acceptKw("read", "write"), p.acceptKw("read", "only"), p.acceptKw("deferrable"),
-				p.acceptKw("not", "deferrable"):
+			case p.acceptKw("read", "only"):
+				b.ReadOnly = true
+			case p.acceptKw("read", "write"), p.acceptKw("deferrable"), p.acceptKw("not", "deferrable"):
 			case p.acceptOp(","):
 			default:
 				return b, nil
@@ -273,11 +274,16 @@ func (p *parser) statement() (Stmt, error) {
 		p.next()
 		p.acceptKw("transaction")
 		p.acceptKw("work")
+		if p.acceptKw("to") {
+			p.acceptKw("savepoint")
+			name, err := p.ident()
+			return &RollbackToStmt{name}, err
+		}
 		return &Rollback{}, nil
 	case "set":
 		p.next()
 		p.acceptKw("session")
-		p.acceptKw("local")
+		local := p.acceptKw("local")
 		var name []string
 		for {
 			t := p.next()
@@ -297,7 +303,7 @@ func (p *parser) statement() (Stmt, error) {
 		for p.peek().k != tEOF && !p.isOp(";") {
 			val = append(val, p.next().s)
 		}
-		return &SetVar{Name: strings.Join(name, "."), Value: strings.Join(val, " ")}, nil
+		return &SetVar{Name: strings.Join(name, "."), Value: strings.Join(val, " "), Local: local}, nil
 	case "listen":
 		p.next()
 		ch, err := p.ident()
@@ -363,6 +369,12 @@ func (p *parser) statement() (Stmt, error) {
 			name = append(name, p.next().s)
 		}
 		return &Show{Name: strings.Join(name, " ")}, nil
+	}
+	if st, ok, err := p.compatStatement(t.s); ok {
+		return st, err
+	}
+	if !knownStatements[t.s] {
+		return nil, p.errHere("syntax error at or near %q", t.s)
 	}
 	return nil, errf(codeFeature, "statement %q is not supported", strings.ToUpper(t.s))
 }

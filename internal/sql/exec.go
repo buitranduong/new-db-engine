@@ -53,6 +53,11 @@ type Session struct {
 	ctl stmtCtl // cancel and timeouts of the running statement (cancel.go)
 
 	trigDepth int // nesting of row triggers being run (trigger.go)
+
+	// compat_stmts.go
+	savepoints []savepointState
+	readOnly   bool       // BEGIN READ ONLY / SET TRANSACTION READ ONLY
+	localUndo  []localVar // SET LOCAL values to restore at the end of the transaction
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -62,14 +67,7 @@ type Session struct {
 func (s *Session) clickHouse() bool { return s.vars["sql_dialect"] == "clickhouse" }
 
 func NewSession(e *core.Engine) *Session {
-	return &Session{E: e, vars: map[string]string{
-		"client_encoding": "UTF8", "datestyle": "ISO, MDY", "timezone": "UTC",
-		"standard_conforming_strings": "on", "server_version": "16.0",
-		"transaction_isolation": "repeatable read", "default_transaction_isolation": "repeatable read",
-		"application_name": "", "search_path": "public", "integer_datetimes": "on", "server_encoding": "UTF8",
-		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
-		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
-	}}
+	return &Session{E: e, vars: sessionDefaults()}
 }
 
 // TxStatus is the ReadyForQuery indicator: 'I' idle, 'T' in transaction, 'E' failed.
@@ -107,12 +105,18 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 	}
 	if s.failed {
 		switch st.(type) {
-		case *Commit, *Rollback:
+		case *Commit, *Rollback, *RollbackToStmt:
 		default:
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 		}
 	}
+	if w, what := writesStatement(st); w && s.isReadOnly() {
+		s.markFailed()
+		return nil, errf("25006", "cannot execute %s in a read-only transaction", what)
+	}
 	switch st := st.(type) {
+	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:
+		return s.execCompat(st)
 	case *Begin:
 		if s.explicit {
 			return &Result{Tag: "BEGIN", Notice: "there is already a transaction in progress"}, nil
@@ -122,6 +126,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			iso = core.Serializable
 		}
 		s.tx, s.explicit, s.failed = s.begin(iso), true, false
+		s.readOnly = st.ReadOnly || s.vars["default_transaction_read_only"] == "on"
 		return &Result{Tag: "BEGIN"}, nil
 	case *Commit:
 		if !s.explicit {
@@ -129,6 +134,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		}
 		tx, failed := s.tx, s.failed
 		s.tx, s.explicit, s.failed = nil, false, false
+		s.endTx()
 		if failed {
 			tx.Abort()
 			s.discardPending()
@@ -150,6 +156,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		}
 		s.tx.Abort()
 		s.tx, s.explicit, s.failed = nil, false, false
+		s.endTx()
 		s.discardPending()
 		return &Result{Tag: "ROLLBACK"}, nil
 	case *SetVar:
@@ -160,6 +167,12 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			name = "transaction_isolation"
 		}
 		v, ok := s.vars[name]
+		if !ok {
+			v, ok = settingDefaults[name]
+		}
+		if name == "transaction_read_only" && s.explicit && s.readOnly {
+			v = "on"
+		}
 		if name == "transaction_isolation" && s.explicit && s.tx.Iso() == core.Serializable {
 			v = "serializable"
 		}
@@ -299,8 +312,33 @@ func (s *Session) markFailed() {
 func (s *Session) set(st *SetVar) (*Result, error) {
 	name := strings.ToLower(st.Name)
 	val := strings.Trim(strings.ToLower(st.Value), "'\"")
+	if st.Local && name != "transaction" {
+		if !s.explicit { // PostgreSQL warns: there is no transaction block, so nothing is set
+			return &Result{Tag: "SET", Notice: "SET LOCAL can only be used in transaction blocks"}, nil
+		}
+		s.noteLocal(name)
+		local := *st
+		local.Local = false
+		return s.set(&local)
+	}
 	switch name {
 	case "transaction", "session characteristics":
+		if strings.Contains(val, "read only") || strings.Contains(val, "read write") {
+			ro := strings.Contains(val, "read only")
+			if name == "transaction" {
+				if !s.explicit {
+					return &Result{Tag: "SET"}, nil
+				}
+				s.readOnly = ro
+			} else if ro {
+				s.vars["default_transaction_read_only"] = "on"
+			} else {
+				s.vars["default_transaction_read_only"] = "off"
+			}
+			if !strings.Contains(val, "isolation") {
+				return &Result{Tag: "SET"}, nil
+			}
+		}
 		// SET TRANSACTION ISOLATION LEVEL x / SET SESSION CHARACTERISTICS AS TRANSACTION ...
 		val = strings.TrimPrefix(strings.TrimPrefix(val, "as transaction "), "isolation level ")
 		if name == "session characteristics" {
@@ -1026,6 +1064,31 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 					break
 				}
 			}
+		}
+	}
+
+	// an unknown column is an error even when no row is read (42703)
+	if sc.t != nil {
+		var cerr error
+		check := func(x Expr) {
+			walk(x, func(e Expr) {
+				if c, ok := e.(*ColRef); ok && cerr == nil {
+					_, cerr = sc.resolve(c)
+				}
+			})
+		}
+		for _, it := range items {
+			check(it.X)
+		}
+		check(st.Where)
+		check(st.Having)
+		for i, o := range st.OrderBy {
+			if orderOut[i] < 0 {
+				check(o.X)
+			}
+		}
+		if cerr != nil {
+			return nil, cerr
 		}
 	}
 

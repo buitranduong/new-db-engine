@@ -115,7 +115,7 @@ func TestSQLBasics(t *testing.T) {
 		{`SELECT nope FROM users`, codeUndefinedColumn},
 		{`SELECT * FROM nope`, codeUndefinedTable},
 		{`SELECT name, count(*) FROM users`, codeGrouping},
-		{`SELEC 1`, codeFeature},
+		{`SELEC 1`, codeSyntax},
 		{`SELECT 1 +`, codeSyntax},
 		{`SELECT 1/0`, codeDivisionByZero},
 		{`INSERT INTO users (id, name) VALUES (1, 'dup')`, codeUniqueViolation},

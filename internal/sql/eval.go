@@ -406,11 +406,23 @@ func arith(op string, l, r Datum) (Datum, error) {
 		a, b := l.I, r.I
 		switch op {
 		case "+":
-			return IntD(a + b), nil
+			c := a + b
+			if (a^c)&(b^c) < 0 {
+				return Null, errf(codeNumericOutOfRange, "bigint out of range")
+			}
+			return IntD(c), nil
 		case "-":
-			return IntD(a - b), nil
+			c := a - b
+			if (a^b)&(a^c) < 0 {
+				return Null, errf(codeNumericOutOfRange, "bigint out of range")
+			}
+			return IntD(c), nil
 		case "*":
-			return IntD(a * b), nil
+			c := a * b
+			if a != 0 && (c/a != b || a == -1 && b == math.MinInt64) {
+				return Null, errf(codeNumericOutOfRange, "bigint out of range")
+			}
+			return IntD(c), nil
 		case "&":
 			return IntD(a & b), nil
 		case "/", "%":

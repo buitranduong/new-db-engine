@@ -1,4 +1,4 @@
-# STATUS — đã đạt, chưa đạt (cập nhật 2026-10-29, sau khi gộp đợt 2)
+# STATUS — đã đạt, chưa đạt (cập nhật 2026-10-29, sau khi gộp đợt 2 và `history`)
 
 Mọi dòng có bằng chứng tái lập được. Chi tiết từng task: `14_plan_target_actual.md`. Các tỉ lệ phần trăm "hoàn thành" là **ước lượng của người điều phối**, không phải số đo; số đo thật là `claimcheck`, `pgdiff` và test.
 
@@ -15,10 +15,11 @@ STASK có lõi vững (log, MVCC, phục hồi, nhân bản, view cột/tìm ki�
 | Log có thẩm quyền, MVCC SI, group commit, checkpoint, phục hồi sau kill/mất điện/ENOSPC/EIO | test + `staskchaos`; **`kill -9` 8 chu kỳ: 0 giao dịch đã ACK bị mất** (`accept/kill9.sh`) |
 | **Lỗi lõi B1 đã sửa**: phát lại log (và replica) làm rơi thao tác thứ hai trở đi trên cùng khoá trong một batch | nhánh `fixbatch`: test tái hiện đỏ trước khi sửa, property test 25 seed |
 | Nhanh hơn PG16 ở đọc/ghi điểm cùng client (2,1× ở 128 client); hơn Redis fsync-always ~30%-3,2× | docs/04. **Chỉ workload điểm tự đặt**; chưa có YCSB/TPC-C/ClickBench |
-| SQL: SELECT/INSERT/UPDATE/DELETE, JOIN, CTE, window, `ON CONFLICT`, sequence/SERIAL, DEFAULT/CHECK/NOT NULL, ALTER (kể cả đổi kiểu cột, `USING`), SAVEPOINT, TRUNCATE/DROP, COPY, VIEW, trigger thân SQL, role + GRANT | `claimcheck` **208/248 (83,9%)** |
+| SQL: SELECT/INSERT/UPDATE/DELETE, JOIN, CTE, window, `ON CONFLICT`, sequence/SERIAL, DEFAULT/CHECK/NOT NULL, ALTER (kể cả đổi kiểu cột, `USING`), SAVEPOINT, TRUNCATE/DROP, COPY, VIEW, trigger thân SQL, role + GRANT | `claimcheck` **212/252 (84,1%)** |
 | Kiểu đúng PG: timestamp µs, `numeric` chính xác, `uuid`, `bytea`, `json`/`jsonb`, mảng 1 chiều | nhánh `types`: 58 câu `type-*` khớp PG16 từng chuỗi; header checkpoint v4 |
 | **Index phụ**, `UNIQUE`, **khoá ngoại** (`ON DELETE`), planner dùng index (`=`, `IN`, khoảng, `ORDER BY..LIMIT`) | nhánh `index`: test đồng thời, race; chi phí ghi 3-5 index **gấp 2,5-3 lần** (chưa đạt "không làm xấu") |
 | **Tìm kiếm mẫu số từ SQL** (tiền tố, đuôi, chứa, regex, số đẹp, facet) bằng view trigram, kèm hợp đồng độ mới và `EXPLAIN` | nhánh `search`, 2M số: nhanh hơn quét 14-1500×; **thắng PG16+pg_trgm** ở chuỗi dài/regex/số đẹp, **thua 1,5-10×** ở truy vấn trả hàng chục nghìn dòng và mẫu ngắn <3 ký tự |
+| Giữ lịch sử **theo thời gian** (`history_retention='60 days'`), `AS OF`, `stask_history('t', key)`; sửa 3 lỗi gốc của GC lịch sử (mốc thời gian và remap chỉ ở RAM, replica mất lịch sử) | nhánh `history`: test crash/restart/replica, `-race` sạch; 60 byte/phiên bản trong log, nén 2,3-2,8×. **Không phù hợp quy mô 40M SIM × 200 phiên bản (xem §4 mục 2)** |
 | Tràn đĩa cho join/group/distinct/sort khi vượt ngân sách bộ nhớ | `spill`: join 10M×10M ngân sách 1 GB chạy đúng (3 phút 52 giây, 404 MB file tạm); chỉ phủ một số dạng truy vấn |
 | Bảo mật: TLS, SCRAM, mTLS + secret, token/TLS HTTP, **cả 4 cổng từ chối bind ngoài loopback không xác thực** | `accept/security.sh`: 72 kiểm tra OK, 0 lỗi |
 | PITR đầu-cuối: lưu trữ liên tục + base backup lúc đang ghi + khôi phục theo thời điểm/LSN | `accept/pitr.sh`, 3 lần (300 MB, 1,2 GB, 3,0 GB): 0 mất, 0 thừa, 0 hỏng |
@@ -49,7 +50,7 @@ Phân loại phần khác biệt: sai kiểu 102 câu (chủ yếu OID: `integer
 Xếp theo mức chặn triển khai:
 
 1. **Liquibase không khởi động được**: `CREATE TABLE databasechangelog` (không có khoá chính) bị từ chối, kéo theo 10 câu lỗi trong bộ so sánh. Cần khoá ẩn `__rowid` cho bảng không có PK, và PK ghép. (D21 mục 3; nhánh `compat` ghi là C1.)
-2. **Lịch sử 60 ngày**: GC giữ 1 giờ; chưa có chính sách giữ theo thời gian, nén, xoá theo ngày. Nhánh `history` được giao nhưng **chưa có commit nào**. Khối lượng thật chưa rõ (docs/15 §0).
+2. **Lịch sử 60 ngày: tính năng có, quy mô lớn chưa.** Giữ theo thời gian đã làm được. Nhưng GC phải đi dọc chuỗi phiên bản của từng khoá nên tốn O(độ sâu chuỗi): đo ở 3.000 SIM × 200 phiên bản mất 4 phút 42 giây GC cho 75 MB ghi (10,6 triệu lần đọc); ở 40M SIM × 200 tính ra ~3×10⁵ lần đọc ngẫu nhiên/giây liên tục, GC sẽ tụt lại sau tải ghi (**tính từ số đo, chưa chạy ở quy mô đó**). 40M × 5 phiên bản thì ổn (~10-34 GB sau nén). **Cần số thật của người dùng** (docs/15 §7.8) trước khi chọn hướng sửa (bảng cơ sở theo khoá, remap trên đĩa, xếp phiên bản khi GC: cỡ L-XL).
 3. **Độ mới ở quy mô nhập hàng triệu dòng chưa đo.** `simbench` viết xong (`9de47e9`) **chưa chạy lần nào**, nên chưa có số nào cho "website/đơn hàng chậm bao nhiêu khi nhập". Số đo duy nhất: view trigram bắt kịp ~350k dòng/s riêng lẻ, lõi nhận ~65k dòng/s.
 4. **Ghi chậm khi có nhiều index** (3-5 index: gấp 2,5-3 lần) và **entry index chưa nằm trong checkpoint** (dựng lại khi khởi động, chưa đo ở 100M dòng).
 5. **Tìm kiếm văn bản BM25 từ SQL** chưa có; tìm theo mẫu thua PG ở kết quả lớn (cần đếm trực tiếp trên view, D19).
@@ -74,17 +75,18 @@ Xếp theo mức chặn triển khai:
 | B8 | `simbench` chưa chạy | **Mở** (chặn bởi cổng/đĩa; đĩa đã thoáng 13 GB) |
 | B9 | Test nhạy thời gian (`TestCancelRequest` 100 ms, `TestStatementTimeout`) chập chờn khi máy quá tải | **Mở**, có thể làm CI đỏ trên runner chậm |
 | B10 | Chuỗi gộp đã làm lộ 2 lỗi tương tác (literal `numeric` với index `float`; hai `DROP INDEX`). Đã sửa; có thể còn tương tác khác test chưa phủ | **Theo dõi**: chạy lại `pgdiff` + `claimcheck` sau mỗi lần gộp |
-| B11 | `-race` chưa chạy lại trên bản gộp cuối (lần cuối trước các lần gộp `index`/`types`/`compat`/`search`/`spill`/`raftwire`) | **Mở**, làm tiếp theo |
+| B11 | `-race` trên bản gộp cuối | **Đã chạy: sạch** cho `core`, `sql`, `pgwire`, `repl`, `wal` (`merge-gate` với `RACE=1`) |
+| B12 | Gộp `history` + `types`: `AS OF` theo thời điểm coi datum thời gian là mili giây trong khi sau P1.1 là micro giây, nên trả trạng thái hiện tại | **Đã sửa**; bắt được nhờ `TestSQLAsOf`. Cùng loại với B10: lỗi chỉ lộ khi chạy test chung |
 
 ## 6. Nhánh git
 
-Đã gộp vào `main`: `admission`, `trigger`, `cluster`, `ops`, `pcol`, `pgdiff`, `harness`, `index`, `types`, `fixbatch`, `compat`, `e2e`, `spill`, `search`, `btree`, `ci`, `raftwire`.
+Đã gộp vào `main`: `admission`, `trigger`, `cluster`, `ops`, `pcol`, `pgdiff`, `harness`, `index`, `types`, `fixbatch`, `compat`, `e2e`, `spill`, `search`, `btree`, `ci`, `raftwire`, `history`.
 
-**Chưa gộp:** `simbench` (1 commit, chưa chạy), `history` (**chưa có commit**).
+**Chưa gộp:** `simbench` (1 commit, **chưa chạy lần nào**). `history` đã gộp.
 
 ## 7. Kiểm thử
 
-Bản gộp cuối (`55019f0`): `merge-gate` (không `-race`): gofmt, build, vet và **22 gói test đều `ok`** (gồm `cluster`, `raft`, `spill`, `pindex`, `router`, `benchcheck`); `claimcheck` 208/248; `pgdiff` 496/859. **`-race` chưa chạy trên bản gộp.** CI GitHub chưa chạy lần nào.
+Bản gộp cuối (`c5afed2`), `merge-gate` với `RACE=1`: gofmt, build, vet; **18 gói test `ok`** (gồm `cluster`, `raft`, `spill`, `pindex`, `router`, `benchcheck`); **`-race` sạch** cho `core` (394 s), `sql`, `pgwire`, `repl`, `wal`; `claimcheck` 212/252. `pgdiff` đo lần cuối ở `55019f0` (496/859); **chưa chạy lại sau khi gộp `history`**. CI GitHub chưa chạy lần nào.
 
 ## 8. Điều cần từ người dùng (chưa có)
 

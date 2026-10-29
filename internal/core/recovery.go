@@ -275,7 +275,11 @@ func (e *Engine) replay(r *wal.Record) error {
 		}
 		key := string(op.Key)
 		old, had := t.index().get(key)
-		if had && old.lsn >= r.LSN {
+		// Skip only a version newer than this record (a fuzzy checkpoint
+		// can hold later ones). An equal LSN is the same transaction: it may
+		// hold several operations on one key, applied in order, so the last
+		// wins as it did when the transaction committed (I2/I3).
+		if had && old.lsn > r.LSN {
 			continue
 		}
 		wasLive := had && old.flags&entDeleted == 0

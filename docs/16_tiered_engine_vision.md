@@ -36,6 +36,33 @@ Không thay toàn bộ cùng lúc. Thứ tự rủi ro tăng dần, mỗi bướ
 3. **Chuyển đường ghi** (nhập hàng, đơn hàng) sang STASK khi các bất biến và PITR đã được kiểm chứng; PG giữ ở chế độ chỉ đọc một thời gian.
 4. CRM gộp sau cùng, nếu có lợi.
 
+### Chế độ bóng (nhánh `shadow`, `cmd/stashadow`, `internal/shadow`)
+
+Công cụ giữ STASK đồng bộ với một PostgreSQL thật đang là nguồn ghi, **không phục vụ khách**, để so sánh. STASK chỉ được dùng qua giao thức PG (như một client). Cơ chế: slot logical + publication, plugin `pgoutput`; ảnh chụp ban đầu `COPY` trong snapshot xuất của slot, rồi áp từng giao dịch nguồn thành đúng một giao dịch STASK, cập nhật dòng điều khiển `shadow_ctl.applied_lsn` **trong cùng giao dịch**; chạy lại thì bắt đầu từ LSN đó và bỏ giao dịch có `FinalLSN < applied_lsn`.
+
+Cách chạy (cổng ví dụ: PG 28510, STASK 28501):
+
+```sh
+go build -o /tmp/shadow-bin/ ./cmd/stashadow ./cmd/staskd
+export SHADOW_SOURCE="postgres://postgres@127.0.0.1:28510/postgres?sslmode=disable"
+export SHADOW_STASK="postgres://app@127.0.0.1:28501/stask?sslmode=disable"
+export SHADOW_TABLES=sims,orders,order_items,sim_history     # bảng public
+# nguồn cần wal_level=logical, quyền REPLICATION; bảng không PK cần REPLICA IDENTITY FULL
+stashadow run -create-tables -set-replica-identity -txlog /tmp/tx.log   # lần đầu: snapshot rồi theo dõi
+stashadow run -txlog /tmp/tx.log          # chạy lại sau dừng/kill: tiếp tục từ LSN đã áp
+stashadow status                          # LSN nguồn / đã ack / đã áp, số byte chậm
+stashadow compare -queries scripts/shadow/sim_queries.sql -json report.json   # so sánh (thoát 1 nếu lệch)
+stashadow compare -every 10m -retries 2 ...   # định kỳ, nguồn đang ghi: kiểm lại khối lệch sau 2 s
+stashadow txstats /tmp/tx.log             # thông lượng và độ trễ p50/p99 từ -txlog
+stashadow drop                            # xoá slot, publication, dòng điều khiển
+```
+
+Điều khiển: `Ctrl-C`/SIGTERM dừng gọn; `-pause-file F` (có file thì không áp giao dịch mới; xoá file thì tiếp tục); `-rate N` giới hạn dòng/giây; tự nối lại với backoff 1 đến 10 s. Thử đầy đủ (kill -9 staskd và công cụ): `scripts/shadow/chaos.sh`.
+
+So sánh: đếm dòng; tổng kiểm theo khối khoá (băm khoá vào N khối, tổng băm dòng đã chuẩn hoá, **không phụ thuộc thứ tự/collation**; khối lệch được quét lại để liệt kê dòng thiếu/thừa/đổi từng cột); mẫu ngẫu nhiên tra theo PK ở cả hai bên; bộ truy vấn (`-queries`) chạy ở cả hai bên rồi so từng ô (chuẩn hoá numeric/float/bool/uuid/bytea/timestamp/json; không chép logic của `cmd/pgdiff` vì đó là gói `main`); độ trễ nhận: byte chậm (LSN nguồn so với LSN đã áp/đã ack) và p50/p99 từ commit nguồn đến commit STASK.
+
+Hạn chế đã biết: DDL không được áp (khi thấy cột lạ hoặc đổi kiểu thì dừng với câu `ALTER TABLE` cần chạy, rồi khởi động lại); kiểu hỗ trợ: bool, int2/4/8, text, varchar, char, numeric, float4/8, uuid, bytea, timestamp, timestamptz, date, json, jsonb (kiểu khác bị từ chối khi khởi động); chỉ schema `public`; bảng không PK: mỗi UPDATE/DELETE chậm hơn (một vòng mạng, vì STASK xoá mọi dòng trùng nên công cụ chèn lại n-1 bản); `-reset` hoặc dừng giữa snapshot thì làm lại snapshot từ đầu; so sánh trên nguồn đang ghi chỉ có giá trị tương đối (dùng `-retries`), kết luận chắc chỉ khi nguồn tạm dừng và `caught_up=true`. Đồng hồ commit nguồn và đồng hồ máy chạy công cụ phải cùng máy hoặc đồng bộ NTP để độ trễ ms có nghĩa.
+
 ## 5. Điều kiện production (danh sách kiểm, chưa đạt)
 
 Kiểm thử vi phân với PG trên khối lượng thật; kiểm thử sự cố (kill, mất điện, đầy đĩa, mạng) lặp lại tự động; mô phỏng tất định kiểu FoundationDB cho nhân bản/đồng thuận; fuzz giao thức và SQL; soak nhiều ngày; sao lưu có diễn tập khôi phục; định dạng đĩa có phiên bản và đường nâng cấp; quan sát vận hành và cảnh báo; rà soát bảo mật độc lập; runbook; người có trách nhiệm ký duyệt cho từng mục. Hiện **chưa mục nào đạt hoàn toàn**; xem docs/14 cho từng phần.

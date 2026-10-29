@@ -1223,6 +1223,8 @@ type pk struct {
 
 type commitReq struct {
 	enq         time.Time // LatDebug only
+	prepared    time.Time // LatDebug only
+	acked       time.Time // LatDebug only
 	ops         []pendingOp
 	reads       []readKey
 	seenSeq     uint64 // installSeq read before the seen heads were looked up
@@ -1233,9 +1235,10 @@ type commitReq struct {
 	drop        *TableState // DROP TABLE; with ddl, TRUNCATE (ddl replaces it)
 	alter       *TableState // ALTER TABLE: ddl is its new schema, computed from alterBase
 	alterBase   *schema.Table
-	moves       []moveOp // log reclamation: relocate or drop heads
-	own         *reqOwn  // checkUnique: the request's ops by key
-	shares      []pk     // parents of the children written (fk.go)
+	moves       []moveOp    // log reclamation: relocate or drop heads
+	own         *reqOwn     // checkUnique: the request's ops by key
+	stage       *stageState // big request whose index entries are staged first (commitstage.go)
+	shares      []pk        // parents of the children written (fk.go)
 	lsn         uint64
 	err         error
 	done        chan struct{}
@@ -1341,6 +1344,9 @@ func (e *Engine) submit(r *commitReq) error {
 	// committer exits; it is then never processed and must not be waited on.
 	select {
 	case <-r.done:
+		if LatDebug && r.stage == nil {
+			LatWake.Add(time.Since(r.acked))
+		}
 		return r.err
 	case <-e.commitExited:
 		select {
@@ -1457,6 +1463,9 @@ func (e *Engine) TruncateTable(name string) error {
 // Validation sees the open batch, the batches handed off but not installed
 // (newest first), and installed heads, in that order.
 
+// bigBatchBytes is the size above which a batch does not count for syncEWMA.
+const bigBatchBytes = 32 << 10
+
 // commitBatch is a set of prepared requests that are synced together.
 type commitBatch struct {
 	pending  map[pk]*Version // key -> newest version written by this batch
@@ -1477,6 +1486,7 @@ type commitBatch struct {
 	lastTS  int64
 	seq     uint64 // installSeq value once installed (set by the installer)
 	failed  bool   // sync failed: answered with an error, never installed
+	bytes   int    // estimated size of the batch's records
 
 	// set at handoff
 	file   *os.File
@@ -1500,9 +1510,9 @@ func (e *Engine) committer() {
 	// durable, the installer installs, publishes and answers them, so the
 	// fdatasync of one batch overlaps the install of the previous one.
 	toSync := make(chan *commitBatch)
-	toInstall := make(chan *commitBatch) // unbuffered: a busy installer holds the syncer back
+	toInstall := make(chan *commitBatch, 64) // a busy installer (a big batch) must not hold up the syncer of small ones
 	synced := make(chan struct{}, 1)
-	installed := make(chan *commitBatch, 4)
+	installed := make(chan *commitBatch, 64)
 	syncerDone, installerDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(syncerDone)
@@ -1539,6 +1549,9 @@ func (e *Engine) committer() {
 	timer.Stop()
 	var timerC <-chan time.Time
 	gatherFrom, gathered := 0, false
+	var staging []*commitReq // big requests whose index entries are being staged, oldest first
+	alwaysReady := make(chan struct{})
+	close(alwaysReady)
 
 	handoff := func() {
 		if timerC != nil {
@@ -1561,6 +1574,13 @@ func (e *Engine) committer() {
 				adapt = max(adapt*3/4, 10*time.Microsecond)
 			}
 			gathered = false
+		}
+		if LatDebug {
+			for _, r := range open.placed {
+				if r.stage == nil {
+					LatHold.Add(time.Since(r.prepared))
+				}
+			}
 		}
 		if err := e.flushOpen(open); err != nil {
 			e.fail(err, nil, open.placed, nil)
@@ -1615,6 +1635,10 @@ func (e *Engine) committer() {
 		if stopping {
 			stopC = nil
 		}
+		var workC <-chan struct{}
+		if len(staging) > 0 && len(e.reqCh) == 0 && !stopping {
+			workC = alwaysReady // nothing queued: stage a slice of the oldest big request
+		}
 		select {
 		case r := <-reqCh:
 			batch := []*commitReq{r}
@@ -1627,10 +1651,48 @@ func (e *Engine) committer() {
 					break fill
 				}
 			}
+			k := 0
+			for _, q := range batch {
+				if StageBig && stageable(q) {
+					q.stage = &stageState{}
+					staging = append(staging, q)
+				} else {
+					batch[k] = q
+					k++
+				}
+			}
+			if batch = batch[:k]; len(batch) == 0 {
+				continue
+			}
 			e.tmu.RLock()
 			ddlNext = max(ddlNext, e.nextTableID)
 			e.tmu.RUnlock()
+			var tp time.Time
+			if LatDebug {
+				tp = time.Now()
+			}
 			e.prepare(open, inflight, recent, batch, &ddlNext)
+			if LatDebug {
+				LatPrepare.Add(time.Since(tp))
+			}
+		case <-workC:
+			var tp time.Time
+			if LatDebug {
+				tp = time.Now()
+			}
+			if r := staging[0]; e.stageStep(r) {
+				staging[0], staging = nil, staging[1:]
+				e.tmu.RLock()
+				ddlNext = max(ddlNext, e.nextTableID)
+				e.tmu.RUnlock()
+				e.prepare(open, inflight, recent, []*commitReq{r}, &ddlNext)
+				if r.err != nil {
+					e.unstage(r)
+				}
+			}
+			if LatDebug {
+				LatPrepare.Add(time.Since(tp))
+			}
 		case <-syncedC:
 			// answered on sync: whoever queued meanwhile, plus those clients
 			answered := len(syncing.placed)
@@ -1697,6 +1759,9 @@ func (e *Engine) flushOpen(b *commitBatch) error {
 
 func finishReq(r *commitReq, err error) {
 	r.err = err
+	if LatDebug {
+		r.acked = time.Now()
+	}
 	close(r.done)
 }
 
@@ -1763,7 +1828,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 
 	for _, req := range batch {
 		r = req
-		if LatDebug {
+		if LatDebug && r.stage == nil {
 			LatQueue.Add(time.Since(r.enq))
 		}
 		if rollErr != nil {
@@ -1892,6 +1957,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 				continue
 			}
 		}
+		b.bytes += est
 		pos := wal.Pos{Seg: e.log.WritePos().Seg, Off: e.log.WritePos().Off + int64(len(b.buf))}
 
 		r.lsn = lsn
@@ -2035,7 +2101,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					pv := placedVersion{t: op.t, key: op.key, v: v}
 					if len(op.sch.Indexes) > 0 {
 						pv.sch, pv.sk = op.sch, op.sk
-						e.placeSec(b, op, lsn)
+						e.placeSec(b, op, lsn, r.stage != nil && !(prevs[i] != nil && prevs[i].LSN > r.stage.tok))
 					}
 					b.installs = append(b.installs, pv)
 					e.Stats.PayloadBytes.Add(int64(len(op.key) + len(op.val)))
@@ -2043,12 +2109,18 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 				lo = hi
 			}
 		}
+		if LatDebug {
+			r.prepared = time.Now()
+		}
 		e.noteFK(r, lsn)
 		e.tsRing[lsn&(tsRingSize-1)].Store(now)
 		lsn++
 		b.placed = append(b.placed, r)
 	}
 	if len(b.adds) > 0 {
+		if LatDebug {
+			defer func(t0 time.Time) { LatFlush.Add(time.Since(t0)) }(time.Now())
+		}
 		flushAdds(b.adds)
 		b.adds = b.adds[:0]
 	}
@@ -2082,10 +2154,15 @@ func (e *Engine) syncBatch(b *commitBatch) {
 		return
 	}
 	e.Stats.SyncNsTotal.Add(int64(sd))
-	if old := e.syncEWMA.Load(); old == 0 {
-		e.syncEWMA.Store(int64(sd))
-	} else {
-		e.syncEWMA.Store(old + (int64(sd)-old)/8)
+	// the average sync time bounds how long the committer gathers more
+	// requests for a batch; a batch with a big transaction syncs far longer
+	// and would make the small ones wait for stragglers that do not come
+	if b.bytes <= bigBatchBytes {
+		if old := e.syncEWMA.Load(); old == 0 {
+			e.syncEWMA.Store(int64(sd))
+		} else {
+			e.syncEWMA.Store(old + (int64(sd)-old)/8)
+		}
 	}
 	if int64(sd) > e.Stats.SyncNsMax.Load() {
 		e.Stats.SyncNsMax.Store(int64(sd))

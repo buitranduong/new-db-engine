@@ -180,41 +180,80 @@ type secAdd struct {
 	lsn uint64
 }
 
-// flushAdds applies the entries added while preparing a batch.
+// flushAdds applies the entries added while preparing a batch. The entries
+// of one index go in together, in key order, in a single clone of its tree:
+// nodes copied for one entry are reused by the next (the adds of a request
+// alternate between its indexes, so applying them as they come would clone
+// every tree once per entry). Indexes are independent, so a batch touching
+// several of them applies them in parallel.
 func flushAdds(adds []secAdd) {
-	for i := 0; i < len(adds); {
-		si := adds[i].si
+	by := map[*secIndex][]secAdd{}
+	var order []*secIndex
+	for _, a := range adds {
+		if _, ok := by[a.si]; !ok {
+			order = append(order, a.si)
+		}
+		by[a.si] = append(by[a.si], a)
+	}
+	one := func(si *secIndex, l []secAdd) {
+		if len(l) > 1 {
+			slices.SortStableFunc(l, func(x, y secAdd) int { return strings.Compare(x.key, y.key) })
+		}
 		si.mu.Lock()
 		tr := si.tr.Load().clone()
-		j := i
-		for ; j < len(adds) && adds[j].si == si; j++ {
-			tr.put(adds[j].key, secVersion(adds[j].lsn, 0))
+		for _, a := range l {
+			tr.put(a.key, secVersion(a.lsn, 0))
 		}
 		si.tr.Store(tr)
 		si.mu.Unlock()
-		si.Adds.Add(int64(j - i))
-		i = j
+		si.Adds.Add(int64(len(l)))
 	}
+	if len(order) == 1 || len(adds) < parallelAdds {
+		for _, si := range order {
+			one(si, by[si])
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	for _, si := range order[1:] {
+		wg.Add(1)
+		go func(si *secIndex, l []secAdd) {
+			defer wg.Done()
+			one(si, l)
+		}(si, by[si])
+	}
+	one(order[0], by[order[0]])
+	wg.Wait()
 }
+
+// parallelAdds is the batch size from which flushAdds uses a goroutine per index.
+const parallelAdds = 48
 
 // markDead marks the entries of a superseded version dead at lsn, unless
 // the key was added again by a later commit.
 func (si *secIndex) markDead(recs []deadRec) {
-	si.mu.Lock()
-	tr := si.tr.Load().clone()
-	n := 0
-	for _, d := range recs {
-		en, ok := tr.get(d.key)
-		if !ok || en.lsn >= d.lsn || en.flags&entDeleted != 0 {
-			continue
+	// in slices, so that the committer's adds for small transactions are not
+	// held up by the marks of a big batch (commitfair)
+	const slice = 64
+	for len(recs) > 0 {
+		chunk := recs[:min(slice, len(recs))]
+		recs = recs[len(chunk):]
+		si.mu.Lock()
+		tr := si.tr.Load().clone()
+		n := 0
+		for _, d := range chunk {
+			en, ok := tr.get(d.key)
+			if !ok || en.lsn >= d.lsn || en.flags&entDeleted != 0 {
+				continue
+			}
+			tr.put(d.key, secVersion(en.lsn, d.lsn))
+			si.dead = append(si.dead, d)
+			n++
 		}
-		tr.put(d.key, secVersion(en.lsn, d.lsn))
-		si.dead = append(si.dead, d)
-		n++
+		si.tr.Store(tr)
+		si.mu.Unlock()
+		si.Dead.Add(int64(n))
 	}
-	si.tr.Store(tr)
-	si.mu.Unlock()
-	si.Dead.Add(int64(n))
 }
 
 // sweep removes the entries that were marked dead at or before the GC
@@ -903,7 +942,7 @@ func (e *Engine) holds(b *commitBatch, inflight []*commitBatch, r *commitReq, t 
 
 // placeSec records the index entries of a write placed in batch b at lsn.
 // The entries reach the trees at the end of the prepare call (flushAdds).
-func (e *Engine) placeSec(b *commitBatch, op pendingOp, lsn uint64) {
+func (e *Engine) placeSec(b *commitBatch, op pendingOp, lsn uint64, staged bool) {
 	if b.sk == nil {
 		b.sk = map[pk][]secKey{}
 	}
@@ -918,7 +957,9 @@ func (e *Engine) placeSec(b *commitBatch, op pendingOp, lsn uint64) {
 		if si == nil {
 			continue
 		}
-		b.adds = append(b.adds, secAdd{si, k.enc + op.key, lsn})
+		if !staged {
+			b.adds = append(b.adds, secAdd{si, k.enc + op.key, lsn})
+		}
 		if ix.Unique && !k.null {
 			if b.uq == nil {
 				b.uq = map[*secIndex]map[string][]string{}

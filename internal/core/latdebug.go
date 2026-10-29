@@ -48,8 +48,8 @@ var SyncBytes, SyncCount atomic.Int64
 var GatherStarted, GatherFull, GatherTimeout, GatherAdapt, GatherExpect, GatherHave atomic.Int64
 
 var (
-	LatDebug                                                               = os.Getenv("STASK_LATDEBUG") != ""
-	LatQueue, LatBatch, LatSubmit, LatServer, LatSync, LatInstall, LatRead LatHist
+	LatDebug                                                                                                       = os.Getenv("STASK_LATDEBUG") != ""
+	LatPrepare, LatFlush, LatHold, LatWake, LatQueue, LatBatch, LatSubmit, LatServer, LatSync, LatInstall, LatRead LatHist
 )
 
 func init() {
@@ -61,7 +61,7 @@ func init() {
 			for _, x := range []struct {
 				n string
 				h *LatHist
-			}{{"queue", &LatQueue}, {"batch", &LatBatch}, {"submit", &LatSubmit}, {"server", &LatServer}, {"sync", &LatSync}, {"instal", &LatInstall}, {"read", &LatRead}} {
+			}{{"hold", &LatHold}, {"wake", &LatWake}, {"prepare", &LatPrepare}, {"flush", &LatFlush}, {"queue", &LatQueue}, {"batch", &LatBatch}, {"submit", &LatSubmit}, {"server", &LatServer}, {"sync", &LatSync}, {"instal", &LatInstall}, {"read", &LatRead}} {
 				log.Printf("latdebug %-6s p50=%.3f p90=%.3f p99=%.3f p999=%.3f ms", x.n, x.h.q(.5), x.h.q(.9), x.h.q(.99), x.h.q(.999))
 				x.h.reset()
 			}

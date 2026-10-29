@@ -269,6 +269,7 @@ type Engine struct {
 	commitExited chan struct{} // closed when the committer stops taking requests
 	syncEWMA     atomic.Int64  // smoothed fdatasync duration (ns)
 	installSeq   atomic.Uint64 // number of commit batches installed in the index
+	gate         atomic.Pointer[WriteGate]
 	stop         chan struct{}
 	wg           sync.WaitGroup
 	nextLSN      uint64
@@ -1207,6 +1208,7 @@ type pendingOp struct {
 	seenOk   bool
 	sk       []secKey // index keys of the row, per sch.Indexes (secindex.go)
 	guard    bool     // deletes or re-keys a row that foreign keys reference (fk.go)
+	base     uint64   // occ_repair.go: conflicts with a head newer than this; 0: the request snapshot
 }
 
 type readKey struct {
@@ -1235,7 +1237,11 @@ type commitReq struct {
 	alterBase   *schema.Table
 	moves       []moveOp // log reclamation: relocate or drop heads
 	own         *reqOwn  // checkUnique: the request's ops by key
-	shares      []pk     // parents of the children written (fk.go)
+	repair      bool     // occ_repair.go: report every write-write conflict (indexes into ops)
+	gate        *WriteGate
+	conflicts   []int
+	rv          *repairVal // occ_repair.go
+	shares      []pk       // parents of the children written (fk.go)
 	lsn         uint64
 	err         error
 	done        chan struct{}
@@ -1301,6 +1307,9 @@ func (e *Engine) submit(r *commitReq) error {
 		return err
 	}
 	r.done = make(chan struct{})
+	if g := e.gate.Load(); g != nil && r.gate != g {
+		g.wait(e, r) // occ_repair.go: a starved statement is finishing on these tables
+	}
 	if r.moves == nil && r.ddl == nil {
 		// Look up current heads here, in parallel with other submitters, so
 		// the committer only checks what was installed since (see prepare).
@@ -1817,12 +1826,20 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					verr = ErrConflict
 				}
 			}
-			for _, op := range r.ops {
-				if verr != nil {
+			skip := false
+			if r.repair && verr == nil {
+				skip, verr = e.repairPre(b, inflight, recent, r, cur2)
+			}
+			for i, op := range r.ops {
+				if skip || verr != nil {
 					break
 				}
 				c := cur2(op.t, op.key, op.seen, true)
-				if r.checkWrites && c != nil && c.LSN > r.snap {
+				if r.checkWrites && c != nil && c.LSN > opBase(&op, r.snap) {
+					if r.repair {
+						r.conflicts = append(r.conflicts, i)
+						continue
+					}
 					verr = ErrConflict
 					break
 				}
@@ -1835,6 +1852,9 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 						break
 					}
 				}
+			}
+			if r.repair {
+				verr = e.repairPost(r, verr)
 			}
 			if verr == nil {
 				for _, rk := range r.reads {

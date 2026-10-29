@@ -50,8 +50,9 @@ type Result struct {
 type Session struct {
 	E        *core.Engine
 	tx       *core.Tx
-	explicit bool // inside BEGIN ... COMMIT
-	failed   bool // an error occurred inside the explicit transaction
+	explicit bool       // inside BEGIN ... COMMIT
+	rep      *repairRec // occ_repair.go: the autocommit statement being run
+	failed   bool       // an error occurred inside the explicit transaction
 	vars     map[string]string
 	Views    Views // nil: aggregates always scan rows
 
@@ -329,11 +330,14 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		s.notes = nil // pg_notify() calls of an attempt that was retried
 		tx := s.begin(core.SnapshotIsolation)
 		tx.SetImplicit()
+		s.rep = s.repairFor(st, params) // occ_repair.go
 		res, err := s.run(tx, st, params)
+		rec := s.rep
+		s.rep = nil
 		if err != nil {
 			tx.Abort()
 			s.discardPending()
-			if errors.Is(err, core.ErrConflict) && attempt < autocommitRetries {
+			if errors.Is(err, core.ErrConflict) && attempt < s.retryLimit(rec, tx) {
 				// rows built for a schema an ALTER TABLE replaced
 				backoff(attempt)
 				continue
@@ -341,9 +345,9 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return nil, AsError(err)
 		}
 		s.beforeCommit(tx)
-		lsn, err := tx.Commit()
+		lsn, err := s.commitAuto(tx, rec, res)
 		if err != nil {
-			if errors.Is(err, core.ErrConflict) && attempt < autocommitRetries {
+			if errors.Is(err, core.ErrConflict) && attempt < s.retryLimit(rec, tx) {
 				backoff(attempt)
 				continue
 			}
@@ -1837,7 +1841,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if commitChecks {
 		tx.Grow(len(st.Rows))
 	}
-	for _, exprs := range st.Rows {
+	rec := s.rep
+	if rec != nil && len(st.Rows) < repairMinRows {
+		rec = nil
+	}
+	for ri, exprs := range st.Rows {
 		if len(exprs) > len(cols) {
 			return nil, errf(codeSyntax, "INSERT has more expressions than target columns")
 		}
@@ -1874,6 +1882,9 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			}
 		}
 		key := t.KeyOf(row)
+		if rec != nil {
+			rec.note(st, key, ri)
+		}
 		if commitChecks {
 			if inserted[key] {
 				return nil, dupKeyErr(t, key)

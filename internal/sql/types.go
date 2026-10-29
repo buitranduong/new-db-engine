@@ -44,7 +44,7 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			return KInterval
 		case l == KDate && r == KInt:
 			return KDate
-		case l == KTimestamp || r == KTimestamp:
+		case l == KTimestamp || r == KTimestamp || l == KDate && r == KInterval || l == KInterval && r == KDate:
 			return KTimestamp
 		case isTime(l) || isTime(r) || l == KDate && r == KInterval:
 			return KTime

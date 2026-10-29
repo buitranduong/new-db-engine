@@ -31,6 +31,7 @@ func main() {
 	load := flag.Bool("load", true, "create and fill the tables")
 	only := flag.String("only", "", "only queries whose text contains this")
 	verbose := flag.Bool("v", false, "print every failure in full")
+	types := flag.Bool("types", true, "run the type queries (they need the PostgreSQL types of docs/12 P1.1)")
 	flag.Parse()
 	ctx := context.Background()
 	st, err := pgx.Connect(ctx, *stURL)
@@ -44,6 +45,9 @@ func main() {
 	ch := &chClient{base: *chURL}
 	if *load {
 		for _, s := range ddl("pg") {
+			if !*types && strings.Contains(s, "typed") {
+				continue
+			}
 			for _, c := range []*pgx.Conn{st, pg} {
 				if _, err := c.Exec(ctx, s); err != nil {
 					if c == st && strings.HasPrefix(s, "DROP") {
@@ -73,6 +77,9 @@ func main() {
 			}
 		}
 		for _, ins := range typedInserts() { // PostgreSQL only
+			if !*types {
+				break
+			}
 			for _, c := range []*pgx.Conn{st, pg} {
 				if _, err := c.Exec(ctx, ins); err != nil {
 					log.Fatalf("insert: %v", err)
@@ -89,7 +96,7 @@ func main() {
 		if *only != "" && !strings.Contains(q.sql, *only) {
 			continue
 		}
-		if q.dialect == "ch" && *chURL == "" {
+		if q.dialect == "ch" && *chURL == "" || !*types && strings.HasPrefix(q.cat, "type-") {
 			continue
 		}
 		var want, got []string

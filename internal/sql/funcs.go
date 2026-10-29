@@ -115,6 +115,9 @@ func (c *evalCtx) callPre(f *Func, args []Datum) (Datum, bool, error) {
 	case "array":
 		return arrayD(args), true, nil
 	case "length", "array_length", "cardinality":
+		if f.Name == "length" && len(args) >= 1 && args[0].K == KBytea {
+			return IntD(int64(len(args[0].S))), true, nil
+		}
 		if len(args) >= 1 && args[0].K == KArray {
 			n := len(parseArrayText(args[0]))
 			if n == 0 && f.Name == "array_length" {
@@ -509,6 +512,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			return Null, err
 		}
 		return datePart(strings.ToLower(str(0)), args[1])
+	case "extract": // numeric, as in PostgreSQL 14 and later
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		return extractNumeric(strings.ToLower(str(0)), args[1])
 	case "make_date":
 		if err := nargs(3, 3); err != nil {
 			return Null, err
@@ -722,9 +730,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		return TextD(strings.Join(parts, sep)), nil
 	case "pg_typeof", "totypename":
 		if args[0].K == KArray {
-			return TextD(strings.ToLower(Kind(args[0].I).String()) + "[]"), nil
+			return TextD(pgKindName(Kind(args[0].I)) + "[]"), nil
 		}
-		return TextD(strings.ToLower(args[0].K.String())), nil
+		return TextD(pgKindName(args[0].K)), nil
 	}
 	return Null, errf(codeUndefinedFunction, "function %s does not exist", f.Name)
 }
@@ -768,6 +776,61 @@ func compileRegex(p string) (*regexp.Regexp, error) {
 	}
 	regexCache.Store(p, re)
 	return re, nil
+}
+
+// pgKindName is the type's name as pg_typeof and format_type print it.
+func pgKindName(k Kind) string {
+	switch k {
+	case KTime:
+		return "timestamp with time zone"
+	case KTimestamp:
+		return "timestamp without time zone"
+	}
+	return k.String()
+}
+
+// extractNumeric is EXTRACT: numeric, with the scales PostgreSQL gives
+// (seconds 6 digits, milliseconds 3, epoch 6; the other fields are whole
+// numbers), exact to the microsecond.
+func extractNumeric(field string, v Datum) (Datum, error) {
+	if isTime(v.K) || v.K == KText || v.K == KDate {
+		t, err := coerce(v, KTime)
+		if err != nil {
+			return Null, err
+		}
+		us := t.I
+		secUs := us - floorDiv(us, 60*usPerSec)*60*usPerSec
+		var s string
+		switch field {
+		case "epoch":
+			a := us
+			if us < 0 {
+				a = -us
+			}
+			s = fmt.Sprintf("%d.%06d", a/usPerSec, a%usPerSec)
+			if us < 0 {
+				s = "-" + s
+			}
+		case "second", "seconds", "sec":
+			s = fmt.Sprintf("%d.%06d", secUs/usPerSec, secUs%usPerSec)
+		case "milliseconds":
+			s = fmt.Sprintf("%d.%03d", secUs/1000, secUs%1000)
+		case "microseconds":
+			s = strconv.FormatInt(secUs, 10)
+		default:
+			f, err := datePart(field, v)
+			if err != nil {
+				return Null, err
+			}
+			return coerce(IntD(int64(f.F)), KNumeric)
+		}
+		return coerce(TextD(s), KNumeric)
+	}
+	f, err := datePart(field, v)
+	if err != nil || f.IsNull() {
+		return f, err
+	}
+	return coerce(f, KNumeric)
 }
 
 // datePart is PostgreSQL's date_part / EXTRACT.
@@ -1274,6 +1337,8 @@ func funcKind(name string, args []Kind) Kind {
 		return KDate
 	case "age":
 		return KInterval
+	case "extract":
+		return KNumeric
 	case "gen_random_uuid", "uuid_generate_v4", "generateuuidv4":
 		return KUUID
 	case "array", "array_agg", "grouparray", "groupuniqarray":

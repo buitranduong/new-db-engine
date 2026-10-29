@@ -1402,7 +1402,7 @@ func (p *parser) funcCall(name string) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Func{Name: "date_part", Args: []Expr{&Lit{TextD(strings.ToLower(field))}, x}}, p.expectOp(")")
+		return &Func{Name: "extract", Args: []Expr{&Lit{TextD(strings.ToLower(field))}, x}}, p.expectOp(")")
 	case "position":
 		a, err := p.addExpr()
 		if err != nil {

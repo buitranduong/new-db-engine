@@ -30,11 +30,14 @@ func TestTypeTimestampMicroseconds(t *testing.T) {
 	expectRows(t, s, `SELECT '2024-01-02 00:00:00.000001'::timestamp - '2024-01-01'::timestamp`, "1 day 00:00:00.000001")
 	expectRows(t, s, `SELECT '2024-01-31 10:00:00.5'::timestamp + interval '1 month 1.25 seconds'`, "2024-02-29 10:00:01.75")
 	expectRows(t, s, `SELECT date_trunc('second', a), date_trunc('day', b) FROM ts WHERE id = 1`, "2024-01-02 03:04:05,2024-01-02 00:00:00+00")
-	expectRows(t, s, `SELECT extract(microseconds FROM a), extract(milliseconds FROM a), extract(epoch FROM b) FROM ts WHERE id = 1`,
-		"5123456,5123.456,1704164645.123456")
-	expectRows(t, s, `SELECT pg_typeof(a), pg_typeof(b) FROM ts WHERE id = 1`, "timestamp,timestamptz")
+	expectRows(t, s, `SELECT extract(microseconds FROM a), extract(milliseconds FROM a), extract(epoch FROM b), extract(second FROM a), extract(year FROM b) FROM ts WHERE id = 1`,
+		"5123456,5123.456,1704164645.123456,5.123456,2024")
+	expectRows(t, s, `SELECT extract(epoch FROM a) FROM ts WHERE id = 3`, "-0.000001")
+	expectRows(t, s, `SELECT pg_typeof(a), pg_typeof(b) FROM ts WHERE id = 1`, "timestamp without time zone,timestamp with time zone")
 	expectRows(t, s, `SELECT min(a), max(b) FROM ts`, "1969-12-31 23:59:59.999999,2024-01-02 03:04:05.123456+00")
 	expectRows(t, s, `SELECT to_char(a, 'YYYY-MM-DD HH24:MI:SS.US') FROM ts WHERE id = 1`, "2024-01-02 03:04:05.123456")
+	expectRows(t, s, `SELECT date '2024-01-31' + interval '1 month', interval '1 mon' / 2, timestamp '2024-03-31' - interval '1 month'`,
+		"2024-02-29 00:00:00,15 days,2024-02-29 00:00:00")
 	// the row keeps the microseconds through an update
 	run(t, s, `UPDATE ts SET a = a + interval '1 microsecond' WHERE id = 1`)
 	expectRows(t, s, `SELECT a FROM ts WHERE id = 1`, "2024-01-02 03:04:05.123457")
@@ -176,7 +179,7 @@ func TestTypeMigrationFromLegacyTime(t *testing.T) {
 		t.Helper()
 		expectRows(t, s, `SELECT id, at, n, f FROM legacy ORDER BY id`,
 			"1,2024-01-02 03:04:05.678+00,7,1.5;2,NULL,NULL,NULL;3,2024-01-02 03:04:05.678912+00,0.25,0.1")
-		expectRows(t, s, `SELECT pg_typeof(at), pg_typeof(n) FROM legacy WHERE id = 3`, "timestamptz,numeric")
+		expectRows(t, s, `SELECT pg_typeof(at), pg_typeof(n) FROM legacy WHERE id = 3`, "timestamp with time zone,numeric")
 		expectRows(t, s, `SELECT sum(n) FROM legacy`, "7.25")
 	}
 	check(s)

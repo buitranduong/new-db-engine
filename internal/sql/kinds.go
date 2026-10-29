@@ -220,8 +220,8 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 	tsl, tsr := isTime(l.K) || l.K == KDate, isTime(r.K) || r.K == KDate
 	// the kind of a timestamp result: without time zone if an operand is
 	tk := KTime
-	if l.K == KTimestamp || r.K == KTimestamp {
-		tk = KTimestamp
+	if l.K == KTimestamp || r.K == KTimestamp || l.K == KDate && r.K == KInterval || l.K == KInterval && r.K == KDate {
+		tk = KTimestamp // date plus interval is a timestamp without time zone
 	}
 	switch {
 	case tsl && r.K == KInterval && (op == "+" || op == "-"):
@@ -262,11 +262,11 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 				}
 				f = 1 / f
 			}
-			return IntervalD(int64(math.Round(l.F*f)), int64(math.Round(float64(l.I)*f))), true, nil
+			return mulInterval(l, f), true, nil
 		}
 	case r.K == KInterval && op == "*":
 		if f, ok := num(l); ok {
-			return IntervalD(int64(math.Round(r.F*f)), int64(math.Round(float64(r.I)*f))), true, nil
+			return mulInterval(r, f), true, nil
 		}
 	}
 	return Null, true, errf(codeUndefinedFunction, "operator does not exist: %s %s %s", l.K, op, r.K)
@@ -289,4 +289,13 @@ func floorDivInt(a, b int) int {
 		q--
 	}
 	return q
+}
+
+// mulInterval is interval * f as PostgreSQL's interval_mul: the months
+// stay whole and a fractional month becomes 30-day days.
+func mulInterval(iv Datum, f float64) Datum {
+	m := iv.F * f
+	whole := math.Trunc(m)
+	us := float64(iv.I)*f + (m-whole)*30*usPerDay
+	return IntervalD(int64(whole), int64(math.Round(us)))
 }

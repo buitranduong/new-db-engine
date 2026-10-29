@@ -236,6 +236,11 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		if e.Over != nil && !tySameAsArg[e.Name] && e.Name != "ntile" {
 			return pgTy{}
 		}
+		if jsonarrNames[e.Name] || e.Name == "array_agg" {
+			if t := arrTyFor(e, func(Expr) Kind { return KNull }, leaf); t.oid != 0 {
+				return t
+			}
+		}
 		switch {
 		case tyInt4Fn[e.Name]:
 			return pgTy{oid: tyInt4, mod: -1}

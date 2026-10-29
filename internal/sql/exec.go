@@ -1573,7 +1573,7 @@ func itemName(it SelItem) string {
 		if e.Disp != "" {
 			return e.Disp
 		}
-		if e.Name == "stask_subscript" && len(e.Args) > 0 { // (ARRAY[1,2])[3] is named by the array
+		if (e.Name == "stask_subscript" || e.Name == "stask_slice") && len(e.Args) > 0 { // (ARRAY[1,2])[3] is named by the array
 			return itemName(SelItem{X: e.Args[0]})
 		}
 		return e.Name

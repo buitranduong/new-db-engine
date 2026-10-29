@@ -120,8 +120,11 @@ func (p *arrParser) parse(depth int) error {
 		}
 		return errf(codeInvalidText, "x")
 	}
-	if len(p.dims) <= depth {
-		p.dims = append(p.dims, n)
+	for len(p.dims) <= depth {
+		p.dims = append(p.dims, -1)
+	}
+	if p.dims[depth] < 0 {
+		p.dims[depth] = n
 	} else if p.dims[depth] != n {
 		p.bad = "malformed array literal: multidimensional arrays must have sub-arrays with matching dimensions"
 	}
@@ -462,6 +465,9 @@ func arrayConcat(l, r Datum) (Datum, bool, error) {
 	}
 	switch {
 	case la && ra:
+		if l.K == KArray && r.K == KArray && !compatKinds(Kind(l.I), Kind(r.I)) {
+			return Null, true, errf(codeUndefinedFunction, "operator does not exist: %s[] || %s[]", pgKindName(Kind(l.I)), pgKindName(Kind(r.I)))
+		}
 		x, err := arrOf(l, Kind(r.I))
 		if err != nil {
 			return Null, true, err

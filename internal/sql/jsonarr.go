@@ -188,6 +188,12 @@ func jsonarrBinKind(op string, l, r Kind) (Kind, bool) {
 // binaryHook is || and - for arrays and json, called before the core.
 func binaryHook(op string, l, r Datum) (Datum, bool, error) {
 	if l.IsNull() || r.IsNull() {
+		if op == "||" && (l.K == KArray || r.K == KArray) { // array_cat(NULL, a) is a
+			if l.IsNull() {
+				return r, true, nil
+			}
+			return l, true, nil
+		}
 		return Null, false, nil
 	}
 	switch op {
@@ -395,6 +401,9 @@ func elemTyOf(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 		return pgTy{oid: ArrayElemOID(t.oid), mod: t.mod} // multidimensional: same element type
 	}
 	t := inferTy(x, leaf)
+	if l, ok := x.(*Lit); ok && t.oid == 0 && !l.V.IsNull() && l.V.K != KText {
+		t = defaultTyOfKind(l.V.K)
+	}
 	if t.oid == 0 {
 		if l, ok := x.(*Lit); ok && (l.V.IsNull() || l.V.K == KText) {
 			if l.V.IsNull() {
@@ -523,6 +532,11 @@ func arrTyFor(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 func jsonarrCol(x Expr, kind Kind, ty pgTy, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) (Kind, pgTy) {
 	t := arrTyFor(x, kindOf, leaf)
 	if t.oid == 0 {
+		if kind == KNull {
+			if t2 := inferTy(x, leaf); t2.oid != 0 && t2.family() != KNull {
+				return t2.family(), t2
+			}
+		}
 		return kind, ty
 	}
 	if IsArrayOID(t.oid) {
@@ -606,7 +620,7 @@ func (a *jsonAgg) result() (Datum, error) {
 		for n, i := range idx {
 			vals[n] = a.rows[i][0]
 		}
-		return arrayCtorAgg(vals)
+		return arrayAggResult(vals)
 	case "json_agg":
 		var b strings.Builder
 		b.WriteByte('[')
@@ -659,8 +673,40 @@ func (a *jsonAgg) result() (Datum, error) {
 
 // arrayCtorAgg collects array_agg input: scalars into a one-dimensional
 // array, arrays into a multidimensional one.
-func arrayCtorAgg(vals []Datum) (Datum, error) {
+func arrayAggResult(vals []Datum) (Datum, error) {
+	var first *arr
+	for _, v := range vals {
+		if v.K != KArray {
+			continue
+		}
+		if v.IsNull() {
+			return Null, errf("22004", "cannot accumulate null arrays")
+		}
+		a, err := parseArr(v)
+		if err != nil {
+			return Null, err
+		}
+		if first == nil {
+			first = a
+			continue
+		}
+		if len(a.dims) != len(first.dims) {
+			return Null, errf("2202E", "cannot accumulate arrays of different dimensionality")
+		}
+		for i := range a.dims {
+			if a.dims[i] != first.dims[i] {
+				return Null, errf("2202E", "cannot accumulate arrays of different dimensions")
+			}
+		}
+	}
 	return arrayCtor(vals)
+}
+
+// compatKinds reports element kinds that PostgreSQL would unify.
+func compatKinds(a, b Kind) bool {
+	num := func(k Kind) bool { return k == KInt || k == KFloat || k == KNumeric }
+	tm := func(k Kind) bool { return isTime(k) || k == KDate }
+	return a == b || a == KNull || b == KNull || num(a) && num(b) || tm(a) && tm(b)
 }
 
 // ---- set-returning functions ----
@@ -883,6 +929,9 @@ func srfKind(f *Func, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) (Kin
 	col := int(f.Args[1].(*Lit).V.I)
 	args := f.Args[3:]
 	if d, ok := srfDefs[name]; ok {
+		if name == "generate_subscripts" {
+			return KInt, pgTy{oid: tyInt4, mod: -1}
+		}
 		if col < len(d.kinds) {
 			return d.kinds[col], pgTy{}
 		}

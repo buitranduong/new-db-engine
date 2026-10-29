@@ -948,7 +948,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		})
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) { // pg_typeof knows static types
 			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
-				if n := staticTypeName(f.Args[0], inferTy(f.Args[0], slotTy), staticKind(f.Args[0], sk)); n != "" {
+				ptk, ptt := staticKind(f.Args[0], sk), inferTy(f.Args[0], slotTy)
+				ptk, ptt = jsonarrCol(f.Args[0], ptk, ptt, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
+				if n := staticTypeName(f.Args[0], ptt, ptk); n != "" {
 					return &Lit{TextD(n)}, true
 				}
 			}

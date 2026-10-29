@@ -50,7 +50,7 @@ SELECT id FROM jdoc WHERE doc @? '$.o.k[*] ? (@ > 2)' ORDER BY id;
 SELECT id FROM jdoc WHERE doc @@ '$.n > 1' ORDER BY id;
 SELECT jsonb_typeof('1'::jsonb), jsonb_typeof('"a"'::jsonb), jsonb_typeof('null'::jsonb), jsonb_typeof('[]'::jsonb), jsonb_typeof('{}'::jsonb), jsonb_typeof('true'::jsonb);
 SELECT '{"a": 1}'::jsonb = '{"a": 1}'::jsonb, '{"a": 1}'::jsonb <> '{"a": 2}'::jsonb;
-SELECT pg_typeof(doc -> 'a')::text, pg_typeof(doc ->> 'a')::text, pg_typeof(raw -> 'a')::text, pg_typeof(doc || doc)::text FROM jdoc WHERE id = 1;
+SELECT pg_typeof(doc -> 'name')::text, pg_typeof(doc ->> 'name')::text, pg_typeof(raw -> 'name')::text, pg_typeof(doc || doc)::text FROM jdoc WHERE id = 1;
 
 -- ### h/json-funcs
 SELECT jsonb_build_object('a', 1, 'b', 'x', 'c', NULL, 'd', true, 'e', 1.50);
@@ -173,7 +173,7 @@ SELECT ARRAY[1, 2] || NULL::int[], NULL::int[] || ARRAY[1];
 SELECT i4[1], i4[2], i4[4], i4[0], t[3], i4[1:2], i4[2:], i4[:1], i4[5:6] FROM arrt WHERE id = 1;
 SELECT i4[2] FROM arrt WHERE id = 3;
 SELECT (ARRAY[ARRAY[1, 2], ARRAY[3, 4]])[2][1], (ARRAY[ARRAY[1, 2], ARRAY[3, 4]])[1:1];
-SELECT pg_typeof(i4[1])::text, pg_typeof(t[1])::text, pg_typeof(i4[1:2])::text, pg_typeof(i4 || 1)::text FROM arrt WHERE id = 1;
+SELECT pg_typeof(i4[1])::text, pg_typeof(t[1])::text, pg_typeof(i4[1:2])::text, pg_typeof(i4 || 1)::text FROM arrt a, generate_series(1, 1) g WHERE id = 1;
 SELECT id, i4[1] + 1 FROM arrt WHERE i4[1] IS NOT NULL ORDER BY id;
 SELECT id FROM arrt ORDER BY i4, id;
 SELECT id FROM arrt WHERE i4 = '{3,4,5}' ORDER BY id;

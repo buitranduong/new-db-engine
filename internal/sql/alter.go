@@ -132,6 +132,7 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 				if err := s.addPrimaryKey(oldName, d, a.KeyCols, dropped); err != nil {
 					return err
 				}
+				d.PKName = a.Column
 			case "drop_column":
 				// the column is only marked dropped (core.AlterTable): rows
 				// keep its value until rewritten, as in PostgreSQL

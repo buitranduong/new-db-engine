@@ -59,7 +59,7 @@ func hiddenSequence(q core.Sequence) bool { return strings.HasSuffix(q.Owner, ".
 // dupKeyErr is the 23505 for a row whose primary key exists already.
 func dupKeyErr(t *schema.Table, key string) *Error {
 	cols, vals := t.KeyDisplay(key)
-	return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, cols, vals)
+	return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s\": Key (%s)=(%s) already exists", pkeyName(t), cols, vals)
 }
 
 // addPrimaryKey is ALTER TABLE ... ADD PRIMARY KEY (cols) on a table

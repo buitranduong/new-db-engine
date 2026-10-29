@@ -841,7 +841,7 @@ func (e *Engine) GetAt(table, key string, snap uint64) (schema.Row, *Version, er
 }
 
 // KeyExistsError is returned by a commit that inserts a key that exists.
-type KeyExistsError struct{ Table, Column, Key string }
+type KeyExistsError struct{ Table, Column, Key, Constraint string }
 
 func (e *KeyExistsError) Error() string {
 	return fmt.Sprintf("%v: %s/%s", ErrExists, e.Table, e.Key)
@@ -850,7 +850,7 @@ func (e *KeyExistsError) Error() string {
 // keyExists is the error for a duplicate row key of table sch.
 func keyExists(sch *schema.Table, key string) *KeyExistsError {
 	cols, vals := sch.KeyDisplay(key)
-	return &KeyExistsError{Table: sch.Name, Column: cols, Key: vals}
+	return &KeyExistsError{Table: sch.Name, Column: cols, Key: vals, Constraint: sch.PKName}
 }
 
 func (e *KeyExistsError) Is(target error) bool { return target == ErrExists }

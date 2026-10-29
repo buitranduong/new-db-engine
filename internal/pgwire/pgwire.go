@@ -1081,7 +1081,7 @@ func (c *conn) rowDescription(cols []sql.Column, formats []int16) {
 		if col.OID == 0 {
 			mod = -1
 		}
-		m.str(col.Name).int32(0).int16(0).int32(int(colOID(col))).int16(size).int32(mod).int16(int(format(formats, i)))
+		m.str(col.Name).int32(int(col.TableOID)).int16(int(col.AttNum)).int32(int(colOID(col))).int16(size).int32(mod).int16(int(format(formats, i)))
 	}
 	c.send(m)
 }

@@ -329,7 +329,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 	case KDate:
 		switch d.K {
 		case KText:
-			us, err := parseTime(d.S)
+			us, err := parseTimeKind(d.S, KTimestamp) // a date ignores any zone
 			if err != nil {
 				return badTime(d, "date")
 			}

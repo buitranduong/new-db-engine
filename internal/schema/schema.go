@@ -201,7 +201,10 @@ type Table struct {
 	Key     string   `json:"key"`
 	// KeyCols are the columns of a composite PRIMARY KEY (Key is then the
 	// hidden column KeyCol, pkey.go); empty for a one-column key or none.
-	KeyCols      []string `json:"key_cols,omitempty"`
+	KeyCols []string `json:"key_cols,omitempty"`
+	// PKName is the name the user gave the PRIMARY KEY constraint
+	// (CONSTRAINT pk_sim PRIMARY KEY); empty: <table>_pkey.
+	PKName       string   `json:"pk_name,omitempty"`
 	Search       []string `json:"search,omitempty"`
 	Columnar     bool     `json:"columnar,omitempty"`
 	AppendOnly   bool     `json:"append_only,omitempty"`

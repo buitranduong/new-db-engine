@@ -485,6 +485,7 @@ func (p *parser) createStmt() (Stmt, error) {
 			if c.Key != "" || c.KeyCols != nil {
 				return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
 			}
+			c.PKName = cname
 			if len(cols) == 1 {
 				c.Key = cols[0]
 			} else {
@@ -500,6 +501,7 @@ func (p *parser) createStmt() (Stmt, error) {
 					return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
 				}
 				c.Key = cd.Name
+				c.PKName = cd.PKName
 			}
 			for _, k := range cd.Constraints {
 				if k.Kind == "unique" || k.Kind == "foreign" {
@@ -597,6 +599,8 @@ func (p *parser) colDef() (ColDef, error) {
 	switch cd.Type {
 	case "date": // stored as a timestamp at midnight, read back as a date (PG "date")
 		cd.Type = "timestamp"
+	case "oid": // Liquibase BLOB: an integer column that reports the type oid
+		cd.Type, cd.PG = "int", "oid"
 	case "interval", "array":
 		return cd, errf(codeFeature, "columns of type %s are not supported", cd.Type)
 	}
@@ -646,6 +650,12 @@ func (p *parser) colDef() (ColDef, error) {
 			if p.acceptKw("constraint") {
 				if name, err = p.ident(); err != nil {
 					return cd, err
+				}
+				if p.isKw("primary") && p.peekN(1).s == "key" {
+					p.next()
+					p.next()
+					cd.Primary, cd.NotNull, cd.PKName = true, true, name
+					continue
 				}
 				if !p.isKw("check") && !p.isKw("unique") && !p.isKw("references") {
 					return cd, errf(codeFeature, "only named CHECK, UNIQUE and REFERENCES column constraints are supported")
@@ -1349,9 +1359,10 @@ func (p *parser) predicate() (Expr, error) {
 					pl, ok1 := pat.(*Lit)
 					el, ok2 := esc.(*Lit)
 					if !ok1 || !ok2 || pl.V.K != KText || el.V.K != KText {
-						return nil, errf(codeFeature, "LIKE ... ESCAPE needs literal pattern and escape strings")
+						pat = &Func{Name: "stask_like_escape", Disp: "?column?", Args: []Expr{pat, esc}}
+					} else {
+						pat = &Lit{TextD(likeEscape(pl.V.S, el.V.S))}
 					}
-					pat = &Lit{TextD(likeEscape(pl.V.S, el.V.S))}
 				}
 				l = &Like{l, pat, not, ic}
 			default:
@@ -1644,6 +1655,9 @@ func (p *parser) columnRest(first string) (Expr, error) {
 		}
 		if p.isOp("(") && (first == "pg_catalog" || first == "public") {
 			return p.funcCall(n) // pg_catalog.set_config(...)
+		}
+		if p.isOp(".") {
+			return p.columnRest3(n)
 		}
 		return &ColRef{Table: first, Name: n}, nil
 	}
@@ -2043,7 +2057,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				break
 			}
 			if p.acceptKw("primary", "key") {
-				act.Kind = "add_pk"
+				act.Kind, act.Column = "add_pk", cname // Column carries the constraint name
 				if act.KeyCols, err = p.pkColumns(); err != nil {
 					return nil, err
 				}

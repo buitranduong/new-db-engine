@@ -8,7 +8,7 @@ S=$(date -u +%Y-%m-%dT%H:%M:%S); sleep 1
 $D/lb.sh pg update >/dev/null 2>&1; $D/lb.sh pg status >/dev/null 2>&1
 $D/lb.sh stask update --label-filter="!gap-uuid-index and !gap-expr-index" >/dev/null 2>&1; $D/lb.sh stask status >/dev/null 2>&1
 norm() { tr -s ' \t' ' ' | sed -E "s/ +$//; s/'[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9:.]+'/'<ts>'/g; s/[0-9a-f]{32}/<md5>/g"; }
-docker logs --since $S rc-pg 2>&1 | grep -E "LOG:  (statement|execute [^:]*):" | sed -E 's/^.*LOG:  (statement|execute [^:]*): //' | norm > $RC_OUT/stmts-pg.txt
+docker logs --since $S $PG_NAME 2>&1 | grep -E "LOG:  (statement|execute [^:]*):" | sed -E 's/^.*LOG:  (statement|execute [^:]*): //' | norm > $RC_OUT/stmts-pg.txt
 grep "slow statement:" $RC_OUT/staskd.log | sed -E 's/^.*statement: //' | norm > $RC_OUT/stmts-stask.txt
 wc -l $RC_OUT/stmts-pg.txt $RC_OUT/stmts-stask.txt
 echo "--- statements sent to stask but not logged by pg (after normalisation; expected: the skipped gap changesets differ in pg only)"

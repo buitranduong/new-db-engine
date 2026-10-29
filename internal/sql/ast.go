@@ -9,6 +9,7 @@ type ColDef struct {
 	Type    string // schema type: int, float, string, text, time, bool
 	PG      string // declared PostgreSQL type when Type cannot tell (pgtype.go)
 	Primary bool
+	PKName  string // CONSTRAINT name PRIMARY KEY (column constraint)
 	NotNull bool
 	Default string // SQL text of DEFAULT
 	Checks  []CheckDef
@@ -87,6 +88,7 @@ type CreateTable struct {
 	Constraints []*ConstraintDef // UNIQUE and FOREIGN KEY, table and column constraints
 	Key         string
 	KeyCols     []string // composite PRIMARY KEY (two columns or more); Key is then empty
+	PKName      string   // CONSTRAINT name PRIMARY KEY
 	IfNotExists bool
 	Options     map[string]string // WITH (columnar = true, search = 'a,b', ...)
 }

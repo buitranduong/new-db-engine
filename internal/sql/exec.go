@@ -27,6 +27,10 @@ type Column struct {
 	// varchar(n) for KText...); OID 0 means the Kind's default type.
 	OID uint32
 	Mod int32
+	// TableOID and AttNum: the column is read straight from that table's
+	// column (RowDescription fields JDBC ResultSetMetaData uses); 0 if not.
+	TableOID uint32
+	AttNum   int16
 }
 
 // withTy returns c typed t when t describes values of c's Kind.
@@ -452,7 +456,7 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		}
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
-	t := schema.Table{Name: c.Name, Key: c.Key, KeyCols: c.KeyCols}
+	t := schema.Table{Name: c.Name, Key: c.Key, KeyCols: c.KeyCols, PKName: c.PKName}
 	seen := map[string]bool{}
 	for _, cd := range c.Cols {
 		if cd.Name == schema.RowIDCol || cd.Name == schema.KeyCol {
@@ -1787,7 +1791,7 @@ func returningCols(sc *scope, items []SelItem, pk map[int]Kind) []Column {
 		if it.Star {
 			for i := range sc.t.Columns {
 				if !sc.t.Columns[i].Hidden {
-					cols = append(cols, tableCol(&sc.t.Columns[i]))
+					cols = append(cols, tableCol(&sc.t.Columns[i]).withTable(sc.t))
 				}
 			}
 			continue

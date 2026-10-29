@@ -186,7 +186,7 @@ func decodeKeyValue(b []byte, ct ColType) (Value, error) {
 	}
 	b = b[1:]
 	switch ct {
-	case TInt, TTime, TBool:
+	case TInt, TTime, TBool, TTimestamp, TTimestamptz:
 		return Value{I: int64(binary.BigEndian.Uint64(b) ^ 1<<63)}, nil
 	case TFloat:
 		u := binary.BigEndian.Uint64(b)
@@ -199,7 +199,7 @@ func decodeKeyValue(b []byte, ct ColType) (Value, error) {
 			u = ^u
 		}
 		return Value{F: math.Float64frombits(u)}, nil
-	case TString, TText:
+	case TString, TText, TBytea:
 		var s []byte
 		for i := 0; i+1 < len(b); i++ {
 			if b[i] == 0 {
@@ -213,6 +213,9 @@ func decodeKeyValue(b []byte, ct ColType) (Value, error) {
 			s = append(s, b[i])
 		}
 		return Value{S: string(s)}, nil
+	}
+	if v, ok, err := decodeKeyExt(b, ct); ok {
+		return v, err
 	}
 	return Value{}, fmt.Errorf("column type %d cannot be a key", ct)
 }

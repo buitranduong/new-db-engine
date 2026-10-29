@@ -12,6 +12,8 @@ from the log, and can always be rebuilt from it. The planner picks an execution
 path from the *consistency the query asked for* and reports which plan it used
 (engine, LSN, view lag).
 
+Direction: not "one database for everything", but a **tiered, tightly controlled engine** that gathers the best architectures of existing systems (log and MVCC core, derived columnar and search views, time-bounded history, archive), each tier with a declared role and freshness. See [docs/16](docs/16_tiered_engine_vision.md).
+
 > **Status: research prototype. Not for production use.** It is roughly a third of
 > the way to the feature set listed in [docs/11](docs/11_rust_criteria.md) (see the
 > [roadmap](#roadmap)). On-disk formats may still change. Do not keep data you

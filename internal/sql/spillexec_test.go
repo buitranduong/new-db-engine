@@ -130,7 +130,9 @@ func TestSpillMatchesMemory(t *testing.T) {
 
 func TestSpillRefusalsAndLimits(t *testing.T) {
 	s := spillFixture(t)
-	defer func(q, so int64, sd string, sm int64) { QueryMemLimit, SpillOpMem, SpillDir, SpillMaxBytes = q, so, sd, sm }(QueryMemLimit, SpillOpMem, SpillDir, SpillMaxBytes)
+	defer func(q, so int64, sd string, sm int64) {
+		QueryMemLimit, SpillOpMem, SpillDir, SpillMaxBytes = q, so, sd, sm
+	}(QueryMemLimit, SpillOpMem, SpillDir, SpillMaxBytes)
 	QueryMemLimit, SpillOpMem, SpillDir = 3<<20, 256<<10, t.TempDir()
 	// not a covered shape (array_agg grows with the group): still the budget error
 	if _, err := tryRun(s, `SELECT g, array_agg(tag) FROM a JOIN b ON a.k = b.k GROUP BY g`); code(err) != "53200" {

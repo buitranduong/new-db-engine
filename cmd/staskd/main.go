@@ -62,6 +62,7 @@ func main() {
 	replRequire := flag.Bool("repl-require-secure", false, "leader: refuse replicas that are not both on TLS and authenticated (secret or client certificate); replica: refuse a leader without TLS")
 	replInsecure := flag.Bool("repl-insecure", false, "allow -repl-addr on a non-loopback address without replica authentication")
 	pgAddr := flag.String("pg-addr", "127.0.0.1:17432", "PostgreSQL protocol listen address (empty = off)")
+	pgInsecure := flag.Bool("pg-insecure", false, "allow -pg-addr on a non-loopback address without a password (-pg-password)")
 	// Off by default: the lane needs GOMAXPROCS above the CPU count, and the
 	// GC then runs idle mark workers on the extra Ps, taking most of the
 	// real CPUs for each mark phase (20M rows: write p99 313ms with the
@@ -304,6 +305,10 @@ func main() {
 	}
 	var pg *pgwire.Server
 	if *pgAddr != "" {
+		if err := server.CheckBind(*pgAddr, *pgPassword != "", *pgInsecure, "-pg-addr",
+			"set -pg-password (with -pg-auth scram) or pass -pg-insecure"); err != nil {
+			log.Fatal(err)
+		}
 		ln, err := net.Listen("tcp", *pgAddr)
 		if err != nil {
 			log.Fatalf("pg listen: %v", err)

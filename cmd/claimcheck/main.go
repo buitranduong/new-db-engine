@@ -208,6 +208,8 @@ func checks() []check {
 		{"pg_stat_activity", "P5.5", "12 P5.5", []string{"SELECT count(*) FROM pg_stat_activity"}, "val:1", nil},
 		// ---- P7
 		{"create_trigger", "P7.1", "12 P7.1", []string{T, "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW EXECUTE FUNCTION cc_fn()"}, "ok", nil},
+		{"trigger_sql_body_fires", "P7.1", "05 §18 (SQL-body syntax)", []string{T, "CREATE TABLE cc_p (id BIGINT PRIMARY KEY, w TEXT)", "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW BEGIN INSERT INTO cc_p VALUES (NEW.id, NEW.v); END", "INSERT INTO cc_t VALUES (1, 'z')", "SELECT w FROM cc_p WHERE id = 1"}, "val:z", nil},
+		{"trigger_raise_abort", "P7.1", "05 §18", []string{T, "CREATE TRIGGER cc_tr BEFORE INSERT ON cc_t FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'no'); END", "INSERT INTO cc_t VALUES (1, 'z')"}, "err:P0001", nil},
 		// ---- baseline SQL the README claims
 		{"on_conflict_update", "base", "05 §1", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "INSERT INTO cc_t VALUES (1,'b') ON CONFLICT (id) DO UPDATE SET v = excluded.v", "SELECT v FROM cc_t WHERE id=1"}, "val:b", nil},
 		{"join", "base", "05 §1", []string{T, "CREATE TABLE cc_p (id BIGINT PRIMARY KEY, w TEXT)", "INSERT INTO cc_t VALUES (1,'a')", "INSERT INTO cc_p VALUES (1,'j')", "SELECT p.w FROM cc_t t JOIN cc_p p ON p.id = t.id"}, "val:j", nil},

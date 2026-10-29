@@ -93,7 +93,7 @@ func (qx *qexec) ctx(outer *evalCtx) *evalCtx {
 
 // runQuery executes a query statement on the general executor.
 func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
-	c := &compiler{s: s}
+	c := &compiler{s: s, tx: tx}
 	p, err := c.compile(st, &qscope{lvl: &qlevel{}})
 	if err != nil {
 		return nil, err
@@ -115,7 +115,11 @@ func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error
 	return res, nil
 }
 
-type compiler struct{ s *Session }
+type compiler struct {
+	s  *Session
+	tx *core.Tx // snapshot the views are read at; nil: the newest
+	vs *viewScope
+}
 
 func (c *compiler) compile(st Stmt, sc *qscope) (qplan, error) {
 	switch q := st.(type) {
@@ -1730,12 +1734,16 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		}
 		t, err := c.s.table(f.Name)
 		if err != nil {
+			if vp, ok, verr := c.expandView(f, qual); ok || verr != nil {
+				return vp, verr
+			}
 			if _, _, serr := c.s.E.SequenceState(f.Name); serr == nil { // SELECT last_value FROM seq
 				return &funcPlan{name: seqRelFunc, args: []Expr{&Lit{TextD(`"` + f.Name + `"`)}},
 					c: renameCols(tableFuncCols[seqRelFunc], f.ColAliases, qual)}, nil
 			}
 			return nil, err
 		}
+		c.noteDep(f.Name)
 		tp := &tablePlan{t: t}
 		for i, col := range t.Columns {
 			rc := relCol{qual: qual, name: col.Name, kind: kindOf(col.T)}

@@ -298,7 +298,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	case *SetOp:
 		return s.describeQuery(st)
 	case *Select:
-		if needsGeneral(st) || s.isSequence(st.From) {
+		if needsGeneral(st) || s.isSequence(st.From) || s.isView(st.From) {
 			return s.describeQuery(st)
 		}
 		table = st.From

@@ -164,7 +164,7 @@ func (s *Session) isSequence(name string) bool {
 }
 
 func (s *Session) relationExists(name string) bool {
-	if _, err := s.E.UserTable(name); err == nil {
+	if _, err := s.E.UserTable(name); err == nil || s.isView(name) {
 		return true
 	}
 	_, _, err := s.E.SequenceState(name)

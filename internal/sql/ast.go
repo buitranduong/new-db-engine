@@ -163,6 +163,7 @@ type Show struct{ Name string }
 type DropTable struct {
 	Names    []string
 	IfExists bool
+	Cascade  bool // also drop the views that read the tables
 }
 
 // Truncate is TRUNCATE [TABLE] name [, ...].

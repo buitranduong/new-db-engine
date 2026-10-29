@@ -37,6 +37,9 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 		}
 		return nil, errf(codeUndefinedTable, "relation %q does not exist", st.Name)
 	}
+	if err := s.alterTableViews(st); err != nil {
+		return nil, err
+	}
 	now := nowMillis()
 	var oldName string
 	var renamed map[string]string // old column name -> new

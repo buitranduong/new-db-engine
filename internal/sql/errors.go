@@ -82,6 +82,8 @@ func AsError(err error) *Error {
 		return errf("2200H", "%v", err)
 	case errors.Is(err, core.ErrSequenceBounds):
 		return errf("22003", "%v", err)
+	case errors.Is(err, core.ErrViewExists):
+		return errf(codeDuplicateTable, "%v", err)
 	case errors.Is(err, core.ErrNoTable):
 		return errf(codeUndefinedTable, "%v", err)
 	case errors.Is(err, core.ErrSnapshotTooOld):

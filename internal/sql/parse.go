@@ -200,15 +200,17 @@ func (p *parser) statement() (Stmt, error) {
 			d.Name, err = p.ident()
 			return d, err
 		}
+		if p.acceptKw("view") {
+			return p.dropView()
+		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err
 		}
 		d := &DropTable{IfExists: p.acceptKw("if", "exists")}
 		var err error
 		d.Names, err = p.tableList()
-		// no table depends on another (no views, no foreign keys yet), so
-		// CASCADE and RESTRICT drop the same
-		if !p.acceptKw("cascade") {
+		// only views depend on a table (no foreign keys yet): CASCADE drops them
+		if d.Cascade = p.acceptKw("cascade"); !d.Cascade {
 			p.acceptKw("restrict")
 		}
 		return d, err
@@ -366,6 +368,9 @@ func (p *parser) statement() (Stmt, error) {
 
 func (p *parser) createStmt() (Stmt, error) {
 	p.next()
+	if st, ok, err := p.createView(); ok {
+		return st, err
+	}
 	if p.acceptKw("publication") {
 		return p.createPublication()
 	}

@@ -590,3 +590,28 @@ Hạng mục P1.5 (phần COPY) của docs/12. Mã nguồn: `internal/sql/copy.g
 **Đo thử** (`STASK_COPY_ROWS=1000000 go test ./internal/pgwire -run CopyVsInsert -v`; 4 cột bigint/bigint/text/double, qua pgx và TCP loopback, máy dev đang có tải khác nên chỉ so sánh tương đối, mỗi con số là một lần chạy): 1 000 000 dòng, `COPY` mất 4,6 s và 6,2 s (hai lần; 215 và 160 nghìn dòng/s), `INSERT` 1000 dòng/câu trong một giao dịch mất 9,8 s và 10,2 s (khoảng 100 nghìn dòng/s). Ở 100 000 dòng: 0,52 s so với 0,84 s. Một bản đầu cấp phát lại mảng ghi của giao dịch theo từng 4096 dòng (`Tx.Grow` cấp đúng cỡ), chậm hơn INSERT ở 1M (14 s so với 8,6 s); đã sửa bằng tăng gấp đôi. Chưa đo 10M (tiêu chí của P1.5 là 10M; ngoại suy chưa phải số đo), chưa đo INSERT từng câu autocommit và chưa so với `COPY` của PostgreSQL.
 
 **Chưa làm.** Binary; file/program; `FORCE_*`; `HEADER MATCH` kiểm tên cột; COPY qua giao thức mở rộng; `COPY` trong khối nhiều câu (`COPY ...; SELECT ...` trong một câu Query); cả giao dịch 10M dòng nằm trong RAM tới lúc commit (chưa chia lô commit, nên bộ nhớ phụ thuộc kích thước nạp; ngân sách chỉ báo lỗi chứ chưa spill); `COPY TO` từ truy vấn chưa phát theo luồng; COPY chưa qua hàng đợi admission (`lanes.go`); chưa thử bằng `psql \copy` thật (không có psql trên máy test), chỉ bằng pgx.
+
+## 16. CREATE VIEW và DROP VIEW (2026-10-29)
+
+Cú pháp: `CREATE [OR REPLACE] VIEW tên [(cột, ...)] AS truy_vấn` và `DROP VIEW [IF EXISTS] a [, b ...] [CASCADE | RESTRICT]`. Đây là view thường (SQL view). Không liên quan tới "view dạng cột" ở §8 (`internal/sql/views.go`); code của view SQL nằm ở `internal/sql/sqlview.go` và `internal/core/sqlview.go`.
+
+**Lưu trữ.** Mỗi view là một dòng của bảng hệ thống `__stask_views` (cùng cách với sequence, `__stask_sequences`): tên, văn bản SQL của truy vấn, tên các cột kết quả (chốt lúc tạo) và danh sách quan hệ mà truy vấn đọc trực tiếp. Vì là dòng thường nên view đi qua WAL, checkpoint, replay khi khởi động và nhân bản tới replica mà không cần cơ chế riêng. Bảng hệ thống bị ẩn khỏi client, publication và CDC (`Schema.System`): tạo hay xoá view không sinh thay đổi nào trong slot.
+
+**Phân giải.** Khi planner gặp tên không phải bảng, nó tìm view và thay bằng truy vấn con (`expandView` trong `sqlview.go`, gọi từ `compileFrom`). View lồng nhau mở ra đệ quy. Truy vấn của view chạy ở phạm vi riêng: không thấy CTE hay cột của câu dùng nó. Câu `SELECT ... FROM view` một bảng sang bộ thực thi tổng quát (đường nhanh báo lỗi rồi `runHere` thử lại, như với sequence).
+
+**MVCC.** Định nghĩa được đọc bằng `tx.Get` theo snapshot của giao dịch. Giao dịch repeatable read bắt đầu trước `CREATE VIEW` thì không thấy view; bắt đầu trước `CREATE OR REPLACE`/`DROP VIEW` thì vẫn dùng định nghĩa cũ. (Bảng cơ sở thì khác: schema bảng chưa có MVCC, xem §11.)
+
+**Quy tắc.**
+
+- `SELECT *` được chốt thành danh sách cột lúc tạo, như PG: cột thêm vào bảng sau đó không hiện trong view. Tên cột trùng trong view trả `42701`. Tham số `$n` trong truy vấn của view bị từ chối.
+- `OR REPLACE`: giữ nguyên tên và kiểu các cột cũ, được thêm cột ở cuối; không thì `42P16`. View chưa có thì tạo mới.
+- Tên view cùng không gian tên với bảng và sequence: trùng thì `42P07`. `DROP TABLE` trên view hoặc `DROP VIEW` trên bảng trả `42809`.
+- View chỉ đọc: `INSERT/UPDATE/DELETE` qua view trả `55000`.
+- **Chặn vòng:** lúc `CREATE`/`OR REPLACE`, truy vấn được biên dịch với chính view đó nằm trên ngăn xếp; chạm lại nó (trực tiếp hay qua view khác) trả `42P17`, không ghi gì.
+- **Phụ thuộc:** `DROP VIEW` view còn view khác dùng, hoặc `DROP TABLE` bảng còn view đọc, trả `2BP01` (kèm tên view phụ thuộc) trừ khi `CASCADE`; khi đó các view phụ thuộc, kể cả gián tiếp, bị xoá cùng (một lần ghi nguyên tử, thông báo `drop cascades to view ...`). `DROP VIEW a, b` khi `b` dùng `a` thì được.
+- `ALTER TABLE` có `DROP COLUMN`, `ALTER COLUMN TYPE`, `RENAME COLUMN`, `RENAME TO` trên bảng còn view đọc trả `2BP01` (PG cho đổi tên và tự sửa view; ở đây văn bản được lưu nên chưa làm). `ADD COLUMN` thì được.
+- **Khác PG:** như `CREATE TABLE`, `CREATE/DROP VIEW` có hiệu lực ngay, kể cả trong `BEGIN`. Phụ thuộc vào sequence (`SELECT last_value FROM seq`) và vào hàm không được theo dõi.
+
+**Chưa làm.** `pg_class`/`pg_views`/`information_schema.views` chưa liệt kê view (để lại `TODO(catalog)` trong `sqlview.go`; `catalog_*.go` thuộc việc khác); `ALTER VIEW`, view tạm, `WITH CHECK OPTION`, `security_barrier`; `\d view` của psql phụ thuộc P4.1.
+
+**Test.** `internal/sql/sqlview_test.go` (SQL, lồng nhau, vòng, `2BP01`, snapshot, khởi động lại bằng replay và bằng checkpoint, CDC, Describe) và `internal/repl/sqlview_repl_test.go` (replica theo CREATE/REPLACE/DROP, khởi động lại replica).

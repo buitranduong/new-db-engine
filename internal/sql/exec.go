@@ -189,6 +189,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreateView, *DropView:
+		// applied at once, like CREATE TABLE
+		res, err := s.viewDDL(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *DropTable, *Truncate:
 		// applied at once, not at commit, like CREATE TABLE (PostgreSQL
 		// runs both inside the transaction)
@@ -308,7 +315,7 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 }
 
 func (s *Session) createTable(c *CreateTable) (*Result, error) {
-	if _, err := s.E.UserTable(c.Name); err == nil {
+	if _, err := s.E.UserTable(c.Name); err == nil || s.isView(c.Name) {
 		if c.IfNotExists {
 			return &Result{Tag: "CREATE TABLE", Notice: fmt.Sprintf("relation %q already exists, skipping", c.Name)}, nil
 		}
@@ -369,6 +376,9 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 func (s *Session) table(name string) (*schema.Table, error) {
 	ts, err := s.E.UserTable(name)
 	if err != nil {
+		if s.isView(name) {
+			return nil, errf(codeObjectNotInState, "cannot change view %q", name)
+		}
 		return nil, errf(codeUndefinedTable, "relation %q does not exist", name)
 	}
 	return ts.Schema(), nil
@@ -399,7 +409,7 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 				return r2, nil
 			}
 		}
-		if err != nil && s.isSequence(st.From) { // SELECT last_value FROM seq
+		if err != nil && (s.isSequence(st.From) || s.isView(st.From)) { // SELECT last_value FROM seq, or FROM a view
 			return s.runQuery(tx, st, params)
 		}
 		return res, err
@@ -1769,10 +1779,10 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 // tables are then changed one at a time.
 func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 	var names []string
-	ifExists, tag, restart := false, "TRUNCATE TABLE", false
+	ifExists, tag, restart, cascade := false, "TRUNCATE TABLE", false, false
 	switch st := st.(type) {
 	case *DropTable:
-		names, ifExists, tag = st.Names, st.IfExists, "DROP TABLE"
+		names, ifExists, tag, cascade = st.Names, st.IfExists, "DROP TABLE", st.Cascade
 	case *Truncate:
 		names, restart = st.Names, st.Restart
 	}
@@ -1780,6 +1790,9 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 	var todo []string
 	for _, n := range names {
 		if _, err := s.E.UserTable(n); err != nil {
+			if s.isView(n) {
+				return nil, errf(codeWrongObjectType, "%q is not a table", n)
+			}
 			if !ifExists {
 				return nil, errf(codeUndefinedTable, "table %q does not exist", n)
 			}
@@ -1787,6 +1800,15 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 			continue
 		}
 		todo = append(todo, n)
+	}
+	if tag == "DROP TABLE" {
+		note, err := s.dropTableViews(todo, cascade) // 2BP01 unless CASCADE
+		if err != nil {
+			return nil, err
+		}
+		if note != "" {
+			res.Notice = strings.Trim(res.Notice+"; "+note, "; ")
+		}
 	}
 	for _, n := range todo {
 		var err error

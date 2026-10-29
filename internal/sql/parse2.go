@@ -226,14 +226,14 @@ func (p *parser) withList() ([]CTE, error) {
 	var out []CTE
 	for {
 		t, t1 := p.peek(), p.peekN(1)
-		isCTE := (t.k == tIdent || t.k == tQuoted) && (t1.k == tIdent && t1.s == "as" && p.peekN(2).s == "(" ||
+		isCTE := (t.k == tIdent || t.k == tQuoted) && (t1.k == tIdent && t1.s == "as" && p.cteBodyAt(p.i+2) ||
 			t1.k == tOp && t1.s == "(")
 		if isCTE && t1.s == "(" { // name(cols) AS (...) vs ClickHouse WITH f(x) AS alias
 			j := p.i + 2
 			for j < len(p.toks) && p.toks[j].s != ")" {
 				j++
 			}
-			isCTE = j+2 < len(p.toks) && p.toks[j+1].s == "as" && p.toks[j+2].s == "("
+			isCTE = j+2 < len(p.toks) && p.toks[j+1].s == "as" && p.cteBodyAt(j+2)
 		}
 		if isCTE {
 			c := CTE{Recursive: recursive}

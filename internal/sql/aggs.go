@@ -38,6 +38,9 @@ func isAggCall(f *Func) bool { return f.Over == nil && aggNames[f.Name] }
 func newAgg(a *aggCall) (aggImpl, error) {
 	f := a.f
 	nargs := len(a.args)
+	if impl, ok, err := supfixNewAgg(a); ok {
+		return impl, err
+	}
 	want := func(lo, hi int) error {
 		if nargs < lo || nargs > hi {
 			return errf(codeUndefinedFunction, "function %s with %d arguments does not exist", f.Name, nargs)

@@ -1,11 +1,18 @@
 package sql
 
+import "strings"
+
 // supfix: result kinds PostgreSQL gives to numeric-flavoured expressions that the executor
 // used to report as double precision / bigint (docs/14 Appendix E item 7).
 
 // supfixAggKind refines funcKind(name, ak) = k for an aggregate / window call with bound args.
 func supfixAggKind(name string, args []Expr, ak []Kind, k Kind, slotTy func(Expr) (pgTy, bool)) Kind {
 	switch name {
+	case "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_avgx", "regr_avgy",
+		"regr_sxx", "regr_syy", "regr_sxy":
+		return KFloat
+	case "regr_count":
+		return KInt
 	case "stddev", "stddev_samp", "stddev_pop", "variance", "var_samp", "var_pop":
 		if len(ak) == 1 && k == KFloat && (ak[0] == KInt || ak[0] == KNumeric) {
 			return KNumeric
@@ -19,4 +26,47 @@ func supfixAggKind(name string, args []Expr, ak []Kind, k Kind, slotTy func(Expr
 		}
 	}
 	return k
+}
+
+// supfixFuncTy: functions that return type name (oid 19) in PostgreSQL.
+func supfixFuncTy(f *Func) (pgTy, bool) {
+	switch f.Name {
+	case "current_schema", "current_database", "current_user", "session_user", "current_role", "current_catalog",
+		"pg_encoding_to_char", "pg_get_userbyid", "pg_get_serial_sequence_name":
+		return pgTy{oid: tyName, mod: -1}, true
+	}
+	return pgTy{}, false
+}
+
+// cteBodyAt reports whether the tokens at i open a CTE body: "(", "MATERIALIZED (" or
+// "NOT MATERIALIZED (".
+func (p *parser) cteBodyAt(i int) bool {
+	at := func(j int, s string) bool { return j < len(p.toks) && p.toks[j].s == s }
+	switch {
+	case at(i, "("):
+		return true
+	case at(i, "materialized"):
+		return at(i+1, "(")
+	case at(i, "not"):
+		return at(i+1, "materialized") && at(i+2, "(")
+	}
+	return false
+}
+
+// scanQuotedIdent reads the double-quoted identifier starting at src[i] ("" is a quote inside);
+// it returns the identifier and the index after the closing quote.
+func scanQuotedIdent(src string, i int) (string, int, bool) {
+	var b strings.Builder
+	for j := i + 1; j < len(src); j++ {
+		if src[j] == '"' {
+			if j+1 < len(src) && src[j+1] == '"' {
+				b.WriteByte('"')
+				j++
+				continue
+			}
+			return b.String(), j + 1, true
+		}
+		b.WriteByte(src[j])
+	}
+	return "", 0, false
 }

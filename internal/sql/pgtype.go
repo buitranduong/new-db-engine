@@ -227,6 +227,9 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		}
 		return commonTy(ts, as)
 	case *Func:
+		if t, ok := supfixFuncTy(e); ok {
+			return t
+		}
 		if e.Over != nil && !tySameAsArg[e.Name] && e.Name != "ntile" {
 			return pgTy{}
 		}

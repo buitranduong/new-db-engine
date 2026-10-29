@@ -362,7 +362,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "quote_ident":
 		return TextD(quoteIdent(arg(0).String())), nil
 	case "pg_relation_size", "pg_total_relation_size", "pg_table_size", "pg_indexes_size":
-		return IntD(0), nil
+		return s.supfixRelSize(arg(0), name != "pg_relation_size" && name != "pg_table_size"), nil
 	case "pg_get_indexdef":
 		oid := argInt(0)
 		for _, t := range s.catSnap().tables {

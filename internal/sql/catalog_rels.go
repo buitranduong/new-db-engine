@@ -38,6 +38,7 @@ func init() {
 				ident = "f"
 			}
 			rel(tableOID(t), t.Name, heapAMOID, "r", maxNum(t), len(t.Checks), true, ident, relOptions(t))
+			supfixRelStats(c, t, rows[len(rows)-1])
 			if t.HasPK() {
 				rel(indexOID(t), pkeyName(t), btreeAMOID, "i", len(t.PKCols()), 0, false, "n", Null)
 			}

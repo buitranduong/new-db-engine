@@ -85,12 +85,12 @@ func lex(src string) ([]token, error) {
 			out = append(out, token{tString, b.String(), start})
 		case c == '"':
 			start := i
-			end := strings.IndexByte(src[i+1:], '"')
-			if end < 0 {
+			qid, next, ok := scanQuotedIdent(src, i)
+			if !ok {
 				return nil, syntaxErr(i, "unterminated quoted identifier")
 			}
-			out = append(out, token{tQuoted, src[i+1 : i+1+end], start})
-			i += end + 2
+			out = append(out, token{tQuoted, qid, start})
+			i = next
 		case c == '$' && dollarTagEnd(src, i) > 0:
 			// $$ text $$ or $tag$ text $tag$: no escapes inside
 			start, te := i, dollarTagEnd(src, i)

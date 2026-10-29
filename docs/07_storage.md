@@ -164,7 +164,7 @@ Mọi dòng dùng checkpoint v2 (256 MB), trừ dòng cuối (lần thử đầu
    - Đây là việc lớn tiếp theo: view cột nén hoặc đẩy xuống đĩa, `Version` gọn hơn.
 2. **Nén theo dòng, chưa nén theo cột.**
    - Để tiến gần ClickHouse cần lưu bản dạng cột đã nén trên đĩa, với codec theo kiểu dữ liệu: Delta/DoubleDelta cho id và thời gian, ZSTD cho số thực và văn bản.
-   - Hiện view cột chỉ nằm trong bộ nhớ.
+   - ~~Hiện view cột chỉ nằm trong bộ nhớ.~~ **Đã làm một phần (P3.2, mục 7):** view cột được lưu ra `columnar.view` nén theo cột. Cột văn bản tự do (`note`) không nằm trong view nên không có trong tệp này; log vẫn là nơi giữ dữ liệu, nên tổng dung lượng đĩa của STASK không giảm.
 3. **Nạp checkpoint 21 s** cho 20 triệu khoá, chủ yếu là dựng B-tree và cấp phát. Có thể nạp theo từng phần hoặc dùng index dạng phẳng.
 4. **Dữ liệu ghi đè và xoá:** GC đã gom segment khi tỉ lệ dữ liệu còn sống thấp. Segment đã nén đi qua cùng đường đọc, nên GC vẫn hoạt động, nhưng chưa có bài đo riêng cho tải cập nhật nhiều.
 
@@ -175,3 +175,47 @@ Mọi dòng dùng checkpoint v2 (256 MB), trừ dòng cuối (lần thử đầu
   - đọc song song với cache 256 KB, để có thay thế block trong lúc đọc, chạy dưới race detector;
   - phục hồi bằng cách phát lại toàn bộ log từ các segment đã nén.
 - **Test có sẵn:** `TestCompressedSegmentCrashLeftovers` kiểm tra file sót lại sau crash. Toàn bộ `go test ./...` pass (`results/gotest-compress.txt`).
+
+## 7. View cột lưu trên đĩa (P3.2)
+
+**Làm gì.** Mỗi khi view cột đứng yên giữa hai lô log, và khi tắt máy, `internal/proj/colstore.go` ghi `<dir>/columnar.view`: các dòng còn sống của mọi bảng `columnar`, theo cột, nén từng block 65.536 dòng, gắn với LSN và vị trí log của chúng. Khi khởi động, view nạp tệp này rồi chỉ phát lại log sau vị trí đó thay vì quét toàn bộ dữ liệu (182 s ở 100M, docs/08 §7 #3). Định dạng: docs/09 mục 7a. Cờ: `-view-save-every` (mặc định 10 phút, chỉ khi có dữ liệu mới), `-no-view-file`.
+
+**Codec (chọn theo từng block, bằng đo):**
+- số nguyên, thời gian, bool, mã từ điển của chuỗi: frame-of-reference, delta hoặc delta-of-delta, giá trị nào cần ít bit nhất, đóng gói từng bit (id tăng đều và `created` mỗi giây thành 0 bit);
+- số thực: nếu mọi giá trị đúng bằng `k/scale` (tiền: 2 chữ số thập phân) thì lưu `k` như số nguyên; nếu không thì giữ cái nhỏ hơn giữa 8 byte thô và tách byte-plane, cùng zstd mức mặc định;
+- từ điển chuỗi và khoá chuỗi: zstd.
+- Đo trên một block 65.536 giá trị (zstd mặc định): `amount` kiểu tiền (hai chữ số thập phân): thô 4,18 B/giá trị, byte-plane 6,77, **thập phân 2,5**. Số thực ngẫu nhiên đều: thô 8,00, byte-plane 6,85. Vậy byte-plane không phải lúc nào cũng tốt, nên mỗi block thử cả hai. Không dùng Gorilla/XOR: docs/07 mục 3 đã cho thấy nó làm cột `amount` to gấp 1,75 lần ZSTD.
+
+**Dung lượng, bảng `orders` sinh như mục 1 (cột `note` có mặt trong bảng nhưng view bỏ nó vì hơn 65.536 giá trị khác nhau), 5 triệu dòng** (`STASK_VIEWBENCH=5000000 go test -run TestViewBench -v ./internal/proj`):
+
+| Cột | ClickHouse ZSTD(3) (20M ở mục 3, chia 4) | Tệp view STASK |
+|---|---|---|
+| id | 5,1 MB | 0,003 MB |
+| customer_id | 16,6 MB | 12,5 MB |
+| amount | 20,6 MB | 12,5 MB |
+| status | 2,9 MB | 1,25 MB |
+| created | 13,8 MB | 0,003 MB |
+| **Tổng (không có note)** | **58,9 MB** | **26,3 MB (5,25 B/dòng)** |
+
+Tỉ lệ là **0,45×** ClickHouse ZSTD cho các cột view lưu. Hai điều cần đọc kèm: (1) ClickHouse thêm 44 MB cho `note` mà view không lưu; (2) tệp view là **bản bổ sung** bên cạnh log, không thay log, nên dung lượng đĩa tổng của STASK (mục 2) không giảm mà tăng thêm ~26 MB trên 5M dòng. Con số 20M là cùng phân bố (105 MB, 5,25 B/dòng), tuyến tính. Số ClickHouse lấy từ mục 3, **không đo lại** lần này.
+
+**Thời gian, máy dùng chung tải ~10 (chỉ có giá trị tương đối):**
+
+| Dòng | Lưu | Nạp | Dựng từ dòng (chỉ vòng `put` trong bộ nhớ, chưa tính quét core) |
+|---|---|---|---|
+| 5M | 0,29–0,9 s | 0,47–0,57 s | 6,5–7,0 s |
+| 20M | 0,93 s | 2,2 s | 29,9 s |
+
+Nạp tuyến tính theo số dòng, nên **ngoại suy** 100M cho cỡ 11 s (**chưa đo** ở 100M; chỉ số ngoại suy, tiêu chí "<20 s" chưa được đo trực tiếp). Cũng cần cộng thời gian phát lại phần log sau LSN đã lưu. Thử đầu cuối với `staskd` và 1M dòng `orders` (`columnar = true`): khởi động lại in `columnar: loaded the saved view at lsn=1001 in 141ms` và `final_count` 1.000.000.
+
+**Tốc độ quét.** Cấu trúc trong bộ nhớ sau khi nạp giống hệt cấu trúc dựng từ dòng (cùng đường `push`/đóng gói chunk), nên quét không đổi theo thiết kế. Đo ngắn trên 5M dòng, tốt nhất trong 7 lần, ba lượt xen kẽ: `GROUP BY status` đếm+sum 10,8/25,8/10,7 ms (dựng) so với 16,9/18,8/12,2 (nạp); `sum, avg, max` toàn bảng 71–118 ms so với 69–91; lọc `amount>9000` 8,3–17,2 so với 8,4–9,6. Chênh lệch nằm trong nhiễu của máy chung, không thấy chậm đi có hệ thống. Kết quả hai bên bằng nhau (so tập dòng, số thực làm tròn 9 chữ số vì tổng song song cộng theo thứ tự khác).
+
+**Đúng sau sập.** `TestViewCrashDuringSave`: sập sau fsync, trước đổi tên, thì tệp cũ vẫn nạp được, tệp `.tmp` dở dang bị bỏ qua rồi ghi đè. `TestViewDamagedFileRebuilds`: tệp rỗng, cụt, thiếu section kết thúc, rác, lật một bit: đều bị từ chối và view dựng lại, đáp án như cũ. `TestViewRestartReplaysTail`: lưu giữa chừng, ghi thêm 300 lô, tắt không lưu (như sập), mở lại: nạp tệp, phát lại phần đuôi, đáp án 6 truy vấn aggregate bằng view không dừng lần nào và bằng view dựng lại từ dữ liệu. `TestViewSchemaChangeRebuilds`: ADD COLUMN, DROP TABLE sau lúc lưu thì tệp bị bỏ. Chạy với `-race`.
+
+**Giới hạn.**
+- Lưu chạy trên goroutine của view nên view ngừng áp dụng log trong lúc lưu (0,3–0,9 s ở 5–20M dòng; ngoại suy vài giây ở 100M). Truy vấn vẫn đọc được.
+- Bất kỳ khác biệt schema nào (kể cả ADD COLUMN) làm bỏ tệp và dựng lại toàn bộ.
+- Không dùng tệp khi mở bằng `RestoreArchive` hoặc đích phục hồi LSN/thời điểm. Replica chưa được thử riêng.
+- Cột văn bản tự do không có trong view, nên không có trong tệp.
+- Khi nạp, bộ nhớ vẫn là toàn bộ view (chưa phải view trên đĩa theo nghĩa quét không cần nạp, docs/12 P3.1).
+- Phát hiện kèm theo, **không do thay đổi này và chưa sửa**: một lệnh `Write` có nhiều thao tác trên cùng một khoá (ví dụ put rồi delete cùng khoá) cho kết quả khác nhau giữa lúc chạy và sau khi khởi động lại phát lại log (thử: 44 dòng trực tiếp, 45 dòng sau mở lại, bảng `kv` khoá chuỗi). Test của tôi vì thế chỉ ghi một thao tác cho mỗi khoá trong một lô.

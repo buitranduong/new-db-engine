@@ -70,6 +70,8 @@ Ngoài ra, docs/11 §2.2 ghi "trigger **và stored procedure**: Có", mâu thu�
 | P3.4 | Truy vấn time-series, search và `AS OF` từ SQL (hiện chỉ có qua HTTP) | M | — | Có cú pháp, có test, có trong sqlcorpus |
 | P3.5 | `ARRAY JOIN`, `FINAL`, `SAMPLE` của ClickHouse (hiện được chấp nhận nhưng bỏ qua) | M | P1.1 (cột mảng) | Đối chiếu ClickHouse đúng 100% |
 
+> **P3.2 (nhánh `pcol`):** đã có tệp `columnar.view` nén theo cột, nạp lại và phát lại log sau LSN (docs/07 mục 7, docs/09 mục 7a). Mỗi tiêu chí chưa đo trọn: 100M chưa đo (20M nạp 2,2 s, ngoại suy ~11 s); dung lượng 0,45× ClickHouse ZSTD chỉ cho các cột view lưu (không có `note`); aggregate không đổi theo thiết kế, đo ngắn 5M thấy trong nhiễu. Chi tiết docs/14.
+
 ## P4. Catalog, công cụ và ORM
 
 | # | Việc | Cỡ | Phụ thuộc | Tiêu chí xong |

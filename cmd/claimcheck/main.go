@@ -129,10 +129,11 @@ func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool
 			continue
 		}
 		var out string
-		err := conn.QueryRow(cctx, "SELECT ("+strings.TrimSuffix(strings.TrimSpace(s), ";")+")::text", c.Args...).Scan(&out)
+		q := "SELECT (" + strings.TrimSuffix(strings.TrimSpace(s), ";") + ")::text"
 		if fullStatement(s) {
-			err = conn.QueryRow(cctx, s, c.Args...).Scan(&out)
+			q = s
 		}
+		err := conn.QueryRow(cctx, q, c.Args...).Scan(&out)
 		return verdict(c.Want, out, err)
 	}
 	return "no steps", false

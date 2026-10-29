@@ -24,17 +24,29 @@ URL dùng được với các driver:
 
 ## 2. Những gì đã hỗ trợ
 
-**Kiểu dữ liệu.** Các tên kiểu PostgreSQL được ánh xạ sang 5 kiểu lưu trữ:
+**Kiểu dữ liệu** (P1.1, 2026-10-29). Các tên kiểu PostgreSQL được ánh xạ sang các kiểu lưu trữ sau (định dạng trên đĩa ở docs/09 §4):
 
 | Kiểu SQL | Kiểu lưu | OID trả về |
 |---|---|---|
 | `int`, `integer`, `bigint`, `smallint`, `serial` | int64 | int8 (20) |
-| `real`, `float`, `double precision`, `numeric` | float64 | float8 (701) |
+| `real`, `float`, `double precision` | float64 | float8 (701) |
 | `text`, `varchar(n)`, `char(n)` | chuỗi | text (25) |
 | `boolean` | bool | bool (16) |
-| `timestamp`, `timestamptz`, `date` | thời gian, độ phân giải ms, UTC | timestamptz (1184) |
+| `timestamp [without time zone]` | micro giây từ 1970-01-01 | timestamp (1114) |
+| `timestamptz`, `timestamp with time zone` | micro giây từ 1970-01-01, UTC | timestamptz (1184) |
+| `date` | ngày (chỉ trong biểu thức) | date (1082) |
+| `numeric`, `numeric(p,s)`, `decimal` | số thập phân độ chính xác tuỳ ý (như `numeric` của PG) | numeric (1700) |
+| `uuid` | 16 byte | uuid (2950) |
+| `bytea` | byte | bytea (17) |
+| `json` | văn bản đã kiểm tra cú pháp, giữ nguyên | json (114) |
+| `jsonb` | văn bản chuẩn hoá như PG in (khoá xếp theo độ dài rồi byte, bỏ khoá trùng, `": "` và `", "`) | jsonb (3802) |
+| `int[]`, `text[]`, `numeric[]`, `uuid[]`, `timestamptz[]`, `double precision[]`, `boolean[]` (một chiều) | văn bản dạng mảng của PG, phần tử được kiểm tra theo kiểu | bigint[] (1016), text[] (1009), numeric[] (1231), uuid[] (2951), timestamptz[] (1185), float8[] (1022), bool[] (1000) khi qua CDC; kết quả truy vấn vẫn khai là text[] (1009) |
 
-`numeric` hiện được lưu dạng float64, nên **chưa dùng được cho tiền tệ cần chính xác tuyệt đối**. Với tiền, hãy lưu số nguyên theo đơn vị nhỏ nhất, ví dụ đồng.
+- **Số học `numeric`** theo PG: cộng/trừ lấy scale lớn hơn, nhân cộng scale, chia theo `select_div_scale` (ít nhất 16 chữ số có nghĩa), `round` làm tròn ra xa số 0, `numeric(p,s)` làm tròn về scale `s` và báo `22003` khi tràn. `NaN`, `Infinity` có. Literal thập phân (`1.5`, `1e3`) là `numeric`, như PG. `numeric` với `double precision` cho `double precision`. `sum`/`avg`/`min`/`max` trên `numeric` chính xác. `EXTRACT` trả `numeric` (scale 6 cho giây và epoch, 3 cho mili giây).
+- **Timestamp** giữ đủ micro giây; đầu vào làm tròn về micro giây. Cộng `interval` theo lịch (31/1 + 1 tháng = 29/2). Số nguyên gán cho cột timestamp được hiểu là mili giây (để giữ cách dùng cũ).
+- `json`/`jsonb`/`uuid`/`bytea` sai cú pháp trả `22P02`. Chưa có toán tử `->`, `->>`, `@>` và hàm JSON.
+- **Chưa làm:** mảng nhiều chiều; `int2`/`int4`/`varchar(n)` vẫn hiện là `bigint`/`text`; `time`, `interval` làm kiểu cột; `numeric`, `uuid`... trên bảng `columnar` (`numeric` bị từ chối khi tạo bảng columnar, các kiểu khác dùng được); khoá chính chỉ là `int`, `string` hoặc `uuid`.
+- **Bảng cũ:** cột `time` (mili giây, tạo trước P1.1) vẫn đọc và ghi được như trước (độ phân giải mili giây) và hiện là `timestamptz`. `ALTER TABLE t ALTER COLUMN c TYPE timestamptz` chuyển nó sang micro giây mà không viết lại dòng nào (docs/09 §5); cũng chuyển được `int`/`float` sang `numeric`.
 
 **Câu lệnh:**
 - `CREATE TABLE [IF NOT EXISTS]` với đúng một khoá chính, `NOT NULL`, và `WITH (...)` để bật các view dẫn xuất: `columnar`, `search='cột1,cột2'`, `append_only`, `time_column`, `series_column`.
@@ -102,7 +114,7 @@ Trong giao dịch tường minh, va chạm trả `40001` (`could not serialize a
 
 ## 3. Chưa hỗ trợ
 
-- `CREATE VIEW`, `ARRAY JOIN` của ClickHouse, `FINAL`/`SAMPLE` (được chấp nhận nhưng bỏ qua), `numeric` chính xác.
+- `CREATE VIEW`, `ARRAY JOIN` của ClickHouse, `FINAL`/`SAMPLE` (được chấp nhận nhưng bỏ qua).
 - Truy vấn nhiều bảng chạy bằng bộ thực thi tổng quát trên dữ liệu đã đưa hết vào bộ nhớ (hash join, không spill ra đĩa). Chỉ aggregate một bảng mới dùng view dạng cột.
 - Index phụ. Mọi truy vấn không theo khoá chính đều quét bảng.
 - `ALTER COLUMN ... TYPE`, khoá ngoại, `UNIQUE` ngoài khoá chính. `ALTER TABLE` đã có, xem §11. `COPY` text/csv đã có, xem §14 (chưa có binary, file/program, `FORCE_*`, giao thức mở rộng).
@@ -462,7 +474,7 @@ Hạn chế, kèm cách xử lý:
 
 | Hạn chế | Xử lý |
 |---|---|
-| `ALTER COLUMN TYPE` (`0A000`) | Hoãn sang P1.2b: cần ghi lại các dòng ở nền, dùng chính cơ chế bố cục theo LSN |
+| `ALTER COLUMN TYPE` (`0A000`) với cặp kiểu khác | Chỉ có `time`→`timestamp`/`timestamptz`, `int`/`float`→`numeric` (P1.1, docs/09 §5); không dùng được cho cột khoá, bảng columnar, time-series và search; chưa có `USING`. Các chuyển đổi khác cần ghi lại dòng ở nền |
 | DROP COLUMN trên bảng time-series (`0A000`), hoặc chính cột đang được view search đánh chỉ mục | Hoãn: view time-series lưu block theo vị trí cột. Bảng time-series là append-only nên hiếm khi bị đổi. Các cột khác của bảng có search thì xoá được |
 | DROP COLUMN cột khoá chính (`0A000`) | Không làm, vì bảng STASK luôn cần khoá chính. PG cho phép và bỏ luôn ràng buộc |
 | Cột thêm bằng ADD COLUMN không được lưu trong view cột cho tới lần khởi động sau (aggregate trên cột đó chạy trên dòng) | Hoãn: dựng vector ở nền |
@@ -630,6 +642,6 @@ Mã nguồn: `internal/sql/catalog*.go`. Các bảng ảo, dựng từ schema c�
 
 **Cú pháp thêm cho các câu catalog:** `OPERATOR(pg_catalog.~)`, `COLLATE x`, `::pg_catalog.type`, `::"char"`, `x = ANY(mảng)` / `ALL(mảng)`, `ARRAY(SELECT ...)`, `col[i]` (từ 0 cho `int2vector`), toán tử `&`, hàm đặt trong ngoặc kép (`"substring"(...)`), `pg_catalog.generate_series(...) alias(cột)` trong FROM.
 
-**Giới hạn đã biết.** Kiểu hiển thị theo kiểu wire của engine: `integer`/`smallint` hiện `bigint`, `timestamp` hiện `timestamp with time zone`, `varchar(n)` hiện `text` (không có độ dài). `relpages`/`reltuples` là 0/-1. Mọi index là khoá chính, nên `getIndexInfo` trả đúng một dòng mỗi bảng. `regclass` in ra số. Không có view (`relkind` `v`) cho tới khi `CREATE VIEW` có.
+**Giới hạn đã biết.** Kiểu hiển thị theo kiểu của engine: `integer`/`smallint` hiện `bigint`, `varchar(n)` hiện `text` (không có độ dài); `timestamp`, `timestamptz`, `numeric(p,s)` (qua `atttypmod`), `uuid`, `bytea`, `json`, `jsonb` và các mảng hiện đúng kiểu từ P1.1. `relpages`/`reltuples` là 0/-1. Mọi index là khoá chính, nên `getIndexInfo` trả đúng một dòng mỗi bảng. `regclass` in ra số. Không có view (`relkind` `v`) cho tới khi `CREATE VIEW` có.
 
 **Kiểm chứng.** `internal/sql/catalog_test.go` (từng bảng catalog, `information_schema`, hàm, DDL đổi thì catalog đổi, bảng cột, sequence, `ALTER`/`DROP COLUMN`), `internal/sql/catalog_queries_test.go` (các câu psql 16 `\dt` `\d` `\di` `\ds` `\dn` `\d tbl` `\l` `\dT` `\du`, pgjdbc 42.7 `getTables`/`getColumns`/`getPrimaryKeys`/`getIndexInfo`/`getSchemas`/`getCatalogs`/`getTypeInfo`/`getImportedKeys`, DBeaver, viết lại từ trí nhớ về mã nguồn các client này, chưa đối chiếu với gói tin thật), `internal/pgwire/catalog_wire_test.go` (qua pgx, giao thức mở rộng có tham số và giao thức đơn giản).

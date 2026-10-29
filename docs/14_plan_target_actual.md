@@ -1,6 +1,6 @@
 # 14 — Kế hoạch – Mục tiêu – Thực tế (plan–target–actual)
 
-Tài liệu này là **bản đối chiếu duy nhất** giữa điều docs nói và điều mã nguồn thực sự làm. Mỗi task có ba cột: **Kế hoạch** (làm gì, theo docs/12), **Mục tiêu** (tiêu chí xong), **Thực tế** (bằng chứng chạy được: test, probe, số đo). Chênh lệch nào cũng ghi rõ. Cập nhật lần cuối: 2026-10-29, trên `main` sau khi gộp các nhánh `trigger`, `cluster`, `ops`.
+Tài liệu này là **bản đối chiếu duy nhất** giữa điều docs nói và điều mã nguồn thực sự làm. Mỗi task có ba cột: **Kế hoạch** (làm gì, theo docs/12), **Mục tiêu** (tiêu chí xong), **Thực tế** (bằng chứng chạy được: test, probe, số đo). Chênh lệch nào cũng ghi rõ. Cập nhật lần cuối: 2026-10-29, trên `main` sau khi gộp các nhánh `trigger`, `cluster`, `ops`; nhánh `pgdiff` thêm Phụ lục B (kiểm thử vi phân với PostgreSQL 16: 859 câu, 417 khác biệt).
 
 **Quy tắc:** một task chỉ được ghi "xong" khi cột Thực tế có bằng chứng tái lập được (tên test, lệnh, hoặc probe `claimcheck`). Docs nói "xong" mà không có bằng chứng thì tính là **chưa kiểm chứng**. Mỗi lần gộp một nhánh vào `main`: chạy lại `claimcheck`, dán kết quả vào Phụ lục A, sửa bảng bên dưới.
 
@@ -176,3 +176,70 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 29 of 46 probes pass
 
 Ghi chú: `bool_cast_text`, `statement_timeout`, `pg_stat_activity`, `create_trigger` (cú pháp PG) ở trên là chênh lệch thật so với PostgreSQL; các dòng `unclaimed_*` là tính năng không tuyên bố mà vẫn chạy (CTE, window, `string_agg`, `generate_series`).
+
+## Phụ lục B. Kiểm thử vi phân với PostgreSQL 16 (`cmd/pgdiff`), nhánh `pgdiff`
+
+**Công cụ.** `cmd/pgdiff` đọc các tệp kịch bản `scripts/pgdiff/*.sql` (mỗi khối `-- ### nhóm/tên` là một phiên, một kết nối mới trên mỗi bên; có thể nhiều câu, có tham số `-- args: a | b | null`), chạy **từng câu y hệt** trên PostgreSQL 16 và STASK bằng pgx ở mức giao thức (extended protocol, kết quả dạng text), rồi so: số cột, tên cột, OID kiểu, giá trị (không có `ORDER BY` thì chuẩn hoá thứ tự dòng; `float4/float8` so theo sai số tương đối 1e-9; kiểu khác so đúng chuỗi text), SQLSTATE khi lỗi, command tag và số dòng. Kết luận mỗi câu: `PASS`, `PASS-MSG` (cùng SQLSTATE, khác thông điệp), `DIFF`, `ERR-ONLY-ONE-SIDE`. Cờ `-fail-on-diff` thoát mã 1 nếu còn `DIFF` hoặc `ERR-ONLY-ONE-SIDE`; `-v` liệt kê cả câu `PASS`.
+
+```sh
+go build -o /tmp/pgdiff-bin/ ./cmd/staskd ./cmd/pgdiff ./cmd/claimcheck
+docker run -d --name pgdiff-pg -p 127.0.0.1:28432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust --tmpfs /var/lib/postgresql/data postgres:16 -c timezone=UTC
+/tmp/pgdiff-bin/staskd -dir /tmp/pgdiff-data/db -addr 127.0.0.1:28090 -pg-addr 127.0.0.1:28433 -segment-mb 16 -prezero=false &
+/tmp/pgdiff-bin/pgdiff -pg postgres://postgres@127.0.0.1:28432/postgres?sslmode=disable \
+    -stask postgres://app@127.0.0.1:28433/stask?sslmode=disable -fail-on-diff scripts/pgdiff > report.md
+```
+
+**Bộ kịch bản.** 32 phiên, **859 câu**: (a) DDL/DML kiểu Liquibase + Hibernate (bảng `databasechangelog`, CREATE TABLE với PK/DEFAULT/CHECK/NOT NULL, ALTER, INSERT..RETURNING, ON CONFLICT, UPDATE..FROM, DELETE..USING, serial/identity, giao dịch); (b) kiểu và biểu thức (số học, chuỗi, timestamp, cast, NULL, CASE, LIKE/ILIKE, IN/EXISTS, join, UNION, window, CTE, aggregate, ORDER BY/LIMIT); (c) lỗi SQLSTATE (khoá, NOT NULL, CHECK, thiếu đối tượng, cú pháp, chia 0, sai kiểu, lỗi trong giao dịch, DDL lạ); (d) kho SIM (tìm theo tiền tố `LIKE '090%'`, lọc nhà mạng/trạng thái/giá, `UPDATE .. WHERE status='available' RETURNING`, nhập hàng loạt `ON CONFLICT DO UPDATE`, đơn hàng nhiều dòng trong giao dịch). Máy chạy: STASK tại `main` @ `04c23f4` build mới, PostgreSQL 16 trong container `postgres:16` (locale mặc định `en_US.utf8`, `timezone=UTC`). Toàn văn kết quả: `docs/14b_pgdiff_report.md` (mỗi `DIFF`/`ERR` kèm câu SQL và hai kết quả).
+
+### B.1 Kết quả thật
+
+| Nhóm | Số câu | PASS | PASS-MSG | DIFF | ERR-ONLY-ONE-SIDE |
+|---|---|---|---|---|---|
+| a. DDL/DML Liquibase+Hibernate | 166 | 111 | 5 | 31 | 19 |
+| b. Kiểu và biểu thức | 287 | 88 | 6 | 141 | 52 |
+| c. Lỗi SQLSTATE | 266 | 93 | 37 | 49 | 87 |
+| d. Kho SIM | 140 | 99 | 3 | 33 | 5 |
+| **Tổng** | **859** | **391** | **51** | **254** | **163** |
+
+**Tổng số khác biệt: 417 câu (254 DIFF + 163 ERR-ONLY-ONE-SIDE), 48,5% số câu; thêm 51 câu chỉ khác thông điệp lỗi.** Chỉ 391 câu (45,5%) khớp hoàn toàn. Lưu ý khi đọc con số: đếm theo câu, không theo nguyên nhân gốc. Một câu `SELECT` nhiều biểu thức chỉ báo khác biệt đầu tiên (hàm thiếu che các khác biệt sau nó); khoảng 42 câu là hệ quả dây chuyền (CREATE TABLE bị từ chối nên các câu sau báo 42P01; `SAVEPOINT` bị từ chối làm hỏng giao dịch nên câu sau báo 25P02). Số nguyên nhân gốc độc lập thấp hơn nhiều, xem B.3.
+
+### B.2 Phân loại nguyên nhân (theo câu)
+
+| Nhóm nguyên nhân | Số câu | Ghi chú |
+|---|---|---|
+| Sai kiểu: chỉ khác OID, text giống | 105 | `integer` ra `bigint` (OID 20 thay 23) ở 94 câu; `varchar`/`json`/`uuid`/`name`/`int2vector` ra `text`; `timestamp` ra `timestamptz`; mảng `int[]` ra OID `_text` |
+| Sai kiểu kéo theo sai giá trị | 68 | `numeric` đi qua `float8` (OID 701, 66 câu): `1500000.00` thành `1500000`, `1.5` thay `1.50`, `price * 1.1` ra `1650000.0000000002`, `0.1+0.2` ra `0.30000000000000004` |
+| Thiếu tính năng (STASK từ chối, PG chấp nhận) | 79 | 0A000/42601/42883: composite PK, bảng không PK, UNIQUE/FK/INDEX, SAVEPOINT, schema, extension, enum, hàm, kiểu `time`/`bytea`/`inet`, data-modifying CTE, toán tử `^ \| & # ~ << >> @> ? ->`, `$$`, `ESCAPE`, `SIMILAR TO`, `AT TIME ZONE`, `to_timestamp/to_date`, `regexp_match`, `array_append`, `jsonb_build_object`, CTAS, TEMP, EXPLAIN, VACUUM... |
+| STASK chấp nhận hoặc xử lý khác nơi PG báo lỗi | 46 + 5 | 46 câu PG từ chối còn STASK chạy: tràn `int`/`bigint`/`smallint` (22003), `numeric(p,s)` tràn, `varchar(n)` quá dài (22001), `sqrt(-1)`, `ln(0)`, `LIMIT -1`, `WHERE 1`, `CASE WHEN 1`, `1 AND TRUE`, `upper(1)`, `'zzz'::uuid`, `'{bad'::jsonb`, `ARRAY[1,'a']`, giao dịch READ ONLY vẫn ghi được (25006), `ON CONFLICT (cột không có unique)`; khoảng 5 câu STASK từ chối literal `'2026-01-15 10:00'::timestamp` (thiếu giây) |
+| Hệ quả dây chuyền của một lỗi trước | 33 + 9 | 42P01 / 25P02 sau CREATE TABLE hoặc SAVEPOINT bị từ chối (ERR 33, DIFF sqlstate 9) |
+| Sai SQLSTATE (cả hai báo lỗi nhưng mã khác) | 43 − 9 = 34 | `SELEC 1`, `GARBAGE`, kiểu lạ: STASK 0A000, PG 42601/42704; ngày sai: STASK 22P02, PG 22008/22007; `ORDER BY 5`: 42703 thay 42P10; toán tử sai kiểu: 22P02/42883 thay 42883/42725; `DROP INDEX`; `SAVEPOINT` ngoài giao dịch 25P01 |
+| Sai thông điệp lỗi (cùng SQLSTATE) | 51 | tính riêng (PASS-MSG): tên constraint khai báo bị bỏ (`pk_pd_item` thành `pd_item_pkey`), thông điệp 23505 kèm `Key (id)=(1) already exists` trong message thay vì DETAIL, `integer` thay `bigint` trong 22P02, `function nosuchfn does not exist` thiếu danh sách kiểu tham số, `table` thay `relation` ở 42P01, thông điệp regex của Go thay của PG |
+| Sai giá trị (cùng kiểu) | 15 | collation: `'a' < 'B'` PG true (en_US), STASK false, `ORDER BY name` đặt `Alice` trước `alan`; `age()` ra `429 days` thay `1 year 2 mons 5 days`; `to_char(.., 'FM9999.00')` ra `1234.5` / `12,000,000.`; `SHOW transaction_isolation` ra `repeatable read`; `SHOW search_path`; `to_char(1,'ZZZ')` rỗng |
+| Định dạng (cùng giá trị sau chuẩn hoá) | 1 | |
+| Tên cột trả về | 19 | cast không đặt tên: `x::int` PG `int4`, STASK `?column?`; `extract` ra `date_part`; `a IS DISTINCT FROM b` ra `is_distinct_from`; `regexp_like`; `SHOW DateStyle` ra `datestyle` |
+| Command tag / số dòng | 3 | `COMMIT` của giao dịch hỏng ra `ROLLBACK`, `DELETE 0` thay `DELETE 1` (cả ba là hệ quả của SAVEPOINT) |
+
+(Các hàng không cộng ra đúng 417 vì "dây chuyền" và "sai SQLSTATE" cắt ngang hai nhóm `DIFF` và `ERR`.)
+
+**Điểm tốt đã kiểm chứng (khớp 100% về giá trị):** `LIKE '090%'`/`ILIKE`/`BETWEEN`/`IN`/`EXISTS`, `INSERT .. RETURNING`, `ON CONFLICT DO NOTHING/DO UPDATE .. WHERE`, `UPDATE .. FROM`, `DELETE .. USING`, `UPDATE .. WHERE status='available' RETURNING` (không bán trùng số: lần hai trả 0 dòng, giống PG), `CASE`, `COALESCE`, logic NULL ba trị, `ORDER BY .. NULLS`, `LIMIT/OFFSET/FETCH`, `GROUP BY/HAVING/ROLLUP/GROUPING SETS`, window (`row_number, rank, lag, lead, ntile`), CTE thường và đệ quy, join các loại, `UNION/INTERSECT/EXCEPT`, tham số `$1`, lỗi 23505/23502/23514 và 42P01/42703/22012 (chia 0). **Nhóm kho SIM: 99/140 khớp; 33 DIFF còn lại đều là `numeric` chạy bằng `float8` (hiển thị `1500000` thay `1500000.00`, sai số khi nhân) hoặc hệ quả của `SAVEPOINT`; logic tìm kiếm, giữ số, nhập hàng loạt, đơn nhiều dòng cho cùng kết quả dòng với PostgreSQL.**
+
+### B.3 Mười khác biệt quan trọng nhất cho ứng dụng thật
+
+Xếp theo mức chặn ứng dụng (Liquibase, Hibernate/JDBC, kho SIM). Mỗi mục có probe `claimcheck` tương ứng (id trong ngoặc).
+
+1. **Liquibase không khởi động được.** `CREATE TABLE` bắt buộc đúng một cột khoá chính: `databasechangelog` (Liquibase tạo **không có PK**) bị từ chối `0A000 needs a single-column PRIMARY KEY`; khoá chính ghép cũng bị từ chối. Mọi migration dừng ở bước đầu. (`pd_table_without_pk`, `pd_composite_pk`)
+2. **Chỉ có `CREATE TABLE`.** `CREATE INDEX`, `UNIQUE`, `REFERENCES`, `CREATE SCHEMA/EXTENSION/TYPE/FUNCTION`, `CREATE TEMP`, CTAS, `COMMENT`, `ANALYZE`, `VACUUM`, `EXPLAIN` đều `0A000`. Changelog điển hình của Hibernate/Jmix (index, unique, FK) sẽ không chạy. (đã có `create_index`, `unique_constraint_23505`, `foreign_key_23503`; mới: `pd_ctas`, `pd_create_temp_table`, `pd_explain`)
+3. **Không có `SAVEPOINT`/`ROLLBACK TO`/`RELEASE`.** Bị từ chối bằng `0A000`/`42601` và **làm hỏng giao dịch đang mở** (các câu sau báo `25P02`); pgJDBC và Spring dùng savepoint cho giao dịch lồng nhau và một số kịch bản `autosave`. (`pd_savepoint`)
+4. **`numeric` chạy bằng `float64`, báo OID 701.** Giá SIM `1500000.00` trả về `1500000`; `price * 1.1` ra `1650000.0000000002`; `SUM/AVG` mất độ chính xác; Hibernate `BigDecimal` mất scale. Tiền tệ không dùng được. Cùng nguyên nhân: `numeric(p,s)` **không làm tròn và không báo tràn** (`1.005` lưu nguyên, `999.99` vào `numeric(4,2)` được nhận thay vì 22003). (đã có `numeric_exact`, `numeric_wide`; mới: `pd_numeric_scale_rounds`, `pd_numeric_overflow_22003`, `pd_numeric_mul_exact`)
+5. **Ràng buộc kiểu không được thực thi.** `varchar(n)` quá dài vẫn nhận (PG 22001); `int`/`bigint`/`smallint` tràn vẫn nhận (PG 22003); `sqrt(-1)`, `ln(0)`, `LIMIT -1` chạy thay vì lỗi; giao dịch `READ ONLY` vẫn ghi được. Dữ liệu sai vào DB thay vì lỗi. (`pd_varchar_len_22001`, `pd_int_overflow_22003`, `pd_bigint_overflow_22003`, `pd_sqrt_negative_2201F`, `pd_limit_negative_2201W`, `pd_read_only_txn_25006`)
+6. **Thời gian.** `timestamp` được trả như `timestamptz` (OID 1184 thay 1114); `'2026-01-15 10:00'::timestamp` (không có giây) bị từ chối; kiểu `time` chưa có; không có `AT TIME ZONE`, `to_timestamp`, `to_date`; ngày sai trả 22P02 thay 22008/22007; `now()` mặc định chỉ chính xác mili giây (đã có `ts_microseconds`). (`pd_timestamp_type`, `pd_timestamp_no_seconds`, `pd_time_type`, `pd_at_time_zone`, `pd_to_timestamp`, `pd_bad_date_22008`, `pd_bad_timestamptz_22007`)
+7. **Mọi số nguyên ra `bigint`, mọi chuỗi biến thể ra `text`.** `SELECT 1`, cột `INTEGER`, `length()`, `min/max`, `nextval` đều báo OID 20/25 thay 23/1043/19: driver ánh xạ `Integer`/`String` theo metadata (Hibernate, pgx `Scan` vào `int32` ở chế độ binary) có thể lệch; `pg_typeof` trả `bigint`/`timestamptz` (tên rút gọn). Tên cột mặc định của cast/`extract` cũng lệch (`?column?`, `date_part`). (`pd_int_literal_type`, `pd_uuid_type_oid`; đã có `uuid_type`)
+8. **Kiểu và toán tử mở rộng.** `uuid`/`json`/`jsonb` là `text` (không kiểm tra cú pháp, đã có `jsonb_validates`), `bytea`/`inet`/`money`/`bit`/range chưa có; toán tử jsonb `->`, `->>`, `@>`, `?` chưa có; mảng `int[]` trả OID `_text`. (`pd_jsonb_arrow`, đã có `bytea_type`)
+9. **Cú pháp SQL mà ORM/ứng dụng hay sinh.** CTE chứa `INSERT/UPDATE/DELETE`; `UPDATE t alias SET .. WHERE alias.id` (bí danh ở bảng đích bị `42P01`); `UPDATE .. SET (a,b) = (..)`; toán tử bit `& \| # ~ << >>` và luỹ thừa `^`; chuỗi `$$..$$` (nên cũng không có `CREATE FUNCTION`/`DO`); `LIKE .. ESCAPE`; `SIMILAR TO`; `IS UNKNOWN`. (`pd_data_modifying_cte`, `pd_update_alias`, `pd_update_row_value`, `pd_bitwise_or`, `pd_power_operator`, `pd_dollar_quote`, `pd_like_escape`, `pd_similar_to`, `pd_is_unknown`)
+10. **Thứ tự chuỗi, tên constraint và mã lỗi.** So sánh/sắp xếp text theo byte (`'a' < 'B'` sai, `Alice` trước `alan`) trong khi PG mặc định theo locale (kết quả phụ thuộc locale của DB PG; cùng kết quả nếu PG dùng `C`); tên constraint khai báo (`CONSTRAINT pk_x`) bị thay bằng `<bảng>_pkey` nên ánh xạ lỗi theo tên constraint (Jmix, Hibernate `ConstraintViolationException`) không khớp; `SELEC 1` và kiểu lạ báo `0A000` thay `42601`/`42704`; `SHOW transaction_isolation` báo `repeatable read` (PG: `read committed`). (`pd_collation_order`, `pd_unknown_stmt_42601`, `pd_unknown_type_42704`, `pd_default_isolation`, `pd_on_conflict_no_index_42P10`, `pd_where_not_boolean_42804`)
+
+### B.4 Probe `claimcheck` mới (40) và kiểm chứng ngược
+
+Mỗi nhóm khác biệt trên có probe `pd_*` trong `cmd/claimcheck/main.go` (40 probe). Để chắc chắn kỳ vọng đúng là của PostgreSQL, chạy `claimcheck -only pd_` trên container `postgres:16`: **40/40 qua**. Trên STASK (instance mới): **0/40 qua**; tổng `claimcheck` là **32/86** (46 probe cũ: 32 qua, 14 trượt; 40 probe mới: 0 qua). Con số 31/46 ở §4 và Phụ lục A là kết quả của lần chạy trước trên `main`; chênh một probe là `pg_stat_activity` (qua trên instance mới này). Các số ở §1 và §4 chưa được cập nhật vì chúng mô tả trạng thái `main`, không phải nhánh này.
+
+Hạn chế của lần đo này, để không đọc quá mức: (1) STASK chỉ được so với PostgreSQL ở một cấu hình locale (`en_US.utf8`); các khác biệt collation sẽ biến mất nếu PG dùng `C`. (2) Mỗi câu chỉ báo khác biệt đầu tiên, nên số khác biệt thật lớn hơn số đếm. (3) Chưa so giao thức binary, `COPY`, `LISTEN/NOTIFY`, đồng thời nhiều phiên (khoá, mức cô lập), hay độ trễ; công cụ hiện chạy tuần tự một phiên mỗi bên. (4) Không sửa engine để che khác biệt nào; toàn bộ số liệu ở trên là kết quả chạy thật ngày 2026-10-29.

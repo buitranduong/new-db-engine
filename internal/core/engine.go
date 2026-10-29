@@ -90,6 +90,11 @@ type Options struct {
 	// committer and no log reclamation of its own.
 	Replica bool
 
+	// Quorum, if set, makes a batch wait after its local fdatasync until a
+	// majority of the cluster holds it (docs/06 section 5). nil, the
+	// default: a single node, no change of behavior or speed.
+	Quorum Quorum
+
 	// SlotMaxLagBytes invalidates a CDC slot that holds back more log than
 	// this (0 = no limit; see cdc.go).
 	SlotMaxLagBytes int64
@@ -1950,6 +1955,16 @@ func (e *Engine) syncBatch(b *commitBatch) {
 	for _, d := range b.ddls {
 		if _, err := e.addTable(d); err != nil {
 			e.logf("install ddl: %v", err)
+		}
+	}
+	if q := e.opts.Quorum; q != nil {
+		// durable here; acknowledged only when a majority has it too. An
+		// error leaves the outcome unknown: the batch may still commit
+		// under another leader, so it is not answered as failed.
+		if err := q.Replicate(b.lastLSN, b.endPos); err != nil {
+			e.fail(fmt.Errorf("quorum: %w", err), nil, b.placed, nil)
+			b.failed = true
+			return
 		}
 	}
 	e.overlayPush(b)

@@ -75,14 +75,14 @@ Phần còn lại (profile `results/cdc/v3/cpu-on.pb.gz`): đọc log để phâ
 
 Lượt NOTIFY thứ hai có read p99 197 ms, cao hơn hẳn các lượt khác. Lượt thứ nhất cùng cấu hình chỉ 37 ms, và CPU hai lượt như nhau, nên đây nhiều khả năng là dao động của máy hơn là do NOTIFY. Chưa kiểm chứng thêm.
 
-## 5. Trigger và stored procedure: hoãn, có lý do
+## 5. Trigger và stored procedure: trigger thân SQL đã làm, còn lại hoãn
 
 **Stored procedure / function do người dùng viết**: không làm.
 - Logic nghiệp vụ trong DB khó test, khó version, khó quan sát, và trói ứng dụng vào một engine. Kinh nghiệm thực tế của người dùng (một lần trong 15 năm) khớp với xu hướng chung.
 - Các hệ mới thường bắt đầu không có, rồi chỉ thêm dạng hạn chế khi bị ép bởi nhu cầu tương thích: CockroachDB mới có [PL/pgSQL từ v23.2](https://www.cockroachlabs.com/docs/stable/plpgsql); ClickHouse chỉ có [UDF dạng lambda](https://clickhouse.com/docs/sql-reference/statements/create/function).
 - Chi phí lớn: một ngôn ngữ thủ tục đầy đủ, quyền hạn, và giới hạn tài nguyên khi chạy trong engine.
 
-**Trigger**: hoãn.
+**Trigger**: dạng thân SQL **đã làm (2026-10-29, docs/05 §20)**, theo lý do dưới đây. Ngôn ngữ thủ tục vẫn không làm.
 - Phần lớn nhu cầu "khi bảng X đổi thì làm Y" là đồng bộ ra ngoài hoặc đánh thức worker. CDC (bền, có thứ tự, at-least-once) cộng với NOTIFY đã làm được việc đó, theo mẫu [transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html): ghi bảng outbox trong cùng giao dịch, rồi để CDC hoặc worker đọc ra.
 - Trigger chạy **trong** đường ghi, nên mỗi trigger thêm độ trễ vào mọi giao dịch ghi bảng đó. Điều này đi ngược mục tiêu hiệu năng cân bằng của engine.
 - Nếu sau này có ca di trú cụ thể cần trigger, chỉ làm dạng thân SQL như [SQLite](https://www.sqlite.org/lang_createtrigger.html) (BEFORE/AFTER, FOR EACH ROW, thân là các câu INSERT/UPDATE/DELETE/SELECT có `NEW`/`OLD`). Không làm ngôn ngữ thủ tục. CockroachDB cũng đi theo hướng thận trọng: [trigger mới ở dạng preview](https://www.cockroachlabs.com/docs/stable/triggers).

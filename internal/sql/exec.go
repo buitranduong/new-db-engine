@@ -52,6 +52,12 @@ type Session struct {
 	listenOps []listenOp       // LISTEN/UNLISTEN of the current transaction
 
 	ctl stmtCtl // cancel and timeouts of the running statement (cancel.go)
+
+	trigDepth int                  // nesting of row triggers being run (trigger.go)
+	role      string               // role the session runs as; "" = bootstrap superuser (roles.go)
+	needCache map[Stmt]cachedNeeds // privileges each statement needs
+	pendingQ  string               // text of the statement about to run (SetQuery)
+	act       *Activity            // pg_stat_activity entry (activity.go)
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -67,7 +73,7 @@ func NewSession(e *core.Engine) *Session {
 		"transaction_isolation": "repeatable read", "default_transaction_isolation": "repeatable read",
 		"application_name": "", "search_path": "public", "integer_datetimes": "on", "server_encoding": "UTF8",
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
-		"idle_session_timeout": "0",
+		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
 	}}
 }
 
@@ -91,6 +97,7 @@ func (s *Session) Close() {
 	s.explicit, s.failed = false, false
 	s.discardPending()
 	s.closeListener()
+	s.untrack()
 }
 
 // A single autocommit statement that loses a write-write race is retried
@@ -101,11 +108,20 @@ const autocommitRetries = 1000
 // Exec runs one statement.
 // exec executes one statement (Exec in cancel.go wraps it).
 func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
+	if err := s.waitMinLSN(st); err != nil {
+		return nil, err
+	}
 	if s.failed {
 		switch st.(type) {
 		case *Commit, *Rollback:
 		default:
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
+		}
+	}
+	if s.role != "" {
+		if err := s.authorize(st); err != nil {
+			s.markFailed()
+			return nil, err
 		}
 	}
 	switch st := st.(type) {
@@ -131,9 +147,11 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return &Result{Tag: "ROLLBACK"}, nil
 		}
 		ops := s.beforeCommit(tx)
-		if _, err := tx.Commit(); err != nil {
+		lsn, err := tx.Commit()
+		if err != nil {
 			return nil, AsError(err)
 		}
+		s.noteCommit(lsn)
 		for _, op := range ops {
 			s.applyListen(op)
 		}
@@ -149,7 +167,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 	case *SetVar:
 		return s.set(st)
 	case *Show:
-		name := strings.ReplaceAll(strings.ToLower(st.Name), " ", "_")
+		name := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(st.Name), " . ", "."), " ", "_")
 		if name == "transaction_isolation_level" {
 			name = "transaction_isolation"
 		}
@@ -190,9 +208,23 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreateRole, *AlterRole, *DropRole, *Grant:
+		// applied at once, not at commit
+		res, err := s.roleDDL(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *CreateView, *DropView:
 		// applied at once, like CREATE TABLE
 		res, err := s.viewDDL(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *CreateTrigger, *DropTrigger:
+		// applied at once, like CREATE TABLE
+		res, err := s.triggerDDL(st)
 		if err != nil {
 			s.markFailed()
 		}
@@ -259,13 +291,15 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return nil, AsError(err)
 		}
 		s.beforeCommit(tx)
-		if _, err := tx.Commit(); err != nil {
+		lsn, err := tx.Commit()
+		if err != nil {
 			if errors.Is(err, core.ErrConflict) && attempt < autocommitRetries {
 				backoff(attempt)
 				continue
 			}
 			return nil, AsError(err)
 		}
+		s.noteCommit(lsn)
 		return res, nil
 	}
 }
@@ -301,6 +335,16 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		name = "timezone"
 	case "statement_timeout", "idle_in_transaction_session_timeout", "idle_session_timeout":
 		return s.setTimeout(name, st.Value)
+	case MinLSNVar:
+		if _, err := strconv.ParseUint(strings.Trim(st.Value, "'\""), 10, 64); err != nil {
+			return nil, errf(codeInvalidText, "invalid value for %s: %q (want an LSN, a number)", MinLSNVar, st.Value)
+		}
+	case MinLSNTimeoutVar:
+		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
+			return nil, err
+		}
+	case LastLSNVar:
+		return nil, errf("55000", "parameter %q cannot be changed", LastLSNVar)
 	case ReadStalenessVar:
 		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
 			return nil, err
@@ -389,6 +433,7 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 	if heavyQ != nil && s.heavy(st, params) {
 		var res *Result
 		var err error
+		defer admit(ClassHeavy)()
 		onHeavyLane(func() { res, err = s.runHere(tx, st, params) })
 		return res, err
 	}
@@ -1547,6 +1592,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	}
 	sc := &scope{t: t}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
+	tgs := s.E.Triggers(t.Name)
 	var cols []int
 	if st.Cols == nil {
 		for i := range t.Columns {
@@ -1611,6 +1657,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 		if err != nil {
 			return nil, err
 		}
+		if tgs != nil {
+			if row, err = s.fireTriggers(tx, t, tgs, "before", "insert", nil, row); err != nil {
+				return nil, err
+			}
+		}
 		key := t.KeyOf(row)
 		if commitChecks {
 			if inserted[key] {
@@ -1618,6 +1669,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			}
 			if err := tx.InsertUniqueAs(t.Name, t, row); err != nil {
 				return nil, err
+			}
+			if tgs != nil {
+				if _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
+					return nil, err
+				}
 			}
 			inserted[key] = true
 			n++
@@ -1657,12 +1713,16 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			if t.KeyOf(upd) != key {
 				return nil, errf(codeFeature, "ON CONFLICT DO UPDATE cannot change the primary key")
 			}
-			if err := tx.PutAs(t, upd); err != nil {
+			if upd, err = s.updateRow(tx, t, tgs, existing, upd); err != nil {
 				return nil, err
 			}
 			row = upd
 		} else if err := tx.InsertAs(t, row); err != nil {
 			return nil, err
+		} else if tgs != nil {
+			if _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
+				return nil, err
+			}
 		}
 		inserted[key] = true
 		n++
@@ -1727,6 +1787,7 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
@@ -1736,19 +1797,7 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 		if err != nil {
 			return nil, err
 		}
-		if ok, nk := t.KeyOf(old), t.KeyOf(upd); ok != nk {
-			if _, exists, err := tx.Get(t.Name, nk); err != nil {
-				return nil, err
-			} else if exists {
-				return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, nk)
-			}
-			if err := tx.Delete(t.Name, ok); err != nil {
-				return nil, err
-			}
-			if err := tx.InsertAs(t, upd); err != nil {
-				return nil, err
-			}
-		} else if err := tx.PutAs(t, upd); err != nil {
+		if upd, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
 			return nil, err
 		}
 		if err := s.returning(sc, ctx, st.Returning, upd, res); err != nil {
@@ -1773,12 +1822,13 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
 	for _, r := range rows {
-		if err := tx.Delete(t.Name, t.KeyOf(r)); err != nil {
+		if err := s.deleteRow(tx, t, tgs, r); err != nil {
 			return nil, err
 		}
 		if err := s.returning(sc, ctx, st.Returning, r, res); err != nil {
@@ -1828,7 +1878,12 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 	for _, n := range todo {
 		var err error
 		if tag == "DROP TABLE" {
-			err = s.E.DropTable(n)
+			if err = s.E.DropTable(n); err == nil {
+				err = s.E.DropTableTriggers(n)
+				if err == nil {
+					err = s.E.MoveGrants(n, "") // privileges do not outlive the table
+				}
+			}
 		} else {
 			err = s.E.TruncateTable(n)
 		}

@@ -10,6 +10,7 @@ Cách lập (2026-10-29): đọc lại docs/03 §9, 04 §5–7, 05 §3, 06 §3�
 3. Đo trước và sau theo docs/11 §5: ghim CPU, ít nhất 3 lượt, ghi cả CPU của client.
 4. Không làm xấu loại thao tác nào. Nếu có thì ghi rõ và có hướng xử lý.
 5. Mục nào đổi định dạng trên đĩa thì cập nhật docs/09 và giữ khả năng đọc dữ liệu cũ.
+6. **Plan–target–actual (docs/14):** mỗi task khi xong phải điền kế hoạch, mục tiêu và thực tế (bằng chứng tái lập được: test, probe `cmd/claimcheck`, lệnh đo) vào docs/14, và nêu chênh lệch với docs. Task không có bằng chứng thì không được ghi "xong". Build bằng `go build -o bin-main/ ./cmd/...` trước khi đo hay probe (không dùng `bin/` cũ).
 
 Cỡ việc: **S** vài giờ, **M** 1–2 ngày, **L** 3–5 ngày, **XL** trên một tuần.
 
@@ -37,6 +38,8 @@ Ngoài ra, docs/11 §2.2 ghi "trigger **và stored procedure**: Có", mâu thu�
 | P0.6 | Bài đo GC dưới tải cập nhật nặng, gồm cả segment đã nén (docs/07 §5 #4) | M | Dung lượng, CPU GC và độ trễ ổn định sau 30 phút |
 | P0.7 | **Xong ở 10 GB** (1,05–2,42 s, docs/04 §10.5); còn nợ số nguội ở 100M. RTO khởi động nguội, page cache trống (docs/04 §6) | S | Ghi số ở 10 GB và ở 100M |
 | P0.8 | **Ưu tiên đọc khi quá tải** (N1): xếp hàng có ưu tiên, hoặc lane riêng, trong admission. Cách chọn tham khảo CockroachDB admission control | L | Ở tải 2x, đọc được phục vụ ≥ 99% với p99 < 50 ms; các loại khác xuống cấp có kiểm soát; có báo cáo tỉ lệ phục vụ theo từng loại |
+
+**Trạng thái P0.8 (nhánh `admission`, 2026-10-29): đã cài và có test mô phỏng; chưa có số đo thật ở 2x.** Thiết kế ở docs/08 §Admission theo ưu tiên (`internal/sql/admission.go`): đọc không bao giờ xếp hàng chờ slot (trước đây đọc dùng chung slot với ghi, chỉ được xếp trước); ghi và lệnh nặng (range, quét, ghi nhiều dòng) mỗi loại có hồ slot riêng và chỉ bị trễ, không bị bỏ. Test `TestAdmissionReadPriorityUnderOverload` mô phỏng 4 core bị 96 client ghi/nặng/tx làm bão hoà: đọc đúng hạn 50 ms đạt 100% (p99 5 ms) so với 0% khi tắt admission (p99 115 ms), ghi và nặng vẫn chạy. Đây là mô hình, không phải số đo máy thật. `/v1/status` có khối `admission` với tỉ lệ phục vụ theo loại. **Chạy lại ở 2x:** `cd ~/stask && SCALES="1.5 2" bash scripts/slotsweep.sh "-admission -admission-slots 0 -heavy-workers -1"` (xem tỉ lệ `served read`), rồi so với `results/sweep-adm-x2.txt`. Lưu ý: nếu nút thắt của đọc là CPU chứ không phải hàng đợi thì còn cần giới hạn số slot ghi nhỏ hơn số core (`-admission-slots`).
 
 ## P1. Kiểu dữ liệu và schema (đổi định dạng, làm đầu tiên)
 
@@ -85,12 +88,12 @@ Rà theo code hiện tại. Các mục **in đậm** làm trước P4.2 (chạy 
 | ~~**S1**~~ | Cổng nhân bản (`-repl-addr`) **không xác thực, không mã hoá**: ai kết nối được là stream được toàn bộ dữ liệu | TLS + xác thực replica (mTLS hoặc secret dùng chung, so sánh constant-time) | M | **Xong (2026-10-29)**: TLS verify-full, secret chứng minh bằng HMAC challenge-response hai chiều (có channel binding), mTLS tuỳ chọn, `-repl-require-secure`; không xác thực thì từ chối bind địa chỉ không phải loopback trừ khi `-repl-insecure`. Xem docs/06_cluster.md §2 "Bảo mật cổng nhân bản" |
 | ~~**S2**~~ | API HTTP (`-addr`) **không xác thực**: đọc/ghi mọi bảng. Mặc định chỉ nghe 127.0.0.1 nên hiện an toàn trên một máy | Token bearer hoặc mTLS, TLS. Từ chối nghe địa chỉ không phải loopback nếu chưa bật xác thực | M | **Xong (2026-10-29)**: TLS + mTLS, token bearer đầy đủ/chỉ đọc (file đọc lại khi đổi hoặc SIGHUP, so sánh constant-time), Basic với `-pg-password` tuỳ chọn; không có xác thực thì từ chối bind ngoài loopback trừ `-http-insecure`; `/v1/status` cần token, `/v1/health` mở. Xem `docs/13_http_security.md` |
 | ~~S3~~ | `-pprof` và endpoint lỗi giả lập không có xác thực | Chỉ cho bind loopback; cảnh báo khi khởi động | S | **Xong (2026-10-29)**: `-pprof` chỉ loopback trừ `-pprof-insecure`, dùng chung xác thực của API; `/v1/admin/fault` cần token đầy đủ; cảnh báo khi khởi động. Xem `docs/13_http_security.md` |
-| S4 | Một mật khẩu dùng chung cho mọi kết nối PG; không có user/role; đổi mật khẩu phải restart | `CREATE/ALTER ROLE ... PASSWORD` (verifier SCRAM lưu trong catalog), `GRANT/REVOKE` (P5.2), luật kiểu `pg_hba.conf` (IP, user, db, phương thức) | L | P5.2 mở rộng |
+| ~~S4~~ | ~~Một mật khẩu dùng chung cho mọi kết nối PG; không có user/role; đổi mật khẩu phải restart~~ **Đã làm 2026-10-29 trừ luật `pg_hba.conf`** (docs/05 §18; `-pg-roles-only` đóng đường mật khẩu chung) | `CREATE/ALTER ROLE ... PASSWORD` (verifier SCRAM lưu trong catalog), `GRANT/REVOKE` (P5.2), luật kiểu `pg_hba.conf` (IP, user, db, phương thức) | L | P5.2 mở rộng |
 | S5 | Không giới hạn số lần đăng nhập sai; chưa có SASLprep | Trễ tăng dần và khoá tạm theo IP/user; SASLprep (RFC 4013) | S | Cùng S4 |
 | S6 | Log và checkpoint lưu dạng rõ trên đĩa | Mã hoá ở tầng đĩa (LUKS/dm-crypt), giống cách khuyến nghị cho PG (PG cũng không có TDE). Backup (P5.4) mã hoá | — | Không làm TDE riêng; ghi hướng dẫn vận hành |
 | S7 | Không có audit log | Ghi đăng nhập, DDL, GRANT ra file riêng | S | Sau S4 |
 | D1 | Backup nóng, PITR: đã có mã (docs/05 §14), còn thử end-to-end | = P5.4 | L | P5 |
-| D2 | Bản ghi có CRC nhưng không quét định kỳ | Quét nền CRC của segment và checkpoint (scrub), báo hỏng sớm | S | P5 |
+| ~~D2~~ | ~~Bản ghi có CRC nhưng không quét định kỳ~~ **Đã làm 2026-10-29** (docs/05 §19): `POST /v1/admin/scrub`, `-scrub-interval`; chỉ đọc và báo, không sửa | Quét nền CRC của segment và checkpoint (scrub), báo hỏng sớm | S | P5 |
 | D3 | Dòng đã xoá còn trong segment cũ tới khi GC qua horizon (mặc định giữ lịch sử 1 h) | Ghi rõ thời hạn xoá thật; lệnh ép GC cho yêu cầu xoá dữ liệu cá nhân | S | P5 |
 | ~~**M1**~~ | Truy vấn nhiều bảng đưa hết vào RAM, không có ngân sách: một truy vấn lớn có thể làm cả tiến trình OOM | Ngân sách bộ nhớ theo truy vấn và theo node, vượt thì trả `53200` thay vì chết (kiểu [`--max-sql-memory` của CockroachDB](https://www.netdata.cloud/guides/cockroachdb/cockroachdb-sql-memory-budget-53200/)); spill ra đĩa ở P2 | M | **Xong (2026-10-29)**: `-query-mem-mb`, `-sql-mem-mb`, lỗi `53200`; docs/05 §12 |
 | ~~M2~~ | ~~Không huỷ được câu lệnh (CancelRequest bị bỏ qua); không có `statement_timeout`~~ | = P5.3 | M | **Đã làm 2026-10-29** (docs/05 §11): CancelRequest kiểm pid + khoá ngẫu nhiên (so constant-time), `statement_timeout` (SET và `-statement-timeout`), cùng trả `57014` |
@@ -107,18 +110,18 @@ Rà theo code hiện tại. Các mục **in đậm** làm trước P4.2 (chạy 
 | # | Việc | Cỡ | Tiêu chí xong |
 |---|---|---|---|
 | P5.1 | ~~TLS (PG wire), SCRAM-SHA-256~~ **đã làm 2026-10-29** (docs/05 §10); còn TLS cho HTTP | M | psql `sslmode=verify-full` và JDBC kết nối được |
-| P5.2 | Vai trò, `GRANT`/`REVOKE` ở mức bảng | L | SQLSTATE 42501; test quyền cho cả walsender và CDC |
+| P5.2 | ~~Vai trò, `GRANT`/`REVOKE` ở mức bảng~~ **Đã làm 2026-10-29** (docs/05 §18): `CREATE/ALTER/DROP ROLE\|USER`, `GRANT`/`REVOKE` SELECT/INSERT/UPDATE/DELETE/ALL trên bảng và view, `PUBLIC`, `42501`; verifier SCRAM trong bảng hệ thống ẩn (bền qua WAL/checkpoint/nhân bản); walsender cần `REPLICATION`. **Chưa có:** chủ sở hữu đối tượng (DDL chỉ superuser), thành viên role, quyền cột/sequence, `pg_hba.conf`; CDC qua HTTP vẫn dùng token | L | SQLSTATE 42501; test quyền cho cả walsender và CDC |
 | P5.3 | ~~CancelRequest, `statement_timeout`, `idle_in_transaction_session_timeout`~~ **đã làm 2026-10-29** (docs/05 §11): aggregate quét toàn bảng bị huỷ sau 6–35 ms qua pgx (8 worker chiếm hết CPU); thêm `idle_session_timeout`, trần tuổi snapshot, TCP keepalive | M | Huỷ được một aggregate dài trong vòng 100 ms |
 | P5.4 | Backup nóng và PITR (dùng chính log). **Đã viết 2026-10-29, docs/05 §14; test đơn vị qua, chưa thử end-to-end qua mạng/TLS và tải lớn** | L | Khôi phục tới một thời điểm bất kỳ; dữ liệu trùng khớp |
-| P5.5 | Metrics kiểu Prometheus (`/metrics`), log truy vấn chậm, `pg_stat_activity` tối thiểu | M | Có dashboard mẫu; không tốn quá 1% CPU |
+| P5.5 | ~~Metrics kiểu Prometheus (`/metrics`), log truy vấn chậm, `pg_stat_activity` tối thiểu~~ **Đã làm 2026-10-29** (docs/05 §19). **Chưa có:** dashboard mẫu (có danh sách metric và gợi ý cảnh báo); chi phí đo được +1,2% CPU của (server + client) trên point-select qua loopback, trong nhiễu của máy dùng chung, nên chưa chứng minh được "≤ 1%" | M | Có dashboard mẫu; không tốn quá 1% CPU |
 
 ## P6. Cluster
 
 | # | Việc | Cỡ | Tiêu chí xong |
 |---|---|---|---|
-| P6.1 | A2: đọc-ghi-của-mình qua replica (client mang LSN, replica chờ tới đó) và bộ điều hướng tự động | M | Đọc ngay sau khi ghi, qua replica, luôn thấy bản ghi đó |
-| P6.2 | B: xác nhận ghi theo đa số (Raft), failover, lease cho leader | XL | Chaos: giết leader và chia mạng, 0 ghi đã xác nhận bị mất; có số đo thời gian chuyển leader |
-| P6.3 | Slot, publication và replica identity đi qua log, để sống sót qua failover (docs/10 §7) | M | Subscriber PG tiếp tục sau failover, không mất, không trùng |
+| P6.1 | ~~A2: đọc-ghi-của-mình qua replica (client mang LSN, replica chờ tới đó) và bộ điều hướng tự động~~ **đã làm 2026-10-29** (docs/06 §2a; test qua, chưa thử psql/pgx đầu-cuối) | M | Đọc ngay sau khi ghi, qua replica, luôn thấy bản ghi đó |
+| P6.2 | B: xác nhận ghi theo đa số (Raft), failover, lease cho leader. **Làm một phần 2026-10-29** (docs/06 §5): `internal/raft` + mô phỏng chaos có seed qua (không mất bản ghi đã xác nhận; failover trung vị 27 tick trong mô phỏng) + giao diện `core.Quorum` mặc định tắt. **Chưa nối vào engine, chưa có transport mạng, chưa có snapshot/đổi thành viên** | XL | Chaos: giết leader và chia mạng, 0 ghi đã xác nhận bị mất; có số đo thời gian chuyển leader |
+| P6.3 | Slot, publication và replica identity đi qua log, để sống sót qua failover (docs/10 §7). **Lõi đã làm 2026-10-29** (docs/06 §5.3, test `TestCDCStateSurvivesFailover`); chưa thử subscriber PG thật qua failover, promote vẫn là khởi động lại | M | Subscriber PG tiếp tục sau failover, không mất, không trùng |
 | P6.4 | Đo cluster trên **các máy riêng** (hiện chỉ có 1 VM chia core, docs/06 §4) | M | **Cần thêm VM**: phần này phụ thuộc vào bạn |
 | P6.5 | C: phân mảnh, giao dịch xuyên shard | XL | **Sau quyết định ngôn ngữ** (docs/11): làm trên bản thắng |
 
@@ -126,8 +129,8 @@ Rà theo code hiện tại. Các mục **in đậm** làm trước P4.2 (chạy 
 
 | # | Việc | Cỡ | Tiêu chí xong |
 |---|---|---|---|
-| P7.1 | Trigger thân SQL kiểu SQLite: `BEFORE/AFTER INSERT/UPDATE/DELETE`, `FOR EACH ROW`, `NEW`/`OLD`, `WHEN`. Chạy trong giao dịch ghi; đo chi phí | L | Có test; khi bảng không có trigger thì ghi không chậm đi |
-| P7.2 | Cú pháp `CREATE FUNCTION ... RETURNS trigger LANGUAGE plpgsql` tối thiểu, đủ cho dạng trigger mà Liquibase và Jmix sinh ra (nếu P4.2 cần) | M | Chỉ làm nếu P4.2 gặp |
+| P7.1 | **Đã làm 2026-10-29** (docs/05 §20, docs/10 §5): trigger thân SQL kiểu SQLite: `BEFORE/AFTER INSERT/UPDATE/DELETE`, `FOR EACH ROW`, `NEW`/`OLD`, `WHEN`. Chạy trong giao dịch ghi (rollback cùng nhau), chống đệ quy (sâu tối đa 16 tầng, rồi 54001), định nghĩa bền vững như `CREATE VIEW`, không chạy lại trên replica. Thêm hai mở rộng để không cần ngôn ngữ thủ tục: `SET NEW.col = expr` trong BEFORE, và `SELECT RAISE(ABORT, 'msg') [WHERE ...]`. **Đo:** bảng không có trigger: 10,9 / 10,9 / 11,9 µs (trước) so với 11,0 / 11,3 / 11,8 µs (sau) cho insert+update+delete, cùng số cấp phát (36), tức không chậm đi; có 3 trigger mỗi trigger ghi 1 dòng: ~27–28 µs (thêm ~5,5 µs mỗi lần chạy thân). **Chưa làm:** `UPDATE OF cols`, trigger mức câu lệnh, `INSTEAD OF`, `REFERENCING`, `RAISE(IGNORE)`, `pg_get_triggerdef` (vẫn trả NULL), `information_schema.triggers` | L | Có test; khi bảng không có trigger thì ghi không chậm đi |
+| P7.2 | Cú pháp `CREATE FUNCTION ... RETURNS trigger LANGUAGE plpgsql` tối thiểu, đủ cho dạng trigger mà Liquibase và Jmix sinh ra (nếu P4.2 cần). **Chưa làm (2026-10-29):** P4.2 chưa gặp ca nào cần, và `CREATE TRIGGER ... EXECUTE FUNCTION f()` trả lỗi 0A000 rõ ràng. Khi cần, chỉ hỗ trợ thân hàm dạng `BEGIN NEW.col := expr; RETURN NEW; END` dịch sang `SET NEW.col`, còn lại từ chối | M | Chỉ làm nếu P4.2 gặp |
 | — | Stored procedure và ngôn ngữ thủ tục đầy đủ | — | **Không làm** (docs/10 §5) |
 
 ## P8. Cổng 2 và quyết định port

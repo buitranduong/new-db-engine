@@ -118,7 +118,7 @@ func TestDropTruncate(t *testing.T) {
 	check := func(e *Engine, when string) {
 		t.Helper()
 		got := map[string]int{}
-		for _, ts := range e.Tables() {
+		for _, ts := range e.UserTables() {
 			got[ts.Schema().Name] = countRows(t, e, ts.Schema().Name)
 		}
 		if len(got) != 3 || got["a"] != 5 || got["b"] != 10 || got["c"] != 300 {

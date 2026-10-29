@@ -184,8 +184,14 @@ func (p *parser) statement() (Stmt, error) {
 		return p.deleteStmt()
 	case "create":
 		return p.createStmt()
+	case "grant", "revoke":
+		p.next()
+		return p.grantStmt(t.s == "revoke")
 	case "drop":
 		p.next()
+		if p.acceptKw("role") || p.acceptKw("user") {
+			return p.dropRole()
+		}
 		if p.acceptKw("sequence") {
 			d := &DropSequence{IfExists: p.acceptKw("if", "exists")}
 			var err error
@@ -205,6 +211,9 @@ func (p *parser) statement() (Stmt, error) {
 		}
 		if p.acceptKw("view") {
 			return p.dropView()
+		}
+		if p.acceptKw("trigger") {
+			return p.dropTrigger()
 		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err
@@ -326,6 +335,9 @@ func (p *parser) statement() (Stmt, error) {
 		return n, nil
 	case "alter":
 		p.next()
+		if p.acceptKw("role") || p.acceptKw("user") {
+			return p.alterRole()
+		}
 		if p.acceptKw("sequence") {
 			a := &AlterSequence{IfExists: p.acceptKw("if", "exists")}
 			var err error
@@ -371,6 +383,15 @@ func (p *parser) statement() (Stmt, error) {
 
 func (p *parser) createStmt() (Stmt, error) {
 	p.next()
+	if st, ok, err := p.createTrigger(); ok {
+		return st, err
+	}
+	if p.acceptKw("role") {
+		return p.createRole(false)
+	}
+	if p.acceptKw("user") {
+		return p.createRole(true)
+	}
 	if st, ok, err := p.createView(); ok {
 		return st, err
 	}

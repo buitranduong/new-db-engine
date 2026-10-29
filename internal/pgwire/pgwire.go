@@ -124,8 +124,11 @@ type Server struct {
 	TLS        *tls.Config
 	TLSRequire bool
 	MaxConns   int64 // 0 = unlimited; beyond it new sessions get SQLSTATE 53300
-	Logf       func(string, ...any)
-	Views      sql.Views // derived views SELECT aggregates may be answered from
+	// RolesOnly closes the shared-password login once a stored superuser
+	// role that can log in exists: only roles (CREATE ROLE) then connect.
+	RolesOnly bool
+	Logf      func(string, ...any)
+	Views     sql.Views // derived views SELECT aggregates may be answered from
 
 	// Session defaults of statement_timeout,
 	// idle_in_transaction_session_timeout and idle_session_timeout
@@ -150,7 +153,7 @@ type Server struct {
 	conns   map[int32]*conn
 	Active  atomic.Int64
 
-	scram  *scramVerifier   // AuthSCRAM: derived from Password
+	scram  *core.SCRAM      // AuthSCRAM: derived from Password
 	cbHash func() hash.Hash // tls-server-end-point hash (nil = no -PLUS)
 }
 
@@ -237,6 +240,8 @@ type conn struct {
 	// replication=database: a logical walsender (walsender.go)
 	replication bool
 	dbname      string
+	user, app   string // startup parameters
+	role        string // the stored role of the session; "" = bootstrap superuser
 	tempSlots   []string
 }
 
@@ -259,6 +264,10 @@ func (s *Server) handle(nc net.Conn) {
 	c.sess = sql.NewSession(s.E)
 	c.sess.Views = s.Views
 	c.sess.PID = c.pid
+	c.sess.SetRole(c.role)
+	host, port, _ := net.SplitHostPort(nc.RemoteAddr().String())
+	pn, _ := strconv.Atoi(port)
+	c.sess.Track(c.user, c.app, host, int64(pn))
 	c.sess.SetTimeoutDefaults(s.StatementTimeout, s.IdleInTxTimeout, s.IdleSessionTimeout)
 	c.done = make(chan struct{})
 	defer close(c.done)
@@ -498,8 +507,29 @@ func (c *conn) startup() error {
 			c.w.Flush()
 			return errors.New("TLS required")
 		}
-		if err := c.authenticate(params["user"]); err != nil {
+		role, err := c.authenticate(params["user"])
+		if err != nil {
 			return err
+		}
+		c.user, c.app, c.role = params["user"], params["application_name"], role
+		isSuper := "on"
+		if role != "" {
+			r, ok := c.s.E.Role(role)
+			if !ok {
+				c.sendFatal("28000", fmt.Sprintf("role %q does not exist", role))
+				c.w.Flush()
+				return errors.New("role dropped during login")
+			}
+			if !r.Super {
+				isSuper = "off"
+			}
+			// as pg_hba.conf's "replication" entries and the REPLICATION
+			// attribute: a walsender is for superusers and replication roles
+			if c.replication && !r.Super && !r.Replication {
+				c.sendFatal("42501", "permission denied to start WAL sender: must be superuser or replication role")
+				c.w.Flush()
+				return errors.New("permission denied to start WAL sender")
+			}
 		}
 		c.pid = c.s.nextPID.Add(1)
 		// the cancel key: unpredictable, so that only the client that
@@ -522,7 +552,7 @@ func (c *conn) startup() error {
 			{"server_version", version}, {"server_encoding", "UTF8"}, {"client_encoding", "UTF8"},
 			{"DateStyle", "ISO, MDY"}, {"TimeZone", "UTC"}, {"integer_datetimes", "on"},
 			{"standard_conforming_strings", "on"}, {"application_name", params["application_name"]},
-			{"is_superuser", "on"}, {"session_authorization", params["user"]}, {"IntervalStyle", "postgres"},
+			{"is_superuser", isSuper}, {"session_authorization", params["user"]}, {"IntervalStyle", "postgres"},
 		} {
 			c.send(newMsg('S').str(kv[0]).str(kv[1]))
 		}
@@ -766,6 +796,7 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 		return false
 	}
 	for _, st := range stmts {
+		c.sess.SetQuery(q)
 		res, err := c.sess.Exec(st, nil)
 		if err != nil {
 			c.sendError(sql.AsError(err))
@@ -937,6 +968,7 @@ func (c *conn) execute(body []byte) {
 		if core.LatDebug {
 			t0 = time.Now()
 		}
+		c.sess.SetQuery(p.ps.query)
 		res, err := c.sess.Exec(p.ps.stmt, p.params)
 		if core.LatDebug {
 			if _, ok := p.ps.stmt.(*sql.Select); ok {

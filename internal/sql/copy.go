@@ -489,6 +489,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	if !cs.From || cs.Query != nil {
 		return nil, errf(codeFeature, "not a COPY FROM")
 	}
+	if err := s.checkNeeds([]need{{cs.Table, core.PrivInsert}}, ""); s.role != "" && err != nil {
+		return nil, s.copyFail(err)
+	}
 	t, err := s.table(cs.Table)
 	if err != nil {
 		return nil, s.copyFail(err)
@@ -665,6 +668,13 @@ func (ci *CopyIn) store(f []copyField) error {
 	if err := ci.qx.chargeN(size); err != nil {
 		return err
 	}
+	tgs := ci.s.E.Triggers(t.Name) // row triggers (trigger.go)
+	if tgs != nil {
+		var err error
+		if row, err = ci.s.fireTriggers(ci.tx, t, tgs, "before", "insert", nil, row); err != nil {
+			return err
+		}
+	}
 	if ci.own {
 		key := t.KeyOf(row)
 		if _, dup := ci.seen[key]; dup {
@@ -687,6 +697,11 @@ func (ci *CopyIn) store(f []copyField) error {
 			return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, key)
 		}
 		if err := ci.tx.InsertAs(t, row); err != nil {
+			return err
+		}
+	}
+	if tgs != nil {
+		if _, err := ci.s.fireTriggers(ci.tx, t, tgs, "after", "insert", nil, row); err != nil {
 			return err
 		}
 	}
@@ -946,9 +961,11 @@ func (ci *CopyIn) Finish() (string, error) {
 	ci.finish()
 	if ci.own {
 		ci.s.beforeCommit(ci.tx)
-		if _, err := ci.tx.Commit(); err != nil {
+		lsn, err := ci.tx.Commit()
+		if err != nil {
 			return "", ci.end(AsError(err))
 		}
+		ci.s.noteCommit(lsn)
 	}
 	return fmt.Sprintf("COPY %d", ci.rows), ci.end(nil)
 }
@@ -992,6 +1009,12 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	}
 	if s.failed {
 		return 0, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
+	}
+	if s.role != "" {
+		if err := s.checkNeeds([]need{{cs.Table, core.PrivSelect}}, ""); err != nil {
+			s.markFailed()
+			return 0, err
+		}
 	}
 	t, err := s.table(cs.Table)
 	if err != nil {

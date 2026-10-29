@@ -17,6 +17,7 @@ import (
 	"stask/internal/planner"
 	"stask/internal/proj"
 	"stask/internal/schema"
+	"stask/internal/sql"
 )
 
 type Server struct {
@@ -55,11 +56,51 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/health", s.health)
 	m.HandleFunc("POST /v1/admin/checkpoint", s.checkpoint)
 	m.HandleFunc("POST /v1/admin/gc", s.gcRound)
+	m.HandleFunc("GET /metrics", s.metrics)
+	m.HandleFunc("POST /v1/admin/scrub", s.scrub)
+	m.HandleFunc("GET /v1/admin/scrub", s.scrub)
 	s.cdcRoutes(m)
 	if s.Fault != nil {
 		m.HandleFunc("POST /v1/admin/fault", s.setFault)
 	}
-	return m
+	return s.minLSN(m)
+}
+
+// Read-your-writes (docs/06 section 2a). A write or a transaction commit
+// answers with the header X-Stask-Lsn. A client that sends X-Stask-Min-Lsn
+// on a later request (to any node, usually a replica) has the node wait
+// until it has applied that LSN before the request runs, at most
+// X-Stask-Min-Lsn-Timeout milliseconds (default 5000); after that the
+// answer is 503 with Retry-After and nothing has run.
+const (
+	HeaderLSN        = "X-Stask-Lsn"
+	HeaderMinLSN     = "X-Stask-Min-Lsn"
+	HeaderMinTimeout = "X-Stask-Min-Lsn-Timeout"
+)
+
+func (s *Server) minLSN(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get(HeaderMinLSN); v != "" {
+			lsn, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				reply(w, http.StatusBadRequest, map[string]any{"error": "bad " + HeaderMinLSN})
+				return
+			}
+			timeout := 5 * time.Second
+			if t := r.Header.Get(HeaderMinTimeout); t != "" {
+				if ms, err := strconv.ParseInt(t, 10, 64); err == nil && ms >= 0 {
+					timeout = time.Duration(ms) * time.Millisecond
+				}
+			}
+			if err := s.P.E.WaitDurable(lsn, timeout); err != nil {
+				w.Header().Set("Retry-After", "1")
+				w.Header().Set(HeaderLSN, strconv.FormatUint(s.P.E.DurableLSN(), 10))
+				reply(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "durable_lsn": s.P.E.DurableLSN()})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func decode(r *http.Request, v any) error {
@@ -184,6 +225,7 @@ func (s *Server) write(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	w.Header().Set(HeaderLSN, strconv.FormatUint(lsn, 10))
 	reply(w, 200, map[string]any{"lsn": lsn})
 }
 
@@ -469,6 +511,7 @@ func (s *Server) txOp(w http.ResponseWriter, r *http.Request) {
 			fail(w, err)
 			return
 		}
+		w.Header().Set(HeaderLSN, strconv.FormatUint(lsn, 10))
 		reply(w, 200, map[string]any{"lsn": lsn})
 	case "abort":
 		finish()
@@ -565,10 +608,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			"block_loads": e.Log().ZBlockLoads.Load(),
 			"wal_disk":    e.Log().DiskBytes(),
 		},
-		"views":   s.P.Views(),
-		"tables":  tables,
-		"heap_mb": ms.HeapAlloc >> 20,
-		"open_tx": openTx,
+		"admission": sql.AdmissionReport(),
+		"views":     s.P.Views(),
+		"tables":    tables,
+		"heap_mb":   ms.HeapAlloc >> 20,
+		"open_tx":   openTx,
 	})
 }
 

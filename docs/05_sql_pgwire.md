@@ -119,7 +119,7 @@ Trong giao dịch tường minh, va chạm trả `40001` (`could not serialize a
 - Index phụ. Mọi truy vấn không theo khoá chính đều quét bảng.
 - `ALTER COLUMN ... TYPE`, khoá ngoại, `UNIQUE` ngoài khoá chính. `ALTER TABLE` đã có, xem §11. `COPY` text/csv đã có, xem §14 (chưa có binary, file/program, `FORCE_*`, giao thức mở rộng).
 - `pg_catalog` và `information_schema`. Lệnh `\d` của psql, cùng phần duyệt schema của DBeaver và DataGrip, sẽ báo lỗi. Truy vấn dữ liệu thì vẫn chạy.
-- Xác thực bằng chứng chỉ client, GSSAPI, nhiều user/role (xem §10). (Huỷ câu lệnh và các timeout của session đã có từ 2026-10-29, xem §11.)
+- Xác thực bằng chứng chỉ client, GSSAPI (xem §10). Vai trò và `GRANT`/`REVOKE` mức bảng đã có từ 2026-10-29, xem §18; quan sát vận hành (`pg_stat_activity`, `/metrics`, log chậm, scrub) xem §19. (Huỷ câu lệnh và các timeout của session đã có từ 2026-10-29, xem §11.)
 - Chưa truy vấn được time-series, tìm kiếm, `as_of` từ SQL. Các chức năng này vẫn có qua HTTP API.
 
 Vì các giới hạn này, **ORM như Hibernate/Jmix chưa thể dùng STASK làm datastore chính**. Chúng cần `information_schema`, sequence, JOIN và DDL đầy đủ. Hướng dùng hiện tại vẫn là: ứng dụng giữ PostgreSQL cho phần nghiệp vụ, còn service layer gọi STASK qua JDBC bằng SQL viết tay. Đây là một cách mới bên cạnh HTTP API.
@@ -434,7 +434,7 @@ psql "host=stask-host port=5432 user=app dbname=stask sslmode=require"
 - **SASLprep:** server băm mật khẩu ở dạng byte gốc. Với mật khẩu ASCII không có ký tự điều khiển, SASLprep là phép đồng nhất, nên kết quả trùng PostgreSQL. Mật khẩu ngoài ASCII mà SASLprep có ánh xạ (khoảng trắng không phải ASCII, ký tự cần chuẩn hoá NFKC, ký tự bị xoá) có thể lệch với client đã chuẩn hoá. Thư viện chuẩn của Go không có NFKC. Mật khẩu UTF-8 đã ở dạng NFC và không có ký tự đặc biệt (như `bí-mật`) vẫn dùng được, test có kiểm.
 - **SCRAM-SHA-256-PLUS** chỉ được mời khi cấu hình có đúng một chứng chỉ và chứng chỉ ký bằng RSA/ECDSA/DSA với SHA-1/256/384/512. Chứng chỉ Ed25519 không có hàm băm cho `tls-server-end-point`, nên chỉ mời `SCRAM-SHA-256` (PostgreSQL cũng không hỗ trợ binding cho loại này). pgx v5.7.1 mà dự án đang dùng chưa biết `-PLUS` và chọn `SCRAM-SHA-256`. `-PLUS` được kiểm bằng một client tự viết trong test.
 - Không có xác thực bằng chứng chỉ client (`clientcert`, `cert`), GSSAPI/Kerberos, `md5`, LDAP.
-- Chưa có user/role: một mật khẩu chung cho mọi tên user, không có `pg_hba.conf` theo host/user/database.
+- Mật khẩu chung `-pg-password` vẫn là đường đăng nhập của superuser khởi tạo; user riêng có role và mật khẩu riêng, xem §18. Không có `pg_hba.conf` theo host/user/database.
 - Chứng chỉ được nạp một lần khi khởi động. Đổi chứng chỉ phải khởi động lại.
 - Bắt tay TLS có hạn 10 giây.
 
@@ -645,3 +645,141 @@ Mã nguồn: `internal/sql/catalog*.go`. Các bảng ảo, dựng từ schema c�
 **Giới hạn đã biết.** Kiểu hiển thị theo kiểu của engine: `integer`/`smallint` hiện `bigint`, `varchar(n)` hiện `text` (không có độ dài); `timestamp`, `timestamptz`, `numeric(p,s)` (qua `atttypmod`), `uuid`, `bytea`, `json`, `jsonb` và các mảng hiện đúng kiểu từ P1.1. `relpages`/`reltuples` là 0/-1. Mọi index là khoá chính, nên `getIndexInfo` trả đúng một dòng mỗi bảng. `regclass` in ra số. Không có view (`relkind` `v`) cho tới khi `CREATE VIEW` có.
 
 **Kiểm chứng.** `internal/sql/catalog_test.go` (từng bảng catalog, `information_schema`, hàm, DDL đổi thì catalog đổi, bảng cột, sequence, `ALTER`/`DROP COLUMN`), `internal/sql/catalog_queries_test.go` (các câu psql 16 `\dt` `\d` `\di` `\ds` `\dn` `\d tbl` `\l` `\dT` `\du`, pgjdbc 42.7 `getTables`/`getColumns`/`getPrimaryKeys`/`getIndexInfo`/`getSchemas`/`getCatalogs`/`getTypeInfo`/`getImportedKeys`, DBeaver, viết lại từ trí nhớ về mã nguồn các client này, chưa đối chiếu với gói tin thật), `internal/pgwire/catalog_wire_test.go` (qua pgx, giao thức mở rộng có tham số và giao thức đơn giản).
+
+## 18. Vai trò, GRANT/REVOKE và quyền mức bảng (2026-10-29)
+
+Hạng mục P5.2 (và S4) của lộ trình. Mã nguồn: `internal/core/roles.go` (lưu trữ), `internal/core/scram.go` (verifier), `internal/sql/roles.go` (cú pháp, kiểm quyền), `internal/pgwire/auth.go` (đăng nhập). Test: `internal/sql/roles_test.go`, `internal/pgwire/roles_test.go`.
+
+**Cách các hệ khác làm** ([CREATE ROLE](https://www.postgresql.org/docs/16/sql-createrole.html), [GRANT](https://www.postgresql.org/docs/16/sql-grant.html), [pg_authid](https://www.postgresql.org/docs/16/catalog-pg-authid.html), [thuộc tính REPLICATION](https://www.postgresql.org/docs/16/role-attributes.html), CockroachDB [`GRANT`](https://www.cockroachlabs.com/docs/stable/grant)): verifier SCRAM lưu trong catalog, quyền là bitmask theo bảng, walsender cần thuộc tính `REPLICATION`. STASK làm đúng cú pháp và mã lỗi đó, ở mức tối thiểu.
+
+### Cú pháp
+
+| Lệnh | Ghi chú |
+|---|---|
+| `CREATE ROLE tên [WITH] opt...`, `CREATE USER ...` | `CREATE USER` mặc định `LOGIN`, `CREATE ROLE` mặc định `NOLOGIN`. Opt: `SUPERUSER`/`NOSUPERUSER`, `LOGIN`/`NOLOGIN`, `REPLICATION`/`NOREPLICATION`, `[ENCRYPTED] PASSWORD 'x'`, `PASSWORD NULL`. `NOCREATEDB`, `NOCREATEROLE`, `INHERIT`, `NOINHERIT`, `NOBYPASSRLS` được nhận (là mặc định). `CREATEDB`, `CREATEROLE`, `CONNECTION LIMIT`, `VALID UNTIL`, `IN ROLE`, `ADMIN` bị từ chối `0A000`. |
+| `ALTER ROLE\|USER tên [WITH] opt...` | Cùng opt. Không có `RENAME`, `SET`. Tự bỏ `SUPERUSER` của chính mình bị từ chối `42501`. |
+| `DROP ROLE\|USER [IF EXISTS] a, b` | `2BP01` nếu role còn quyền trên bảng (phải `REVOKE` trước, như PG); `55006` nếu là role của chính session. |
+| `GRANT p[, p] ON [TABLE] t[, ...] TO r[, ...]` | `p` = `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL [PRIVILEGES]`. `r` là role hoặc `PUBLIC`. Cũng nhận `ON ALL TABLES IN SCHEMA public` (các bảng có lúc chạy lệnh; chưa có `ALTER DEFAULT PRIVILEGES`). Đối tượng là view cũng được. |
+| `REVOKE p ON t FROM r [CASCADE\|RESTRICT]` | Như trên. |
+| `GRANT USAGE ON SCHEMA public TO r`, `GRANT CONNECT ON DATABASE d TO r` | Không làm gì (luôn được phép); nhận để các công cụ chạy được. |
+
+Bị từ chối `0A000`: `WITH GRANT OPTION`, quyền theo cột, `TRUNCATE`/`REFERENCES`/`TRIGGER`, quyền trên sequence và hàm, thành viên role (`GRANT role TO role`), `CREATE` trên schema.
+
+### Lưu trữ
+
+Mỗi role là một dòng của bảng hệ thống ẩn `__stask_roles` (cùng mẫu với `__stask_views`, `core/sqlview.go`): đi qua WAL, checkpoint, replay, nhân bản; ẩn khỏi client, publication và CDC. Cột: `name` (khoá), `flags` (bit 0 superuser, 1 login, 2 replication), `verifier` (`SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>`, đúng dạng `pg_authid.rolpassword`, mật khẩu không khôi phục được), `grants` (bản ghi `bits\x01bảng` cách nhau bằng NUL, bits: 1 SELECT, 2 INSERT, 4 UPDATE, 8 DELETE). Dòng tên `public` giữ quyền của `PUBLIC`; không phải role. Ghi role/quyền là đọc-sửa-ghi dưới một mutex; `GRANT` nhiều role là một ghi nguyên tử. `DROP TABLE` xoá quyền của bảng đó, `ALTER TABLE RENAME` chuyển quyền theo tên mới (không để quyền sống lâu hơn bảng).
+
+`DROP ROLE` chỉ xoá khi hết quyền, nên không có "đối tượng sở hữu" nào cần chuyển: **STASK không có chủ sở hữu bảng**. Hệ quả: DDL (`CREATE/ALTER/DROP TABLE`, `TRUNCATE`, view, sequence, publication, role, `GRANT`) chỉ dành cho superuser. Muốn một role không phải superuser tạo bảng thì chưa được.
+
+### Đăng nhập
+
+- Tên user trong startup packet trùng một role đã lưu: role phải `LOGIN`, không thì FATAL `28000 role "x" is not permitted to log in`. Role có mật khẩu luôn phải chứng minh: **SCRAM-SHA-256** (và `-PLUS` qua TLS) so với verifier đã lưu, hoặc cleartext nếu server chạy `-pg-auth password` (server tính lại verifier từ mật khẩu gửi tới rồi so sánh constant-time). Sai: `28P01`. Role không có mật khẩu chỉ vào được khi server chạy `trust`.
+- Tên user không phải role: như trước, theo `-pg-auth`/`-pg-password` chung, session là **superuser khởi tạo (bootstrap)** không bị kiểm quyền. Mọi triển khai chưa dùng role chạy y như cũ.
+- `-pg-roles-only`: khi đã có một role `SUPERUSER LOGIN`, đóng đường đăng nhập bằng mật khẩu chung (user lạ trải qua cùng chuỗi SCRAM giả rồi nhận `28P01`, để không lộ user nào có thật). Chưa có role superuser thì mật khẩu chung vẫn dùng được, tránh tự khoá mình.
+- Đổi mật khẩu hay `NOLOGIN` có hiệu lực ở lần đăng nhập sau; session đang mở giữ nguyên cho tới khi đóng.
+- Đếm lần đăng nhập thất bại ở `stask_pg_auth_failures_total` (§19). Chưa có trễ tăng dần/khoá tạm (S5) và chưa có audit (S7).
+
+### Kiểm quyền
+
+Mỗi câu lệnh của session có role được kiểm trước khi chạy (`Session.authorize`, một dòng ở `exec`, thêm ở `Describe` và `COPY`): lỗi `42501 permission denied for table t`, trong BEGIN thì giao dịch vào trạng thái lỗi như mọi lỗi khác. Quyền được đọc từ dòng role mới nhất ở mỗi câu lệnh, nên `GRANT`/`REVOKE`/`DROP ROLE` có hiệu lực ngay với session đang mở. Danh sách bảng và quyền cần của một câu lấy từ cây cú pháp (duyệt bằng reflection, một lần cho mỗi prepared statement; không phải tự liệt kê từng loại biểu thức nên subquery, CTE, UNION, JOIN, `INSERT ... SELECT` đều được phủ):
+
+| Câu | Cần |
+|---|---|
+| `SELECT` (mọi bảng/view trong FROM, kể cả trong subquery, CTE, UNION) | `SELECT` trên từng bảng. Tên CTE che bảng cùng tên chỉ trong phạm vi định nghĩa nó (`WITH t AS (SELECT * FROM t)` vẫn kiểm bảng `t`). |
+| `INSERT` | `INSERT`; thêm `SELECT` nếu có `RETURNING` hoặc `ON CONFLICT`, thêm `UPDATE` nếu `DO UPDATE`; phần `SELECT` nguồn kiểm riêng. |
+| `UPDATE` / `DELETE` | `UPDATE` / `DELETE`; thêm `SELECT` khi có `WHERE`, `FROM`/`USING` hoặc `RETURNING` (như PG). |
+| `COPY t FROM` / `COPY t TO` | `INSERT` / `SELECT`. `COPY (query) TO` kiểm như query. |
+| `BEGIN`, `COMMIT`, `ROLLBACK`, `SET`, `SHOW`, `LISTEN`, `NOTIFY` | không cần |
+| catalog (`pg_*`, `information_schema`), hàm bảng, sequence, `nextval` | không kiểm (đọc catalog luôn được; **sequence chưa có quyền riêng**) |
+| mọi DDL, `GRANT`, role | superuser |
+
+View được kiểm như một quan hệ riêng: quyền `SELECT` trên view đủ, không cần quyền trên bảng bên dưới (chủ view luôn là superuser). `has_table_privilege([role,] bảng, quyền)` trả theo quyền thật; `information_schema.table_privileges` liệt kê thêm các quyền đã `GRANT`; `pg_roles`, `pg_authid`, `pg_user` liệt kê role (mật khẩu hiện `********`); `current_user` trả role của session.
+
+### Nhân bản và CDC
+
+- **Walsender** (`replication=database`): khi role đã lưu không phải superuser và không có `REPLICATION`, FATAL `42501 permission denied to start WAL sender` ngay lúc khởi động (PG cũng làm vậy). Role `REPLICATION` mở được walsender, tạo slot và stream publication **không cần quyền `SELECT` trên bảng** (đúng PG: quyền stream là thuộc tính `REPLICATION`; quyền `SELECT` chỉ cần cho đồng bộ ban đầu bằng `COPY`/`SELECT`). Câu SQL thường gửi trên kết nối replication vẫn bị kiểm quyền bảng. Test `TestReplicationNeedsPrivilege`: `plain` bị `42501`, `repl` stream được dòng `INSERT` qua `START_REPLICATION`, đồng thời không `SELECT` được bảng.
+- **Nhân bản nhị phân `-repl-addr`** (leader/replica) có xác thực riêng bằng secret/mTLS (S1), không đi qua role. Replica nhận các dòng `__stask_roles` như mọi dòng: session có role trên replica bị kiểm quyền theo leader, `REVOKE` ở leader có hiệu lực ngay trên replica đang chạy, và role còn nguyên sau khi replica khởi động lại (`TestReplicaRoles`, `internal/repl/roles_repl_test.go`).
+- **CDC qua HTTP** (`/v1/cdc`) vẫn dùng token HTTP (docs/13), chưa gắn với role.
+
+### Giới hạn
+
+Không có chủ sở hữu đối tượng, thành viên role (`GRANT role TO role`), quyền cột, quyền sequence/hàm/schema, `WITH GRANT OPTION`, `ALTER DEFAULT PRIVILEGES`, row-level security, `pg_hba.conf` theo IP/database. Hàm nhận tên bảng dạng chuỗi (ví dụ truy vấn catalog) không kiểm quyền. API HTTP và `/metrics` không dùng role. SASLprep chưa có (docs/05 §10). Một superuser mất quyền vẫn có thể tự khôi phục nhờ đăng nhập bằng mật khẩu chung (nếu chưa `-pg-roles-only`).
+
+## 19. Quan sát vận hành: pg_stat_activity, /metrics, log truy vấn chậm, scrub (2026-10-29)
+
+Hạng mục P5.5 và D2. Mã nguồn: `internal/sql/activity.go`, `internal/server/metrics.go`, `internal/core/scrub.go`. Test: `internal/sql/roles_test.go` (`TestActivityAndSlowLog`), `internal/server/metrics_test.go`, `internal/core/scrub_test.go`.
+
+**Cách các hệ khác làm.** PG: [`pg_stat_activity`](https://www.postgresql.org/docs/16/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW) (mỗi backend một dòng, `query` của người khác ẩn với user không phải superuser), [`log_min_duration_statement`](https://www.postgresql.org/docs/16/runtime-config-logging.html), exporter [`postgres_exporter`](https://github.com/prometheus-community/postgres_exporter); CockroachDB phục vụ `/_status/vars` ở định dạng Prometheus ([monitoring](https://www.cockroachlabs.com/docs/stable/monitoring-and-alerting)); định dạng [Prometheus text](https://prometheus.io/docs/instrumenting/exposition_formats/). Quét CRC nền: [`pg_checksums`/`data_checksums`](https://www.postgresql.org/docs/16/app-pgchecksums.html) và [`amcheck`](https://www.postgresql.org/docs/16/amcheck.html) của PG, `scrub` của ZFS/Btrfs.
+
+### pg_stat_activity
+
+Mỗi session PG-wire đã xác thực có một bản ghi (`Session.Track`, gỡ khi đóng). Cột: `datid, datname, pid, leader_pid, usesysid, usename, application_name, client_addr, client_hostname, client_port, backend_start, xact_start, query_start, state_change, wait_event_type, wait_event, state, backend_xid, backend_xmin, query_id, query, backend_type` (cột tối thiểu theo yêu cầu: `pid, usename, state, query, query_start, xact_start`; các cột khác để công cụ không lỗi, một số luôn NULL). `state`: `active`, `idle`, `idle in transaction`, `idle in transaction (aborted)`. `query` là câu đang chạy hoặc câu cuối cùng (như PG); user không phải superuser thấy `<insufficient privilege>` ở dòng của người khác. Câu `CREATE/ALTER ROLE` được thay bằng `CREATE ROLE <password hidden>` để mật khẩu không nằm ở đây hay trong log chậm. Chỉ có session PG-wire; phiên HTTP không có. Chưa có `pg_cancel_backend`/`pg_terminate_backend`.
+
+### /metrics
+
+`GET /metrics` cạnh API HTTP, cùng token (token chỉ đọc đủ; không có token → 401 khi API có xác thực). Định dạng Prometheus text 0.0.4. Nguồn: các bộ đếm atomic đã có của engine và của lớp SQL; không tính toán theo lần scrape, trừ `runtime.ReadMemStats`.
+
+| Metric | Loại |
+|---|---|
+| `stask_up`, `stask_uptime_seconds`, `stask_durable_lsn` | gauge/counter |
+| `stask_commits_total`, `stask_conflicts_total`, `stask_commit_batches_total`, `stask_fsyncs_total`, `stask_fsync_seconds_total`, `stask_fsync_slow_total` | counter |
+| `stask_wal_written_bytes_total`, `stask_wal_segments`, `stask_wal_disk_bytes`, `stask_checkpoints_total`, `stask_checkpoint_bytes_total` | counter/gauge |
+| `stask_gc_rounds_total`, `stask_gc_reclaimed_segments_total`, `stask_gc_pinned_snapshots`, `stask_gc_oldest_snapshot_age_seconds` | counter/gauge |
+| `stask_tables`, `stask_live_rows`, `stask_http_open_transactions`, `stask_go_heap_alloc_bytes`, `stask_go_goroutines` | gauge |
+| `stask_sql_statements_total{kind}` (select, insert, update, delete, transaction, ddl, other), `stask_sql_statement_errors_total`, `stask_sql_permission_denied_total`, `stask_sql_slow_statements_total` | counter |
+| `stask_sql_statement_duration_seconds` (histogram, 100 µs … 30 s) | histogram |
+| `stask_pg_sessions{state}`, `stask_pg_sessions_opened_total`, `stask_pg_auth_failures_total` | gauge/counter |
+| `stask_scrub_running`, `stask_scrub_errors_total`, `stask_scrub_last_start_timestamp_seconds`, `stask_scrub_last_ok` | gauge/counter |
+
+Thời gian câu lệnh là thời gian thực thi trong engine, **không gồm** lúc chờ fsync của commit autocommit (xem comment ở `Session.run`); đo ở phía client sẽ lớn hơn. Bộ đếm theo tiến trình, không theo engine. Cảnh báo gợi ý: `stask_up == 0`, `increase(stask_scrub_errors_total[1h]) > 0`, `stask_pg_sessions{state="idle_in_transaction"}` lớn, `rate(stask_sql_permission_denied_total[5m])` tăng đột ngột, `histogram_quantile(0.99, ...)` vượt ngưỡng.
+
+### Log truy vấn chậm
+
+`-slow-query 250ms` (hoặc `0` = tắt): câu nào chạy từ ngưỡng đó trở lên được ghi bằng log của staskd: `slow statement: duration: 312.481 ms  pid=17 user="app" statement: SELECT ...` (câu cắt ở 4096 byte). Dùng `Session.SetQuery` do pgwire gọi nên có cả đường extended protocol; câu role được che mật khẩu. Ngưỡng thấp hơn thời gian chạy tối thiểu thì ghi mọi câu: đừng đặt `1ns` ngoài test.
+
+### Chi phí
+
+Mỗi câu lệnh: hai lần đọc đồng hồ, khoảng 10 phép cộng atomic trên bộ đếm **của riêng session** (không tranh chấp giữa core; bộ đếm chung chỉ nhận phần của session đã đóng), một lần khoá mutex rẻ để thay `query`, vài phép gán atomic cho trạng thái. Đo bằng `BenchmarkWirePoint` (`internal/pgwire/wbench_test.go`: pgx, 4 kết nối, `SELECT` theo khoá qua loopback, ghim `taskset -c 4-7`, đo CPU `Getrusage` của cả server lẫn client trong một tiến trình, 5 lượt xen kẽ trước/sau): **45.597 ns CPU/lệnh trước, 46.147 ns sau (+1,2%, tính cả CPU client; nhiễu giữa các lượt ±1,3%)**. Phần của server vào khoảng một nửa tổng, nên đóng góp thực ước tính 1–2% CPU của server ở tải toàn point-select qua loopback, và dưới 1% với tải có đĩa/mạng thật. Chưa chứng minh được "≤ 1%" chắc chắn bằng đo này (máy dùng chung, nhiễu cùng cỡ). Kiểm quyền cho session có role: +1,8 µs/lệnh (3.8 → 5.7 µs trong `BenchmarkPointSelect`), session bootstrap không tốn thêm.
+
+### Scrub (D2)
+
+`POST /v1/admin/scrub` (token đầy đủ) bắt đầu quét nền; `?rate_mb=N` (mặc định 64 MB/s, `0` = không giới hạn), `?wait=1` đợi xong và trả kết quả (HTTP 500 nếu thấy hỏng), `?cancel=1` dừng. `GET /v1/admin/scrub` (token chỉ đọc đủ) trả trạng thái: `running, started, finished, segments, records, checkpoints, bytes, skipped, errors[], cancelled`. `-scrub-interval 24h -scrub-rate-mb 32` chạy định kỳ. Quét:
+- Mỗi segment log (kể cả `.walz`): đọc từng bản ghi qua `wal.Scan`, kiểm CRC32C và khung. Segment đang ghi chỉ quét tới vị trí ghi hiện tại. Segment mà GC thu hồi giữa chừng được tính vào `skipped`.
+- Segment đã đóng: phần sau bản ghi cuối phải toàn số 0. Nếu không, một trường độ dài bị hỏng thành 0 sẽ giống dấu hết log và che mọi bản ghi sau nó (`TestScrubTailGarbage`).
+- Mọi file checkpoint: header và CRC từng chunk (`ReadCheckpoint`; đọc cả file vào bộ nhớ, nên trên checkpoint rất lớn cần chừa RAM tương đương).
+- Lỗi: một dòng cho mỗi hỏng hóc trong `errors` (`segment 3: bad record (CRC or framing) at offset 4096, after 17 good records`), ghi log, cộng `stask_scrub_errors_total`. Scrub **chỉ đọc**, không sửa: phục hồi bằng replica hoặc backup (§14).
+- Một lần một scrub (`409` nếu đang chạy). Đọc bị giới hạn tốc độ nhưng vẫn đi qua page cache, nên có thể đẩy dữ liệu nóng ra; trên máy sát RAM hãy đặt `rate_mb` thấp. Giá trị trong `Value` của bản ghi không có CRC riêng ngoài CRC của khung, nên được phủ như phần còn lại của bản ghi; index trong bộ nhớ không được quét.
+
+### Kiểm chứng
+
+- `TestRolesAndGrants`, `TestRolesSurviveRestart` (replay và checkpoint), `TestActivityAndSlowLog` (`internal/sql`); `TestReplicaRoles` (`internal/repl`).
+- `TestRolesOverWire` (SCRAM và cleartext: `28P01`/`28000`/`42501`, đổi mật khẩu, `COPY`, `pg_stat_activity` qua pgx), `TestRolesOnlyClosesSharedPassword`, `TestReplicationNeedsPrivilege` (walsender và luồng logical thật) (`internal/pgwire`).
+- `TestMetricsAndScrubEndpoints` (`internal/server`: 401 khi thiếu token, định dạng mẫu, token chỉ đọc không bắt đầu được scrub), `TestScrub`, `TestScrubTailGarbage`, `TestScrubCompressedSegment` (`internal/core`: lật một byte trong segment và trong checkpoint, đúng một lỗi được báo; khôi phục byte thì sạch; huỷ giữa chừng).
+
+## 20. CREATE TRIGGER và DROP TRIGGER (2026-10-29)
+
+Trigger thân SQL theo [SQLite](https://www.sqlite.org/lang_createtrigger.html); [PostgreSQL](https://www.postgresql.org/docs/16/sql-createtrigger.html) cho tên gọi, thứ tự chạy (theo tên) và mã lỗi. Không có ngôn ngữ thủ tục (docs/10 §5).
+
+```sql
+CREATE [OR REPLACE] TRIGGER [IF NOT EXISTS] name {BEFORE | AFTER} {INSERT | UPDATE | DELETE} [OR ...]
+    ON table [FOR [EACH] ROW] [WHEN (condition)]
+BEGIN statement; ... END
+DROP TRIGGER [IF EXISTS] name [ON table]
+```
+
+Thân là các câu `INSERT`, `UPDATE`, `DELETE`, `SELECT` (kể cả `WITH`); `NEW.col` và `OLD.col` là dòng đang ghi (`OLD` là NULL khi INSERT, `NEW` là NULL khi DELETE; dùng `OLD` trong trigger chỉ INSERT hay `NEW` trong trigger chỉ DELETE là lỗi 42P17 lúc tạo). Hai mở rộng:
+
+- `SET NEW.col = expr [, NEW.col2 = expr2]` trong trigger BEFORE INSERT/UPDATE đổi dòng sắp ghi (SQLite không cho; PostgreSQL làm bằng hàm plpgsql). `RETURNING` thấy giá trị đã đổi. Trigger sau thấy `NEW` đã đổi.
+- `SELECT RAISE(ABORT, 'msg') [WHERE cond]` hoặc `SELECT CASE WHEN cond THEN RAISE(ABORT, 'msg') END` làm câu lệnh lỗi `P0001`. `ABORT`, `FAIL`, `ROLLBACK` đều làm cùng việc: câu lệnh lỗi (autocommit thì cả giao dịch bị huỷ; trong `BEGIN` thì giao dịch chuyển sang trạng thái lỗi). `IGNORE` chưa hỗ trợ.
+
+**Chạy.** Mỗi dòng bị INSERT/UPDATE/DELETE chạm tới (kể cả `INSERT ... SELECT`, `UPDATE ... FROM`, `DELETE ... USING`, `ON CONFLICT DO UPDATE`, `COPY FROM`) chạy trigger BEFORE trước khi ghi và trigger AFTER ngay sau khi ghi dòng đó, **trong cùng giao dịch**: thứ trigger ghi thấy được trong giao dịch, commit hay rollback cùng câu lệnh. Đổi khoá chính là một UPDATE. `ON CONFLICT DO NOTHING` bỏ qua dòng thì không chạy AFTER. `ON CONFLICT DO UPDATE` chạy BEFORE INSERT, rồi BEFORE/AFTER UPDATE (như PG). `TRUNCATE` không chạy trigger. Trigger ghi vào bảng có trigger thì chạy tiếp; sâu quá 16 tầng thì lỗi 54001 (`stack depth limit exceeded`) và câu lệnh gốc bị huỷ, nên đệ quy vô hạn dừng và không để lại gì. Không có trigger nào chạy trên replica: replica áp dụng các dòng leader đã ghi (kể cả dòng do trigger ghi), mỗi dòng đúng một lần.
+
+**Lưu trữ.** Như view: một dòng của bảng hệ thống ẩn `__stask_triggers` (khoá `bảng\x1ftên`, cột `tbl, name, timing, events, cond, body`), nên đi qua WAL, checkpoint, replay và nhân bản; ẩn khỏi client, publication và CDC. DDL áp dụng ngay như `CREATE TABLE`. `DROP TABLE` xoá trigger của bảng; `ALTER TABLE ... RENAME TO` bị từ chối (0A000) khi bảng có trigger. Lúc tạo, thân được biên dịch và kiểm tra theo bảng (cột lạ: 42703).
+
+**Giá phải trả.** `Engine.Triggers(bảng)` đọc một con trỏ nguyên tử tới map đã dựng sẵn (bị huỷ mỗi lần tạo/xoá trigger, dựng lại ở lần đọc sau; `gen` chặn lần dựng đua với thay đổi): bảng không có trigger chỉ tốn một lần tra map rỗng mỗi câu lệnh, không thêm cấp phát. Thân được biên dịch một lần cho mỗi định nghĩa (`NEW.col` thành tham số `$n`); mỗi lần chạy tốn chừng 5 µs cho một thân `INSERT` một dòng (`BenchmarkWriteTrigger`).
+
+**Catalog.** `pg_trigger` (tgtype theo bit của PG), `pg_class.relhastriggers`, `pg_tables.hastriggers`. `pg_get_triggerdef` trả NULL, `information_schema.triggers` còn trống.
+
+**Chưa làm.** `UPDATE OF col`, trigger mức câu lệnh, `INSTEAD OF` (cả trên view), `REFERENCING`, `RAISE(IGNORE)`, `CREATE FUNCTION`/`EXECUTE FUNCTION` (P7.2), trigger `DEFERRABLE`, `ALTER TABLE ... DISABLE TRIGGER`.
+
+**Kiểm chứng.** `internal/sql/trigger_test.go` (AFTER và mọi dạng ghi, BEFORE `SET`/`RAISE`, rollback, đệ quy, DDL và lỗi, tham số, khôi phục qua replay và checkpoint, CDC, COPY, catalog), `internal/repl/trigger_repl_test.go` (replica), `BenchmarkWriteNoTrigger`/`BenchmarkWriteTrigger`.

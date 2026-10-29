@@ -242,3 +242,32 @@ func TestUpdateReturningFrom(t *testing.T) {
 		t.Errorf("upsert: %s", got)
 	}
 }
+
+func TestSQLPrepareExecute(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE pe (id INTEGER PRIMARY KEY, v TEXT)`)
+	run(t, s, `PREPARE ins (int, text) AS INSERT INTO pe VALUES ($1, $2)`)
+	run(t, s, `EXECUTE ins(1, 'a')`)
+	run(t, s, `EXECUTE ins(2, 'b')`)
+	run(t, s, `PREPARE q AS SELECT v FROM pe WHERE id = $1`)
+	if got := render(run(t, s, `EXECUTE q(2)`)); got != "b" {
+		t.Errorf("execute: %s", got)
+	}
+	if _, err := tryRun(s, `PREPARE q AS SELECT 1`); code(err) != "42P05" {
+		t.Errorf("duplicate prepare: %v", err)
+	}
+	if _, err := tryRun(s, `EXECUTE nosuch`); code(err) != "26000" {
+		t.Errorf("missing prepared: %v", err)
+	}
+	run(t, s, `DEALLOCATE q`)
+	if _, err := tryRun(s, `EXECUTE q(1)`); code(err) != "26000" {
+		t.Errorf("after deallocate: %v", err)
+	}
+	run(t, s, `DEALLOCATE ALL`)
+	if res := run(t, s, `VACUUM`); res.Tag != "VACUUM" {
+		t.Errorf("vacuum tag %q", res.Tag)
+	}
+	if res := run(t, s, `ANALYZE pe`); res.Tag != "ANALYZE" {
+		t.Errorf("analyze tag %q", res.Tag)
+	}
+}

@@ -766,3 +766,6 @@ func showColumn(name string) string {
 	}
 	return n
 }
+
+// TimeOfDayText prints microseconds since midnight as a time value.
+func TimeOfDayText(us int64) string { return timeOfDayText(us) }

@@ -1161,6 +1161,10 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 			return sql.Null, &sql.Error{Code: "22P03", Msg: fmt.Sprintf("incorrect binary data format for type oid %d", oid)}
 		}
 		return d, nil
+	case oidTime:
+		if len(raw) == 8 {
+			return sql.TextD(sql.TimeOfDayText(int64(binary.BigEndian.Uint64(raw)))), nil
+		}
 	case oidText, oidVarchar, oidUnknown, oidName, oidBpchar:
 		return sql.TextD(string(raw)), nil
 	default:

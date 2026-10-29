@@ -458,8 +458,10 @@ func (s *Session) authorize(st Stmt) error {
 	switch st.(type) {
 	case *Begin, *Commit, *Rollback, *SetVar, *Show, *Listen, *Unlisten, *Notify:
 		return nil
-	case *WithDML:
+	case *WithDML, *PrepareStmt, *DeallocateStmt, *MaintStmt:
 		return nil // each statement it runs is authorized by exec
+	case *ExecuteStmt:
+		return nil // the prepared statement is authorized when it runs
 	}
 	needs, ddl := s.needsOf(st)
 	return s.checkNeeds(needs, ddl)

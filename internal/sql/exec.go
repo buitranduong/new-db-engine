@@ -61,6 +61,7 @@ type Session struct {
 	listener  *Listener
 	notes     []Notification   // NOTIFY of the current transaction
 	currvals  map[string]int64 // currval: the last nextval of each sequence
+	prepared  map[string]Stmt  // SQL-level PREPARE (prepare.go)
 	lastSeq   string           // lastval's sequence
 	listenOps []listenOp       // LISTEN/UNLISTEN of the current transaction
 
@@ -142,6 +143,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 	switch st := st.(type) {
 	case *WithDML:
 		return s.withDML(st, params)
+	case *PrepareStmt, *ExecuteStmt, *DeallocateStmt, *MaintStmt:
+		return s.execPrepare(st, params)
 	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:
 		return s.execCompat(st)
 	case *Begin:

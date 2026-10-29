@@ -137,6 +137,17 @@ Bằng chứng ở cột Thực tế là test chạy được hoặc phép đo `
 | K7 | Chênh lệch còn lại | Mỗi cái có lý do | 34 probe còn FAIL, mỗi cái có dòng ở §3 C1–C16 | Một phần |
 | P8 | Chạy lại toàn bộ bộ tải, quyết định port Rust | Báo cáo Cổng 2 | Chờ P0–P7 | Chưa làm |
 
+### PG Giảm khác biệt với PostgreSQL 16 theo `cmd/pgdiff` (nhánh `pgfix`, 2026-10-29)
+
+Đo bằng cùng bộ 859 câu của Phụ lục B (không đổi kịch bản), PostgreSQL 16 trong container `postgres:16`, STASK build mới từ nhánh. Tái lập: Phụ lục B + B.5. Chạy `go test -p 2 ./internal/...` (qua) và `go test -race` cho `internal/sql`, `internal/pgwire`, `internal/schema`.
+
+| Task | Kế hoạch | Mục tiêu (xong khi) | Thực tế | Trạng thái |
+|---|---|---|---|---|
+| G1 | OID đúng: `integer`/`smallint`/`real`/`varchar(n)`/`char(n)`/`name`/`date`/`time` | `RowDescription` (text và binary), `Describe`, `pg_typeof`, `format_type`, `atttypid`/`atttypmod`, `information_schema.columns` khớp PG; dữ liệu cũ vẫn đọc được | Trường mới `pg` trong JSON schema của cột (`omitempty`, docs/09 §5): ghi cách khai báo PG (`int2`, `int4`, `float4`, `varchar(n)`, `bpchar(n)`, `name`, `date`, `time`); cột không có `pg` giữ nguyên hành vi cũ (`int8`, `float8`, `text`). Suy luận kiểu tĩnh `internal/sql/pgtype.go` (cột, literal, `::`, `+ - * / %` và toán tử bit trên số nguyên, `count/sum/avg/min/max`, `coalesce/nullif/greatest/least`, `CASE`, `lag/lead/first_value`, `length` và họ hàm trả int4, `generate_series`, VALUES, subquery vô hướng, UNION, CTE, view); kiểu đúng chỉ áp khi cùng Kind với giá trị tính được. Binary: int2/int4/float4/time có độ rộng riêng (`BinaryValueFor`). `date` lưu như timestamp lúc nửa đêm, đọc ra `KDate`; `time` lưu dạng chuỗi `HH:MM:SS[.ffffff]` đã chuẩn hoá. `avg(int)` giờ là `numeric` (khớp PG: `2.3333333333333333`). Test: `TestPGTypesOIDs`, `TestPgxColumnTypes` (pgx binary scan vào `int32/int16/float32/pgtype.Date/pgtype.Time`), `TestPGCastColumnNames`, 5 test catalog sửa kỳ vọng (serial/integer ra `integer`) | Xong-có-bằng-chứng |
+| G2 | Thực thi ràng buộc kiểu | `varchar(n)` 22001; tràn int2/int4 22003 khi lưu, ép kiểu và số học; miền hàm toán; điều kiện phải là boolean | `applyPG` (lưu + `CAST`; `CAST` tới `varchar(n)` cắt, gán thì báo lỗi, chỉ khoảng trắng thừa thì cắt); `Binary.W` cờ độ rộng gán lúc biên dịch (`2147483647 + 1`, `* 2` → 22003); `sqrt(-1)` 2201F, `ln(0)` 2201E, `power(0,-1)` 2201F, tràn float 22003, `chr(0)` 54000, `substring(x,1,-1)` 22011, `LIMIT -1` 2201W, `WHERE 1`/`NOT 1`/`CASE WHEN 1` 42804 (trừ dialect ClickHouse); ngày sai 22008, không phải ngày 22007; kiểu lạ 42704 (kiểu thật chưa có như `money`, `inet` vẫn 0A000); cột trùng 42701; `ORDER BY 5` 42P10; `t.x` thiếu bảng 42P01; `ON CONFLICT (cột không unique)` 42P10. Test: `TestPGTypeEnforcement` (26 ca) | Xong-có-bằng-chứng |
+| G3 | Cú pháp ORM hay sinh | `$$..$$` (đã có trước đó trong `lex.go`, không làm lại), CTE chứa INSERT/UPDATE/DELETE, `WITH .. UPDATE/DELETE/INSERT`, `UPDATE SET (a,b) = (..)`, `UPDATE t alias .. FROM .. RETURNING alias.col, from.col`, `INSERT .. SELECT`, `AT TIME ZONE`, `to_char(numeric)`, `to_date/to_timestamp(text, fmt)`, `SIMILAR TO`, `LIKE .. ESCAPE`, `IS UNKNOWN`, `\| & # ~ << >> ^ ^@`, `PREPARE/EXECUTE/DEALLOCATE`, `ANALYZE/VACUUM` (nhận, không làm gì) | `withdml.go`: CTE ghi chạy trước theo thứ tự trong một giao dịch, RETURNING thành VALUES thay CTE; `Describe` có kiểu từ RETURNING; hàm mới: `age` (đúng thuật toán `timestamp_age`), `quote_ident/literal/nullable`, `translate`, `regexp_match`, `regexp_split_to_array`, `bit_length`; tên cột như PG (`int4`, `text`, `substring`, `position`, `count`, `?column?` cho `IS DISTINCT FROM`/`~`). Test: `TestWithDataModifyingCTE`, `TestOperators`, `TestPGFormatFunctions`, `TestUpdateReturningFrom`, `TestSQLPrepareExecute` | Xong-có-bằng-chứng (xem B.5 phần còn lại) |
+| G4 | pgdiff trước/sau | Số PASS tăng, không sửa kịch bản | **496 → 674 / 859** (DIFF 176 → 36, ERR-ONLY-ONE-SIDE 127 → 80, PASS-MSG 60 → 69); `claimcheck` **212 → 236 / 252**, không probe nào từ qua thành trượt (so tên từng probe). Chi tiết B.5 | Xong-có-bằng-chứng |
+
 ### 2.1 Công cụ đo tự kiểm (P0.9)
 
 **Thành phần.**
@@ -533,6 +544,43 @@ Mỗi nhóm khác biệt trên có probe `pd_*` trong `cmd/claimcheck/main.go` (
 Hạn chế của lần đo này, để không đọc quá mức: (1) STASK chỉ được so với PostgreSQL ở một cấu hình locale (`en_US.utf8`); các khác biệt collation sẽ biến mất nếu PG dùng `C`. (2) Mỗi câu chỉ báo khác biệt đầu tiên, nên số khác biệt thật lớn hơn số đếm. (3) Chưa so giao thức binary, `COPY`, `LISTEN/NOTIFY`, đồng thời nhiều phiên (khoá, mức cô lập), hay độ trễ; công cụ hiện chạy tuần tự một phiên mỗi bên. (4) Không sửa engine để che khác biệt nào; toàn bộ số liệu ở trên là kết quả chạy thật ngày 2026-10-29.
 
 Ghi chú: mọi dòng FAIL còn lại đều được liệt kê ở §3 (mục C1–C16) kèm lý do chưa sửa. Các dòng `FAIL` thuộc nhánh khác: kiểu dữ liệu (`types`), index/ràng buộc (`index`), vai trò/`pg_stat_activity` (`ops`), trigger `EXECUTE FUNCTION` (nhánh trigger).
+
+### B.5 Sau nhánh `pgfix` (2026-10-29): 496 → 674 câu giống hệt
+
+Cùng 859 câu, không đổi kịch bản, cùng container `postgres:16` (`timezone=UTC`), STASK build từ nhánh `pgfix`.
+
+| Nhóm | Số câu | PASS | PASS-MSG | DIFF | ERR-ONLY-ONE-SIDE |
+|---|---|---|---|---|---|
+| a. DDL/DML Liquibase+Hibernate | 166 | 148 (trước 123) | 7 | 2 | 9 |
+| b. Kiểu và biểu thức | 287 | 244 (trước 121) | 8 | 14 | 21 |
+| c. Lỗi SQLSTATE | 266 | 144 (trước 118) | 52 | 20 | 50 |
+| d. Kho SIM | 140 | 138 (trước 134) | 2 | 0 | 0 |
+| **Tổng** | **859** | **674 (trước 496)** | 69 | 36 | 80 |
+
+Theo lớp: `DIFF/type` 102 → 8, `DIFF/columns` 23 → 1, `DIFF/sqlstate` 27 → 15, `ERR-ONLY-ONE-SIDE/semantics` 67 → 46, `/feature` 60 → 34. `claimcheck` 212/252 → **236/252** (24 probe chuyển sang qua: `pd_at_time_zone`, `pd_to_timestamp`, `sess_sql_prepare_execute`, `pd_int_literal_type`, `pd_varchar_len_22001`, `pd_int_overflow_22003`, `pd_data_modifying_cte`, `pd_bitwise_or`, `pd_power_operator`, `pd_like_escape`, `pd_similar_to`, `pd_is_unknown`, `pd_update_row_value`, `pd_time_type`, `pd_bad_date_22008`, `pd_bad_timestamptz_22007`, `pd_sqrt_negative_2201F`, `pd_limit_negative_2201W`, `pd_unknown_type_42704`, `pd_where_not_boolean_42804`, `pd_on_conflict_no_index_42P10`, `err_int_range_cast_22003`, `hib_varchar_overflow_22001`, `fn_cte_insert_returning`; không probe nào tụt).
+
+Tái lập: `scripts/pgdiff` + recipe đầu Phụ lục B (cổng `28441` cho PG, `28443` cho STASK).
+
+**Đã sửa, theo tác động tới ORM/Liquibase/Hibernate và kho SIM**
+1. OID/typmod: xem G1. Mọi truy vấn `SELECT id, ...` trên cột `INTEGER` giờ ra OID 23 thay 20, `varchar(n)` ra 1043 + typmod `n+4`, `SELECT 1` ra int4, `date` ra 1082 (trước là `timestamptz`), `time` 1083, `real` 700. Catalog: `pg_attribute.atttypid/atttypmod`, `format_type(oid, mod)`, `information_schema.columns` (`data_type`, `udt_name`, `character_maximum_length`, `numeric_precision/scale`). Logical decoding (`pgoutput`) dùng cùng OID.
+2. Ràng buộc: xem G2.
+3. Cú pháp: xem G3.
+4. SQLSTATE và tên cột: `22007/22008`, `42704`, `42701`, `42P10`, `42P01`, `42804`, `2201x`; tên cột `?column?` thành `int4`/`text`/... theo kiểu đích, `substring`, `position`, `count` (subquery vô hướng), `timezone`, `TimeZone`/`DateStyle` của `SHOW`.
+
+**Còn lại, kèm lý do (không có gì trong số này bị che bằng cách đổi kịch bản)**
+- Bảng không PK / PK ghép (`CREATE TABLE databasechangelog ...`, `PRIMARY KEY (a, b)`) và các câu 42P01 dây chuyền sau nó: thuộc nhánh `nopk`. Đây vẫn là chặn lớn nhất của Liquibase.
+- Collation (`'a' < 'B'`, `ORDER BY name`): khác biệt thật nhưng phụ thuộc locale của PG đối chiếu (`en_US.utf8`); STASK so theo byte. Chưa làm: cần quyết định thiết kế (docs/PROCESS).
+- `SHOW transaction_isolation` báo `repeatable read` (đúng với snapshot isolation thật của engine) trong khi PG mặc định `read committed`; không đổi chuỗi cho khớp vì sẽ nói sai về hành vi.
+- `CREATE SCHEMA/EXTENSION/FUNCTION/TYPE/TEMP/UNLOGGED/LIKE/CTAS/SELECT INTO/PARTITION BY`, `DO`, `LOCK TABLE`, `CHECKPOINT`, `CLOSE`: chưa có (CTAS/LIKE chờ `nopk`; còn lại là tính năng lớn hoặc không có nghĩa trong engine này).
+- Kiểu `money/inet/cidr/bit/range`, toán tử jsonb (`-> ->> @> ?`), hàm `jsonb_build_object`, `array_append`, `||` mảng, `ROW(...)` so sánh, `bytea` hàm (`encode`), `format('%5s')`, `overlay`, `setseed`, `SELECT` không cột, `U&'...'`, `'infinity'::timestamp`: chưa làm.
+- Mảng: `int[]`, `array_agg(int)`, `ARRAY[1,2]` vẫn ra OID mảng `text`/`int8` (1009/1016) thay `_int4` (1007): chưa suy luận kiểu phần tử.
+- Kiểu số: `stddev/variance` của số nguyên ra `float8` (PG `numeric`); `power(2.0, 0.5)` ra `float8` và `numeric` 14 chữ số (PG 16 chữ số); `div(7,2)`; `CASE WHEN .. THEN 1 ELSE 2.5 END` ra `bigint` (PG `numeric`).
+- `char(n)` không đệm khoảng trắng khi lưu (chỉ kiểm độ dài): `length(c)`/so sánh không đổi, hiển thị không có khoảng trắng thừa như PG `bpchar`.
+- `ON CONFLICT (cột)` trên chỉ mục unique không phải khoá chính: nay báo 0A000 rõ ràng thay vì âm thầm coi như khoá chính; hỗ trợ thật chưa làm.
+- Thông điệp lỗi (69 câu PASS-MSG): chỉ sửa khi rẻ, chưa đụng.
+- Phép đo nhiễu: `DEFAULT now()` (hai máy hai đồng hồ) luôn khác ở `RETURNING *`.
+
+**Thay đổi định dạng lưu trữ (theo yêu cầu, ghi ở docs/09 §5):** thêm trường tuỳ chọn `pg` vào cột của JSON schema; bản cũ không có trường vẫn đọc như trước. Bản ghi hàng không đổi. Bản cũ mở schema mới sẽ bỏ qua `pg` (cột `date` mới là `timestamp`, `time` mới là `string` nên vẫn đọc được, chỉ mất OID/ràng buộc mới). Cột `date` tạo từ trước vẫn là `time` (legacy, `timestamptz`), không tự đổi.
 
 ## Phụ lục C. Probe `claimcheck` thêm bởi nhánh `history` (chạy trên staskd của nhánh, `-gc -history-retention 60d`)
 

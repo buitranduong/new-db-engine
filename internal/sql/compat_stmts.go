@@ -40,6 +40,9 @@ var knownStatements = map[string]bool{
 
 // compatStatement parses the statements above; ok is false for any other.
 func (p *parser) compatStatement(word string) (st Stmt, ok bool, err error) {
+	if st, ok, err := p.prepareStatements(word); ok {
+		return st, ok, err
+	}
 	switch word {
 	case "savepoint", "release":
 		p.next()

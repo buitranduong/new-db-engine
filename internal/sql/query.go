@@ -98,7 +98,7 @@ func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error
 	if err != nil {
 		return nil, err
 	}
-	qx := &qexec{s: s, tx: tx, params: params, now: nowMillis(), subCache: map[*boundSub]*relation{},
+	qx := &qexec{s: s, tx: tx, params: params, now: nowMicros(), subCache: map[*boundSub]*relation{},
 		inSets: map[*boundSub]*inSet{}, cteCache: map[*cteDef]*relation{}}
 	rel, err := p.run(qx, nil)
 	qx.release()
@@ -979,7 +979,7 @@ func hasAggOrWin(x Expr) bool {
 
 // constEval evaluates an expression that may not reference rows.
 func (c *compiler) constEval(x Expr) (Datum, error) {
-	return (&evalCtx{now: nowMillis()}).eval(x)
+	return (&evalCtx{now: nowMicros()}).eval(x)
 }
 
 func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
@@ -1966,7 +1966,7 @@ func (p *tablePlan) run(qx *qexec, _ *evalCtx) ([][]Datum, error) {
 	serr := qx.tx.ScanAll(p.t.Name, func(_ string, r schema.Row) bool {
 		d := make([]Datum, len(cols))
 		for i, c := range cols {
-			d[i] = fromValue(c.T, r[i])
+			d[i] = fromCol(&c, r[i])
 		}
 		rows = append(rows, d)
 		if cerr := qx.charge(d); cerr != nil {

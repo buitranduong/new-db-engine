@@ -40,7 +40,7 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 	if err := s.alterTableViews(st); err != nil {
 		return nil, err
 	}
-	now := nowMillis()
+	now := nowMicros()
 	var oldName string
 	var renamed map[string]string // old column name -> new
 	var dropped map[string]bool
@@ -298,7 +298,7 @@ func (s *Session) missingValue(text, typ string, now int64) (schema.Value, error
 	if err != nil {
 		return schema.Value{}, err
 	}
-	return toValue(ct, v)
+	return toValueCol(&schema.Column{T: ct, Type: typ}, v)
 }
 
 // validateExisting checks the existing rows against new NOT NULL columns

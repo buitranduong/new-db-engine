@@ -35,20 +35,25 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			return KText
 		}
 		l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)
+		tl, tr := isTime(l) || l == KDate, isTime(r) || r == KDate
 		switch {
-		case (l == KTime || l == KDate) && (r == KTime || r == KDate):
+		case tl && tr:
 			if l == KDate && r == KDate {
 				return KInt
 			}
 			return KInterval
 		case l == KDate && r == KInt:
 			return KDate
-		case l == KTime || r == KTime || l == KDate && r == KInterval:
+		case l == KTimestamp || r == KTimestamp:
+			return KTimestamp
+		case isTime(l) || isTime(r) || l == KDate && r == KInterval:
 			return KTime
 		case l == KInterval || r == KInterval:
 			return KInterval
 		case l == KFloat || r == KFloat:
 			return KFloat
+		case l == KNumeric || r == KNumeric:
+			return KNumeric
 		case l == KInt && r == KInt:
 			return KInt
 		case l == KInt || r == KInt:
@@ -80,15 +85,26 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if e.Name == "round" && len(e.Args) == 1 && arg() == KInt {
 				return KInt
 			}
+			if arg() == KNumeric && e.Name != "extract_epoch" && e.Name != "epoch" {
+				return KNumeric
+			}
 			return KFloat
 		case "sum":
 			if arg() == KInt {
 				return KInt
 			}
+			if arg() == KNumeric {
+				return KNumeric
+			}
 			return KFloat
 		case "min", "max", "abs", "coalesce", "nullif":
 			return arg()
 		case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "to_timestamp":
+			return KTime
+		case "date_trunc":
+			if len(e.Args) == 2 && typeOf(e.Args[1], sc, pk) == KTimestamp {
+				return KTimestamp
+			}
 			return KTime
 		case "nextval", "currval", "setval", "lastval":
 			return KInt

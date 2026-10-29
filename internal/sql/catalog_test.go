@@ -12,7 +12,7 @@ func catalogFixture(t *testing.T) *Session {
 	t.Helper()
 	s := NewSession(newEngine(t))
 	for _, q := range []string{
-		`CREATE TABLE items (id serial PRIMARY KEY, name text NOT NULL DEFAULT 'x', qty bigint DEFAULT 0 CHECK (qty >= 0), created timestamp DEFAULT now(), tmp varchar(20), price double precision)`,
+		`CREATE TABLE items (id serial PRIMARY KEY, name text NOT NULL DEFAULT 'x', qty bigint DEFAULT 0 CHECK (qty >= 0), created timestamptz DEFAULT now(), tmp varchar(20), price double precision)`,
 		`INSERT INTO items (name, qty) VALUES ('a', 1), ('b', 2)`,
 		`ALTER TABLE items DROP COLUMN tmp`,
 		`ALTER TABLE items ADD COLUMN extra integer`,

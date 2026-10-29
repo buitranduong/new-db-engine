@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -221,6 +222,11 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			return TextD("-"), nil
 		}
 		if t, ok := pgTypeByOID[oid.I]; ok {
+			if oid.I == 1700 && len(args) > 1 && !args[1].IsNull() {
+				if m, err := coerce(args[1], KInt); err == nil && m.I >= 4 {
+					return TextD(fmt.Sprintf("numeric(%d,%d)", (m.I-4)>>16&0xffff, (m.I-4)&0xffff)), nil
+				}
+			}
 			return TextD(t.sqlName), nil
 		}
 		return TextD("???"), nil

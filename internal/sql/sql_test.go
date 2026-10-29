@@ -363,7 +363,7 @@ func TestSQLDescribe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Kind{KInt, KText, KTime, KInt}
+	want := []Kind{KInt, KText, KTimestamp, KInt}
 	if fmt.Sprint(d.Params) != fmt.Sprint(want) {
 		t.Fatalf("params %v, want %v", d.Params, want)
 	}

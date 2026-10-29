@@ -3,6 +3,7 @@ package sql
 import (
 	"math"
 	"sort"
+	"stask/internal/pgnum"
 	"strings"
 )
 
@@ -196,6 +197,8 @@ type basicAgg struct {
 	float bool
 	best  Datum
 	kind  Kind
+	numer bool // a numeric value was added
+	nsum  pgnum.Dec
 }
 
 func (a *basicAgg) add(args, _ []Datum) error {
@@ -221,6 +224,9 @@ func (a *basicAgg) add(args, _ []Datum) error {
 		case KInt, KBool:
 			a.isum += v.I
 			a.fsum += float64(v.I)
+		case KNumeric:
+			a.numer = true
+			a.nsum = pgnum.Add(a.nsum, numOf(v))
 		case KInterval:
 			if a.kind == KNull {
 				a.best = IntervalD(0, 0)
@@ -254,7 +260,14 @@ func (a *basicAgg) result() (Datum, error) {
 		if a.float {
 			return FloatD(a.fsum), nil
 		}
+		if a.numer {
+			return NumericD(pgnum.Add(a.nsum, pgnum.FromInt64(a.isum))), nil
+		}
 		return IntD(a.isum), nil
+	}
+	if a.numer && !a.float {
+		x, err := pgnum.Div(pgnum.Add(a.nsum, pgnum.FromInt64(a.isum)), pgnum.FromInt64(a.n))
+		return NumericD(x), err
 	}
 	if a.kind == KInterval {
 		return IntervalD(int64(a.best.F/float64(a.n)), a.best.I/a.n), nil

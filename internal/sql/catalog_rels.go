@@ -51,6 +51,7 @@ func init() {
 		"atthasmissing:b attidentity:t attgenerated:t attisdropped:b attislocal:b attinhcount:i attcollation:i "+
 		"attacl:a attoptions:a attfdwoptions:a attmissingval:a", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
+		mod := int64(-1) // atttypmod of the column being added
 		att := func(rel int64, name string, typ int64, num int, notNull, def bool, ident string, missing, dropped bool) {
 			ty := pgTypeByOID[typ]
 			coll := int64(0)
@@ -60,7 +61,7 @@ func init() {
 			if dropped { // PostgreSQL keeps the slot: no type, a placeholder name
 				name, typ, notNull, def, ident, coll = fmt.Sprintf("........pg.dropped.%d........", num), 0, false, false, "", 0
 			}
-			rows = append(rows, []Datum{IntD(rel), TextD(name), IntD(typ), IntD(-1), IntD(ty.len), IntD(int64(num)),
+			rows = append(rows, []Datum{IntD(rel), TextD(name), IntD(typ), IntD(mod), IntD(ty.len), IntD(int64(num)),
 				IntD(0), IntD(-1), IntD(-1), BoolD(ty.len > 0 && ty.len <= 8), TextD("d"), TextD("p"), TextD(""),
 				BoolD(notNull), BoolD(def), BoolD(missing), TextD(ident), TextD(""), BoolD(dropped), BoolD(true), IntD(0),
 				IntD(coll), Null, Null, Null, Null})
@@ -81,9 +82,11 @@ func init() {
 			sort.SliceStable(all, func(i, j int) bool { return all[i].col.Num < all[j].col.Num })
 			for _, a := range all {
 				col := a.col
+				mod = typmodOf(col)
 				att(tableOID(t), col.Name, colTypeOID(col), col.Num, col.NotNull || col.Name == t.Key, hasDef(col),
 					identityChar(col), col.Missing != nil, a.dropped)
 			}
+			mod = -1
 			k := keyCol(t)
 			att(indexOID(t), k.Name, colTypeOID(k), 1, false, false, "", false, false)
 		}

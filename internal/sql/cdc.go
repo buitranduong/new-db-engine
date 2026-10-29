@@ -508,18 +508,12 @@ func ConfirmLSN(e *core.Engine, slot, lsn string) (string, error) {
 }
 
 // pgTypeName is format_type() of a column, as both plugins print it.
-func pgTypeName(ct schema.ColType) string {
-	switch ct {
-	case schema.TInt:
-		return "bigint"
-	case schema.TFloat:
-		return "double precision"
-	case schema.TTime:
-		return "timestamp with time zone"
-	case schema.TBool:
-		return "boolean"
+func pgTypeName(c schema.Column) string {
+	n := pgTypeByOID[int64(PgTypeOID(c))].sqlName
+	if p, sc, ok := schema.NumericMod(c.Type); ok {
+		n = "numeric(" + strconv.Itoa(p) + "," + strconv.Itoa(sc) + ")"
 	}
-	return "text"
+	return n
 }
 
 func pgTimestamp(ns int64) string {
@@ -546,13 +540,13 @@ func (o *decodeOpts) tdCommit(c *core.Change) string {
 	return s
 }
 
-func tdValue(ct schema.ColType, v schema.Value) string {
+func tdValue(c schema.Column, v schema.Value) string {
 	if v.Null {
 		return "null"
 	}
-	d := fromValue(ct, v)
+	d := fromCol(&c, v)
 	switch d.K {
-	case KInt, KFloat:
+	case KInt, KFloat, KNumeric:
 		return d.String()
 	case KBool:
 		if d.I != 0 {
@@ -579,7 +573,7 @@ func (o *decodeOpts) tdChange(c *core.Change) string {
 		if c.OldRow != nil {
 			b.WriteString(" old-key:")
 			for i, col := range t.Columns {
-				fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col.T), tdValue(col.T, c.OldRow[i]))
+				fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.OldRow[i]))
 			}
 			b.WriteString(" new-tuple:")
 		}
@@ -587,16 +581,16 @@ func (o *decodeOpts) tdChange(c *core.Change) string {
 		b.WriteString(": DELETE:")
 		if c.OldRow != nil {
 			for i, col := range t.Columns {
-				fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col.T), tdValue(col.T, c.OldRow[i]))
+				fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.OldRow[i]))
 			}
 			return b.String()
 		}
 		k := t.KeyIndex()
-		fmt.Fprintf(&b, " %s[%s]:%s", t.Columns[k].Name, pgTypeName(t.Columns[k].T), tdValue(t.Columns[k].T, keyValue(t, c.Key)))
+		fmt.Fprintf(&b, " %s[%s]:%s", t.Columns[k].Name, pgTypeName(t.Columns[k]), tdValue(t.Columns[k], keyValue(t, c.Key)))
 		return b.String()
 	}
 	for i, col := range t.Columns {
-		fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col.T), tdValue(col.T, c.Row[i]))
+		fmt.Fprintf(&b, " %s[%s]:%s", col.Name, pgTypeName(col), tdValue(col, c.Row[i]))
 	}
 	return b.String()
 }
@@ -615,11 +609,11 @@ func keyValue(t *schema.Table, key string) schema.Value {
 // appendJSONValue appends a column value as wal2json writes it: numbers
 // and booleans as JSON literals, everything else as a string in
 // PostgreSQL's text form (as Datum.String writes it).
-func appendJSONValue(b []byte, ct schema.ColType, v schema.Value) []byte {
+func appendJSONValue(b []byte, c schema.Column, v schema.Value) []byte {
 	if v.Null {
 		return append(b, "null"...)
 	}
-	switch ct {
+	switch c.T {
 	case schema.TInt:
 		return strconv.AppendInt(b, v.I, 10)
 	case schema.TFloat:
@@ -632,12 +626,14 @@ func appendJSONValue(b []byte, ct schema.ColType, v schema.Value) []byte {
 			return append(b, "true"...)
 		}
 		return append(b, "false"...)
-	case schema.TTime:
-		b = append(b, '"')
-		b = time.UnixMilli(v.I).UTC().AppendFormat(b, "2006-01-02 15:04:05.999-07")
-		return append(b, '"')
+	case schema.TNumeric:
+		if x := numOf(Datum{K: KNumeric, S: v.S}); x.IsFinite() {
+			return append(b, v.S...)
+		}
+	case schema.TJSON, schema.TJSONB:
+		return append(b, v.S...) // wal2json writes json values as they are
 	}
-	return appendJSONStr(b, v.S)
+	return appendJSONStr(b, fromCol(&c, v).String())
 }
 
 // appendJSONStr appends s as a JSON string, escaped as PostgreSQL's
@@ -717,11 +713,11 @@ func (o *decodeOpts) appendW2Col(b []byte, col schema.Column, v schema.Value) []
 	b = appendJSONStr(b, col.Name)
 	if o.types {
 		b = append(b, `,"type":"`...)
-		b = append(b, pgTypeName(col.T)...)
+		b = append(b, pgTypeName(col)...)
 		b = append(b, '"')
 	}
 	b = append(b, `,"value":`...)
-	b = appendJSONValue(b, col.T, v)
+	b = appendJSONValue(b, col, v)
 	return append(b, '}')
 }
 
@@ -778,7 +774,7 @@ func (o *decodeOpts) w2Change(c *core.Change) string {
 		b = append(b, `,"pk":[{"name":`...)
 		b = appendJSONStr(b, t.Columns[k].Name)
 		b = append(b, `,"type":"`...)
-		b = append(b, pgTypeName(t.Columns[k].T)...)
+		b = append(b, pgTypeName(t.Columns[k])...)
 		b = append(b, `"}]`...)
 	}
 	b = append(b, '}')
@@ -786,7 +782,7 @@ func (o *decodeOpts) w2Change(c *core.Change) string {
 	return string(b)
 }
 
-func jsonValue(ct schema.ColType, v schema.Value) string { return string(appendJSONValue(nil, ct, v)) }
+func jsonValue(c schema.Column, v schema.Value) string { return string(appendJSONValue(nil, c, v)) }
 
 func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 	var b strings.Builder
@@ -815,7 +811,7 @@ func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 		if ch.Kind != core.ChangeDelete {
 			names, types, vals := make([]string, len(t.Columns)), make([]string, len(t.Columns)), make([]string, len(t.Columns))
 			for j, col := range t.Columns {
-				names[j], types[j], vals[j] = jsonStr(col.Name), `"`+pgTypeName(col.T)+`"`, jsonValue(col.T, ch.Row[j])
+				names[j], types[j], vals[j] = jsonStr(col.Name), `"`+pgTypeName(col)+`"`, jsonValue(col, ch.Row[j])
 			}
 			b.WriteString(`,"columnnames":[` + strings.Join(names, ",") + "]")
 			if o.types {
@@ -831,7 +827,7 @@ func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 			}
 			names, types, jv := make([]string, len(cols)), make([]string, len(cols)), make([]string, len(cols))
 			for j, col := range cols {
-				names[j], types[j], jv[j] = jsonStr(col.Name), `"`+pgTypeName(col.T)+`"`, jsonValue(col.T, vals[j])
+				names[j], types[j], jv[j] = jsonStr(col.Name), `"`+pgTypeName(col)+`"`, jsonValue(col, vals[j])
 			}
 			b.WriteString(`,"oldkeys":{"keynames":[` + strings.Join(names, ",") + "]")
 			if o.types {
@@ -841,7 +837,7 @@ func (o *decodeOpts) w1Tx(c *core.Change, tx []*core.Change) string {
 		}
 		if o.pk {
 			k := t.Columns[t.KeyIndex()]
-			b.WriteString(`,"pk":{"pknames":[` + jsonStr(k.Name) + `],"pktypes":["` + pgTypeName(k.T) + `"]}`)
+			b.WriteString(`,"pk":{"pknames":[` + jsonStr(k.Name) + `],"pktypes":["` + pgTypeName(k) + `"]}`)
 		}
 		b.WriteString("}")
 	}

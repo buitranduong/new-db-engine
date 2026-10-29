@@ -1,7 +1,6 @@
 package sql
 
 import (
-	"strings"
 	"testing"
 
 	"stask/internal/core"
@@ -330,17 +329,34 @@ func TestDDLObjsRestart(t *testing.T) {
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
 	}
+	check := func(s *Session) {
+		t.Helper()
+		wantRows(t, s, `SELECT id FROM rs.t ORDER BY m`, "2;1;3")
+		wantErr(t, s, `INSERT INTO rs.t VALUES (4,'bad',1)`, "22P02")
+		wantErr(t, s, `INSERT INTO rs.t VALUES (4,'ok',0)`, "23514")
+		wantRows(t, s, `SELECT extname FROM pg_extension ORDER BY 1`, "pgcrypto;plpgsql")
+		wantRows(t, s, `SELECT obj_description('rs.t'::regclass, 'pg_class')`, "kept")
+		wantRows(t, s, `SELECT col_description('rs.t'::regclass, 2)`, "kept col")
+		wantRows(t, s, `SELECT nspname FROM pg_namespace WHERE nspname = 'rs'`, "rs")
+		wantRows(t, s, `SELECT enumlabel FROM pg_enum ORDER BY enumsortorder`, "sad;ok;happy")
+	}
+	// replay of the log
+	e = open()
+	s = NewSession(e)
+	check(s)
+	mustq(t, s, `ALTER TYPE rs.mood ADD VALUE 'meh' BEFORE 'ok'`)
+	// a checkpoint, then the log is not needed for these
+	if err := e.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
 	e = open()
 	defer e.Close()
 	s = NewSession(e)
+	wantRows(t, s, `SELECT enumlabel FROM pg_enum ORDER BY enumsortorder`, "sad;meh;ok;happy")
 	wantRows(t, s, `SELECT id FROM rs.t ORDER BY m`, "2;1;3")
-	wantErr(t, s, `INSERT INTO rs.t VALUES (4,'bad',1)`, "22P02")
-	wantErr(t, s, `INSERT INTO rs.t VALUES (4,'ok',0)`, "23514")
-	wantRows(t, s, `SELECT extname FROM pg_extension ORDER BY 1`, "pgcrypto;plpgsql")
 	wantRows(t, s, `SELECT obj_description('rs.t'::regclass, 'pg_class')`, "kept")
-	wantRows(t, s, `SELECT col_description('rs.t'::regclass, 2)`, "kept col")
-	wantRows(t, s, `SELECT nspname FROM pg_namespace WHERE nspname = 'rs'`, "rs")
-	if !strings.Contains(render(mustq(t, s, `SELECT enumlabel FROM pg_enum ORDER BY enumsortorder`)), "happy") {
-		t.Fatal("enum labels lost")
-	}
+	wantRows(t, s, `SELECT extname FROM pg_extension ORDER BY 1`, "pgcrypto;plpgsql")
 }

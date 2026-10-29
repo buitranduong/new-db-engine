@@ -17,7 +17,9 @@
 # then counts both.
 # Summarize: scripts/mixsummary.py $OUT
 . ~/.stask_env
-cd ~/stask
+cd "$(dirname "$0")/.."
+. scripts/benchlib.sh
+bench_require_build || exit 1
 OUT=${OUT:-results/mix}; mkdir -p $OUT
 CPIN=""; [ -n "$CLIENT_CPUS" ] && CPIN="taskset -c $CLIENT_CPUS"
 SPIN=""; [ -n "$SERVER_CPUS" ] && SPIN="taskset -c $SERVER_CPUS"
@@ -42,8 +44,14 @@ pgcpu() { local t=0
     t=$(( t + $(awk '/^usage_usec/{print $2}' $f) * $(getconf CLK_TCK) / 1000000 ))
   done; echo $t; }
 measure() { # label url pidfn [agg url]
+  # self-check (docs/14): staskd is checked for build + table shape; PostgreSQL is not
+  local chk=(env STASK_HTTP= BENCH_EXPECT=)
+  if [[ $1 == stask* ]]; then
+    local kind=row agg=""; [[ "$STASK_WITH" == *columnar* ]] && { kind=columnar; agg=,agg; }
+    chk=(env STASK_HTTP=127.0.0.1:17073 "BENCH_EXPECT=orders,$kind$agg,min=$((N*8/10))")
+  fi
   local with=(); [[ $1 == stask* && -n "$STASK_WITH" ]] && with=(-with "$STASK_WITH")
-  $CPIN ./bin/staskmix -url "$2" -n $N -dur 0s -warm 0s -only none "${with[@]}" > /dev/null 2> $OUT/$1-load.log
+  $CPIN "${chk[@]}" $BIN/staskmix -url "$2" -n $N -dur 0s -warm 0s -only none "${with[@]}" > /dev/null 2> $OUT/$1-load.log
   if [[ $1 == stask* && -n "$4" && -z "$NO_SETTLE" ]]; then
     # a replica just given the whole load: let its views catch up before
     # measuring (a long-running replica is not freshly loaded)
@@ -62,11 +70,11 @@ PY
   local c0=$($3); local t0=$(date +%s.%N)
   local rates="${RATES:-}" pp=""
   if [ -n "$PROBE_CPUS" ]; then
-    taskset -c $PROBE_CPUS ./bin/staskmix -url "$2" -n $N -load=false -dur ${DUR:-30s} -only ${PROBE_ONLY:-read,update,insert,delete} -keybase 2000000000000 \
+    taskset -c $PROBE_CPUS "${chk[@]}" $BIN/staskmix -url "$2" -n $N -load=false -dur ${DUR:-30s} -only ${PROBE_ONLY:-read,update,insert,delete} -keybase 2000000000000 \
       -rates read=${PROBE_RATE:-2000},update=${PROBE_WRATE:-500},insert=${PROBE_WRATE:-500},delete=$(( ${PROBE_WRATE:-500} / 2 )),page=${PAGE_RATE:-50} -label $1-probe > $OUT/$1.probe 2> $OUT/$1-probe.log &
     pp=$!
   fi
-  /usr/bin/time -f "%U %S" -o $OUT/$1.ctime $CPIN ./bin/staskmix -url "$2" -n $N -load=false -dur ${DUR:-30s} -scale ${SCALE:-1} -rates "$rates" ${4:+-agg-url "$4"} -label $1 > $OUT/$1.json 2> $OUT/$1.log
+  /usr/bin/time -f "%U %S" -o $OUT/$1.ctime $CPIN "${chk[@]}" $BIN/staskmix -url "$2" -n $N -load=false -dur ${DUR:-30s} -scale ${SCALE:-1} -rates "$rates" ${4:+-agg-url "$4"} -label $1 > $OUT/$1.json 2> $OUT/$1.log
   [ -n "$pp" ] && wait $pp
   local c1=$($3); local t1=$(date +%s.%N)
   echo "client CPU $(awk -v w=$(echo "$t1 - $t0" | bc) '{printf "%.2f", ($1+$2)/w}' $OUT/$1.ctime) cores"
@@ -98,12 +106,12 @@ for run in $(seq 1 ${RUNS:-1}); do
     # STASK_MEM limits staskd's memory like a container of that size (page
     # cache included); PG_MEM does the same for PostgreSQL (bench/pg/pg.sh)
     DELEG=""; command -v systemd-run >/dev/null && DELEG="systemd-run --user --scope -q -p Delegate=yes ${STASK_MEM:+-p MemoryMax=$STASK_MEM -p MemorySwapMax=0}"
-    $DELEG $SPIN ${STASKD:-./bin/staskd} -dir $DATA/mix -addr 127.0.0.1:17073 -pg-addr 127.0.0.1:17432 ${REPLICA_CPUS:+-repl-addr 127.0.0.1:17500} $STASK_ARGS > $OUT/stask.server.log 2>&1 &
+    $DELEG $SPIN ${STASKD:-$BIN/staskd} -dir $DATA/mix -addr 127.0.0.1:17073 -pg-addr 127.0.0.1:17432 ${REPLICA_CPUS:+-repl-addr 127.0.0.1:17500} $STASK_ARGS > $OUT/stask.server.log 2>&1 &
     pid=$!; sleep 1
     rpid=""; AURL=""
     if [ -n "$REPLICA_CPUS" ]; then
       rm -rf $DATA/mix-replica
-      $DELEG taskset -c $REPLICA_CPUS ${STASKD:-./bin/staskd} -dir $DATA/mix-replica -addr 127.0.0.1:17074 -pg-addr 127.0.0.1:17433 \
+      $DELEG taskset -c $REPLICA_CPUS ${STASKD:-$BIN/staskd} -dir $DATA/mix-replica -addr 127.0.0.1:17074 -pg-addr 127.0.0.1:17433 \
         -replica-of 127.0.0.1:17500 $STASK_ARGS $REPLICA_ARGS > $OUT/stask.replica.log 2>&1 &
       rpid=$!; sleep 1
       AURL="postgres://app@127.0.0.1:17433/stask?sslmode=disable"

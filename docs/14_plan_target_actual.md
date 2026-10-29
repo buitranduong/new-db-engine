@@ -122,6 +122,26 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 
 Ước lượng của tôi, không phải số đo: **khoảng 25 / 118 ngày công ≈ 22%** backlog trong docs/12, **khoảng 30%** theo các dòng "có" của Cổng 1 (docs/11 §2.2). Theo bằng chứng probe hôm nay, **31/46 probe qua trên `main` sau khi gộp `ops` và `cluster`**, nhưng 20 probe trong đó là SQL cơ bản; các probe về kiểu dữ liệu, index, ràng buộc, vai trò, trigger đều chưa qua. Probe không phải là thước đo mức độ hoàn thành, chỉ là bằng chứng cho từng tuyên bố.
 
+## 5. Hạ tầng kiểm chứng (CI)
+
+| Mục | Kế hoạch | Mục tiêu (xong khi) | Thực tế | Trạng thái |
+|---|---|---|---|---|
+| CI-1 | `.github/workflows/ci.yml`, chạy khi push và pull_request vào `main`: job `check` (gofmt rỗng, `go build`, `go vet`, `go test -p 1 -count=1 ./...`, `go-version-file: go.mod`, cache module) | Workflow xanh trên GitHub | Từng lệnh đã chạy cục bộ trên VM (go 1.25.0): gofmt rỗng, build và vet qua; `go test` toàn bộ qua **trừ 2 test nhạy thời gian** (xem danh sách dưới, load VM ~25). **Chưa chạy trên GitHub** (không có `act`, chưa push); YAML chỉ kiểm cú pháp bằng PyYAML | Xong-chưa-kiểm (chờ push) |
+| CI-2 | Job `race`, ma trận `core, sql, pgwire, repl, proj, wal`, `-race -timeout 35m`, `timeout-minutes: 40` | Không có DATA RACE | Cục bộ (`go test -race -p 1`, VM 8 core đang tải): core 341 s, sql 52 s, pgwire 66 s, repl 42 s; proj 228 s, wal 1 s; tất cả qua, không có DATA RACE. Runner 4 core có thể chậm gấp ~2 với core (~11 phút), còn dư so với giới hạn 40 phút | Xong-chưa-kiểm (chờ push) |
+| CI-3 | Job `claimcheck`: build `staskd` + `claimcheck` vào `$RUNNER_TEMP/bin`, chạy staskd ở `127.0.0.1:41070/41432` với thư mục dữ liệu mới, đợi cổng PG, chạy claimcheck, ghi bảng vào step summary, tải `claimcheck.md` làm artifact, luôn dừng staskd | Probe thất bại **không** làm đỏ CI; số probe qua **giảm** so với `docs/claimcheck_baseline.txt` thì đỏ | Cờ mới `-baseline file` và `-write-baseline` trong `cmd/claimcheck/main.go` (thoát 1 khi lùi, 2 khi lỗi kết nối/đọc baseline). Đã chạy cục bộ y hệt các bước: baseline `pass 32 total 46`; so sánh với baseline cao hơn cho exit 1. Lưu ý: claimcheck **không lặp lại được trên thư mục dữ liệu cũ** (`create_role` lần hai thất bại vì `cc_r` đã tồn tại: 31/46); CI dùng thư mục mới nên ra 32/46. Phụ lục A ghi 31/46 vì chạy trên dữ liệu đã dùng; số 32 là số trên dữ liệu mới. Khi tính năng mới làm probe qua thêm, chạy `claimcheck -baseline docs/claimcheck_baseline.txt -write-baseline` trên staskd mới và commit file | Xong-chưa-kiểm (chờ push) |
+| CI-4 | Badge CI ở đầu README.md | Badge hiển thị | Đã thêm; chỉ hoạt động sau khi workflow chạy lần đầu trên `main` | Xong-chưa-kiểm |
+
+**Test nghi flaky (nhạy thời gian, không tắt; quan sát khi VM tải ~25, runner chậm có thể gặp lại):**
+
+| Test | Gói | Triệu chứng | Ghi chú |
+|---|---|---|---|
+| `TestStatementTimeout` | `internal/sql` | `cancel_test.go:143: timed out after 382ms / 445ms, want ~250ms` | Dung sai quanh 250 ms quá chặt khi CPU bận; thất bại 2 lần trên 2 lượt (cả `-count=5`) |
+| `TestCDCHTTP` | `internal/server` | `cdc_test.go:153: drop: 409 Conflict` trong lượt `go test ./...`; chạy riêng `-count=5` qua cả 5 | Nghi tranh chấp thứ tự (slot còn được dùng khi DROP) khi máy tải; chưa điều tra nguyên nhân gốc |
+
+Hai test này có thể làm đỏ job `check` trên runner chậm; cách xử lý đúng là nới dung sai/đồng bộ hoá trong test, không phải tắt test. Việc đó chưa làm.
+
+**Chưa kiểm chứng được cục bộ:** cú pháp hành động GitHub (`actions/checkout@v4`, `setup-go@v5`, `upload-artifact@v4`), `$GITHUB_STEP_SUMMARY`, tên/hành vi của runner, thời gian thật trên runner 4 core, cache module.
+
 ## Phụ lục A. Kết quả `claimcheck` trên `main` @ merge nhánh `trigger` (xem tái lập ở đầu tài liệu)
 
 | id | task | doc | want | actual | verdict |

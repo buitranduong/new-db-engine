@@ -1,5 +1,7 @@
 # STASK
 
+[![ci](https://github.com/buitranduong/new-db-engine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/buitranduong/new-db-engine/actions/workflows/ci.yml)
+
 STASK is an experimental relational database engine written in Go. It speaks the
 PostgreSQL wire protocol, so `psql`, JDBC, pgx and most ORMs can connect to it,
 and it is built around one idea: **the write-ahead log is the single source of

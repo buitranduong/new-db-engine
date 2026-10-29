@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt, build, vet, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then echo "gofmt needed on:"; echo "$out"; exit 1; fi
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -p 1 -count=1 ./...
+
+  race:
+    name: race (${{ matrix.pkg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [core, sql, pgwire, repl, proj, wal]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -race
+        run: go test -race -p 1 -count=1 -timeout 35m ./internal/${{ matrix.pkg }}/...
+
+  claimcheck:
+    name: claimcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build binaries
+        run: go build -o "$RUNNER_TEMP/bin/" ./cmd/staskd ./cmd/claimcheck
+      - name: start staskd
+        run: |
+          mkdir -p "$RUNNER_TEMP/data"
+          nohup "$RUNNER_TEMP/bin/staskd" -dir "$RUNNER_TEMP/data" \
+            -addr 127.0.0.1:41070 -pg-addr 127.0.0.1:41432 \
+            > "$RUNNER_TEMP/staskd.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/staskd.pid"
+          for i in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/41432) 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "staskd did not open the PG port"; cat "$RUNNER_TEMP/staskd.log"; exit 1
+      - name: run claimcheck
+        run: |
+          set +e
+          "$RUNNER_TEMP/bin/claimcheck" \
+            -url "postgres://app@127.0.0.1:41432/stask?sslmode=disable" \
+            -baseline docs/claimcheck_baseline.txt \
+            > "$RUNNER_TEMP/claimcheck.md" 2> "$RUNNER_TEMP/claimcheck.err"
+          code=$?
+          cat "$RUNNER_TEMP/claimcheck.err" >&2
+          {
+            echo "## claimcheck"
+            echo "Baseline: $(cat docs/claimcheck_baseline.txt)"
+            echo
+            cat "$RUNNER_TEMP/claimcheck.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/claimcheck.md" claimcheck.md
+          # Failing probes do not fail CI; only a drop below the baseline
+          # (exit 1) or a connection/baseline error (exit 2) does.
+          exit $code
+      - name: upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claimcheck
+          path: claimcheck.md
+          if-no-files-found: ignore
+      - name: stop staskd
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/staskd.pid" ]; then kill "$(cat "$RUNNER_TEMP/staskd.pid")" 2>/dev/null || true; fi

@@ -161,3 +161,21 @@ func TestDollarQuotedStrings(t *testing.T) {
 		}
 	}
 }
+
+func TestLockingClauses(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE lk (id BIGINT PRIMARY KEY, v TEXT)`)
+	run(t, s, `INSERT INTO lk VALUES (1, 'a'), (2, 'b')`)
+	for _, q := range []string{
+		`SELECT v FROM lk WHERE id = 1 FOR UPDATE`,
+		`SELECT v FROM lk WHERE id = 1 FOR UPDATE OF lk`,
+		`SELECT v FROM lk l WHERE id = 1 FOR UPDATE OF l NOWAIT`,
+		`SELECT v FROM lk WHERE id = 1 FOR NO KEY UPDATE SKIP LOCKED`,
+		`SELECT v FROM lk WHERE id = 1 FOR SHARE`,
+		`SELECT v FROM lk WHERE id = 1 FOR KEY SHARE`,
+	} {
+		if got := render(run(t, s, q)); got != "a" {
+			t.Errorf("%s = %q", q, got)
+		}
+	}
+}

@@ -136,9 +136,21 @@ func (p *parser) queryStmt() (Stmt, error) {
 					return nil, p.errHere("expected ONLY")
 				}
 			}
-		case p.acceptKw("for", "update"), p.acceptKw("for", "share"):
+		case p.acceptKw("for", "update"), p.acceptKw("for", "share"), p.acceptKw("for", "no", "key", "update"),
+			p.acceptKw("for", "key", "share"):
+			// row locks are not taken (snapshot isolation: a conflicting write fails at commit)
 			forUpd = true
-			for p.acceptKw("nowait") || p.acceptKw("skip", "locked") {
+			if p.acceptKw("of") { // FOR UPDATE OF t1, t2
+				for {
+					if _, err := p.qualifiedName(); err != nil {
+						return nil, err
+					}
+					if !p.acceptOp(",") {
+						break
+					}
+				}
+			}
+			for p.acceptKw("nowait") || p.acceptKw("skip", "locked") || p.acceptKw("wait") {
 			}
 		case p.acceptKw("settings"): // ClickHouse query settings: ignored
 			for p.peek().k != tEOF && !p.isOp(";") && !p.isOp(")") && !p.isKw("format") {

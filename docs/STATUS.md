@@ -22,7 +22,7 @@ STASK là một engine **nhân (lõi) đã vững** (log, MVCC, phục hồi, nh
 | Raft (gói riêng, mô phỏng): 150 seed chaos, 83.892 entry xác nhận, 0 mất | `internal/raft` `TestChaos`. **Chưa nối vào engine, chưa có mạng thật** |
 | Ưu tiên đọc khi quá tải (admission) | mô phỏng 4 core: đúng hạn 50 ms 0% → 100%. **Chưa đo trên máy thật** |
 | View cột lưu file nén, nạp lại khi khởi động | 20M dòng nạp 2,2 s vs dựng lại 29,9 s; **100M suy ra ~11 s, không đo** |
-| Hạ tầng bằng chứng | `claimcheck` (86 probe), `pgdiff` (859 câu), `merge-gate.sh`, docs/14 |
+| Hạ tầng bằng chứng | `claimcheck` (86 probe), `pgdiff` (859 câu), `merge-gate.sh`, harness đo tự kiểm (đã bắt được cả hai lỗi đo cũ khi tái hiện cố ý), docs/14 |
 
 ## 3. So với PostgreSQL 16 (pgdiff, 859 câu SQL)
 
@@ -64,17 +64,18 @@ Chưa làm hẳn: P3.1 index chính trên đĩa (dữ liệu > RAM; 50M dòng hi
 | B3 | `TestCDCHTTP` thỉnh thoảng 409 ErrSlotBusy khi DELETE slot | Thấp | nhánh `e2e` |
 | B4 | `SELECT true::text` ra `t` (PG: `true`) | Thấp | nhánh `compat` |
 | B5 | Kết quả đo aggregate ở 100M của hai đợt p05-gc, p05b **không hợp lệ** (bảng cột bị xoá nhầm); P0.5 (nghẽn mix-1) chưa có kết luận | Đo lường | Cần chạy lại bằng harness tự kiểm (nhánh `harness`) trên máy riêng |
-| B6 | Mọi số đo trước 2026-10-29 chiều có thể dùng `bin/staskd` cũ | Đo lường | `bin-main/` + `scripts/build-bench.sh` (nhánh `harness`) |
+| B6 | Mọi số đo trước 2026-10-29 chiều có thể dùng `bin/staskd` cũ | Đo lường | Đã có `scripts/build-bench.sh` + `internal/benchcheck` (từ chối binary cũ/dirty, kiểm tiền điều kiện, JSON có `valid`). Mới chuyển 8/46 script đo; **38 script còn lại vẫn gọi `./bin/` và chưa tự kiểm** (danh sách trong docs/14); số cũ từ chúng vẫn chưa kiểm chứng. Điểm mù: aggregate qua PG wire không trả `plan` |
 | B7 | Số "hơn Redis ~30%" (docs/04 §9) và "3,2×" (§10.1) khác nhau theo điều kiện đo | Báo cáo | Hợp nhất khi có đợt đo chuẩn |
 | B8 | `simbench` viết xong **chưa chạy lần nào** nên chưa có số nào cho kịch bản SIM | Lớn | Chạy cỡ nhỏ khi cổng/đĩa rảnh; cỡ thật cần máy riêng |
+| B9 | `pgwire` `TestCancelRequest` đòi huỷ trong 100 ms; khi máy quá tải (load average 25-28 trên 8 core do ~13 agent) đo được 107 ms: thất bại 1/4 lượt, qua 3/4. Cùng loại chập chờn với B3 | Thấp | Test nhạy thời gian; cần máy riêng/CI hoặc nới ngưỡng có lý do |
 
 ## 6. Nhánh git
 
-Đã gộp vào `main` (có công việc): `admission`, `trigger`, `cluster`, `ops`, `pcol`, `pgdiff`.
+Đã gộp vào `main` (có công việc): `admission`, `trigger`, `cluster`, `ops`, `pcol`, `pgdiff`, `harness`.
 
-Có commit, **chưa gộp**: `types` (13), `compat` (11), `index` (7), `harness` (5), `e2e` (4), `btree` (3), `spill` (3), `raftwire` (3), `simbench` (1).
+Có commit, **chưa gộp**: `types` (13), `compat` (11), `index` (7), `e2e` (4), `btree` (3), `spill` (3), `raftwire` (3), `simbench` (1).
 
-Tạo rồi, **chưa có commit**: `ci`, `search`, `history`, `fixbatch`.
+Tạo rồi, **chưa có commit**: `ci`, `search`, `history`, `fixbatch`. (Sau mỗi lần commit, phải chạy lại `scripts/build-bench.sh`: benchmark từ chối binary không khớp HEAD.)
 
 ## 7. Kiểm thử
 

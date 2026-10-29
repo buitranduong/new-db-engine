@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -146,7 +147,13 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 				d.Columns = slices.Delete(d.Columns, i, i+1)
 				dropped[a.Column] = true
 			case "set_type":
-				return errf(codeFeature, "ALTER TABLE ... %s is not supported yet", strings.ToUpper(strings.ReplaceAll(a.Kind, "_", " ")))
+				i, err := col(a.Column)
+				if err != nil {
+					return err
+				}
+				if err := alterColumnType(d, i, a.Type); err != nil {
+					return err
+				}
 			case "rename_column":
 				i, err := col(a.Column)
 				if err != nil {
@@ -353,4 +360,41 @@ func (s *Session) validateExisting(table string, d *schema.Table, notNull []int,
 		return err
 	}
 	return verr
+}
+
+// alterColumnType converts column i of d to type typ without rewriting
+// rows: the rows stored before the ALTER keep their encoding and are read
+// as the new type (schema.Column.PrevType). Supported: the legacy
+// millisecond "time" to timestamp or timestamptz, and int or float to
+// numeric. Tables with derived views over the column are not supported.
+func alterColumnType(d *schema.Table, i int, typ string) error {
+	c := &d.Columns[i]
+	if c.Type == typ {
+		return nil
+	}
+	from, err := schema.ParseType(c.Type)
+	if err != nil {
+		return err
+	}
+	to, err := schema.ParseType(typ)
+	if err != nil {
+		return errf(codeFeature, "type %q is not supported", typ)
+	}
+	switch {
+	case from == to && from == schema.TNumeric: // numeric(p,s) modifier: new rows only
+		c.Type = typ
+		return nil
+	case !schema.ConvertibleTypes(from, to):
+		return errf(codeFeature, "ALTER COLUMN %q TYPE %s is not supported: the column is %s", c.Name, typ, c.Type)
+	case c.PrevType != "":
+		return errf(codeFeature, "column %q was converted from %s by an earlier ALTER; rewrite the table before converting it again", c.Name, c.PrevType)
+	case d.Columnar || d.TimeColumn != "" || len(d.Search) > 0 || c.Name == d.Key:
+		return errf(codeFeature, "ALTER COLUMN TYPE is not supported on a key column or on columnar, time-series and search tables")
+	}
+	if c.Missing != nil {
+		m := schema.ConvertValue(from, to, *c.Missing)
+		c.Missing = &m
+	}
+	c.PrevType, c.Type, c.TypeLSN = c.Type, typ, math.MaxUint64
+	return nil
 }

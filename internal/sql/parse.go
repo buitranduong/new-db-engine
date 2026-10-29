@@ -1834,13 +1834,12 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				act.Kind = "drop_not_null"
 			case p.acceptKw("set", "data", "type"), p.acceptKw("type"):
 				act.Kind = "set_type"
-				if _, err := p.typeName(); err != nil {
+				var err error
+				if act.Type, err = p.typeName(); err != nil {
 					return nil, err
 				}
 				if p.acceptKw("using") {
-					if _, err := p.expr(); err != nil {
-						return nil, err
-					}
+					return nil, errf(codeFeature, "ALTER COLUMN TYPE ... USING is not supported")
 				}
 			default:
 				return nil, p.errHere("syntax error at or near %q", p.peek().s)

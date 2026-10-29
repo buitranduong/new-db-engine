@@ -47,10 +47,10 @@ type Datum struct {
 
 var Null = Datum{}
 
-func IntD(i int64) Datum     { return Datum{K: KInt, I: i} }
-func FloatD(f float64) Datum { return Datum{K: KFloat, F: f} }
-func TextD(s string) Datum   { return Datum{K: KText, S: s} }
-func TimeD(us int64) Datum   { return Datum{K: KTime, I: us} }
+func IntD(i int64) Datum        { return Datum{K: KInt, I: i} }
+func FloatD(f float64) Datum    { return Datum{K: KFloat, F: f} }
+func TextD(s string) Datum      { return Datum{K: KText, S: s} }
+func TimeD(us int64) Datum      { return Datum{K: KTime, I: us} }
 func TimestampD(us int64) Datum { return Datum{K: KTimestamp, I: us} }
 
 // NumericD is a numeric value (its text is canonical).

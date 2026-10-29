@@ -44,6 +44,10 @@ const (
 	oidDate        = 1082
 	oidInterval    = 1186
 	oidTextArray   = 1009
+	oidBytea       = 17
+	oidJSON        = 114
+	oidJSONB       = 3802
+	oidUUID        = 2950
 )
 
 func oidOf(k sql.Kind) uint32 {
@@ -56,6 +60,18 @@ func oidOf(k sql.Kind) uint32 {
 		return oidBool
 	case sql.KTime:
 		return oidTimestamptz
+	case sql.KTimestamp:
+		return oidTimestamp
+	case sql.KNumeric:
+		return oidNumeric
+	case sql.KUUID:
+		return oidUUID
+	case sql.KBytea:
+		return oidBytea
+	case sql.KJSON:
+		return oidJSON
+	case sql.KJSONB:
+		return oidJSONB
 	case sql.KDate:
 		return oidDate
 	case sql.KInterval:
@@ -70,12 +86,26 @@ func kindOfOID(oid uint32) (sql.Kind, bool) {
 	switch oid {
 	case oidInt8, oidInt2, oidInt4:
 		return sql.KInt, true
-	case oidFloat4, oidFloat8, oidNumeric:
+	case oidFloat4, oidFloat8:
 		return sql.KFloat, true
+	case oidNumeric:
+		return sql.KNumeric, true
 	case oidBool:
 		return sql.KBool, true
-	case oidTimestamp, oidTimestamptz:
+	case oidTimestamp:
+		return sql.KTimestamp, true
+	case oidTimestamptz:
 		return sql.KTime, true
+	case oidDate:
+		return sql.KDate, true
+	case oidUUID:
+		return sql.KUUID, true
+	case oidBytea:
+		return sql.KBytea, true
+	case oidJSON:
+		return sql.KJSON, true
+	case oidJSONB:
+		return sql.KJSONB, true
 	case oidText, oidVarchar:
 		return sql.KText, true
 	}
@@ -973,18 +1003,21 @@ func (c *conn) rowDescription(cols []sql.Column, formats []int16) {
 	for i, col := range cols {
 		size := -1
 		switch col.Kind {
-		case sql.KInt, sql.KFloat, sql.KTime:
+		case sql.KInt, sql.KFloat, sql.KTime, sql.KTimestamp:
 			size = 8
 		case sql.KBool:
 			size = 1
+		case sql.KUUID:
+			size = 16
+		case sql.KDate:
+			size = 4
+		case sql.KInterval:
+			size = 16
 		}
 		m.str(col.Name).int32(0).int16(0).int32(int(oidOf(col.Kind))).int16(size).int32(-1).int16(int(format(formats, i)))
 	}
 	c.send(m)
 }
-
-// pgEpoch is 2000-01-01 in unix milliseconds.
-const pgEpochMs = 946684800000
 
 func (c *conn) dataRow(row []sql.Datum, formats []int16) error {
 	m := newMsg('D').int16(len(row))
@@ -995,24 +1028,11 @@ func (c *conn) dataRow(row []sql.Datum, formats []int16) error {
 		}
 		if format(formats, i) == 1 {
 			var b []byte
-			switch d.K {
-			case sql.KInt:
-				b = binary.BigEndian.AppendUint64(nil, uint64(d.I))
-			case sql.KFloat:
-				b = binary.BigEndian.AppendUint64(nil, math.Float64bits(d.F))
-			case sql.KBool:
-				b = []byte{byte(d.I)}
-			case sql.KTime:
-				b = binary.BigEndian.AppendUint64(nil, uint64((d.I-pgEpochMs)*1000))
-			case sql.KDate:
-				b = binary.BigEndian.AppendUint32(nil, uint32(int32((d.I-pgEpochMs)/86_400_000)))
-			case sql.KInterval:
-				b = binary.BigEndian.AppendUint64(nil, uint64(d.I*1000))
-				b = binary.BigEndian.AppendUint32(b, 0)
-				b = binary.BigEndian.AppendUint32(b, uint32(int32(d.F)))
-			case sql.KArray:
+			if d.K == sql.KArray {
 				b = textArrayBinary(d.S)
-			default:
+			} else if v, ok := sql.BinaryValue(d); ok {
+				b = v
+			} else {
 				b = []byte(d.S)
 			}
 			m.int32(len(b)).bytes(b)
@@ -1058,10 +1078,12 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 		if len(raw) == 1 {
 			return sql.BoolD(raw[0] != 0), nil
 		}
-	case oidTimestamp, oidTimestamptz:
-		if len(raw) == 8 {
-			return sql.TimeD(int64(binary.BigEndian.Uint64(raw))/1000 + pgEpochMs), nil
+	case oidTimestamp, oidTimestamptz, oidDate, oidNumeric, oidUUID, oidBytea, oidJSON, oidJSONB:
+		d, err := sql.ValueFromBinary(k, raw)
+		if err != nil {
+			return sql.Null, &sql.Error{Code: "22P03", Msg: fmt.Sprintf("incorrect binary data format for type oid %d", oid)}
 		}
+		return d, nil
 	case oidText, oidVarchar, oidUnknown:
 		return sql.TextD(string(raw)), nil
 	default:

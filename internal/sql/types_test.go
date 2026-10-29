@@ -1,6 +1,11 @@
 package sql
 
-import "testing"
+import (
+	"testing"
+
+	"stask/internal/core"
+	"stask/internal/schema"
+)
 
 // The PostgreSQL types (docs/12 P1.1): the expected texts are PostgreSQL 16's.
 
@@ -132,4 +137,56 @@ func TestTypeArrays(t *testing.T) {
 		t.Errorf("bad int array: %v", err)
 	}
 	expectRows(t, s, `SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attname = 'n' AND attnum > 0`, "numeric[]")
+}
+
+// The migration path: a table made before the microsecond types has a
+// "time" column in milliseconds. It reads as a timestamp (microseconds,
+// the milliseconds scaled), ALTER COLUMN TYPE keeps the old rows as they
+// are and stores new rows in the new format, and all of it survives a
+// restart.
+func TestTypeMigrationFromLegacyTime(t *testing.T) {
+	dir := t.TempDir()
+	open := func() (*core.Engine, *Session) {
+		e, err := core.Open(core.Options{Dir: dir, SegmentSize: 1 << 20, NoCheckpoint: true, Logf: t.Logf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e, NewSession(e)
+	}
+	e, s := open()
+	if _, err := e.CreateTable(schema.Table{Name: "legacy", Key: "id", Columns: []schema.Column{
+		{Name: "id", Type: "int", NotNull: true}, {Name: "at", Type: "time"}, {Name: "n", Type: "int"}, {Name: "f", Type: "float"}}}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, s, `INSERT INTO legacy VALUES (1, '2024-01-02 03:04:05.678', 7, 1.5), (2, NULL, NULL, NULL)`)
+	expectRows(t, s, `SELECT at FROM legacy WHERE id = 1`, "2024-01-02 03:04:05.678+00")
+	// a legacy column holds milliseconds: a write keeps no more
+	run(t, s, `UPDATE legacy SET at = '2024-01-02 03:04:05.678912' WHERE id = 2`)
+	expectRows(t, s, `SELECT at FROM legacy WHERE id = 2`, "2024-01-02 03:04:05.678+00")
+	run(t, s, `UPDATE legacy SET at = NULL WHERE id = 2`)
+
+	run(t, s, `ALTER TABLE legacy ALTER COLUMN at TYPE timestamptz, ALTER COLUMN n TYPE numeric, ALTER COLUMN f TYPE numeric`)
+	run(t, s, `INSERT INTO legacy VALUES (3, '2024-01-02 03:04:05.678912', 0.25, 0.1)`)
+	check := func(s *Session) {
+		t.Helper()
+		expectRows(t, s, `SELECT id, at, n, f FROM legacy ORDER BY id`,
+			"1,2024-01-02 03:04:05.678+00,7,1.5;2,NULL,NULL,NULL;3,2024-01-02 03:04:05.678912+00,0.25,0.1")
+		expectRows(t, s, `SELECT pg_typeof(at), pg_typeof(n) FROM legacy WHERE id = 3`, "timestamptz,numeric")
+		expectRows(t, s, `SELECT sum(n) FROM legacy`, "7.25")
+	}
+	check(s)
+	// a second conversion of the same column is refused
+	if _, err := tryRun(s, `ALTER TABLE legacy ALTER COLUMN at TYPE timestamp`); code(err) != codeFeature {
+		t.Errorf("second conversion: %v", err)
+	}
+	if _, err := tryRun(s, `ALTER TABLE legacy ALTER COLUMN id TYPE numeric`); code(err) != codeFeature {
+		t.Errorf("key conversion: %v", err)
+	}
+	e.Close()
+
+	e, s = open()
+	defer e.Close()
+	check(s)
+	run(t, s, `UPDATE legacy SET at = at + interval '1 microsecond' WHERE id = 1`)
+	expectRows(t, s, `SELECT at FROM legacy WHERE id = 1`, "2024-01-02 03:04:05.678001+00")
 }

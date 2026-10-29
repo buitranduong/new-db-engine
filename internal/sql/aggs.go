@@ -1,9 +1,9 @@
 package sql
 
 import (
-	"stask/internal/pgnum"
 	"math"
 	"sort"
+	"stask/internal/pgnum"
 	"strings"
 )
 

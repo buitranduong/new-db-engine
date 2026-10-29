@@ -191,12 +191,13 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
-	seqMu  sync.Mutex
-	seqs   map[string]*seqState // sequences in use (sequence.go)
-	slotMu sync.Mutex
-	slots  map[string]*slot           // CDC slots (cdc.go)
-	cdcCat atomic.Pointer[cdcCatalog] // publications, replica identities (cdccat.go)
-	opts   Options
+	seqMu        sync.Mutex
+	seqs         map[string]*seqState // sequences in use (sequence.go)
+	slotMu       sync.Mutex
+	slots        map[string]*slot           // CDC slots (cdc.go)
+	cdcMirrorLSN atomic.Uint64              // highest LSN of a CDC mirror write (cdcmirror.go)
+	cdcCat       atomic.Pointer[cdcCatalog] // publications, replica identities (cdccat.go)
+	opts         Options
 	// archived is the newest segment in Options.ArchiveDir (-1: none)
 	archived atomic.Int64
 	log      *wal.Log
@@ -347,6 +348,8 @@ func Open(opts Options) (*Engine, error) {
 	e.initGC()
 	e.slots = map[string]*slot{}
 	if !opts.Replica {
+		// slots and the catalog come from files and from the replicated
+		// CDC table, so a promoted replica has them (cdcmirror.go)
 		if err := e.loadSlots(); err != nil {
 			l.Close()
 			return nil, fmt.Errorf("cdc slots: %w", err)

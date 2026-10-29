@@ -53,11 +53,12 @@ type SlotInfo struct {
 func (s SlotInfo) Pos() wal.Pos { return wal.Pos{Seg: s.Seg, Off: s.Off} }
 
 type slot struct {
-	mu   sync.Mutex // one decoder at a time
-	adv  sync.Mutex // serializes changes of the position (advance, invalidation)
-	info SlotInfo   // guarded by e.slotMu
-	ship *Shipper   // guarded by e.slotMu
-	pin  uint64     // pinned snapshot (0: none), guarded by e.slotMu
+	mu       sync.Mutex // one decoder at a time
+	adv      sync.Mutex // serializes changes of the position (advance, invalidation)
+	info     SlotInfo   // guarded by e.slotMu
+	ship     *Shipper   // guarded by e.slotMu
+	pin      uint64     // pinned snapshot (0: none), guarded by e.slotMu
+	mirrored time.Time  // last position written to the log (guarded by e.slotMu)
 }
 
 var (
@@ -76,12 +77,10 @@ func (e *Engine) slotDir() string { return filepath.Join(e.opts.Dir, "slots") }
 func (e *Engine) loadSlots() error {
 	e.slots = map[string]*slot{}
 	ents, err := os.ReadDir(e.slotDir())
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	have := map[string]SlotInfo{}
 	for _, en := range ents {
 		n := en.Name()
 		if strings.HasSuffix(n, ".tmp") {
@@ -98,6 +97,15 @@ func (e *Engine) loadSlots() error {
 		var info SlotInfo
 		if err := json.Unmarshal(b, &info); err != nil {
 			return fmt.Errorf("slot %s: %w", n, err)
+		}
+		have[info.Name] = info
+	}
+	e.slotsFromTable(have)
+	for _, info := range have {
+		if _, err := os.Stat(filepath.Join(e.slotDir(), info.Name+".json")); err != nil {
+			if err := e.saveSlot(info); err != nil { // adopted from the table
+				return err
+			}
 		}
 		s := &slot{info: info}
 		if info.Invalid == "" {
@@ -178,6 +186,10 @@ func (e *Engine) CreateSlot(name, plugin string) (SlotInfo, error) {
 		return SlotInfo{}, err
 	}
 	e.slots[name] = &slot{info: info, ship: ship, pin: lsn}
+	b, _ := json.Marshal(info)
+	if err := e.cdcMirror("slot:"+name, b); err != nil {
+		e.logf("cdc: slot %s not mirrored to the log: %v", name, err)
+	}
 	return info, nil
 }
 
@@ -206,6 +218,11 @@ func (e *Engine) DropSlot(name string) error {
 	e.slotMu.Unlock()
 	if err := os.Remove(filepath.Join(e.slotDir(), name+".json")); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	if e.tableExists(cdcTableName) {
+		if err := e.cdcMirror("slot:"+name, nil); err != nil {
+			e.logf("cdc: dropping slot %s not mirrored to the log: %v", name, err)
+		}
 	}
 	return syncDirPath(e.slotDir())
 }
@@ -516,6 +533,10 @@ func (e *Engine) advanceSlot(s *slot, pos wal.Pos, lsn uint64) error {
 	}
 	e.slotMu.Lock()
 	s.info = info
+	mirror := lsn > e.cdcMirrorLSN.Load() && time.Since(s.mirrored) >= time.Second
+	if mirror {
+		s.mirrored = time.Now()
+	}
 	if s.ship != nil {
 		s.ship.SetPos(pos)
 	}
@@ -529,6 +550,12 @@ func (e *Engine) advanceSlot(s *slot, pos wal.Pos, lsn uint64) error {
 	e.slotMu.Unlock()
 	if old != 0 {
 		e.unpin(old)
+	}
+	if mirror { // for the replicas (failover); a failure here is not the subscriber's
+		b, _ := json.Marshal(info)
+		if err := e.cdcMirror("slot:"+info.Name, b); err != nil {
+			e.logf("cdc: slot %s position not mirrored to the log: %v", info.Name, err)
+		}
 	}
 	return nil
 }

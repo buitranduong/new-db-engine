@@ -804,7 +804,10 @@ func (p *parser) typeName() (string, error) {
 	case "bool", "boolean":
 		out = "bool"
 	default:
-		return "", errf(codeFeature, "type %q is not supported", t.s)
+		if unsupportedTypes[t.s] {
+			return "", errf(codeFeature, "type %q is not supported", t.s)
+		}
+		return "", errf(codeUndefinedObject, "type %q does not exist", t.s)
 	}
 	if p.acceptOp("[") {
 		if err := p.expectOp("]"); err != nil {
@@ -933,6 +936,45 @@ func (p *parser) insertStmt() (Stmt, error) {
 func (p *parser) assignments() ([]Assign, error) {
 	var out []Assign
 	for {
+		if p.isOp("(") { // SET (a, b) = (x, y) or ROW(x, y)
+			p.next()
+			var cols []string
+			for {
+				c, err := p.ident()
+				if err != nil {
+					return nil, err
+				}
+				cols = append(cols, c)
+				if p.acceptOp(")") {
+					break
+				}
+				if err := p.expectOp(","); err != nil {
+					return nil, err
+				}
+			}
+			if err := p.expectOp("="); err != nil {
+				return nil, err
+			}
+			p.acceptKw("row")
+			if !p.isOp("(") || p.peekN(1).s == "select" || p.peekN(1).s == "with" {
+				return nil, errf(codeFeature, "UPDATE SET (columns) = (subquery) is not supported")
+			}
+			p.next()
+			vals, err := p.exprList(")")
+			if err != nil {
+				return nil, err
+			}
+			if len(vals) != len(cols) {
+				return nil, errf(codeSyntax, "number of columns (%d) does not match number of values (%d)", len(cols), len(vals))
+			}
+			for i, c := range cols {
+				out = append(out, Assign{c, vals[i]})
+			}
+			if !p.acceptOp(",") {
+				return out, nil
+			}
+			continue
+		}
 		c, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -1217,7 +1259,7 @@ func (p *parser) predicate() (Expr, error) {
 			if p.isKw("global") && (p.peekN(1).s == "in" || p.peekN(1).s == "not") {
 				p.next() // ClickHouse GLOBAL IN: one server here
 			}
-			if p.isKw("not") && (p.peekN(1).s == "in" || p.peekN(1).s == "between" || p.peekN(1).s == "like" || p.peekN(1).s == "ilike") {
+			if p.isKw("not") && (p.peekN(1).s == "in" || p.peekN(1).s == "between" || p.peekN(1).s == "like" || p.peekN(1).s == "ilike" || p.peekN(1).s == "similar") {
 				p.next()
 				not = true
 			}
@@ -1263,11 +1305,32 @@ func (p *parser) predicate() (Expr, error) {
 				} else {
 					l = &Between{l, lo, hi, not}
 				}
+			case p.acceptKw("similar", "to"):
+				pat, err := p.bitExpr()
+				if err != nil {
+					return nil, err
+				}
+				l = &Func{Name: "similar_to", Disp: "?column?", Args: []Expr{l, pat}}
+				if not {
+					l = &Unary{"not", l}
+				}
 			case p.acceptKw("like"), p.acceptKw("ilike"):
 				ic := p.toks[p.i-1].s == "ilike"
 				pat, err := p.bitExpr()
 				if err != nil {
 					return nil, err
+				}
+				if p.acceptKw("escape") { // the pattern's escape character becomes the backslash
+					esc, err := p.bitExpr()
+					if err != nil {
+						return nil, err
+					}
+					pl, ok1 := pat.(*Lit)
+					el, ok2 := esc.(*Lit)
+					if !ok1 || !ok2 || pl.V.K != KText || el.V.K != KText {
+						return nil, errf(codeFeature, "LIKE ... ESCAPE needs literal pattern and escape strings")
+					}
+					pat = &Lit{TextD(likeEscape(pl.V.S, el.V.S))}
 				}
 				l = &Like{l, pat, not, ic}
 			default:
@@ -1283,11 +1346,15 @@ func (p *parser) predicate() (Expr, error) {
 // bitExpr: the "other operators" of PostgreSQL, looser than + and -.
 func (p *parser) bitExpr() (Expr, error) {
 	l, err := p.addExpr()
-	for err == nil && (p.isOp("|") || p.isOp("&") || p.isOp("#") || p.isOp("<<") || p.isOp(">>")) {
+	for err == nil && (p.isOp("|") || p.isOp("&") || p.isOp("#") || p.isOp("<<") || p.isOp(">>") || p.isOp("^@")) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.addExpr(); err == nil {
-			l = &Binary{Op: op, L: l, R: r}
+			if op == "^@" {
+				l = &Func{Name: "starts_with", Disp: "?column?", Args: []Expr{l, r}}
+			} else {
+				l = &Binary{Op: op, L: l, R: r}
+			}
 		}
 	}
 	return l, err

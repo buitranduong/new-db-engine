@@ -221,6 +221,8 @@ func (s *Session) resetVar(name string) error {
 // READ ONLY transaction, 25006).
 func writesStatement(st Stmt) (bool, string) {
 	switch st.(type) {
+	case *WithDML:
+		return true, "WITH"
 	case *Insert:
 		return true, "INSERT"
 	case *Update:

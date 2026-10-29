@@ -319,6 +319,8 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	var table string
 	var ret []SelItem
 	switch st := st.(type) {
+	case *WithDML:
+		return s.describeWithDML(st)
 	case *SetOp:
 		return s.describeQuery(st)
 	case *Select:

@@ -152,7 +152,7 @@ func lex(src string) ([]token, error) {
 				continue
 			}
 			switch two {
-			case "<=", ">=", "<>", "!=", "||", "::", "!~", "~*", "->", "==", "<<", ">>":
+			case "<=", ">=", "<>", "!=", "||", "::", "!~", "~*", "->", "==", "<<", ">>", "^@":
 				out = append(out, token{tOp, two, start})
 				i += 2
 				continue

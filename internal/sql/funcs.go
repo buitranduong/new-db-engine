@@ -331,6 +331,15 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		}
 		h := md5.Sum([]byte(str(0)))
 		return TextD(hex.EncodeToString(h[:])), nil
+	case "similar_to":
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		re, err := compileRegex("^(?:" + similarToRegex(str(1)) + ")$")
+		if err != nil {
+			return Null, err
+		}
+		return BoolD(re.MatchString(str(0))), nil
 	case "starts_with", "startswith":
 		if err := nargs(2, 2); err != nil {
 			return Null, err
@@ -766,6 +775,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		}
 		return TextD(strings.Join(parts, sep)), nil
 	case "pg_typeof", "totypename":
+		if c.sc != nil && (c.sc.t != nil || !hasColRef(f.Args)) && len(f.Args) == 1 && f.Name == "pg_typeof" { // single-table path: static types
+			if n := staticTypeName(f.Args[0], inferTy(f.Args[0], c.sc.leafTy), typeOf(f.Args[0], c.sc, nil)); n != "" {
+				return TextD(n), nil
+			}
+		}
 		if args[0].K == KArray {
 			return TextD(pgKindName(Kind(args[0].I)) + "[]"), nil
 		}
@@ -1347,6 +1361,14 @@ func funcKind(name string, args []Kind) Kind {
 	case "min", "max", "coalesce", "nullif", "ifnull", "greatest", "least", "any", "anylast", "argmax", "argmin",
 		"minif", "maxif", "first_value", "last_value", "nth_value", "lag", "lead", "mode", "percentile_disc",
 		"quantileexact", "quantileexactlow", "quantileexacthigh", "median", "medianexact":
+		if name == "coalesce" || name == "greatest" || name == "least" {
+			for _, k := range args {
+				if k != KNull {
+					return k
+				}
+			}
+			return KNull
+		}
 		if name == "argmax" || name == "argmin" || len(args) > 0 {
 			return arg(0)
 		}
@@ -1355,7 +1377,7 @@ func funcKind(name string, args []Kind) Kind {
 		return arg(1)
 	case "multiif":
 		return arg(1)
-	case "bool_and", "bool_or", "every", "starts_with", "startswith", "endswith", "ends_with", "regexp_like", "sim_pretty",
+	case "similar_to", "bool_and", "bool_or", "every", "starts_with", "startswith", "endswith", "ends_with", "regexp_like", "sim_pretty",
 		"match", "isnull", "isnotnull", "is_distinct_from", "is_not_distinct_from", "has", "empty", "notempty":
 		return KBool
 	case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "to_timestamp", "date_trunc",

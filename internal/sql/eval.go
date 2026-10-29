@@ -139,7 +139,7 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return Null, err
 		}
 		if e.Op == "not" {
-			if v, err = coerce(v, KBool); err != nil {
+			if v, err = c.asBool(v, "NOT"); err != nil {
 				return Null, err
 			}
 			return BoolD(v.I == 0), nil
@@ -300,7 +300,7 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 					match = cmp == 0
 				}
 			} else if !cv.IsNull() {
-				b, err := coerce(cv, KBool)
+				b, err := c.asBool(cv, "CASE/WHEN")
 				if err != nil {
 					return Null, err
 				}
@@ -435,6 +435,15 @@ func (c *evalCtx) evalBool(x Expr) (Datum, error) {
 	v, err := c.eval(x)
 	if err != nil || v.IsNull() {
 		return Null, err
+	}
+	return c.asBool(v, "WHERE")
+}
+
+// asBool is a condition's value as a boolean: numbers are not accepted
+// (42804) outside the ClickHouse dialect.
+func (c *evalCtx) asBool(v Datum, what string) (Datum, error) {
+	if (v.K == KInt || v.K == KFloat || v.K == KNumeric) && !c.dialectCH() {
+		return Null, errf("42804", "argument of %s must be type boolean, not type %s", what, pgKindName(v.K))
 	}
 	return coerce(v, KBool)
 }

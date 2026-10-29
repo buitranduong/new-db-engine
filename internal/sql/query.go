@@ -302,6 +302,18 @@ func (b *binder) resolve(cr *ColRef) (Expr, error) {
 		}
 	}
 	if cr.Table != "" {
+		known := false
+		for sc := b.sc; sc != nil && !known; sc = sc.outer {
+			for _, col := range sc.cols {
+				if col.qual == cr.Table {
+					known = true
+					break
+				}
+			}
+		}
+		if !known {
+			return nil, errf("42P01", "missing FROM-clause entry for table %q", cr.Table)
+		}
 		return nil, errf(codeUndefinedColumn, "column %s.%s does not exist", cr.Table, cr.Name)
 	}
 	return nil, errf(codeUndefinedColumn, "column %q does not exist", cr.Name)
@@ -581,7 +593,12 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				return st2[e.I], true
 			}
 			return pgTy{}, true
-		case *OuterRef, *boundSub, *groupingFn:
+		case *boundSub:
+			if e.kind == "scalar" {
+				return e.plan.outCols()[0].ty, true
+			}
+			return pgTy{}, true
+		case *OuterRef, *groupingFn:
 			return pgTy{}, true
 		}
 		return pgTy{}, false
@@ -667,7 +684,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	for i, g := range st.GroupBy {
 		if l, ok := g.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
-				return nil, errf(codeUndefinedColumn, "GROUP BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "GROUP BY position %d is not in select list", l.V.I)
 			}
 			g = items[l.V.I-1].X
 		}
@@ -871,8 +888,20 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) {
 			if f, ok := e.(*Func); ok && (f.Name == "generate_series" || f.Name == "unnest") {
 				p.srfs = append(p.srfs, f)
-				sk = append(sk, KNull)
-				st2 = append(st2, pgTy{})
+				k, t := KNull, pgTy{}
+				if f.Name == "generate_series" && len(f.Args) >= 2 {
+					switch ak := staticKind(f.Args[0], sk); ak {
+					case KInt:
+						k, t = KInt, seriesTy(f.Args)
+					case KTime, KTimestamp, KDate:
+						k = KTime
+						if ak == KTimestamp {
+							k = KTimestamp
+						}
+					}
+				}
+				sk = append(sk, k)
+				st2 = append(st2, t)
 				return &Slot{I: srfBase + len(p.srfs) - 1}, true
 			}
 			return nil, false
@@ -895,7 +924,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls}
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
-				return nil, errf(codeUndefinedColumn, "ORDER BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
 			}
 			s.out = int(l.V.I) - 1
 		} else if cr, ok := o.X.(*ColRef); ok && cr.Table == "" {
@@ -1587,7 +1616,7 @@ func (c *compiler) compileSetOp(so *SetOp, outer *qscope) (qplan, error) {
 		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls}
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(p.cols) {
-				return nil, errf(codeUndefinedColumn, "ORDER BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
 			}
 			s.out = int(l.V.I) - 1
 		} else if s.x, err = b.bind(o.X); err != nil {
@@ -2349,6 +2378,9 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 			name = f.ColAliases[0]
 		}
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
+		if f.F.Name == "generate_series" {
+			fp.c[0].ty = seriesTy(fp.args)
+		}
 	case "stask_history":
 		cols, err := c.historyCols(f.F.Args)
 		if err != nil {

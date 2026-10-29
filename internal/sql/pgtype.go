@@ -167,7 +167,7 @@ var tyInt4Fn = map[string]bool{
 // sameAsArg: functions whose result has the type of their first argument.
 var tySameAsArg = map[string]bool{
 	"abs": true, "min": true, "max": true, "first_value": true, "last_value": true, "lag": true, "lead": true,
-	"nth_value": true, "sign": true,
+	"nth_value": true,
 }
 
 // tyCommonFn: functions whose result is the common type of all arguments.
@@ -195,15 +195,18 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			return specTy(e.PG)
 		}
 	case *Unary:
-		if e.Op == "-" || e.Op == "+" {
+		if e.Op == "-" || e.Op == "+" || e.Op == "~" {
 			return inferTy(e.X, leaf)
 		}
 	case *Binary:
 		switch e.Op {
-		case "+", "-", "*", "/", "%":
+		case "+", "-", "*", "/", "%", "&", "|", "#", "<<", ">>":
 			l, r := inferTy(e.L, leaf), inferTy(e.R, leaf)
 			if l.isInt() && r.isInt() {
 				return widerInt(l, r)
+			}
+			if e.Op == "-" && l.oid == tyDate && r.oid == tyDate {
+				return pgTy{oid: tyInt4, mod: -1}
 			}
 		}
 	case *Case:
@@ -616,4 +619,98 @@ func mathDomain(name string, x float64) error {
 		}
 	}
 	return nil
+}
+
+// unsupportedTypes are real PostgreSQL types STASK does not have (0A000);
+// any other unknown type name is 42704.
+var unsupportedTypes = map[string]bool{
+	"money": true, "inet": true, "cidr": true, "macaddr": true, "macaddr8": true, "bit": true, "varbit": true,
+	"tsvector": true, "tsquery": true, "xml": true, "point": true, "line": true, "lseg": true, "box": true,
+	"path": true, "polygon": true, "circle": true, "int4range": true, "int8range": true, "numrange": true,
+	"tsrange": true, "tstzrange": true, "daterange": true, "geometry": true, "geography": true, "hstore": true,
+	"citext": true, "ltree": true, "pg_lsn": true, "txid_snapshot": true, "timetz": true, "serial2": true,
+	"serial4": true, "serial8": true, "record": true, "cstring": true,
+}
+
+// showNames are the mixed-case column names PostgreSQL gives SHOW results.
+var showNames = map[string]string{"timezone": "TimeZone", "datestyle": "DateStyle", "intervalstyle": "IntervalStyle"}
+
+// seriesTy is the type of generate_series over arguments: int4 when every
+// argument is an int4 (a small literal), else bigint (the default).
+func seriesTy(args []Expr) pgTy {
+	for _, a := range args {
+		if t := inferTy(a, func(Expr) (pgTy, bool) { return pgTy{}, false }); t.oid != tyInt4 {
+			return pgTy{}
+		}
+	}
+	return pgTy{oid: tyInt4, mod: -1}
+}
+
+func hasColRef(xs []Expr) bool {
+	found := false
+	for _, x := range xs {
+		walk(x, func(e Expr) {
+			if _, ok := e.(*ColRef); ok {
+				found = true
+			}
+		})
+	}
+	return found
+}
+
+// likeEscape rewrites a LIKE pattern whose escape character is esc into one
+// that escapes with the backslash (the form likeMatch reads).
+func likeEscape(pat, esc string) string {
+	if esc == "" { // no escape character at all
+		return strings.ReplaceAll(pat, `\`, `\\`)
+	}
+	e := []rune(esc)[0]
+	var b strings.Builder
+	rs := []rune(pat)
+	for i := 0; i < len(rs); i++ {
+		switch {
+		case rs[i] == e && i+1 < len(rs):
+			i++
+			if rs[i] == '\\' {
+				b.WriteString(`\\`)
+			} else {
+				b.WriteRune('\\')
+				b.WriteRune(rs[i])
+			}
+		case rs[i] == '\\':
+			b.WriteString(`\\`)
+		default:
+			b.WriteRune(rs[i])
+		}
+	}
+	return b.String()
+}
+
+// similarToRegex translates a SIMILAR TO pattern to a Go regular expression:
+// % and _ are wildcards, . and $ are literal; the rest is regex syntax.
+func similarToRegex(p string) string {
+	var b strings.Builder
+	inClass := false
+	for _, r := range p {
+		switch {
+		case inClass:
+			b.WriteRune(r)
+			if r == ']' {
+				inClass = false
+			}
+		case r == '[':
+			inClass = true
+			b.WriteRune(r)
+		case r == '%':
+			b.WriteString(".*")
+		case r == '_':
+			b.WriteString(".")
+		case r == '.' || r == '$' || r == '^':
+			b.WriteRune('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

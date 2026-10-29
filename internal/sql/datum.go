@@ -3,6 +3,7 @@ package sql
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -314,7 +315,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 		case KText:
 			us, err := parseTimeKind(d.S, k)
 			if err != nil {
-				return bad(k.String())
+				return badTime(d, k.String())
 			}
 			return tsD(k, us), nil
 		case KInt: // milliseconds, as before timestamps had microseconds
@@ -327,7 +328,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 		case KText:
 			us, err := parseTime(d.S)
 			if err != nil {
-				return bad("date")
+				return badTime(d, "date")
 			}
 			return DateD(us), nil
 		case KTime, KTimestamp:
@@ -338,7 +339,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 			if iv, ok := parseInterval(d.S); ok {
 				return iv, nil
 			}
-			return bad("interval")
+			return Null, errf("22007", "invalid input syntax for type interval: %q", d.S)
 		}
 	case KUUID:
 		if d.K == KText {
@@ -601,4 +602,15 @@ func numKey(d Datum) string {
 		t = "0"
 	}
 	return t
+}
+
+var dateLike = regexp.MustCompile(`^\s*\d{4}-\d{1,2}-\d{1,2}`)
+
+// badTime is the error for text that is not a date/time: 22008 when it has
+// the shape of a date whose fields are out of range, else 22007.
+func badTime(d Datum, typ string) (Datum, error) {
+	if dateLike.MatchString(d.S) {
+		return Null, errf("22008", "date/time field value out of range: %q", d.S)
+	}
+	return Null, errf("22007", "invalid input syntax for type %s: %q", typ, d.S)
 }

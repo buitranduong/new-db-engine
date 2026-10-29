@@ -140,6 +140,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		return nil, errf("25006", "cannot execute %s in a read-only transaction", what)
 	}
 	switch st := st.(type) {
+	case *WithDML:
+		return s.withDML(st, params)
 	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:
 		return s.execCompat(st)
 	case *Begin:
@@ -204,7 +206,11 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
 		}
-		return &Result{Cols: []Column{{Name: name, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
+		col := name
+		if c, ok := showNames[name]; ok {
+			col = c
+		}
+		return &Result{Cols: []Column{{Name: col, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
 	case *CreateTable:
 		res, err := s.createTable(st)
 		if err != nil {
@@ -437,7 +443,12 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
 	t := schema.Table{Name: c.Name, Key: c.Key}
+	seen := map[string]bool{}
 	for _, cd := range c.Cols {
+		if seen[cd.Name] {
+			return nil, errf("42701", "column %q specified more than once", cd.Name)
+		}
+		seen[cd.Name] = true
 		ty := cd.Type
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings

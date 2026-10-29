@@ -12,6 +12,15 @@ go build -o bin-main/ ./cmd/...          # KHÔNG dùng bin/ cũ: go build ./...
 ./bin-main/claimcheck -url "postgres://app@127.0.0.1:19432/stask?sslmode=disable"
 ```
 
+Kiểm thử hệ thống (nhiều tiến trình `staskd`, client thật; chạy lại được, kết quả ở §5). Cần Linux, openssl, curl, và `psql` hoặc Docker với `postgres:16`; mỗi script tự build vào `bin-x/`, dùng cổng 20100-20999 và thư mục `$E2E_DIR` (mặc định `~/e2e-data`), chỉ dừng tiến trình do chính nó khởi động:
+
+```sh
+ARCH_MB=3000 accept/pitr.sh    # P5.4: PITR đầu-cuối (cần đĩa trống >= 2,5 x ARCH_MB)
+CYCLES=8     accept/kill9.sh   # kill -9 giữa lúc ghi + cmd/staskchaos
+accept/security.sh             # từ chối đúng ở cổng PG, HTTP, nhân bản; từ chối khi khởi động
+accept/psql.sh                 # psql 16 thật: \d \d+ \dt \di \copy
+```
+
 Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test đơn vị, chưa có bằng chứng ở mức hệ thống), **Một phần**, **Đang làm** (có nhánh git, chưa gộp), **Chưa làm**.
 
 ## 1. Tầm nhìn: một engine thay PostgreSQL + ClickHouse + Redis, một pipeline
@@ -51,7 +60,7 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 | P1.2 | ALTER TABLE ADD/DROP/RENAME COLUMN, SET DEFAULT/NOT NULL, RENAME TO, ALTER COLUMN TYPE | Dòng cũ đọc đúng theo schema version | 7/7 probe qua sau nhánh `compat` (K4); trước đó `ALTER COLUMN TYPE` → `0A000` | Một phần (khớp docs) |
 | P1.3 | DEFAULT (cả `now()`), CHECK, NOT NULL | SQLSTATE 23514, 23502 | 3/3 probe qua | Xong-có-bằng-chứng |
 | P1.4 | Sequence, SERIAL | Không trùng số sau crash | `serial` qua; test crash trong `sequence_test.go` | Xong-có-bằng-chứng |
-| P1.5 | DROP/TRUNCATE, CREATE VIEW, COPY text/csv | psql `\copy` chạy; COPY 10M dòng ≥ INSERT theo lô | DROP, TRUNCATE, COPY, VIEW qua probe. COPY 1M dòng: 4,6–6,2 s so với INSERT 1000 dòng/câu ~10 s (máy đang tải, 1 lần đo). **Chưa thử `psql \copy` thật (máy không có psql), chưa đo 10M.** View chưa hiện trong `pg_class`/`information_schema.views` | Một phần |
+| P1.5 | DROP/TRUNCATE, CREATE VIEW, COPY text/csv | psql `\copy` chạy; COPY 10M dòng ≥ INSERT theo lô | DROP, TRUNCATE, COPY, VIEW qua probe. COPY 1M dòng: 4,6–6,2 s so với INSERT 1000 dòng/câu ~10 s (máy đang tải, 1 lần đo). `psql \copy` chạy với psql 16 thật cả hai chiều (`accept/psql.sh`, qua Docker `postgres:16`). **Chưa đo 10M.** View chưa hiện trong `pg_class`/`information_schema.views` | Một phần |
 
 ### P2 Index và ràng buộc
 
@@ -76,7 +85,7 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 
 | Task | Kế hoạch | Mục tiêu | Thực tế | Trạng thái |
 |---|---|---|---|---|
-| P4.1 | `pg_catalog`, `information_schema` | psql `\d`, `\dt`, `\di`; DBeaver duyệt schema | 3 probe qua. Agent chạy 38 câu psql 16/pgjdbc/DBeaver **theo trí nhớ** qua staskd thật: 0 lỗi (14 lỗi lần đầu, đã sửa). Test: `catalog_test.go`, `catalog_queries_test.go`, `pgwire/catalog_wire_test.go`. **Chưa chạy psql/JDBC/DBeaver thật.** Kiểu hiển thị là kiểu wire (integer hiện bigint, varchar(n) hiện text) | Xong-chưa-kiểm |
+| P4.1 | `pg_catalog`, `information_schema` | psql `\d`, `\dt`, `\di`; DBeaver duyệt schema | 3 probe qua. Agent chạy 38 câu psql 16/pgjdbc/DBeaver **theo trí nhớ** qua staskd thật: 0 lỗi (14 lỗi lần đầu, đã sửa). Test: `catalog_test.go`, `catalog_queries_test.go`, `pgwire/catalog_wire_test.go`. `accept/psql.sh`: psql 16 thật chạy `\dt`, `\d`, `\d+`, `\di`, `\dn`, `\l` đúng; `\d+` lỗi `unnest needs an array` (psql gửi `unnest(NULL)`; câu hỏi ghi lại theo trí nhớ đã bỏ mất phần này) — **đã sửa** (`unnest(NULL)` = không dòng) ; `\dv` rỗng vì view chưa vào `pg_class`. **Chưa chạy JDBC/DBeaver thật.** Kiểu hiển thị là kiểu wire (integer hiện bigint, varchar(n) hiện text) | Xong-chưa-kiểm |
 | P4.2 | Ứng dụng Jmix 2 + Liquibase chạy trên STASK | Liquibase tạo schema; CRUD qua UI | Chưa thử. Thiếu: UNIQUE/FK/index, kiểu đúng, trigger/hàm (Liquibase sinh) | Chưa làm |
 | P4.3 | Debezium thật | Stream 1M thay đổi đúng thứ tự | Chưa thử (docs/10 §7) | Chưa làm |
 | P4.4 | Xuất snapshot khi tạo slot | `CREATE SUBSCRIPTION` copy_data chạy | Chưa làm (COPY TO STDOUT đã có) | Chưa làm |
@@ -85,13 +94,13 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 
 | Task | Kế hoạch | Mục tiêu | Thực tế | Trạng thái |
 |---|---|---|---|---|
-| P5.1 | TLS, SCRAM (PG wire) | psql verify-full, JDBC | Có test (`docs/05 §10`). TLS cho HTTP: có (`docs/13`) | Xong-chưa-kiểm với client thật |
+| P5.1 | TLS, SCRAM (PG wire) | psql verify-full, JDBC | Có test (`docs/05 §10`). TLS cho HTTP: có (`docs/13`). `accept/security.sh` chạy psql 16 và pgx thật: SCRAM đúng (mật khẩu có khoảng trắng, `"`, `é`), sai mật khẩu/để trống/sai ký tự cuối/không TLS/CA lạ/sai tên chứng chỉ (verify-full) đều bị từ chối, 25 lần đăng nhập sai liên tiếp không làm hỏng server. **Chưa chạy JDBC** | Xong-có-bằng-chứng (psql, pgx); JDBC chưa |
 | P5.2 | Vai trò, GRANT/REVOKE | 42501; test cho walsender và CDC | `CREATE/ALTER/DROP ROLE|USER`, `GRANT/REVOKE SELECT|INSERT|UPDATE|DELETE|ALL` trên bảng/view, `TO PUBLIC`; lưu trong bảng hệ thống ẩn qua WAL/checkpoint/replica; SCRAM verifier dạng `pg_authid`; quyền kiểm trước mỗi câu từ cây cú pháp (kể cả subquery/CTE/UNION/INSERT..SELECT); walsender cần `REPLICATION` (42501). 2 probe qua (`create_role`, `grant_select`). Test: `roles_test.go` (sql, pgwire, repl). Chi phí kiểm quyền +1,8 µs/lệnh. **Chưa có:** thành viên role, quyền cột/sequence, `pg_hba.conf`, chủ sở hữu bảng (mọi DDL chỉ superuser), role cho CDC qua HTTP (vẫn token). Chưa thử bằng psql/JDBC thật | Xong-chưa-kiểm với client thật |
 | P5.3 | CancelRequest, statement_timeout, idle timeouts | Aggregate bị huỷ ≤100 ms | Agent đo aggregate toàn bảng bị huỷ sau 6–35 ms. **Probe: `statement_timeout` KHÔNG huỷ `SELECT count(*) FROM generate_series(1, 1e11)`** (hết 20 s phía client). Tức hàm trả tập (function scan) chưa kiểm tra huỷ | Một phần |
-| P5.4 | Backup nóng, PITR | Khôi phục tới thời điểm bất kỳ, dữ liệu khớp | `TestPointInTimeRecovery` qua (kể cả `-race` sau khi sửa data race archiver↔WritePos hôm nay). **Chưa thử `-backup-from` qua mạng/TLS, kho lớn, hoặc leader đang ghi nặng** | Xong-chưa-kiểm |
+| P5.4 | Backup nóng, PITR | Khôi phục tới thời điểm bất kỳ, dữ liệu khớp | `TestPointInTimeRecovery` qua (kể cả `-race`). **`accept/pitr.sh` (hệ thống thật):** leader với `-archive-dir` + TLS/mTLS/bí mật chung (`-repl-require-secure`) + PG TLS/SCRAM + HTTP TLS/token; một client (4 kết nối) ghi liên tục chèn/cập nhật/xoá; `-backup-from` qua loopback với mTLS **trong lúc leader đang ghi**; khôi phục tới `-recovery-target-time` và `-recovery-target-lsn`, so từng dòng (id, version, md5 payload) với nội dung đúng suy ra từ CDC của chính leader (LSN và giờ commit từng giao dịch): 0 mất, 0 thừa, 0 hỏng; các giao dịch client đã nhận ACK trước mục tiêu đều có mặt, giao dịch gửi sau mục tiêu đều vắng. Kho 3,0 GB (188 segment, 151.360 giao dịch, 2,09M dòng): khôi phục tới thời điểm phát lại 1,8 GB trong 2,8 s (10,8 s cả khởi động), tới LSN phát lại 1,0 GB trong 1,9 s; DB sau khôi phục nhận ghi. Chi tiết §5. **Chưa:** kho hàng chục GB (đĩa chỉ còn vài GB, dùng chung nhiều agent), khôi phục khi leader ghi nặng hơn ~15 MB/s, `psql`-driven backup. Khôi phục vào cùng `-archive-dir` bị từ chối (đúng thiết kế) | Xong-có-bằng-chứng (kho 3 GB; chưa chục GB) |
 | P5.5 | `/metrics`, slow log, `pg_stat_activity` | Dashboard mẫu, ≤1% CPU | `pg_stat_activity` đủ cột PG (che mật khẩu trong CREATE ROLE), `GET /metrics` định dạng Prometheus dùng token như API, `-slow-query`. Đo: +1,2% CPU server+client trên point-select (**trong nhiễu ±1,3%, chưa chứng minh được ≤1%**). **Chưa có dashboard mẫu** (chỉ danh sách metric, docs/05 §19). Chỉ thấy session PG-wire | Một phần |
 | D2 | Quét nền CRC | Báo hỏng sớm | `POST /v1/admin/scrub`, `-scrub-interval`, `-scrub-rate-mb`; kiểm CRC từng bản ghi (cả `.walz`), từng chunk checkpoint, đuôi segment đã đóng phải toàn 0. Test lật 1 byte: báo đúng 1 lỗi cho segment, segment nén và checkpoint (`scrub_test.go`). Chỉ đọc-và-báo | Xong-có-bằng-chứng |
-| P9 | Cổng nhân bản có TLS+xác thực; HTTP/pprof token+TLS; huỷ câu lệnh; ngân sách bộ nhớ; DROP COLUMN đánh dấu | Theo docs/12 §P9 | Có test (`repl/security_test.go`, `server/auth_test.go`, `sql/membudget_test.go`, `pgwire/cancel_test.go`, `sql/alter_test.go`). **Lỗ hổng mới tìm ra:** cổng PG (`-pg-addr`) **không từ chối** địa chỉ không phải loopback khi `-pg-password` rỗng (chế độ trust); chỉ HTTP, pprof và cổng nhân bản có kiểm tra (`cmd/staskd/main.go:364`, `repl.CheckListen`). Đã sửa README cho đúng; **chưa sửa mã** | Một phần |
+| P9 | Cổng nhân bản có TLS+xác thực; HTTP/pprof token+TLS; huỷ câu lệnh; ngân sách bộ nhớ; DROP COLUMN đánh dấu | Theo docs/12 §P9 | Có test (`repl/security_test.go`, `server/auth_test.go`, `sql/membudget_test.go`, `pgwire/cancel_test.go`, `sql/alter_test.go`). Lỗ hổng cổng PG (không từ chối `-pg-addr` ngoài loopback khi `-pg-password` rỗng) đã sửa ở commit `a45da63` (`server.CheckBind`, cờ `-pg-insecure`). **`accept/security.sh` kiểm bằng tiến trình thật** (72 kiểm tra, 0 lỗi): cổng PG; HTTP (401 không/sai token, 403 token chỉ-đọc ghi, mTLS: không chứng chỉ hoặc chứng chỉ CA lạ bị cắt, HTTP trơn vào cổng TLS bị 400, token trên query string bị từ chối); cổng nhân bản qua `-backup-from` và `-replica-of` (sai bí mật, không bí mật, không TLS, thiếu chứng chỉ client, chứng chỉ client CA lạ, leader CA lạ, tên chứng chỉ sai (verify-full), replica `-repl-require-secure` với leader không TLS đều bị từ chối; các đối chứng dương đều qua; replica đúng bí mật nhận đủ 3 dòng, sai bí mật không nhận gì); 18 trường hợp khởi động (`0.0.0.0`, `[::]`, `:port`, địa chỉ LAN, không xác thực: từ chối; có mật khẩu/token/bí mật hoặc cờ `-*-insecure`: chạy; loopback trust: chạy). Không tìm thấy lỗ hổng mới. `GET /v1/health` công khai theo thiết kế | Xong-có-bằng-chứng |
 
 ### P6 Cluster, P7 Trigger, P8 Quyết định
 
@@ -150,13 +159,19 @@ Test đơn vị: `go test ./internal/benchcheck` (phân tích `-expect`, bảng 
 | 1 | README (bản đầu của tôi): "Binding anywhere else requires authentication; the server refuses to start otherwise" cho cả hai cổng | Đúng cho HTTP, pprof, cổng nhân bản. **Sai cho cổng PG**; mặc định `-pg-addr` là `127.0.0.1:17432`, không phải 5432 | README đã sửa; việc sửa mã ghi vào P9 |
 | 2 | README: "query cancellation" không giới hạn | Trước đây không huỷ được function scan (`generate_series`); nhánh `compat` đã sửa (K2) | Đã sửa; README sửa theo |
 | 3 | docs/05 §3 "Chưa hỗ trợ" còn ghi một số mục đã làm | Một phần đã sửa (COPY, ALTER); các mục còn lại khớp probe | Kiểm lại mỗi lần gộp |
-| 4 | docs/11 §2.1 "Đã có" liệt kê kiểm kê từ 2026-10-29 sáng | Thiếu: ALTER, sequence, COPY, VIEW, catalog, TLS/SCRAM, PITR, cancel | Cần cập nhật, chưa làm |
+| 4 | docs/11 §2.1 "Đã có" liệt kê kiểm kê từ 2026-10-29 sáng | Thiếu: ALTER, sequence, COPY, VIEW, catalog, TLS/SCRAM, PITR, cancel, trigger, router | **Đã viết lại** (nhánh `e2e`) từ mã và probe. README kiểm kê lại cùng lúc: bỏ "retype" khỏi ALTER (probe `alter_column_type` vẫn `0A000`), bỏ roles/GRANT và triggers khỏi "Not there yet", sửa đoạn cổng SQL, thêm `accept/`, `internal/raft`, `router` vào bố cục |
 | 5 | docs/12 N2: "`uuid`/`json` lưu như text" | Đúng (probe: `pg_typeof(uuid)` = `text`) | Khớp |
 | 6 | PG so sánh: `SELECT true::text` | STASK trả `t`, PostgreSQL trả `true` | Đã sửa ở nhánh `compat` (K1) |
 | 7 | `pg_stat_activity` | Bảng tồn tại nhưng rỗng | P5.5 |
 | 8 | `bin/staskd` | Là bản build cũ; `go build ./...` không ghi binary. Mọi benchmark chạy bằng `bin/` cần build lại | Dùng `bin-main/`; quy tắc ở đầu tài liệu |
 | 9 | Phép đo aggregate p05-gc, p05b | Không hợp lệ (xem §1) | Đã ghi trong docs/12; cần chạy lại sau khi build bản `staskmix` đã sửa |
 | 10 | docs/04 §9 "hơn Redis ~30%" và §10.1 "3,2×" | Hai số khác nhau cho cùng so sánh (khác client và số kết nối) | Cả hai nêu rõ điều kiện; hợp nhất khi có đợt đo chuẩn |
+
+| 11 | `TestCDCHTTP` thỉnh thoảng 409 ở `DELETE /v1/cdc/s` (3 agent thấy 1 lần dưới tải) | **Lỗi của test, không phải của server.** Stream cuối bị client huỷ (`cancel2()` rồi `Body.Close()`), nhưng handler HTTP chỉ thả slot khi nó thấy ngữ cảnh bị huỷ (bất đồng bộ); `DELETE` ngay sau đó thấy slot còn active và trả 409 `ErrSlotBusy` (đúng như `pg_drop_replication_slot` trên slot đang dùng). Bước stream lại đã có vòng thử lại, bước xoá thì không. Tái hiện: `go test ./internal/server -run 'TestCDCHTTP$' -count=300 -cpu 1,2` hỏng nhiều lần; sau sửa (thử lại DELETE khi 409 tới 5 s, vẫn hỏng nếu slot không bao giờ được thả) 800 lần chạy qua | Đã sửa (`internal/server/cdc_test.go`) |
+| 12 | `psql \d+ tbl` | Lỗi `unnest needs an array`: psql 16 gọi `unnest(tc.reloptions)` với `tc` NULL (LEFT JOIN); PG trả 0 dòng. Test catalog ghi lại câu hỏi theo trí nhớ nên không bắt được | Đã sửa (`unnest(NULL)` = không dòng; câu hỏi thật của psql vào `catalog_queries_test.go`). Còn lệch: `NULL || array` là NULL (mảng lưu dạng text), PG cho mảng rỗng; psql hiển thị như nhau |
+| 13 | Chuỗi `$$...$$` (dollar-quoting) | Parser từ chối (`unexpected character '$'`). Dump `pg_dump` và thân hàm dùng nó | Chưa sửa; README ghi rõ |
+| 14 | `psql \dv` | Rỗng (view chưa vào `pg_class`); `accept/psql.sh` in `GAP` | Đã biết (P1.5) |
+| 15 | Đĩa dùng chung | Ba lần trong đợt này đĩa gần đầy do nhiều agent; `-segment-mb` mặc định 256 MB cộng `prezero` làm mỗi `staskd` thử nghiệm chiếm hàng trăm MB ngay khi khởi động (tự gây đầy đĩa một lần với `security.sh`). Script `accept/` dùng `-segment-mb` 4 hoặc 16 và kiểm tra đĩa trống trước | Ghi nhận |
 
 ### Chênh lệch còn lại với PostgreSQL, tìm thấy bằng probe (nhánh `compat`)
 

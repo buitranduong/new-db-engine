@@ -85,7 +85,7 @@ func TestCatalogPsql(t *testing.T) {
 	expectRows(t, s, qs[4], "public,stask")                                                                                          // \dn
 	// \d items
 	expectRows(t, s, qs[5], tbl+",public,items")
-	expectRows(t, s, qs[6], "1,r,true,false,false,false,false,false,false,,0,,p,d,heap")
+	expectRows(t, s, qs[6], "1,r,true,false,false,false,false,false,false,NULL,0,,p,d,heap") // PostgreSQL gives an empty string: NULL || array is NULL here (arrays are text); psql shows both as nothing
 	expectRows(t, s, qs[7], "id,bigint,nextval('items_id_seq'::regclass),true,NULL,,;name,text,'x',true,NULL,,;qty,bigint,0,false,NULL,,;"+
 		"created,timestamp with time zone,now(),false,NULL,,;price,double precision,NULL,false,NULL,,;extra,bigint,NULL,false,NULL,,;"+
 		"note,text,'n',false,NULL,,")

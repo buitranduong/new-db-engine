@@ -31,10 +31,14 @@ what the code actually does for each task, including where the docs were wrong:
   ([docs/03](docs/03_transaction_recovery.md), [docs/07](docs/07_storage.md)).
 - **SQL over the PostgreSQL protocol**: `SELECT`/`INSERT`/`UPDATE`/`DELETE`,
   joins, subqueries, `ON CONFLICT`, transactions, sequences and `SERIAL`,
-  `DEFAULT`/`CHECK`/`NOT NULL`, `ALTER TABLE` (add, drop, rename, retype),
-  `DROP`/`TRUNCATE`, `COPY` (text and csv), `CREATE VIEW`, and
-  `pg_catalog`/`information_schema` for `psql \d` and JDBC metadata
-  ([docs/05](docs/05_sql_pgwire.md)).
+  `DEFAULT`/`CHECK`/`NOT NULL`, `ALTER TABLE` (add, drop and rename column,
+  `SET DEFAULT`/`NOT NULL`, rename table; `ALTER COLUMN TYPE` is refused),
+  `DROP`/`TRUNCATE`, `COPY` (text and csv), `CREATE VIEW`, roles with
+  `GRANT`/`REVOKE` on tables, SQL-bodied row triggers (`CREATE TRIGGER ... BEGIN
+  ... END`; not the PostgreSQL `EXECUTE FUNCTION` form), and
+  `pg_catalog`/`information_schema` for `psql \d`, `\d+`, `\dt`, `\copy` and JDBC
+  metadata ([docs/05](docs/05_sql_pgwire.md)). Not supported: dollar-quoted
+  strings (`$$...$$`).
 - **Analytics**: aggregates served from a columnar view, with a clear
   fall-back to the core path when the view lags
   ([docs/08](docs/08_memory.md)).
@@ -42,8 +46,12 @@ what the code actually does for each task, including where the docs were wrong:
   `wal2json` and `pgoutput`, publications, `LISTEN`/`NOTIFY`
   ([docs/10](docs/10_interop.md)).
 - **Replication and recovery**: asynchronous replicas, base backup, continuous
-  WAL archiving and point-in-time recovery ([docs/06](docs/06_cluster.md),
-  [docs/05 §14](docs/05_sql_pgwire.md)).
+  WAL archiving and point-in-time recovery (to a time or an LSN; run end to end
+  over TLS/mTLS against a leader that is being written by `accept/pitr.sh`),
+  read-your-writes through replicas (LSN tokens, `staskroute`), slot and
+  publication state carried through the log ([docs/06](docs/06_cluster.md),
+  [docs/05 §14](docs/05_sql_pgwire.md)). `internal/raft` is a simulated package,
+  not wired into the engine.
 - **Security and operations**: TLS and SCRAM-SHA-256 on the SQL port, mutual
   TLS and challenge-response authentication on the replication port, TLS and
   bearer tokens on the HTTP API, cancellation of running statements and
@@ -51,9 +59,11 @@ what the code actually does for each task, including where the docs were wrong:
   as `generate_series`, windows, set operations, recursive CTEs), idle-session timeouts, per-query memory budget
   ([docs/13](docs/13_http_security.md)).
 
-Not there yet: secondary indexes, foreign keys, roles and `GRANT`, exact
-`numeric`/`uuid`/`bytea`/array types, triggers, data larger than RAM, and
-consensus-based replication. See the roadmap.
+Not there yet: secondary indexes, `UNIQUE` and foreign keys, exact
+`numeric`/`uuid`/`bytea`/array types and microsecond timestamps, column-level
+`GRANT`, `ALTER COLUMN TYPE`, PostgreSQL-form triggers and functions, views in
+`pg_class` (`psql \dv` is empty), data larger than RAM, and consensus-based
+replication. See the roadmap.
 
 ## Quick start
 
@@ -78,12 +88,13 @@ SELECT status, count(*), sum(amount) FROM orders GROUP BY status;
 ```
 
 By default both listeners (`-addr` for HTTP, `-pg-addr` for SQL, default
-`127.0.0.1:17432`) accept loopback connections only. The HTTP API, the profiling
-endpoint and the replication port refuse to start on a non-loopback address
-unless authentication is configured. **The SQL port does not yet:** with an empty
-`-pg-password` it runs in trust mode on whatever address you give it, so only
-bind it beyond loopback together with `-pg-password` and `-pg-auth scram`
-(tracked in [docs/14](docs/14_plan_target_actual.md)). A JSON/HTTP API on `-addr`
+`127.0.0.1:17432`) accept loopback connections only. The SQL port, the HTTP API,
+the profiling endpoint and the replication port refuse to start on a non-loopback
+address unless authentication is configured (`-pg-password`, `-http-token`,
+`-repl-secret`), or you pass the matching `-pg-insecure`, `-http-insecure`,
+`-pprof-insecure`, `-repl-insecure`. `accept/security.sh` exercises these
+refusals and the TLS, SCRAM, token and replication handshakes with psql, pgx and
+curl. A JSON/HTTP API on `-addr`
 offers the same data with a per-query consistency contract (`strong`, `bounded`,
 `session`, `eventual`); see [docs/README.vi.md](docs/README.vi.md) for examples.
 
@@ -95,6 +106,13 @@ go vet ./...
 go test ./internal/...
 go test -race ./internal/...     # includes crash, torn-tail and power-loss simulations
 ```
+
+System-level acceptance (several `staskd` processes, real clients; needs Linux,
+openssl, curl and either `psql` or Docker with `postgres:16`) lives in `accept/`:
+`pitr.sh` (backup over mTLS while writing, restore to a time and to an LSN, row
+by row comparison), `kill9.sh` (acknowledged transactions survive `kill -9`),
+`security.sh` (refusals on the SQL, HTTP and replication ports), `psql.sh`
+(`\d`, `\copy`). Each prints OK/FAIL lines and exits non-zero on failure.
 
 Benchmarks and workloads (`staskbench`, `staskmix`, `aggbench`, `staskchaos`) are
 described in [docs/04](docs/04_results.md) and [docs/11 §5](docs/11_rust_criteria.md).
@@ -111,7 +129,11 @@ internal/sql    parser, planner glue, executor, catalog, views, COPY
 internal/pgwire PostgreSQL wire protocol (simple and extended), TLS, SCRAM, COPY
 internal/proj   derived views: columnar, search (BM25), time-series
 internal/repl   replication, base backup, logical decoding
+internal/raft   Raft (election, lease, majority commit), simulated, not wired in
+internal/router read-your-writes HTTP router (cmd/staskroute)
 internal/server HTTP/JSON API and admin endpoints
+internal/planner, schema, conf, tune   consistency planner, catalog types, config file, auto-tuning
+accept/         system-level acceptance scripts (see Building and testing)
 docs/           design, measurements, specification and plan (mostly Vietnamese)
 ```
 
@@ -145,7 +167,7 @@ tests pass, not that the feature has been proven with real applications.
 | **P2 Indexes and constraints** | Secondary indexes, `UNIQUE`, foreign keys; serializable scans (SSI); spill-to-disk joins and sorts | Secondary index, `UNIQUE`, foreign keys in progress. SSI scans and spilling open |
 | **P3 Data larger than RAM** | On-disk primary index; on-disk compressed columnar view; incremental checkpoint; time-series and search from SQL | Open. This is the largest remaining change to the storage format |
 | **P4 Ecosystem** | `pg_catalog` and `information_schema` (done, tested only against recorded client queries); acceptance with a real Jmix 2 / Hibernate / Liquibase application; Debezium; snapshot export for `copy_data` subscribers | Catalog done. Real-application acceptance, Debezium and snapshot export open |
-| **P5 Security and operations** | TLS, SCRAM, cancel and timeouts, PITR, HTTP auth (done); roles and `GRANT`, Prometheus metrics, `pg_stat_activity`, background CRC scrub (done, tested with pgx only) | Largely done. PITR has unit tests but no end-to-end run over TLS yet |
+| **P5 Security and operations** | TLS, SCRAM, cancel and timeouts, PITR, HTTP auth (done); roles and `GRANT`, Prometheus metrics, `pg_stat_activity`, background CRC scrub (done, tested with pgx only) | Largely done. PITR and the port security are checked end to end by `accept/pitr.sh` and `accept/security.sh`; no JDBC run, and the PITR archive tested was a few GB, not tens of GB |
 | **P6 Cluster** | Read-your-writes through replicas; majority commit with leader election (Raft) and failover; replication slots that survive failover; multi-machine measurements | Asynchronous replicas, read-your-writes routing and CDC state through the log are done. Raft exists as a simulated package, not yet wired into the engine (in progress). Measurements need separate machines |
 | **P7 Triggers** | SQL-bodied `BEFORE`/`AFTER` row triggers | Done for the SQL-body syntax; PostgreSQL `EXECUTE FUNCTION` triggers are not supported |
 | **P8 Language decision** | Re-run the full benchmark suite on the finished Go engine and decide whether a Rust port is justified (docs/11) | Open, after P0-P7 |

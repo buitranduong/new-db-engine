@@ -148,8 +148,28 @@ func TestCDCHTTP(t *testing.T) {
 	if commits != 2 || again[0].XID == got[0].XID {
 		t.Fatalf("after ack: %v", again)
 	}
-	req, _ := http.NewRequest("DELETE", srv.URL+"/v1/cdc/s", nil)
-	if r, err := http.DefaultClient.Do(req); err != nil || r.StatusCode != http.StatusOK {
-		t.Fatalf("drop: %v %v", r, err)
+	// The slot is released when the cancelled stream notices it, a moment
+	// after the client hung up (the handler runs on its own goroutine), so
+	// a DELETE right after the last stream can still find the slot active:
+	// 409, as PostgreSQL's pg_drop_replication_slot on an active slot. Once
+	// released, the drop must succeed; a slot that is never released fails
+	// the test.
+	var code int
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		req, _ := http.NewRequest("DELETE", srv.URL+"/v1/cdc/s", nil)
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("drop: %v", err)
+		}
+		r.Body.Close()
+		code = r.StatusCode
+		if code != http.StatusConflict || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if code != http.StatusOK {
+		t.Fatalf("drop: %d (the slot stayed active 5 s after the stream was cancelled)", code)
 	}
 }

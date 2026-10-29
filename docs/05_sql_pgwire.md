@@ -663,6 +663,15 @@ Mã nguồn: `internal/core/secindex.go`, `internal/core/fk.go`, `internal/schem
 
 **Tài liệu tham khảo (thiết kế theo cách PG làm; chưa đọc lại mã nguồn trong phiên này, chỉ dựa trên tài liệu và README):** [btree README](https://github.com/postgres/postgres/blob/master/src/backend/access/nbtree/README) và [B-Tree Implementation](https://www.postgresql.org/docs/16/btree-implementation.html) (entry trùng được sắp theo con trỏ heap; index không mang thông tin nhìn thấy được, dòng heap quyết định); [CREATE INDEX](https://www.postgresql.org/docs/16/sql-createindex.html) (khoá ghi, `CONCURRENTLY`); [Explicit Locking](https://www.postgresql.org/docs/16/explicit-locking.html) (`FOR KEY SHARE` dùng cho khoá ngoại); [Index-only scans](https://www.postgresql.org/docs/16/indexes-index-only-scans.html) (recheck dòng heap).
 
-**Đo chi phí ghi** (`go test ./internal/core -bench IndexedWrite -cpu 4`; xem kết quả bên dưới).
+**Đo chi phí ghi** (2026-10-29, `BenchmarkIndexedWrite` trong `internal/core/secindex_bench_test.go`: `go test ./internal/core -run XXX -bench IndexedWrite -benchtime 2s -count 3 -cpu 4`). Giao dịch 50 dòng (một giao dịch 1 dòng chỉ đo fdatasync), bảng 6 cột (khoá chuỗi, 5 cột int), 8 goroutine ghi, mỗi index một cột int. UPDATE đổi giá trị của mọi cột có index (nên vừa thêm entry vừa đánh dấu chết). **Máy dùng chung với ~5 agent khác, load average ~10, đĩa đầy 97%: chỉ đọc là tương đối**, 3 lượt cho mỗi ô, µs/dòng:
+
+| số index | INSERT | UPDATE |
+|---|---|---|
+| 0 | 11,5 · 14,9 · 11,2 | 11,5 · 10,8 · 12,6 |
+| 1 | 9,9 · 10,3 · 9,6 | 14,0 · 10,0 · 8,9 |
+| 3 | 23,2 · 34,1 · 32,9 | 25,9 · 27,8 · 30,2 |
+| 5 | 41,5 · 25,5 · 27,0 | 39,6 · 39,1 · 38,3 |
+
+Một index nằm trong nhiễu; 3 index làm ghi chậm khoảng 2,5 lần và 5 index khoảng 3 lần (≈ +6–8 µs/dòng/index). **Chưa đạt mục tiêu "không làm xấu"** cho bảng có nhiều index. Nguyên nhân dự đoán (chưa profile): mỗi entry mới vào một lá ngẫu nhiên của cây copy-on-write, nên mỗi lần `put` chép một lá 2,7 KB (và nút trong) rồi để GC dọn, và việc này chạy tuần tự trong committer. Hướng xử lý: (1) cho `flushAdds` chạy song song với fdatasync của chính batch (cần giữ các khoá UNIQUE của batch đang bay), (2) sửa tại chỗ trong lá thay vì chép (cần khoá đọc/seqlock), (3) sắp xếp entry của batch theo khoá để nhiều entry dùng chung một lần chép lá. Bảng không có index (so với commit gốc `8e48b23`, cùng bench, xen kẽ 2 vòng × 2 lượt, 0 index): INSERT 13,2/21,9/21,4/23,6 µs (gốc) so với 13,4/12,7/23,8/27,7 (mới); UPDATE 21,1/23,2/22,8/21,4 so với 22,1/22,2/26,8/25,7. Nhiễu của máy (load ~10) lớn hơn chênh lệch; không thấy khác biệt rõ nhưng cũng không loại trừ được vài chục phần trăm. Chưa chạy WL-1 đầy đủ theo docs/11 §5 (không ghim CPU được trên máy dùng chung).
 
 **Test.** `internal/core/secindex_test.go` (xây, duy trì, snapshot cũ, thứ tự xuôi/ngược, khoảng, NULL, sweep, khởi động lại bằng replay và bằng checkpoint, DROP, UNIQUE kể cả đồng thời), `internal/core/fk_test.go` (các hành động, cha con cùng giao dịch, đua chèn con với xoá cha, có đột biến kiểm chứng test bắt được khi tắt `checkFK`), `internal/sql/index_test.go` (cùng truy vấn trước và sau khi tạo index phải ra cùng kết quả và đọc index thật, SQLSTATE, đồng thời, catalog), `internal/repl/secindex_repl_test.go` (replica).

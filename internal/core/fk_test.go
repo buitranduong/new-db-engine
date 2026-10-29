@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"stask/internal/schema"
 )
@@ -185,5 +186,80 @@ func TestForeignKeyConcurrent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestIndexDDLWithWriters: CREATE INDEX and ADD FOREIGN KEY, which stop the
+// writers of one or two tables, finish while transactions that write to
+// both tables keep committing (no deadlock between a writer holding one
+// table and waiting for a blocked other one), and the data stays valid.
+func TestIndexDDLWithWriters(t *testing.T) {
+	e := open(t, t.TempDir(), 1<<20)
+	defer e.Close()
+	e.CreateTable(schema.Table{Name: "parent", Key: "id", Columns: []schema.Column{{Name: "id", Type: "string"}, {Name: "code", Type: "int"}}})
+	e.CreateTable(schema.Table{Name: "child", Key: "id", Columns: []schema.Column{{Name: "id", Type: "string"}, {Name: "pid", Type: "string"}, {Name: "n", Type: "int"}}})
+	for i := 0; i < 50; i++ {
+		fkPut(t, e, "parent", schema.Row{{S: fmt.Sprintf("p%d", i)}, {I: int64(i)}})
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				tx := e.Begin(SnapshotIsolation)
+				p := fmt.Sprintf("p%d", (g*7+i)%50)
+				tx.Put("parent", schema.Row{{S: p}, {I: int64(i)}})
+				tx.Put("child", schema.Row{{S: fmt.Sprintf("c%d-%d", g, i%20)}, {S: p}, {I: int64(i)}})
+				tx.Commit() // conflicts after a DDL are expected
+			}
+		}(g)
+	}
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 20; i++ {
+			if err := e.CreateIndex("parent", schema.IndexDef{Name: fmt.Sprintf("pi%d", i), Columns: []string{"code"}}); err != nil {
+				done <- err
+				return
+			}
+			if err := e.DropIndex("parent", fmt.Sprintf("pi%d", i)); err != nil {
+				done <- err
+				return
+			}
+		}
+		fk := schema.ForeignKey{Name: "child_fk", Columns: []string{"pid"}, RefTable: "parent", RefCols: []string{"id"}}
+		done <- e.AddForeignKey("child", fk, &schema.IndexDef{Name: "child_pid", Columns: []string{"pid"}, Internal: true})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("index DDL did not finish: deadlock between writers and the table gates")
+	}
+	close(stop)
+	wg.Wait()
+	// the constraint holds for what was written meanwhile and from now on
+	var fe *ForeignKeyError
+	if err := fkPut(t, e, "child", schema.Row{{S: "x"}, {S: "nope"}, {I: 1}}); !errors.As(err, &fe) {
+		t.Fatalf("foreign key not enforced after ADD FOREIGN KEY: %v", err)
+	}
+	e.waitInstalled(e.DurableLSN())
+	bad := 0
+	e.ScanSnapshot("child", e.DurableLSN(), func(_ string, r schema.Row, _ *Version) bool {
+		if p, _, _ := e.Get("parent", r[1].S); p == nil {
+			bad++
+		}
+		return true
+	})
+	if bad != 0 {
+		t.Fatalf("%d children without a parent", bad)
 	}
 }

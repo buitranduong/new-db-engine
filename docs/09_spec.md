@@ -151,7 +151,7 @@ Bản ghi `DDL` chứa JSON của bảng, cũng là phần tử của `tables` t
   - bảng: `"key_cols": ["a","b"]`: các cột của PK ghép (>= 2). Khi có nó, `key` là `"__pk"`. Bảng không PK có `"key":"__rowid"` và không có `key_cols`.
   Ví dụ bảng không PK: `{"id":3,"name":"databasechangelog","columns":[{"name":"__rowid","type":"int","not_null":true,"default":"nextval('\"databasechangelog____rowid_seq\"')","hidden":true},{"name":"id","type":"string","not_null":true}, ...],"key":"__rowid"}`. Sequence `<bảng>____rowid_seq` là sequence thường (owner `<bảng>.__rowid`). Bản Go cũ đọc JSON này (trường lạ bị bỏ qua) nhưng không biết ẩn cột [chưa kiểm bằng binary cũ]; bản mới đọc mọi JSON cũ (có test).
   - `ADD PRIMARY KEY` trên bảng rỗng là một bản ghi `DDL` kiểu ALTER: cột `__rowid` thành cột đã drop, `key` đổi, `__pk` (nếu ghép) thêm ở cuối. Bảng không có dòng sống nào nên không dòng nào cần gắn lại khoá; các version đã xoá cũ (nếu có) mang khoá kiểu cũ (chưa kiểm cách `AS OF`/`stask_history` đọc chúng).
-- Kiểm tra hợp lệ ở `schema.Table.Init`: khoá là `int`, `string` hoặc `uuid` (khoá `uuid` lưu dạng chữ thường 36 ký tự, nên thứ tự byte của khoá cũng là thứ tự byte của uuid); cột search là `text`/`string`; `time_column` là `time`, `timestamp` hoặc `timestamptz` (ms hay µs tuỳ kiểu) và đòi hỏi `append_only`; `series_column` là `string`; bảng `columnar` không có cột `numeric`.
+- Kiểm tra hợp lệ ở `schema.Table.Init`: khoá là `int`, `string` hoặc `uuid` (khoá `uuid` lưu dạng chữ thường 36 ký tự, nên thứ tự byte của khoá cũng là thứ tự byte của uuid); cột search là `text`/`string`; `time_column` là `time`, `timestamp` hoặc `timestamptz` (ms hay µs tuỳ kiểu) và đòi hỏi `append_only`; `series_column` là `string`; bảng `columnar` nhận cột `numeric` (từ nhánh `colnumeric`): view giữ `numeric(p,s)` với p ≤ 18 dạng số nguyên 64 bit nhân 10^s; `numeric` không giới hạn hoặc p > 18 vẫn tạo được bảng nhưng cột đó không nằm trong view (truy vấn dùng nó chạy trên dòng) (§7a).
 - **DROP TABLE và TRUNCATE** (thêm 2026-10-29) dùng chính bản ghi `DDL`, với ba trường tuỳ chọn:
   - `dropped_lsn`: bản ghi của DROP TABLE là JSON của bảng bị drop (cùng `id`), có `dropped_lsn` bằng LSN của chính bản ghi.
   - `replaces`: bản ghi của TRUNCATE là một bảng **mới** (ID mới, cùng tên và cột) với `replaces` là ID bảng cũ. Khi phát lại, bảng cũ bị coi là drop tại LSN của bản ghi này. Một bản ghi duy nhất nên không thể chỉ ghi được một nửa.
@@ -227,11 +227,12 @@ entry      = uvarint klen | key | uvarint zigzag(lsn − lsnTrước) | uvarint 
 View cột là dữ liệu dẫn xuất từ log; tệp này chỉ là bản lưu để khỏi dựng lại. Bản Rust không bắt buộc đọc nó: bỏ qua tệp thì dựng lại từ dữ liệu, kết quả như nhau.
 
 ```
-"STCV" u32 version(=1)
+"STCV" u32 version(=1; =2 khi có bảng cột chứa cột numeric)
 section*   : u8 tag | u64 len | payload | u32 crc32c(tag, len, payload)
 tag 1 header : u64 lsn | u32 seg | i64 off | u32 ntables
 tag 2 table  : u32 id | u64 rows | u32 ncols | ncols x (i32 num | u8 type | u8 flags)
-               flags: bit 0 = cột được lưu, bit 1 = cột TEXT
+               flags: bit 0 = cột được lưu, bit 1 = cột TEXT,
+                      bit 2 = cột numeric (chỉ version 2), bits 3-7 = scale s của numeric(p<=18,s) (0 nếu không thuộc dạng đó)
 tag 3 column : u32 chỉ số cột | u8 hasNulls [u32 len | zstd(bitmap u64 LE)]
                [chuỗi/TEXT: u32 nvals | u32 len | zstd(uvarint len | bytes)*]
                u32 nblocks | (u32 len | block)*
@@ -244,6 +245,7 @@ tag 5 end    : u32 ntables
 - Chỉ ghi các dòng còn sống, đánh số lại từ 0. Mỗi block là giá trị của tối đa 65.536 dòng, nén độc lập. Block số nguyên/thời gian/bool/mã từ điển: `zstd(u8 kind | u8 bits | u32 n | i64 base | i64 aux | residual)`.
   - kind 0 = frame-of-reference (`x − min`, base = min); 1 = delta (zigzag(x[i] − x[i−1]), base = x[0]); 2 = delta-of-delta (zigzag(d[i] − d[i−1]), base = x[0], aux = x[1] − x[0]).
   - residual đóng gói từng bit ở độ rộng `bits` của giá trị lớn nhất (0 = hằng số, không có byte nào); trên 56 bit thì mỗi giá trị 8 byte. Chọn kind có `bits` nhỏ nhất, hoà thì kind nhỏ hơn.
+- **Cột numeric (version 2).** `numeric(p,s)` với p ≤ 18 được lưu là số nguyên có dấu 64 bit `giá trị × 10^s` và dùng đúng codec số nguyên ở trên (section 3 như cột `int`), nên không có codec mới; scale nằm trong flags của section 2 và phải bằng scale của schema hiện tại khi mở (ALTER làm tệp bị bỏ). `numeric` không giới hạn, p > 18, hoặc cột đã rời view vì gặp giá trị không biểu diễn được (NaN, ±Infinity) có bit 0 = 0 và không có section 3; mở tệp dựng lại cột ở trạng thái "không trong view" như lúc ghi. Tệp không có cột numeric vẫn ghi version 1, byte giống hệt trước; bản đọc nhận cả 1 và 2; bản cũ gặp version 2 bỏ tệp và dựng lại. Định dạng log và checkpoint không đổi.
 - Block số thực bắt đầu bằng một byte kind: 0 = các giá trị 8 byte thô rồi zstd; 1 = tách theo byte-plane rồi zstd; 2 = thập phân (`u32 scale`, rồi block số nguyên của `round(x·scale)`), chỉ dùng khi mọi giá trị đúng bằng `float64(k)/scale` theo từng bit (loại −0, NaN, Inf). Với kind 0/1 giữ cái nhỏ hơn.
 - Cột TEXT đã bị bỏ khỏi view vì quá 65.536 giá trị khác nhau (flags bit 0 = 0, bit 1 = 1) thì không có section 3.
 - Ghi: `columnar.view.tmp`, fsync, đổi tên, fsync thư mục. Sập giữa chừng thì còn nguyên tệp cũ hoặc tệp mới.

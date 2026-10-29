@@ -376,3 +376,62 @@ func TestProcRouter(t *testing.T) {
 	t.Logf("3 leader kills behind the router: %d acknowledged writes, all on all nodes; %d client-visible errors (writes in flight when the leader died); longest pause between two acknowledgements %v; router found a new leader %d times",
 		len(ackedKeys), errs, maxGap.Round(10*time.Millisecond), rt.Rediscovered.Load())
 }
+
+// TestProcSingleBaseline times single-node writes only, to compare builds
+// (STASK_BIN=/path/to/staskd for another one): the default path must not
+// have become slower.
+func TestProcSingleBaseline(t *testing.T) {
+	if os.Getenv("STASK_BASELINE") == "" {
+		t.Skip("set STASK_BASELINE=1 to run")
+	}
+	n := envInt("STASK_LAT_WRITES", 3000)
+	c, _ := startSingle(t)
+	for i := 0; i < 100; i++ {
+		c.write(fmt.Sprintf("w%d", i), i, 5*time.Second)
+	}
+	for _, clients := range []int{1, 16} {
+		var mu sync.Mutex
+		var lat []time.Duration
+		var wg sync.WaitGroup
+		t0 := time.Now()
+		for g := 0; g < clients; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				var mine []time.Duration
+				for k := 0; k < n/clients; k++ {
+					s := time.Now()
+					if c.write(fmt.Sprintf("c%d-%d-%d", clients, g, k), k, 5*time.Second) == acked {
+						mine = append(mine, time.Since(s))
+					}
+				}
+				mu.Lock()
+				lat = append(lat, mine...)
+				mu.Unlock()
+			}(g)
+		}
+		wg.Wait()
+		t.Logf("BASELINE %s clients=%d p50=%v p99=%v rate=%.0f/s", os.Getenv("STASK_BIN"), clients, pct(lat, 0.5), pct(lat, 0.99), float64(len(lat))/time.Since(t0).Seconds())
+	}
+}
+
+// TestProcOneNode: a cluster of one node commits alone and recovers its
+// state after kill -9 (the restart path: Raft log, applied record, cut).
+func TestProcOneNode(t *testing.T) {
+	c := newCluster(t, 1)
+	c.createTable()
+	w := &writers{acked: map[string]int{}, unknown: map[string]int{}}
+	for round := 0; round < 3; round++ {
+		for k := 0; k < 40; k++ {
+			key := fmt.Sprintf("o%d-%d", round, k)
+			if c.write(key, k, 20*time.Second) != acked {
+				t.Fatal("write failed")
+			}
+			w.acked[key] = k
+		}
+		c.kill(c.nodes[0])
+		c.start(c.nodes[0])
+		c.waitLeader(20 * time.Second)
+	}
+	c.verify(w)
+}

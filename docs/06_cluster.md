@@ -215,13 +215,15 @@ Lệnh trong giao dịch tường minh không chờ (ảnh chụp đã lấy ở
 
 Giới hạn phần cứng hiện tại: chỉ có 1 VM 8 core. Giai đoạn A được đo bằng cách chia core giữa leader và replica, nên chúng vẫn dùng chung đĩa và bộ nhớ. Kết luận cuối cùng về cách ly cần các máy riêng.
 
-## 5. Giai đoạn B: đồng thuận theo đa số (P6.2 và P6.3, làm một phần)
+## 5. Giai đoạn B: đồng thuận theo đa số (P6.2 đã nối vào staskd, P6.3 phần lõi)
 
 ### 5.1 `internal/raft` (đã cài đặt, kiểm bằng mô phỏng)
 
 Raft kiểu [bài báo](https://raft.github.io/raft.pdf) và [luận án của Ongaro](https://github.com/ongardie/dissertation). Tham khảo thiết kế: [etcd/raft](https://github.com/etcd-io/raft) (máy trạng thái chạy theo tick, không có I/O, nên test điều khiển được bằng thời gian ảo), [hashicorp/raft](https://github.com/hashicorp/raft) (tách Storage và Transport), [lease read của TiKV](https://tikv.org/blog/lease-read/).
 
 Có: bầu leader với **pre-vote** (node bị cô lập không đẩy term lên), nhân bản log và commit theo đa số (chỉ commit entry của term hiện tại, leader mới ghi một entry no-op), trả lời từ chối có gợi ý để lùi nhanh, **check-quorum** (leader mất đa số thì tự xuống), **lease** (`Node.LeaseValid`: đa số đã trả lời tin gửi trong `LeaseTicks`; follower từ chối bầu cho người khác trong `ElectionTicks` sau khi nghe leader, nên không có hai leader cùng có lease), `FileStorage` (log thêm vào cuối, CRC, fsync, cắt đuôi hỏng khi mở lại) và `MemStorage`, `Group` (ticker + `Propose` chờ commit; `ErrLeadershipLost` khi mất quyền trước khi commit, kết quả khi đó là không biết trước).
+
+**Nén log (2026-10-29, nhánh `raftwire`)**: `Node.Compact(index)` bỏ phần đã áp, chỉ giữ `(index, term)` làm gốc (`Snapshot`); `Storage.Compact/Reset`, `FileStorage` ghi lại file (file mới + fsync + rename). Leader thấy follower cần entry đã nén thì gửi `MsgSnap` (mang chỉ số gốc của leader); follower gọi `Config.NeedSnapshot` (nội dung snapshot do bên gọi chuyển, xem §5.2) hoặc, nếu đã vượt gốc đó, trả lời `AppResp` với commit của mình. `TestChaosCompaction` (100 seed): nén ngẫu nhiên ở mọi node và cài snapshot cho node tụt lại (15.436 lần cài), 54.687 entry xác nhận, không mất.
 
 Giao diện tách khỏi core: gói không import gì của STASK. Entry là byte mờ; `Storage`, `Config.Send`, `Config.Apply` do bên gọi cấp.
 
@@ -232,20 +234,9 @@ Giao diện tách khỏi core: gói không import gì của STASK. Entry là byt
 - `TestFailoverTime`: giết leader của cụm đã ổn định, đếm tick tới khi leader mới commit được một entry (ElectionTicks = 10, nên timeout ngẫu nhiên 10–19 tick): nhỏ nhất 20, trung vị 27, p95 61, lớn nhất 92 tick (100 lượt, 3 và 5 node, không rơi tin). Nhân với độ dài tick: tick 10 ms cho trung vị khoảng 270 ms. **Đây là số trong mô phỏng, không phải đo trên mạng thật.**
 - `TestMinorityCannotCommit`: leader bị cô lập không commit, mất lease, tự xuống; đa số bầu leader mới; entry ghi vào leader cô lập không bao giờ được xác nhận.
 - `TestSingleNode`, `TestFileStorage` (ghi đè index, đuôi hỏng, khoảng trống bị từ chối).
-- Kiểm tra đột biến: sửa quy tắc commit thành "thiếu một phiếu" thì `TestChaos` bắt ngay (hai node áp hai entry khác nhau tại một index). Bỏ việc từ chối bầu trong lease thì **chaos ngẫu nhiên không bắt được** (sự kiện đó cần cắt mạng đúng lúc lease còn hạn và timeout của ứng viên ngắn hơn); bất biến lease vì vậy mới được kiểm yếu.
+- Kiểm tra đột biến: sửa quy tắc commit thành "thiếu một phiếu" thì `TestChaos` bắt ngay (hai node áp hai entry khác nhau tại một index). Bỏ việc từ chối bầu trong lease thì **chaos ngẫu nhiên không bắt được** (chaos chỉ cắt cả node, không cắt một chiều một link). Đã bù bằng test nhắm đúng luật đó: `TestLeaseRule` cắt hai chiều link giữa leader và một follower, giữ link của follower còn lại, ngừng ghi để log hai follower bằng nhau (nếu không, ứng viên tụt log bị từ chối vì lý do khác và test không chạm luật), rồi chạy 400 tick: leader phải giữ nguyên, term không tăng, vẫn commit được (60 seed). `TestLeaseRuleMutation` tắt luật (`leaseRuleOff`) và đòi test bắt được: **60/60 seed vi phạm** ("node 3 has a valid lease in term 1 while 1 leads term 2").
 
-### 5.2 Việc còn dở của P6.2 (chưa làm)
-
-| Còn thiếu | Ghi chú |
-|---|---|
-| Nối thật với engine: adapter `core.Quorum` đưa byte log của batch vào entry Raft; follower áp bằng `Engine.Apply` | Hiện chỉ có giao diện và test với bản giả. Lớp nhân bản bất đồng bộ (`internal/repl`) vẫn là đường chạy thật |
-| Transport mạng (TCP/TLS, dùng lại bảo mật của cổng nhân bản) | Chỉ có mô phỏng |
-| Nén log và snapshot của Raft | Log Raft lớn mãi. Cần gắn với checkpoint và base backup |
-| Đổi thành viên (thêm/bớt node), chuyển quyền leader, learner không bỏ phiếu | Tập bỏ phiếu cố định |
-| Đọc theo lease trong engine (`LeaseValid` chưa được `Get` dùng); router chưa theo dõi leader đổi | Cần adapter trước |
-| `Quorum.Replicate` chặn tầng sync của committer, nên mỗi batch chờ một vòng mạng, không pipeline các batch | Đo chi phí khi có transport thật |
-| Kiểm Jepsen/đồng hồ lệch/đĩa lỗi (torn write trong mô phỏng không có) | Mô phỏng cho node chết giữa các bước, không giữa một lần ghi |
-| Lease giả định đồng hồ chạy cùng tốc độ (trôi nhỏ hơn `ElectionTicks-LeaseTicks`) | Mô phỏng dùng đồng hồ ảo đồng bộ, không thử độ trôi |
+@@SEC52@@
 
 ### 5.3 Slot, publication, replica identity đi qua log (P6.3, đã cài đặt phần lõi)
 
@@ -258,3 +249,5 @@ Mã: `internal/core/cdcmirror.go`. Trước đây chúng nằm trong file của 
 Test: `internal/repl/failover_test.go` (`TestCDCStateSurvivesFailover`): leader tạo publication, identity FULL, slot; subscriber nhận 5 giao dịch và xác nhận; ghi thêm 3; replica bắt kịp; leader chết; mở thư mục replica làm leader: publication, identity, slot ở đúng vị trí đã xác nhận, và slot stream đúng 3 giao dịch chưa xác nhận (không mất, không trùng), rồi nhận được ghi mới.
 
 Còn dở: nâng cấp vẫn là khởi động lại thủ công (chưa có promote nóng và chưa gắn với bầu cử của `internal/raft`); chưa chạy `accept/pgsub.sh` (subscriber PG thật) qua failover; replica chạy sống không tự làm mới catalog trong bộ nhớ khi bảng thay đổi (chỉ khi mở lại, đủ cho nâng cấp bằng khởi động lại); slot bị xóa trên leader mà file vẫn nằm trên một node từng là leader sẽ xuất hiện lại; tải ghi thêm: mỗi lần đổi catalog hoặc xác nhận slot (tối đa 1/giây/slot) là một commit.
+
+@@SEC54@@

@@ -35,6 +35,9 @@ func staskdBin(t *testing.T) string {
 	if testing.Short() || os.Getenv("STASK_NO_PROC") != "" {
 		t.Skip("process tests skipped")
 	}
+	if p := os.Getenv("STASK_BIN"); p != "" { // test another build, e.g. main's, as the single-node baseline
+		return p
+	}
 	binOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "staskd-bin")
 		if err != nil {

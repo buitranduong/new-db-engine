@@ -67,7 +67,7 @@ Xếp theo mức chặn triển khai. **Mục 1-5 là phát hiện của `simben
 10. **Cô lập tải báo cáo (Superset) khỏi giao dịch**: cùng tiến trình, chưa đo; chưa có bộ truy vấn Superset trong `pgdiff`.
 11. **Chế độ bóng PG → STASK** (docs/16 §4): chưa làm; STASK chưa có công cụ nhận dữ liệu từ PG qua logical replication.
 12. **Raft** đóng băng (D18): chưa có đọc tuyến tính, đổi thành viên, thử trên máy riêng.
-13. **Dữ liệu lớn hơn RAM**: `pindex` chưa nối (D17); `spill` chỉ một số dạng truy vấn.
+13. **Dữ liệu và chỉ mục lớn hơn RAM (D29).** Ước tính RAM ở 50M số: ~20+ GB (chính ~8,6 GB, trigram ~7,3 GB đo theo 145 MB/1M, btree phụ và view cột chưa đo kích thước). Kế hoạch: chỉ mục phụ trên `pindex` có ngân sách (`storage='disk'`) trước, chỉ mục chính giữ RAM mặc định, không tràn tự động, chưa đưa cây RAM ra ngoài heap (GC đã đo ≤1,1% CPU). `pindex` chưa nối vào engine; mới đo trên tmpfs; `spill` chỉ phủ một số dạng truy vấn.
 
 ## 5. Lỗi và rủi ro đã biết
 

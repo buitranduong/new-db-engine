@@ -15,6 +15,14 @@ Mục tiêu: nhiều agent làm song song mà **không** thành một mớ hỗn
 3. **Đánh giá độc lập** chỉ làm khi người điều phối yêu cầu, với một câu hỏi cụ thể (ví dụ "bản so sánh lưu trữ này có sai số liệu nào không"), và người đánh giá nhận **mã/số liệu**, không nhận kết luận của tác giả.
 4. Mâu thuẫn giữa hai tài liệu hay hai báo cáo: **mã và bằng chứng chạy được thắng văn bản**. Ghi chênh lệch vào `docs/14 §3`.
 
+## 2b. Bằng chứng thắng ý kiến; người điều phối tự quyết (bổ sung 2026-10-29)
+
+1. **Bằng chứng trong repo này** (test, `claimcheck`, `pgdiff`, số đo tái lập) thắng mọi nhận định dựa trên kiến thức đã học. Nhận định kiểu "PG/hệ X làm thế này", "thư viện Y tốt hơn", "thiết kế kia sai" mà không kèm bằng chứng chạy được phải gắn nhãn **[chưa kiểm]** và không được dùng để bác một kết quả đã đo hay để đổi thiết kế.
+2. **Hai bên mâu thuẫn thì chạy thí nghiệm rẻ**, không tranh luận. Người điều phối giao việc đo; kết quả quyết định; ghi vào docs/14.
+3. **Người điều phối tự quyết** mọi việc kỹ thuật, quy trình, thứ tự gộp, dọn dẹp thứ rõ ràng là rác do dự án tạo ra, và push `main` khi `merge-gate` qua. **Chỉ hỏi người dùng** về: (a) tiền hoặc phần cứng, (b) sự thật nghiệp vụ chỉ người dùng biết, (c) hành động phá huỷ ngoài phạm vi dự án.
+4. Một quyết định đã ghi trong `docs/PROCESS.md` chỉ đổi khi có **bằng chứng mới**, không vì ý kiến mới.
+5. Người điều phối phải nêu **một lập trường rõ ràng** và lý do; không trả lời kiểu "có thể A, có thể B" khi đã có dữ liệu để chọn.
+
 ## 3. Quyền sở hữu thư mục (giảm xung đột)
 
 | Khu vực | Quy tắc |

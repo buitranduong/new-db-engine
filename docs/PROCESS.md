@@ -38,6 +38,13 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 
 | D16 | **Ưu tiên dùng lại, học từ mã nguồn công khai.** Không đặt "tự viết" làm mục tiêu. Thành phần có bản trưởng thành, giấy phép tương thích MIT (MIT/BSD/Apache-2.0) và phù hợp thì dùng hoặc tích hợp; được học thiết kế từ mã công khai (PostgreSQL, ClickHouse, Lucene, RocksDB, etcd...). Cấm chép mã GPL/AGPL/BSL/SSPL; ghi nguồn và giấy phép khi dùng | Người dùng làm rõ 2026-10-29: không yêu cầu tự viết; các agent chọn tự viết vì không chắc thành phần có sẵn đáp ứng | Giữ |
 
+| D17 | **Phạm vi: chỉ bài toán kho SIM** (docs/15). KHÔNG làm phân mảnh/giao dịch xuyên shard, KHÔNG port Rust, KHÔNG nối index trên đĩa (`pindex`) vào engine trước khi có số lịch sử thật | 50M dòng vừa RAM (ước ~5-10 GB, chưa đo); Rust không có bằng chứng là nút thắt (docs/11 §3); `pindex` đo mới trên tmpfs, 1 luồng | Chốt |
+| D18 | **Raft hiện có (`internal/raft`, `internal/cluster`) giữ nguyên, ĐÓNG BĂNG**: không thêm tính năng (đổi thành viên, đọc tuyến tính) và không thay bằng thư viện, cho tới khi `simbench` chứng minh giá trị một-nút | Đã qua chaos trên tiến trình thật (88.981 ghi xác nhận, 0 mất); thay thế tốn hơn lợi; HA không phải nút chặn hiện tại | Chốt |
+| D19 | **Tìm kiếm mẫu số dùng view trigram trong SQL (nhánh `search`)**, không dựng Elasticsearch trong STASK; việc kế tiếp: đếm trực tiếp trên view khi view đã tới snapshot (khắc phục thua PG ở truy vấn trả nhiều dòng) | Đo 2M số: nhanh hơn quét 14-1500 lần, thắng PG+pg_trgm ở chuỗi dài/regex/số đẹp, thua 1,5-10 lần ở kết quả hàng chục nghìn dòng | Chốt |
+| D20 | **Không viết `docs/17` khảo sát tổng quát.** Quyết "dùng lại hay tự viết" từng thành phần lúc chạm tới nó, bằng phép thử tích hợp nhỏ, theo D16 | Khảo sát chung tốn công, không cho bằng chứng; thành phần nào cần thì thử trực tiếp | Chốt |
+| D21 | **Ưu tiên kế tiếp theo thứ tự:** (1) gộp mọi nhánh đã xong, (2) chạy `simbench` cỡ nhỏ và độ mới, (3) sửa diff `pgdiff` chặn ứng dụng: PK ghép/không PK (Liquibase), `integer`/`varchar(n)` đúng, ràng buộc kiểu, `$$`, CTE ghi, (4) lịch sử 60 ngày (`history`), (5) chế độ bóng PG→STASK | Mỗi mục chặn trực tiếp việc đưa STASK vào chạy thử trên dữ liệu thật | Chốt |
+| D22 | Người điều phối tự quyết việc kỹ thuật/quy trình, không hỏi lại người dùng (AGENT_PROTOCOL §2b) | Người dùng phản hồi 2026-10-29 | Chốt |
+
 ## 3. Bài học (đã trả giá)
 
 1. **Binary cũ làm hỏng phép đo/probe**: luôn build mới, ghi commit vào kết quả (nhánh `harness` bắt buộc điều này).

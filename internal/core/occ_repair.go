@@ -229,7 +229,18 @@ func (e *Engine) repairPre(b *commitBatch, inflight, recent []*commitBatch, r *c
 	cur2 func(*TableState, string, *Version, bool) *Version) (skip bool, verr error) {
 	v := r.rv
 	v.seq = e.installSeq.Load()
-	if !v.incr || len(recent) == 0 || recent[0].seq > v.inSeq+1 {
+	if !v.incr {
+		return false, nil
+	}
+	if len(recent) == 0 || recent[0].seq > v.inSeq+1 {
+		// too long since the last validation to tell from the recent batches
+		// which writes changed: validate everything, on heads looked up now
+		// (the heads kept from earlier rounds may be stale)
+		for i := range r.ops {
+			if r.ops[i].base == 0 {
+				r.ops[i].seen = r.ops[i].t.head(r.ops[i].key)
+			}
+		}
 		return false, nil
 	}
 	// the writes still unchecked since the previous round's validation are
@@ -281,6 +292,7 @@ func (e *Engine) repairPost(r *commitReq, verr error) error {
 type WriteGate struct {
 	tables map[*TableState]struct{}
 	open   chan struct{}
+	mu     sync.Mutex
 	timer  *time.Timer
 	once   sync.Once
 }
@@ -307,7 +319,11 @@ func (g *WriteGate) wait(e *Engine, r *commitReq) {
 
 func (g *WriteGate) release(e *Engine) {
 	g.once.Do(func() {
-		g.timer.Stop()
+		g.mu.Lock()
+		if g.timer != nil {
+			g.timer.Stop()
+		}
+		g.mu.Unlock()
 		e.gate.CompareAndSwap(g, nil)
 		close(g.open)
 	})
@@ -328,7 +344,10 @@ func (tx *Tx) CloseGate(maxHold time.Duration) (release func()) {
 			<-cur.open
 		}
 	}
-	g.timer = time.AfterFunc(maxHold, func() { g.release(e) })
+	t := time.AfterFunc(maxHold, func() { g.release(e) })
+	g.mu.Lock()
+	g.timer = t
+	g.mu.Unlock()
 	tx.gate = g
 	if RepairDebug {
 		fmt.Fprintf(os.Stderr, "occ: gate closed on %d table(s)\n", len(g.tables))

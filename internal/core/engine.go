@@ -1711,7 +1711,7 @@ func finishReq(r *commitReq, err error) {
 
 // recentBatches is how many installed batches the committer keeps to check
 // heads that submitters looked up themselves.
-const recentBatches = 64
+const recentBatches = 256
 
 // prepare validates and encodes requests into the open batch b. inflight
 // holds the batches handed off but not installed (oldest first), recent the

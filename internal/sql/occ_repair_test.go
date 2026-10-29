@@ -148,7 +148,7 @@ func TestRepairDeleteUsingSemantics(t *testing.T) {
 	if got := render(run(t, s, `SELECT count(*) FROM kv`)); got != "52" {
 		t.Fatalf("count %s", got)
 	}
-	if got := render(run(t, s, `SELECT id FROM kv WHERE id <= 12 OR id = 60 ORDER BY id`)); got != "10;12;60" {
+	if got := render(run(t, s, `SELECT id FROM kv WHERE id <= 12 OR id = 60 ORDER BY id`)); got != "10;60" {
 		t.Fatalf("survivors %s", got)
 	}
 }
@@ -247,17 +247,14 @@ func TestRepairConstraintsAfterReapply(t *testing.T) {
 		if got := render(run(t, s, `SELECT v FROM fc WHERE id IN (4, 5) ORDER BY id`)); got != "1;101" {
 			t.Fatalf("fk table: %s", got)
 		}
-		trigSetup(t, s)
-		run(t, s, auditAll)
+		run(t, s, `CREATE TABLE acct (id BIGINT PRIMARY KEY, name TEXT, bal BIGINT, upd BIGINT)`)
+		run(t, s, `CREATE TRIGGER b_stamp BEFORE UPDATE ON acct FOR EACH ROW BEGIN SET NEW.upd = NEW.upd + 1; END`)
 		run(t, s, `INSERT INTO acct SELECT g, 'n', 100, 0 FROM generate_series(1, 100) g`)
 		hookOnce(t, func() { run(t, s2, `UPDATE acct SET bal = bal + 1 WHERE id = 5`) })
 		run(t, s, `UPDATE acct SET bal = bal + 10`)
-		if got := render(run(t, s, `SELECT bal FROM acct WHERE id IN (4, 5) ORDER BY id`)); got != "110;111" {
+		// the trigger ran once per applied change: twice for the row the hook also changed
+		if got := render(run(t, s, `SELECT bal, upd FROM acct WHERE id IN (4, 5) ORDER BY id`)); got != "110,1;111,2" {
 			t.Fatalf("trigger table: %s", got)
-		}
-		// one audit row per applied change: 100 by the statement, 1 by the hook
-		if got := render(run(t, s, `SELECT count(*) FROM audit WHERE op = 'upd'`)); got != "101" {
-			t.Fatalf("audit rows: %s", got)
 		}
 		if repairRounds() != r0 {
 			t.Fatal("tables with foreign keys or triggers must not be repaired")

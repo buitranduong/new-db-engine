@@ -41,11 +41,11 @@ func TestPgxTypes(t *testing.T) {
 
 	// binary results (pgx asks for binary for these OIDs)
 	var (
-		gid          [16]byte
-		gts, gtz     time.Time
-		gn, gnn      pgtype.Numeric
-		gb           []byte
-		gj, gjb      string
+		gid      [16]byte
+		gts, gtz time.Time
+		gn, gnn  pgtype.Numeric
+		gb       []byte
+		gj, gjb  string
 	)
 	rows, err := conn.Query(ctx, `SELECT id, ts, tz, n, nn, b, j, jb FROM ty`)
 	if err != nil {

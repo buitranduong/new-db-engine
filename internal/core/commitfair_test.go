@@ -19,7 +19,7 @@ import (
 // into an indexed table. It reports the small transactions' p50/p99 with the
 // loader idle and running. Opt in with STASK_FAIR=1; knobs: STASK_FAIR_IDX
 // (number of indexes, default 3), _ROWS (table size), _BULK (rows per bulk
-// transaction), _SMALL (small writers), _SECS (seconds per phase).
+// transaction), _SMALL (small writers), _SECS (seconds per phase), _RATE (bulk rows/s cap).
 func TestCommitFairness(t *testing.T) {
 	if os.Getenv("STASK_FAIR") == "" {
 		t.Skip("set STASK_FAIR=1")
@@ -31,6 +31,7 @@ func TestCommitFairness(t *testing.T) {
 		return d
 	}
 	nidx, rows, bulk, nsmall, secs := geti("STASK_FAIR_IDX", 3), geti("STASK_FAIR_ROWS", 300000), geti("STASK_FAIR_BULK", 2000), geti("STASK_FAIR_SMALL", 8), geti("STASK_FAIR_SECS", 6)
+	rate := geti("STASK_FAIR_RATE", 0) // bulk rows/s cap, 0 = closed loop
 	e, err := Open(Options{Dir: t.TempDir(), SegmentSize: 64 << 20, NoCheckpoint: os.Getenv("STASK_FAIR_CKPT") == ""})
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +139,9 @@ func TestCommitFairness(t *testing.T) {
 					}
 					bulkRows += len(ops)
 					bulkTx++
+					if rate > 0 { // pace like a client that encodes between statements
+						time.Sleep(time.Duration(float64(len(ops)) / float64(rate) * float64(time.Second)))
+					}
 				}
 			}()
 		}

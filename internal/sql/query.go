@@ -84,7 +84,8 @@ type qexec struct {
 	inSets   map[*boundSub]*inSet
 	cteCache map[*cteDef]*relation
 
-	memUsed, memReserved int64 // membudget.go
+	memUsed, memReserved int64       // membudget.go
+	sp                   *spillState // spillexec.go: set when the query runs in spill mode
 }
 
 func (qx *qexec) ctx(outer *evalCtx) *evalCtx {
@@ -100,7 +101,7 @@ func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error
 	}
 	qx := &qexec{s: s, tx: tx, params: params, now: nowMillis(), subCache: map[*boundSub]*relation{},
 		inSets: map[*boundSub]*inSet{}, cteCache: map[*cteDef]*relation{}}
-	rel, err := p.run(qx, nil)
+	rel, err := qx.runPlan(p)
 	qx.release()
 	if err != nil {
 		return nil, err
@@ -983,6 +984,11 @@ func (c *compiler) constEval(x Expr) (Datum, error) {
 }
 
 func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
+	if qx.sp != nil {
+		if rel, ok, err := p.runSpill(qx, outer); ok {
+			return rel, err
+		}
+	}
 	var rows [][]Datum
 	var err error
 	if p.from != nil {

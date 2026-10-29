@@ -57,7 +57,7 @@ func (j *Join[T]) part(depth int, key string) int {
 
 func (j *Join[T]) run(build, probe Source[T], depth int, onProbe func(T, []*Entry[T]) error, onBuildDone func([]*Entry[T]) error) error {
 	table := map[string][]*Entry[T]{}
-	var nulls []*Entry[T]
+	var entries []*Entry[T] // build order
 	var used int64
 	var bparts *parts
 	defer func() {
@@ -82,10 +82,9 @@ func (j *Join[T]) run(build, probe Source[T], depth int, onProbe func(T, []*Entr
 			return toDisk(v, key, ok)
 		}
 		e := &Entry[T]{Row: v}
+		entries = append(entries, e)
 		if ok {
 			table[key] = append(table[key], e)
-		} else {
-			nulls = append(nulls, e)
 		}
 		used += j.C.Size(v) + int64(len(key)) + entryOverhead
 		if used <= j.MemLimit {
@@ -111,12 +110,14 @@ func (j *Join[T]) run(build, probe Source[T], depth int, onProbe func(T, []*Entr
 				}
 			}
 		}
-		for _, e := range nulls {
-			if err := toDisk(e.Row, "", false); err != nil {
-				return err
+		for _, e := range entries {
+			if _, ok, _ := j.BuildKey(e.Row); !ok {
+				if err := toDisk(e.Row, "", false); err != nil {
+					return err
+				}
 			}
 		}
-		table, nulls, used = nil, nil, 0
+		table, entries, used = nil, nil, 0
 		return nil
 	})
 	if err != nil {
@@ -136,11 +137,7 @@ func (j *Join[T]) run(build, probe Source[T], depth int, onProbe func(T, []*Entr
 		if err != nil {
 			return err
 		}
-		all := make([]*Entry[T], 0, len(nulls))
-		for _, es := range table {
-			all = append(all, es...)
-		}
-		return onBuildDone(append(all, nulls...))
+		return onBuildDone(entries)
 	}
 	bruns, err := bparts.finish()
 	bparts = nil

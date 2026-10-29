@@ -34,6 +34,7 @@ func (a *HashAgg[T, S]) Run(src Source[T]) error {
 
 func (a *HashAgg[T, S]) run(src Source[T], depth int) error {
 	table := map[string]S{}
+	var order []S // creation order, so output does not depend on map iteration
 	var used int64
 	var ps *parts
 	defer func() {
@@ -61,6 +62,7 @@ func (a *HashAgg[T, S]) run(src Source[T], depth int) error {
 			return err
 		}
 		table[key] = s
+		order = append(order, s)
 		used += a.Size(s) + int64(len(key)) + entryOverhead
 		if used > a.MemLimit {
 			if depth >= MaxDepth {
@@ -79,12 +81,12 @@ func (a *HashAgg[T, S]) run(src Source[T], depth int) error {
 	if err != nil {
 		return err
 	}
-	for _, s := range table {
+	for _, s := range order {
 		if err := a.Finish(s); err != nil {
 			return err
 		}
 	}
-	table = nil
+	table, order = nil, nil
 	if ps == nil {
 		return nil
 	}

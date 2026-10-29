@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <!-- Jmix 2 generated style: upper-case names, uuid ids, VERSION, audit columns, soft delete -->
+    <changeSet id="1" author="app">
+        <createTable tableName="CUSTOMER">
+            <column name="ID" type="BIGINT" autoIncrement="true">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CUSTOMER"/>
+            </column>
+            <column name="VERSION" type="INT" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+            <column name="NAME" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="EMAIL" type="VARCHAR(255)"/>
+            <column name="CREATED_BY" type="VARCHAR(255)"/>
+            <column name="CREATED_DATE" type="DATETIME"/>
+            <column name="DELETED_BY" type="VARCHAR(255)"/>
+            <column name="DELETED_DATE" type="DATETIME"/>
+        </createTable>
+        <rollback>
+            <dropTable tableName="CUSTOMER"/>
+        </rollback>
+    </changeSet>
+    <changeSet id="2" author="app">
+        <createTable tableName="SIM">
+            <column name="ID" type="UUID">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_SIM"/>
+            </column>
+            <column name="VERSION" type="INT" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+            <column name="MSISDN" type="VARCHAR(20)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="ICCID" type="VARCHAR(32)"/>
+            <column name="STATUS" type="VARCHAR(20)" defaultValue="NEW"/>
+            <column name="PRICE" type="DECIMAL(19, 2)"/>
+            <column name="ACTIVE" type="BOOLEAN" defaultValueBoolean="true"/>
+            <column name="NOTE" type="CLOB"/>
+            <column name="PHOTO" type="BYTEA"/>
+            <column name="CREATED_DATE" type="DATETIME"/>
+            <column name="LAST_MODIFIED_DATE" type="DATETIME"/>
+            <column name="ACTIVATED_AT" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="CUSTOMER_ID" type="BIGINT"/>
+        </createTable>
+        <rollback>
+            <dropTable tableName="SIM"/>
+        </rollback>
+    </changeSet>
+    <changeSet id="3" author="app">
+        <createTable tableName="ORDER_">
+            <column name="ID" type="UUID">
+                <constraints nullable="false" primaryKey="true" primaryKeyName="PK_ORDER"/>
+            </column>
+            <column name="VERSION" type="INT" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+            <column name="NUMBER_" type="VARCHAR(30)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="AMOUNT" type="DECIMAL(19, 2)"/>
+            <column name="CUSTOMER_ID" type="BIGINT"/>
+            <column name="SIM_ID" type="UUID"/>
+            <column name="ORDER_DATE" type="DATE"/>
+        </createTable>
+        <rollback>
+            <dropTable tableName="ORDER_"/>
+        </rollback>
+    </changeSet>
+    <changeSet id="3b" author="app">
+        <tagDatabase tag="after-tables"/>
+    </changeSet>
+</databaseChangeLog>

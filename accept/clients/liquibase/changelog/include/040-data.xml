@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="13" author="app">
+        <loadData tableName="CUSTOMER" file="customers.csv" relativeToChangelogFile="true"
+                  separator="," quotchar="&quot;" encoding="UTF-8">
+            <column name="ID" type="NUMERIC"/>
+            <column name="FULL_NAME" type="STRING"/>
+            <column name="EMAIL" type="STRING"/>
+        </loadData>
+        <rollback>
+            <delete tableName="CUSTOMER"/>
+        </rollback>
+    </changeSet>
+    <changeSet id="14" author="app">
+        <loadData tableName="SIM" file="sims.csv" relativeToChangelogFile="true">
+            <column name="ID" type="UUID"/>
+            <column name="MSISDN" type="STRING"/>
+            <column name="ICCID" type="STRING"/>
+            <column name="STATUS" type="STRING"/>
+            <column name="PRICE" type="NUMERIC"/>
+            <column name="ACTIVE" type="BOOLEAN"/>
+            <column name="CREATED_DATE" type="DATETIME"/>
+            <column name="CUSTOMER_ID" type="NUMERIC"/>
+        </loadData>
+        <rollback>
+            <delete tableName="SIM"/>
+        </rollback>
+    </changeSet>
+    <changeSet id="15" author="app">
+        <insert tableName="CUSTOMER">
+            <column name="ID" valueNumeric="100"/>
+            <column name="FULL_NAME" value="Inserted By Changeset"/>
+            <column name="EMAIL" value="ins@example.com"/>
+        </insert>
+        <update tableName="SIM">
+            <column name="STATUS" value="SOLD"/>
+            <where>CUSTOMER_ID = 1</where>
+        </update>
+        <rollback>
+            <delete tableName="CUSTOMER"><where>ID = 100</where></delete>
+        </rollback>
+    </changeSet>
+    <changeSet id="16" author="app" runOnChange="true">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="NOPE_TABLE"/></not>
+            <columnExists tableName="SIM" columnName="MSISDN"/>
+        </preConditions>
+        <comment>precondition + sqlCheck, as Jmix add-on changelogs do</comment>
+        <sql>update SIM set NOTE = 'seeded' where NOTE is null</sql>
+        <rollback/>
+    </changeSet>
+</databaseChangeLog>

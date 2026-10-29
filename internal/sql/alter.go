@@ -82,6 +82,10 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 		for _, a := range st.Actions {
 			switch a.Kind {
 			case "owner":
+			case "set_options":
+				if err := setTableOptions(d, a.Opts); err != nil {
+					return err
+				}
 			case "add_column":
 				cd := a.Col
 				if colIndex(d, cd.Name) >= 0 {

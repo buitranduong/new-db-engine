@@ -364,7 +364,7 @@ func (p *parser) selectCore() (*Select, error) {
 		if err != nil {
 			return nil, err
 		}
-		if t, ok := n.(*FromTable); ok && t.ColAliases == nil {
+		if t, ok := n.(*FromTable); ok && t.ColAliases == nil && t.AsOf == nil {
 			s.From, s.Alias = t.Name, t.Alias
 		} else {
 			s.Rel = n
@@ -805,6 +805,10 @@ func (p *parser) fromItem() (FromNode, error) {
 	if err != nil {
 		return nil, err
 	}
+	asOf, err := p.asOfClause()
+	if err != nil {
+		return nil, err
+	}
 	p.acceptKw("final")
 	if p.acceptKw("sample") {
 		if _, err := p.expr(); err != nil {
@@ -819,7 +823,7 @@ func (p *parser) fromItem() (FromNode, error) {
 	if alias == "" && strings.HasPrefix(name, infoPrefix) {
 		alias = name[len(infoPrefix):] // information_schema.tables is qualified as tables
 	}
-	return &FromTable{Name: name, Alias: alias, ColAliases: cols}, nil
+	return &FromTable{Name: name, Alias: alias, ColAliases: cols, AsOf: asOf}, nil
 }
 
 // exprKey2 is a structural key of an expression (table qualifiers kept).

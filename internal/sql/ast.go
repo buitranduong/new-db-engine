@@ -62,7 +62,8 @@ type AlterAction struct {
 	NewName  string // rename_column, rename_table
 	Expr     string // set_default
 	Check    CheckDef
-	IfExists bool // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
+	IfExists bool              // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
+	Opts     map[string]string // set_options: SET (name = value, ...)
 }
 
 // DefaultExpr is DEFAULT in INSERT ... VALUES or UPDATE ... SET.

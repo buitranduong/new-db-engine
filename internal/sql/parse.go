@@ -1828,6 +1828,29 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 			default:
 				return nil, p.errHere("syntax error at or near %q", p.peek().s)
 			}
+		case p.isKw("set") && p.peekN(1).k == tOp && p.peekN(1).s == "(":
+			p.next()
+			act.Kind = "set_options"
+			if act.Opts, err = p.parseOptions(); err != nil {
+				return nil, err
+			}
+		case p.isKw("reset") && p.peekN(1).k == tOp && p.peekN(1).s == "(":
+			p.next()
+			p.next()
+			act.Kind, act.Opts = "set_options", map[string]string{}
+			for {
+				n, err := p.ident()
+				if err != nil {
+					return nil, err
+				}
+				act.Opts[n] = ""
+				if !p.acceptOp(",") {
+					break
+				}
+			}
+			if err := p.expectOp(")"); err != nil {
+				return nil, err
+			}
 		case p.acceptKw("owner", "to"):
 			act.Kind = "owner" // no roles yet: accepted and ignored (pg_dump writes it)
 			p.next()

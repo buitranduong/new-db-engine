@@ -75,12 +75,15 @@ type Options struct {
 	CommitWait time.Duration
 
 	// Log reclamation (see gc.go)
-	GC             bool
-	GCInterval     time.Duration // between cleaning rounds (default 10s)
-	GCRetention    time.Duration // history kept for as-of reads (minimum 2s)
-	GCMaxLiveRatio float64       // clean segments whose current data is at most this share (default 0.5)
-	GCMaxMoveBytes int64         // bytes relocated per round (default 1GB)
-	GCRateBytes    int64         // relocation rate cap in bytes/s (default 64MB/s, <0 = unlimited)
+	GC          bool
+	GCInterval  time.Duration // between cleaning rounds (default 10s)
+	GCRetention time.Duration // history kept for as-of reads (minimum 2s); a table's history_retention overrides it (history.go)
+	// Now is the clock for commit times and the retention window
+	// (default time.Now; tests set it to age history without waiting).
+	Now            func() time.Time
+	GCMaxLiveRatio float64 // clean segments whose current data is at most this share (default 0.5)
+	GCMaxMoveBytes int64   // bytes relocated per round (default 1GB)
+	GCRateBytes    int64   // relocation rate cap in bytes/s (default 64MB/s, <0 = unlimited)
 	// MaxSnapshotAge caps how long a transaction's snapshot holds back the
 	// horizon once it is stale (0 = no cap): past it the snapshot stops
 	// counting and its transaction fails with ErrSnapshotTooOld (gc.go).
@@ -149,6 +152,9 @@ type TableState struct {
 	dropping   atomic.Bool
 	replaced   atomic.Bool
 	droppedLSN atomic.Uint64
+	// floor: reads of this table below it are refused (history older than
+	// its retention may be gone; history.go)
+	floor atomic.Uint64
 }
 
 // droppedErr is the error for a write to a table dropped meanwhile.
@@ -371,6 +377,9 @@ func Open(opts Options) (*Engine, error) {
 	if opts.GC && !opts.Replica {
 		e.wg.Add(1)
 		go e.cleaner()
+	} else if !opts.Replica {
+		e.wg.Add(1)
+		go e.marker() // AS OF TIMESTAMP needs the time marks even when nothing is reclaimed
 	}
 	if opts.Compression != wal.CodecNone {
 		if opts.CompressKeepRaw < 0 {
@@ -770,7 +779,7 @@ func (e *Engine) GetAt(table, key string, snap uint64) (schema.Row, *Version, er
 		return nil, nil, err
 	}
 	defer e.enterRead().Add(-1)
-	if err := e.checkSnapshot(snap); err != nil {
+	if err := e.checkSnapshotT(t, snap); err != nil {
 		return nil, nil, err
 	}
 	v, err := e.visible(t.head(key), snap)
@@ -793,7 +802,7 @@ func (e *KeyExistsError) Is(target error) bool { return target == ErrExists }
 // getAtHead is GetAt that also returns the head it looked up.
 func (e *Engine) getAtHead(t *TableState, key string, snap uint64) (schema.Row, *Version, error) {
 	defer e.enterRead().Add(-1)
-	if err := e.checkSnapshot(snap); err != nil {
+	if err := e.checkSnapshotT(t, snap); err != nil {
 		return nil, nil, err
 	}
 	h := t.head(key)
@@ -889,7 +898,7 @@ func (e *Engine) ScanRange(table, start, end string, limit int, snap uint64) ([]
 	}
 	e.waitInstalled(snap)
 	defer e.enterRead().Add(-1)
-	if err := e.checkSnapshot(snap); err != nil {
+	if err := e.checkSnapshotT(t, snap); err != nil {
 		return nil, err
 	}
 	var out []schema.Row
@@ -948,7 +957,7 @@ func (e *Engine) ScanSnapshot(table string, snap uint64, fn func(key string, r s
 	}
 	e.waitInstalled(snap)
 	defer e.enterRead().Add(-1)
-	if err := e.checkSnapshot(snap); err != nil {
+	if err := e.checkSnapshotT(t, snap); err != nil {
 		return err
 	}
 	tr := t.index()
@@ -1005,7 +1014,7 @@ func (e *Engine) scanParallel(table string, snap uint64, need []bool, helpers in
 	}
 	e.waitInstalled(snap)
 	defer e.enterRead().Add(-1)
-	if err := e.checkSnapshot(snap); err != nil {
+	if err := e.checkSnapshotT(t, snap); err != nil {
 		return err
 	}
 	// columns added after the scan starts are added after snap: rows
@@ -1590,7 +1599,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 		}
 		return
 	}
-	now := time.Now().UnixNano()
+	now := e.now().UnixNano()
 	if now <= e.lastTS {
 		now = e.lastTS + 1
 	}
@@ -1991,7 +2000,7 @@ func (e *Engine) installBatch(b *commitBatch) {
 	// once the horizon passes it (earlier batches are all installed)
 	for _, d := range b.drops {
 		d.t.index().ascend("", func(en *entry) bool {
-			e.gc.supersede(en.seg, int64(en.valLen)+versionOverhead, d.lsn)
+			e.gc.supersede(en.seg, int64(en.valLen)+versionOverhead, d.lsn, d.t.retClass())
 			return true
 		})
 	}
@@ -2020,7 +2029,7 @@ func (e *Engine) installBatch(b *commitBatch) {
 			if en, had := tree.get(pv.key); had {
 				if old := en.version(); sameVersion(&old, pv.expect) {
 					tree.del(pv.key)
-					e.gc.account(&old, nil)
+					e.gc.account(pv.t.retClass(), &old, nil)
 					e.Stats.GCDroppedTombstones.Add(1)
 				}
 			}
@@ -2030,9 +2039,9 @@ func (e *Engine) installBatch(b *commitBatch) {
 		old := en.version()
 		wasLive := had && !old.Deleted
 		if had {
-			e.gc.account(&old, pv.v)
+			e.gc.account(pv.t.retClass(), &old, pv.v)
 		} else {
-			e.gc.account(nil, pv.v)
+			e.gc.account(pv.t.retClass(), nil, pv.v)
 		}
 		switch {
 		case !pv.v.Deleted && !wasLive:
@@ -2048,7 +2057,7 @@ func (e *Engine) installBatch(b *commitBatch) {
 	if len(b.remaps) > 0 {
 		e.gc.remapMu.Lock()
 		for _, r := range b.remaps {
-			e.gc.remap[r.from] = r.e
+			e.gc.setRemapLocked(r)
 		}
 		e.gc.remapMu.Unlock()
 	}

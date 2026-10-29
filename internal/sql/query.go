@@ -630,6 +630,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		if p.where, err = pre.bind(subst(st.Where)); err != nil {
 			return nil, err
 		}
+		if tp, ok := p.from.(*tablePlan); ok && tp.asOf != nil {
+			tp.keyEq = asOfKey(p.where, tp.t.KeyIndex())
+		}
 		if jp, ok := p.from.(*joinPlan); ok {
 			var keep Expr
 			for _, cnd := range splitAnd(p.where) {
@@ -1728,6 +1731,9 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		if qual == "" {
 			qual = f.Name
 		}
+		if f.AsOf != nil && (sc.cte(f.Name) != nil || virtualTables[f.Name]) {
+			return nil, errf(codeFeature, "AS OF is only supported on tables")
+		}
 		if d := sc.cte(f.Name); d != nil {
 			cols := renameCols(d.cols, f.ColAliases, qual)
 			if d.plan == nil {
@@ -1740,6 +1746,9 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		}
 		t, err := c.s.table(f.Name)
 		if err != nil {
+			if f.AsOf != nil {
+				return nil, errf(codeFeature, "AS OF is only supported on tables")
+			}
 			if vp, ok, verr := c.expandView(f, qual); ok || verr != nil {
 				return vp, verr
 			}
@@ -1751,6 +1760,13 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		}
 		c.noteDep(f.Name)
 		tp := &tablePlan{t: t}
+		if f.AsOf != nil {
+			bx, err := (&binder{c: c, sc: here}).bind(f.AsOf.X)
+			if err != nil {
+				return nil, err
+			}
+			tp.asOf = &asOfPlan{lsn: f.AsOf.LSN, x: bx}
+		}
 		for i, col := range t.Columns {
 			rc := relCol{qual: qual, name: col.Name, kind: kindOf(col.T)}
 			if i < len(f.ColAliases) {
@@ -1954,12 +1970,17 @@ func shiftSlots(x Expr, d int) Expr {
 }
 
 type tablePlan struct {
-	t *schema.Table
-	c []relCol
+	t     *schema.Table
+	c     []relCol
+	asOf  *asOfPlan // read the table as it was (asof.go)
+	keyEq Expr      // with asOf: the constant the key is compared to in WHERE
 }
 
 func (p *tablePlan) cols() []relCol { return p.c }
-func (p *tablePlan) run(qx *qexec, _ *evalCtx) ([][]Datum, error) {
+func (p *tablePlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
+	if p.asOf != nil {
+		return p.runAsOf(qx, outer)
+	}
 	var rows [][]Datum
 	cols := p.t.Columns
 	var err error
@@ -2247,6 +2268,12 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 			name = f.ColAliases[0]
 		}
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
+	case "stask_history":
+		cols, err := c.historyCols(f.F.Args)
+		if err != nil {
+			return nil, err
+		}
+		fp.c = renameCols(cols, f.ColAliases, qual)
 	case "numbers", "range", "generate_series_ch":
 		name := "number"
 		if len(f.ColAliases) > 0 {
@@ -2272,6 +2299,13 @@ func (p *funcPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 			return nil, err
 		}
 		args[i] = v
+	}
+	if p.name == "stask_history" {
+		rows, err := qx.s.historyRows(args)
+		if err == nil {
+			err = qx.chargeAll(rows)
+		}
+		return rows, err
 	}
 	if sessionFuncs[p.name] || virtualTables[p.name] {
 		return qx.s.sessionTableFunc(p.name, args)

@@ -106,6 +106,10 @@ type Table struct {
 	// attisdropped attributes: rows are not rewritten, and those stored
 	// before the drop are read past the dropped column's value.
 	Dropped []Column `json:"dropped_columns,omitempty"`
+	// HistoryRetention (nanoseconds) is how long the superseded versions
+	// of the table's rows are kept for as-of and history reads; zero uses
+	// the engine-wide setting (ALTER TABLE ... SET (history_retention=...)).
+	HistoryRetention int64 `json:"history_retention_ns,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN

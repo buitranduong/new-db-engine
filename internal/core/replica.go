@@ -285,6 +285,7 @@ func (e *Engine) Apply(at wal.Pos, data []byte) error {
 		lastLSN = r.LSN
 		e.lastTS = max(e.lastTS, r.TS)
 		e.tsRing[r.LSN&(tsRingSize-1)].Store(r.TS)
+		e.noteCommit(r.LSN, r.TS)
 	}
 	for t, tree := range clones {
 		t.idx.Store(tree)
@@ -345,6 +346,9 @@ func (e *Engine) applyRecord(r *wal.Record, clones map[*TableState]*tree) error 
 		if old, had := tr.get(key); had && old.lsn == op.OrigLSN {
 			tr.put(key, &Version{LSN: op.OrigLSN, TS: op.OrigTS, Loc: loc, ValOff: op.ValOff,
 				ValLen: uint32(len(op.Val)), Deleted: op.Kind == wal.OpDel, Prev: op.Prev})
+		} else if had && old.lsn > op.OrigLSN {
+			hv := old.version()
+			e.noteMoved(&hv, op.OrigLSN, loc) // an old version: keep its history reachable (history.go)
 		}
 	}
 	return nil
@@ -413,9 +417,9 @@ func (e *Engine) Trim(before uint32) (int, error) {
 	}
 	// history of versions superseded before the oldest pinned snapshot may
 	// be gone: reads below it fail instead of missing versions
-	h := e.minPinned(e.durable.Load())
-	if h > e.gc.floor.Load() {
-		e.gc.floor.Store(h)
+	e.raiseFloors(e.horizons())
+	if err := e.persistHistoryState(); err != nil {
+		return 0, err
 	}
 	e.gc.condemned.Store(&gone)
 	defer e.gc.condemned.Store(nil)

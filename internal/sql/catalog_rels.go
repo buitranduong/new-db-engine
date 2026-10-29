@@ -40,6 +40,9 @@ func init() {
 			rel(tableOID(t), t.Name, heapAMOID, "r", maxNum(t), len(t.Checks), true, ident, relOptions(t))
 			rel(indexOID(t), pkeyName(t), btreeAMOID, "i", 1, 0, false, "n", Null)
 		}
+		secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
+			rel(secIndexOID(ix.Name), ix.Name, btreeAMOID, "i", len(ix.Columns), 0, false, "n", Null)
+		})
 		for _, q := range c.seqs {
 			rel(seqOID(q.Name), q.Name, 0, "S", 3, 0, false, "n", Null)
 		}
@@ -87,6 +90,12 @@ func init() {
 			k := keyCol(t)
 			att(indexOID(t), k.Name, colTypeOID(k), 1, false, false, "", false, false)
 		}
+		secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
+			for i, name := range ix.Columns {
+				j, _ := t.Col(name)
+				att(secIndexOID(ix.Name), name, colTypeOID(t.Columns[j]), i+1, false, false, "", false, false)
+			}
+		})
 		for _, q := range c.seqs {
 			att(seqOID(q.Name), "last_value", 20, 1, true, false, "", false, false)
 			att(seqOID(q.Name), "log_cnt", 20, 2, true, false, "", false, false)
@@ -130,6 +139,13 @@ func init() {
 					BoolD(true), BoolD(false), BoolD(true), BoolD(false), BoolD(true), BoolD(false), BoolD(true),
 					BoolD(true), BoolD(false), vecText(k.Num), vecText(0), vecText(0), vecText(0), Null, Null})
 			}
+			secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
+				zeros := make([]int, len(ix.Columns))
+				rows = append(rows, []Datum{IntD(secIndexOID(ix.Name)), IntD(tableOID(t)), IntD(int64(len(ix.Columns))),
+					IntD(int64(len(ix.Columns))), BoolD(ix.Unique), BoolD(false), BoolD(false), BoolD(false), BoolD(true),
+					BoolD(false), BoolD(true), BoolD(false), BoolD(true), BoolD(true), BoolD(false),
+					vecText(attnums(t, ix.Columns)...), vecText(zeros...), vecText(zeros...), vecText(zeros...), Null, Null})
+			})
 			return rows
 		})
 
@@ -149,6 +165,7 @@ func init() {
 				con(checkOID(t, i), ck.Name, "c", tableOID(t), 0, checkKeys(t, ck.Expr), TextD(ck.Expr))
 			}
 		}
+		secConstraintRows(c, &rows)
 		return rows
 	})
 
@@ -305,6 +322,9 @@ func init() {
 		var rows [][]Datum
 		for _, t := range c.tables {
 			rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(pkeyName(t)), Null, TextD(indexDef(t))})
+			for _, ix := range listedIndexes(t) {
+				rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(ix.Name), Null, TextD(secIndexDef(t, ix))})
+			}
 		}
 		return rows
 	})

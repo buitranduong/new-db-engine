@@ -1,6 +1,8 @@
 package sql
 
 import (
+	"slices"
+
 	"stask/internal/schema"
 )
 
@@ -134,6 +136,14 @@ func init() {
 			for _, ck := range t.Checks {
 				con(ck.Name, t, "CHECK", Null)
 			}
+			for _, ix := range t.Indexes {
+				if ix.Constraint != "" {
+					con(ix.Constraint, t, "UNIQUE", TextD("YES"))
+				}
+			}
+			for _, fk := range t.ForeignKeys {
+				con(fk.Name, t, "FOREIGN KEY", Null)
+			}
 		}
 		return rows
 	})
@@ -155,6 +165,18 @@ func init() {
 			var rows [][]Datum
 			for _, t := range c.tables {
 				rows = append(rows, []Datum{cat, pub, TextD(pkeyName(t)), cat, pub, TextD(t.Name), TextD(t.Key), IntD(1), Null})
+				for _, ix := range t.Indexes {
+					if ix.Constraint != "" {
+						for i, col := range ix.Columns {
+							rows = append(rows, []Datum{cat, pub, TextD(ix.Constraint), cat, pub, TextD(t.Name), TextD(col), IntD(int64(i + 1)), Null})
+						}
+					}
+				}
+				for _, fk := range t.ForeignKeys {
+					for i, col := range fk.Columns {
+						rows = append(rows, []Datum{cat, pub, TextD(fk.Name), cat, pub, TextD(t.Name), TextD(col), IntD(int64(i + 1)), IntD(int64(i + 1))})
+					}
+				}
 			}
 			return rows
 		})
@@ -198,7 +220,28 @@ func init() {
 		"parameter_name:t data_type:t", nil)
 	defInfo("referential_constraints", "constraint_catalog:t constraint_schema:t constraint_name:t "+
 		"unique_constraint_catalog:t unique_constraint_schema:t unique_constraint_name:t match_option:t "+
-		"update_rule:t delete_rule:t", nil)
+		"update_rule:t delete_rule:t", func(c *catSnap) [][]Datum {
+		var rows [][]Datum
+		for _, t := range c.tables {
+			for _, fk := range t.ForeignKeys {
+				uc := Null
+				if p := c.tableNamed(fk.RefTable); p != nil {
+					uc = TextD(pkeyName(p))
+					for _, ix := range p.Indexes {
+						if ix.Unique && ix.Constraint != "" && slices.Equal(ix.Columns, fk.RefCols) {
+							uc = TextD(ix.Constraint)
+						}
+					}
+				}
+				del := map[string]string{"restrict": "RESTRICT", "cascade": "CASCADE", "set null": "SET NULL"}[fk.OnDelete]
+				if del == "" {
+					del = "NO ACTION"
+				}
+				rows = append(rows, []Datum{cat, pub, TextD(fk.Name), cat, pub, uc, TextD("NONE"), TextD("NO ACTION"), TextD(del)})
+			}
+		}
+		return rows
+	})
 	defInfo("views", "table_catalog:t table_schema:t table_name:t view_definition:t check_option:t "+
 		"is_updatable:t is_insertable_into:t is_trigger_updatable:t is_trigger_deletable:t "+
 		"is_trigger_insertable_into:t", nil)

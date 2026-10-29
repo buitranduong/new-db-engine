@@ -307,3 +307,32 @@ func TestSQLConcurrentConstraints(t *testing.T) {
 		}
 	}
 }
+
+// TestSQLIndexCatalog: secondary indexes and constraints are listed by the
+// catalog, with the foreign key's own index hidden.
+func TestSQLIndexCatalog(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE org (id bigint PRIMARY KEY, code text, CONSTRAINT org_code_uq UNIQUE (code))`)
+	run(t, s, `CREATE TABLE emp (id bigint PRIMARY KEY, org_id bigint REFERENCES org(id) ON DELETE CASCADE, age bigint)`)
+	run(t, s, `CREATE INDEX emp_age_idx ON emp (age, org_id)`)
+	expectRows(t, s, `SELECT tablename, indexname, indexdef FROM pg_indexes ORDER BY indexname`,
+		"emp,emp_age_idx,CREATE INDEX emp_age_idx ON public.emp USING btree (age, org_id);"+
+			"emp,emp_pkey,CREATE UNIQUE INDEX emp_pkey ON public.emp USING btree (id);"+
+			"org,org_code_uq,CREATE UNIQUE INDEX org_code_uq ON public.org USING btree (code);"+
+			"org,org_pkey,CREATE UNIQUE INDEX org_pkey ON public.org USING btree (id)")
+	expectRows(t, s, `SELECT c.relname, i.indisunique, i.indisprimary, i.indnatts, i.indkey FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'emp'::regclass ORDER BY c.relname`,
+		"emp_age_idx,false,false,2,3 2;emp_pkey,true,true,1,1")
+	expectRows(t, s, `SELECT conname, contype, confdeltype, conkey FROM pg_constraint WHERE conrelid = 'emp'::regclass ORDER BY conname`,
+		"emp_org_id_fkey,f,c,{2};emp_pkey,p, ,{1}")
+	expectRows(t, s, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname IN ('emp_org_id_fkey','org_code_uq') ORDER BY conname`,
+		"FOREIGN KEY (org_id) REFERENCES org(id) ON DELETE CASCADE;UNIQUE (code)")
+	expectRows(t, s, `SELECT pg_get_indexdef('emp_age_idx'::regclass), pg_get_indexdef('emp_age_idx'::regclass, 2, false)`,
+		"CREATE INDEX emp_age_idx ON public.emp USING btree (age, org_id),org_id")
+	expectRows(t, s, `SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'emp' ORDER BY constraint_name`,
+		"emp_org_id_fkey,FOREIGN KEY;emp_pkey,PRIMARY KEY")
+	expectRows(t, s, `SELECT constraint_name, update_rule, delete_rule FROM information_schema.referential_constraints`,
+		"emp_org_id_fkey,NO ACTION,CASCADE")
+	expectRows(t, s, `SELECT count(*) FROM pg_class WHERE relkind = 'i'`, "4")
+}

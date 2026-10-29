@@ -91,6 +91,9 @@ func (s *Session) regclass(name string) (Datum, error) {
 			return IntD(indexOID(ts.Schema())), nil
 		}
 	}
+	if _, taken := s.E.IndexNameTaken(n); taken {
+		return IntD(secIndexOID(n)), nil
+	}
 	if virtualTables[n] {
 		return IntD(12100), nil // a view of pg_catalog without an OID of its own here
 	}
@@ -335,6 +338,15 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 				return TextD(indexDef(t)), nil
 			}
 		}
+		if t, ix := s.catSnap().secIndexByOID(oid); ix != nil {
+			if len(args) > 1 && argInt(1) > 0 {
+				if n := int(argInt(1)); n <= len(ix.Columns) {
+					return TextD(quoteIdent(ix.Columns[n-1])), nil
+				}
+				return TextD(""), nil
+			}
+			return TextD(secIndexDef(t, *ix)), nil
+		}
 		return Null, nil
 	case "pg_get_constraintdef":
 		oid := argInt(0)
@@ -347,6 +359,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 					return TextD("CHECK (" + ck.Expr + ")"), nil
 				}
 			}
+		}
+		if d, ok := s.catSnap().secConstraintDef(oid); ok {
+			return TextD(d), nil
 		}
 		return Null, nil
 	case "pg_get_serial_sequence":

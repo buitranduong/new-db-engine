@@ -3,7 +3,7 @@
 // and keeps its own record of every transaction, so the server's state can be
 // compared with what the client was told.
 //
-//	e2e write  -url U -log F [-workers 4] [-batch 20] [-size 1000] [-dur 0]
+//	e2e write  -url U -log F [-workers 4] [-batch 20] [-size 1000] [-dur 0] [-gen 0]
 //	    Concurrent transactions on table ev (insert a batch; now and then
 //	    update and delete rows) until -dur, SIGINT, or the first error of a
 //	    worker (a killed server). Each transaction is logged with its send and
@@ -16,9 +16,11 @@
 //	    committed up to the target: none lost, none extra, rows intact. Also
 //	    checks the target against the client's clock (acked before the target:
 //	    present; sent after it: absent).
-//	e2e verify -url U -log F -mode acked
+//	e2e verify -url U -log F1,F2,.. -mode acked
 //	    After a crash: every acknowledged transaction is present, and what
 //	    else is there is, per worker, only the one transaction in flight.
+//	e2e ping -url U [-q "select 1"]
+//	    Connects with pgx (SCRAM, TLS as the URL says) and runs a query; exit 1 if refused.
 //	e2e pick -cdcmap M -frac 0.6
 //	    Prints "lsn ts(RFC3339Nano)" of the commit at that fraction of the map.
 //
@@ -85,6 +87,7 @@ func main() {
 	workers := fs.Int("workers", 4, "concurrent connections")
 	batch := fs.Int("batch", 20, "rows inserted per transaction")
 	size := fs.Int("size", 1000, "payload bytes")
+	gen := fs.Int("gen", 0, "generation: ids and worker numbers of this run start at gen*workers, so several runs can share a table")
 	dur := fs.Duration("dur", 0, "write for this long (0 = until SIGINT)")
 	slot := fs.String("slot", "", "slot")
 	out := fs.String("out", "", "output file")
@@ -92,17 +95,20 @@ func main() {
 	cdcmap := fs.String("cdcmap", "", "file from cdcmap")
 	lsn := fs.Uint64("lsn", 0, "target commit LSN")
 	ts := fs.String("ts", "", "target time (RFC 3339)")
+	query := fs.String("q", "select 1", "ping: query; the first column of the first row is printed")
 	frac := fs.Float64("frac", 0.5, "pick: fraction of commits")
 	fs.Parse(os.Args[2:])
 	switch cmd {
 	case "write":
-		write(*url, *logf, *workers, *batch, *size, *dur)
+		write(*url, *logf, *workers, *batch, *size, *dur, *gen)
 	case "cdcmap":
 		runCDC(*url, *slot, *out)
 	case "verify":
 		verify(*url, *logf, *mode, *cdcmap, *lsn, *ts, *size)
 	case "pick":
 		pick(*cdcmap, *frac)
+	case "ping":
+		ping(*url, *query)
 	default:
 		die("unknown command %q", cmd)
 	}
@@ -113,7 +119,7 @@ type stmt struct {
 	args []any
 }
 
-func write(url, logf string, workers, batch, size int, dur time.Duration) {
+func write(url, logf string, workers, batch, size int, dur time.Duration, gen int) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if dur > 0 {
@@ -134,13 +140,14 @@ func write(url, logf string, workers, batch, size int, dur time.Duration) {
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func(w int) {
+		go func(w0 int) {
 			defer wg.Done()
 			conn, err := pgx.Connect(context.Background(), url)
 			if err != nil {
 				die("worker %d connect: %v", w, err)
 			}
 			defer conn.Close(context.Background())
+			w := gen*workers + w0 // global worker number
 			rng := rand.New(rand.NewSource(int64(w) + 1))
 			next := int64(w)*1_000_000_000 + 1
 			live := map[int64]int{} // id -> version
@@ -379,10 +386,12 @@ func dbState(url string) (map[int64][2]string, error) {
 }
 
 // compare prints (up to 10) differences between want and the database.
+var quiet bool // compare counts but does not print
+
 func compare(want state, db map[int64][2]string, size int, label string) int {
 	bad := 0
 	rep := func(f string, a ...any) {
-		if bad < 10 {
+		if bad < 10 && !quiet {
 			fmt.Printf("  %s: "+f+"\n", append([]any{label}, a...)...)
 		}
 		bad++
@@ -411,7 +420,10 @@ func compare(want state, db map[int64][2]string, size int, label string) int {
 }
 
 func verify(url, logf, mode, cdcmap string, lsn uint64, tsText string, size int) {
-	txns := readLog(logf)
+	var txns []*txn
+	for _, f := range strings.Split(logf, ",") {
+		txns = append(txns, readLog(f)...)
+	}
 	db, err := dbState(url)
 	if err != nil {
 		die("read db: %v", err)
@@ -445,7 +457,9 @@ func verify(url, logf, mode, cdcmap string, lsn uint64, tsText string, size int)
 					dbw[id] = r
 				}
 			}
+			quiet = true
 			n1 := compare(s, dbw, size, fmt.Sprintf("worker %d", w))
+			quiet = false
 			if n1 == 0 {
 				continue
 			}
@@ -455,11 +469,15 @@ func verify(url, logf, mode, cdcmap string, lsn uint64, tsText string, size int)
 					s2[k] = v
 				}
 				apply(s2, pend)
-				if compare(s2, dbw, size, fmt.Sprintf("worker %d (+in flight)", w)) == 0 {
+				quiet = true
+				n2 := compare(s2, dbw, size, fmt.Sprintf("worker %d (+in flight)", w))
+				quiet = false
+				if n2 == 0 {
 					fmt.Printf("  worker %d: the in-flight transaction %d did commit\n", w, pend.N)
 					continue
 				}
 			}
+			compare(s, dbw, size, fmt.Sprintf("worker %d", w)) // print
 			bad += n1
 		}
 		fmt.Printf("verify acked: %d acknowledged txns, %d in flight, %d rows in db, %d violations\n", okN, unk, len(db), bad)
@@ -533,4 +551,19 @@ func verify(url, logf, mode, cdcmap string, lsn uint64, tsText string, size int)
 			os.Exit(1)
 		}
 	}
+}
+
+func ping(url, q string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		die("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+	var v any
+	if err := conn.QueryRow(ctx, q).Scan(&v); err != nil {
+		die("query: %v", err)
+	}
+	fmt.Println(v)
 }

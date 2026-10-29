@@ -2,7 +2,7 @@
 # security.sh). Source it; it does not run anything.
 #
 # Safety: a script only ever stops processes it started itself (pids kept in
-# $E2E_PIDS, found again by their own data directory in /proc/PID/cmdline),
+# $E2E_PIDS; nothing is ever stopped by name or by pattern),
 # only uses ports in 20000-20999 and only touches $E2E_DIR.
 #
 # Environment:
@@ -23,7 +23,7 @@ ok()   { log "OK   $*"; }
 bad()  { log "FAIL $*"; FAILS=$((FAILS+1)); }
 check() { # check "label" cmd... : the command must succeed
   local l=$1; shift
-  if "$@" > $E2E_DIR/last.out 2>&1; then ok "$l"; else bad "$l"; sed s/^/ / $E2E_DIR/last.out | tail -5; fi
+  if "$@" > $E2E_DIR/last.out 2>&1; then ok "$l"; else bad "$l"; sed 's/^/     /' $E2E_DIR/last.out | tail -5; fi
 }
 refuse() { # refuse "label" cmd... : the command must fail
   local l=$1; shift
@@ -81,11 +81,11 @@ wait_port() { for i in $(seq 200); do (exec 3<>/dev/tcp/127.0.0.1/$1) 2>/dev/nul
 psql_run() {
   local port=$1; shift
   if command -v psql > /dev/null; then
-    env PGSSLROOTCERT=$CERTS/ca.crt "${PSQLENV[@]}" psql -X -q -h 127.0.0.1 -p $port -U app stask "$@"
+    env PGSSLROOTCERT=$CERTS/ca.crt "${PSQLENV[@]}" psql -X -q -w -h 127.0.0.1 -p $port -U app stask "$@"
   else
     local e=(); for kv in "${PSQLENV[@]}"; do e+=(-e "${kv//$CERTS//certs}"); done
     docker run --rm --network host -v $E2E_DIR:/d -v $CERTS:/certs:ro -e PGSSLROOTCERT=/certs/ca.crt "${e[@]}" postgres:16 \
-      psql -X -q -h 127.0.0.1 -p $port -U app stask "${@//$E2E_DIR//d}"
+      psql -X -q -w -h 127.0.0.1 -p $port -U app stask "${@//$E2E_DIR//d}"
   fi
 }
 cleanup_common() { stop_all; }

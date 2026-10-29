@@ -179,7 +179,10 @@ type Column struct {
 	TypeLSN  uint64 `json:"type_lsn,omitempty"`
 	// Hidden: an internal key column (RowIDCol, KeyCol, pkey.go), stored
 	// like any column but not part of the table as clients see it.
-	Hidden bool    `json:"hidden,omitempty"`
+	Hidden bool `json:"hidden,omitempty"`
+	// Domain is the name of the domain the column was declared with (PG and
+	// Type are those of its base type); empty for other columns.
+	Domain string  `json:"domain,omitempty"`
 	T      ColType `json:"-"`
 	prevT  ColType
 }

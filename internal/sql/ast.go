@@ -8,6 +8,7 @@ type ColDef struct {
 	Name    string
 	Type    string // schema type: int, float, string, text, time, bool
 	PG      string // declared PostgreSQL type when Type cannot tell (pgtype.go)
+	Domain  string // the domain of the column (ddlobjs_types.go)
 	Primary bool
 	NotNull bool
 	Default string // SQL text of DEFAULT

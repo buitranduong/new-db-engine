@@ -215,6 +215,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			col = c
 		}
 		return &Result{Cols: []Column{{Name: col, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
+	case *ObjDDL, *CommentOn:
+		// applied at once, like CREATE TABLE (ddlobjs_exec.go)
+		res, err := s.objDDL(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *CreateTable:
 		res, err := s.createTable(st)
 		if err != nil {
@@ -242,6 +249,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		res, err := s.seqDDL(st)
 		if err != nil {
 			s.markFailed()
+		} else {
+			s.afterDrop(st)
 		}
 		return res, err
 	case *CreateRole, *AlterRole, *DropRole, *Grant:
@@ -261,6 +270,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		res, err := s.dropIndex(st)
 		if err != nil {
 			s.markFailed()
+		} else {
+			s.afterDrop(st)
 		}
 		return res, err
 	case *CreateView, *DropView:
@@ -268,6 +279,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		res, err := s.viewDDL(st)
 		if err != nil {
 			s.markFailed()
+		} else {
+			s.afterDrop(st)
 		}
 		return res, err
 	case *CreateTrigger, *DropTrigger:
@@ -291,6 +304,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		res, err := s.dropOrTruncate(st)
 		if err != nil {
 			s.markFailed()
+		} else {
+			s.afterDrop(st)
 		}
 		return res, err
 	case *Listen:
@@ -435,6 +450,9 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
 			return nil, err
 		}
+	case "search_path":
+		s.vars[name] = normSearchPath(st.Value)
+		return &Result{Tag: "SET"}, nil
 	case "sql_dialect":
 		if val != "postgres" && val != "clickhouse" {
 			return nil, errf(codeInvalidParameter, "invalid value for parameter \"sql_dialect\": %q (postgres or clickhouse)", val)
@@ -446,6 +464,9 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 }
 
 func (s *Session) createTable(c *CreateTable) (*Result, error) {
+	if err := s.resolveUserTypes(c.Cols); err != nil {
+		return nil, err
+	}
 	if _, err := s.E.UserTable(c.Name); err == nil || s.isView(c.Name) {
 		if c.IfNotExists {
 			return &Result{Tag: "CREATE TABLE", Notice: fmt.Sprintf("relation %q already exists, skipping", c.Name)}, nil
@@ -466,7 +487,7 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings
 		}
-		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, NotNull: cd.NotNull || cd.Primary})
+		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, Domain: cd.Domain, NotNull: cd.NotNull || cd.Primary})
 	}
 	for k, v := range c.Options {
 		switch k {
@@ -538,7 +559,7 @@ func (s *Session) table(name string) (*schema.Table, error) {
 		}
 		return nil, errf(codeUndefinedTable, "relation %q does not exist", name)
 	}
-	return ts.Schema(), nil
+	return s.withTypes(ts.Schema()), nil
 }
 
 func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
@@ -1745,6 +1766,9 @@ func (s *Session) buildRow(t *schema.Table, cols []int, vals []Datum) (schema.Ro
 }
 
 func checkRow(t *schema.Table, r schema.Row) error {
+	if err := checkUserCols(t, r); err != nil {
+		return err
+	}
 	for i, c := range t.Columns {
 		if r[i].Null && (c.NotNull || i == t.KeyIndex()) && !(c.Hidden && t.Composite()) {
 			return errf(codeNotNullViolation, "null value in column %q of relation %q violates not-null constraint", c.Name, t.Name)

@@ -22,6 +22,9 @@ import (
 
 // callPre handles functions whose forms the core set gets wrong, before it.
 func (c *evalCtx) callPre(f *Func, args []Datum) (Datum, bool, error) {
+	if d, ok, err := c.extCall(f, args); ok {
+		return d, true, err
+	}
 	switch f.Name {
 	case "trim", "btrim", "ltrim", "rtrim":
 		if len(args) != 2 {
@@ -1337,6 +1340,9 @@ func funcKind(name string, args []Kind) Kind {
 		return KText
 	}
 	if k, ok := catalogFuncKinds[name]; ok {
+		return k
+	}
+	if k, ok := extFuncKinds[name]; ok {
 		return k
 	}
 	switch name {

@@ -868,6 +868,8 @@ func (p *parser) fromItem() (FromNode, error) {
 	p.acceptKw("final")
 	if alias == "" && strings.HasPrefix(name, infoPrefix) {
 		alias = name[len(infoPrefix):] // information_schema.tables is qualified as tables
+	} else if sch, b, ok := splitSchema(name); ok && alias == "" && sch != "" {
+		alias = b // FROM s.t is referred to as t
 	}
 	return &FromTable{Name: name, Alias: alias, ColAliases: cols, AsOf: asOf}, nil
 }

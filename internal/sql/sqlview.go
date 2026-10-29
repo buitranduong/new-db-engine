@@ -63,7 +63,7 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 		return nil, false, nil
 	}
 	c := &CreateView{OrReplace: replace}
-	if c.Name, err = p.qualifiedName(); err != nil {
+	if c.Name, err = p.qualifiedNameNew(); err != nil {
 		return nil, true, err
 	}
 	if p.acceptOp("(") {

@@ -80,6 +80,9 @@ func (p *parser) compatStatement(word string) (st Stmt, ok bool, err error) {
 		return &ResetStmt{Name: strings.ToLower(strings.Join(name, "."))}, true, nil
 	case "comment":
 		p.next()
+		if st, ok, err := p.commentOn(); ok {
+			return st, true, err
+		}
 		if err := p.expectKw("on"); err != nil {
 			return nil, true, err
 		}
@@ -175,7 +178,7 @@ func sessionDefaults() map[string]string {
 		"client_encoding": "UTF8", "datestyle": "ISO, MDY", "timezone": "UTC",
 		"standard_conforming_strings": "on", "server_version": "16.0",
 		"transaction_isolation": "repeatable read", "default_transaction_isolation": "repeatable read",
-		"application_name": "", "search_path": "public", "integer_datetimes": "on", "server_encoding": "UTF8",
+		"application_name": "", "search_path": defaultSearchPath, "integer_datetimes": "on", "server_encoding": "UTF8",
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
 		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
 		"max_identifier_length": "63", "default_transaction_read_only": "off", "transaction_read_only": "off",
@@ -223,6 +226,9 @@ func (s *Session) resetVar(name string) error {
 // writesStatement reports whether st changes data or schema (refused in a
 // READ ONLY transaction, 25006).
 func writesStatement(st Stmt) (bool, string) {
+	if w, what := objWrites(st); w {
+		return w, what
+	}
 	if e, ok := st.(*Explain); ok {
 		if e.Analyze {
 			return writesStatement(e.Stmt)

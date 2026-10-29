@@ -147,6 +147,9 @@ func fromCol(c *schema.Column, v schema.Value) Datum {
 	if c.PG == "float4" && d.K == KFloat {
 		d.S = f4Mark
 	}
+	if len(c.PG) > 5 && c.PG[:5] == "enum:" { // carries its sort position (ddlobjs_types.go)
+		d = markEnum(c.PG, d)
+	}
 	return d
 }
 
@@ -486,6 +489,11 @@ func (d Datum) String() string {
 
 // compare orders two non-null values (after numeric/text coercion).
 func compare(a, b Datum) (int, error) {
+	if a.K == KText && b.K == KText && (a.I|b.I) != 0 { // an enum value (ddlobjs_types.go)
+		if c, ok, err := cmpEnumD(a, b); ok {
+			return c, err
+		}
+	}
 	if a.K != b.K {
 		switch {
 		case (isTime(a.K) || a.K == KDate) && (isTime(b.K) || b.K == KDate):

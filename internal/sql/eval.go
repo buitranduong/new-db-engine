@@ -262,6 +262,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if strings.HasPrefix(e.PG, "ut:") { // a cast to an enum or domain
+			return c.castUser(e, v)
+		}
 		if d, ok, err := c.castCatalog(v, e.Type); ok {
 			return d, err
 		}
@@ -687,7 +690,7 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 	case "current_database":
 		return TextD("stask"), nil
 	case "current_schema":
-		return TextD("public"), nil
+		return TextD(c.currentSchema()), nil
 	case "concat":
 		var b strings.Builder
 		for _, a := range args {

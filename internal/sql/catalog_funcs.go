@@ -76,6 +76,7 @@ func (s *Session) regclass(name string) (Datum, error) {
 	if strings.HasPrefix(name, infoPrefix) {
 		n = name
 	}
+	n = s.resolveRel(n)
 	if oid, ok := catalogRels[n]; ok {
 		return IntD(oid), nil
 	}
@@ -198,10 +199,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "current_catalog":
 		return TextD("stask"), nil
 	case "current_schemas":
-		if len(args) == 1 && args[0].Bool() {
-			return arrayD([]Datum{TextD("pg_catalog"), TextD("public")}), nil
-		}
-		return arrayD([]Datum{TextD("public")}), nil
+		return s.currentSchemas(len(args) == 1 && args[0].Bool()), nil
 	case "pg_backend_pid":
 		return IntD(1), nil
 	case "pg_my_temp_schema":
@@ -256,6 +254,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 				return TextD("bpchar"), nil // PostgreSQL prints char without a length as bpchar
 			}
 			return TextD(t.sqlName), nil
+		}
+		if n, ok := userTypeFormat(oid.I); ok {
+			return TextD(n), nil
 		}
 		return TextD("???"), nil
 	case "to_regclass", "to_regtype":
@@ -340,7 +341,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_is_other_temp_schema", "pg_is_in_recovery":
 		return BoolD(false), nil
 	case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible":
-		return BoolD(true), nil // everything is in pg_catalog or public, both on the search path
+		return BoolD(s.visible(args)), nil
 	case "pg_get_userbyid":
 		return TextD(roleName), nil
 	case "pg_get_expr":
@@ -353,7 +354,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		}
 		return Null, nil
 	case "obj_description", "col_description", "shobj_description":
-		return Null, nil
+		return s.objDescription(name, args), nil
 	case "pg_encoding_to_char":
 		if argInt(0) == 6 {
 			return TextD("UTF8"), nil
@@ -399,6 +400,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			}
 		}
 		if d, ok := s.catSnap().secConstraintDef(oid); ok {
+			return TextD(d), nil
+		}
+		if d, ok := s.domainConDef(oid); ok {
 			return TextD(d), nil
 		}
 		return Null, nil

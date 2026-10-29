@@ -53,6 +53,12 @@ type pgTy struct {
 
 // specTy reads the spelling the parser recorded (Cast.PG, Column.PG).
 func specTy(spec string) pgTy {
+	if len(spec) > 5 && spec[:5] == "enum:" {
+		return pgTy{oid: userTypeOID(spec[5:]), mod: -1}
+	}
+	if len(spec) > 3 && spec[:3] == "ut:" {
+		return userSpecTy(spec)
+	}
 	name, n := spec, -1
 	if i := strings.IndexByte(spec, '('); i > 0 && strings.HasSuffix(spec, ")") {
 		name = spec[:i]
@@ -118,6 +124,9 @@ func (t pgTy) family() Kind {
 		return KText
 	case tyDate:
 		return KDate
+	}
+	if isUserOID(t.oid) {
+		return KText
 	}
 	return KNull
 }
@@ -336,6 +345,9 @@ func pgTyName(t pgTy) string {
 	case tyJSONB:
 		return "jsonb"
 	}
+	if n, ok := userTypeFormat(int64(t.oid)); ok {
+		return n
+	}
 	return ""
 }
 
@@ -507,6 +519,9 @@ func FormatFloat4(f float64) string {
 func applyPG(pg string, d Datum, explicit bool) (Datum, error) {
 	if pg == "" || d.IsNull() {
 		return d, nil
+	}
+	if strings.HasPrefix(pg, "enum:") || strings.HasPrefix(pg, "ut:") {
+		return applyUserPG(pg, d, explicit)
 	}
 	switch name := specName(pg); name {
 	case "int2", "int4":

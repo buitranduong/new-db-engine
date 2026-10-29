@@ -18,7 +18,7 @@ func defInfo(name, cols string, rows func(c *catSnap) [][]Datum) { defCat(infoPr
 
 // colTypeInfo is a column's information_schema data_type and udt_name.
 func colTypeInfo(c schema.Column) (dataType, udt string, ty *pgType) {
-	ty = pgTypeByOID[colTypeOID(c)]
+	ty = typeByOID(colTypeOID(c))
 	return ty.infoName, ty.name, ty
 }
 

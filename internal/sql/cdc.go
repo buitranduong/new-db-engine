@@ -511,7 +511,7 @@ func ConfirmLSN(e *core.Engine, slot, lsn string) (string, error) {
 
 // pgTypeName is format_type() of a column, as both plugins print it.
 func pgTypeName(c schema.Column) string {
-	n := pgTypeByOID[int64(PgTypeOID(c))].sqlName
+	n := typeByOID(int64(PgTypeOID(c))).sqlName
 	if p, sc, ok := schema.NumericMod(c.Type); ok {
 		n = "numeric(" + strconv.Itoa(p) + "," + strconv.Itoa(sc) + ")"
 	}

@@ -126,7 +126,7 @@ func TestReadOnlySetLocalReset(t *testing.T) {
 	}
 	run(t, s, `SET search_path TO other`)
 	run(t, s, `DISCARD ALL`)
-	if got := render(run(t, s, `SHOW search_path`)); got != "public" {
+	if got := render(run(t, s, `SHOW search_path`)); got != defaultSearchPath {
 		t.Errorf("discard all: %q", got)
 	}
 	if got := render(run(t, s, `SELECT current_setting('app.tenant', true)`)); got != "NULL" {

@@ -41,6 +41,7 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 | P0.6 | GC dưới tải cập nhật nặng 30 phút | Dung lượng, CPU GC ổn định | Chưa chạy | Chưa làm |
 | P0.7 | RTO khởi động nguội | Số ở 10 GB và 100M | 10 GB: 1,05–2,42 s. 100M: khởi động 14,6 s (nạp checkpoint 9,8 s), nhưng **chưa xoá page cache** ở 100M | Một phần |
 | P0.8 | Ưu tiên đọc khi quá tải (N1) | Tải 2×: đọc ≥99% phục vụ, p99 <50 ms | Cài đặt trên `main` (`-admission`), 4 test mô phỏng qua. Mô phỏng 4 core: đúng hạn 50 ms 0% → 100%, p99 115 → 5,4 ms. **Chưa đo trên máy thật** (`scripts/slotsweep.sh`); đo cũ ở 2× là 60% | Xong-chưa-kiểm |
+| P0.9 | Công cụ đo tự kiểm (không lặp lại hai lỗi đo: bảng columnar bị `staskmix` xoá nhầm → 12 script aggregate chạy đường quét dòng, 14 s thay vì 0,18 s; benchmark chạy `bin/staskd` cũ hơn mã) | Binary cũ hoặc bảng sai dạng → lượt đo `valid:false` và thoát mã 3; có test | `internal/benchcheck`, `internal/buildinfo`, `scripts/build-bench.sh`, `scripts/benchlib.sh`; 8 script đã chuyển. Xem §2.1 | Xong (phạm vi ghi ở §2.1) |
 
 ### P1 Kiểu dữ liệu và schema
 
@@ -102,6 +103,38 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 | P6.4 | Đo trên máy riêng | Số đo cluster | Cần thêm VM (phụ thuộc người dùng) | Chưa làm |
 | P7.1 | Trigger thân SQL | Ghi không chậm khi không có trigger | Cú pháp `CREATE TRIGGER ... BEFORE/AFTER INSERT/UPDATE/DELETE ... [WHEN] BEGIN ... END`, `SET NEW.col`, `RAISE(ABORT/FAIL/ROLLBACK, msg)` (P0001), đệ quy giới hạn 16 tầng (54001); chạy trong giao dịch ghi; replica không chạy lại trigger. 2 probe mới qua (`trigger_sql_body_fires`, `trigger_raise_abort`). Vi benchmark (ghim 1 core, insert+update+delete): không trigger 10,9–11,9 µs/op trước và 11,0–11,8 sau (không chậm đi trong nhiễu); mỗi thân trigger ~5,5 µs. **Chưa đo theo quy trình docs/11 §5** (3 lượt, CPU client). **Cú pháp chuẩn PG `EXECUTE FUNCTION` không được hỗ trợ** (`0A000`, không có `CREATE FUNCTION`): trigger do Liquibase/Jmix sinh ra sẽ không chạy. Chưa có: `UPDATE OF cols`, trigger mức câu lệnh, `INSTEAD OF`, `pg_get_triggerdef`. `RENAME TO` bị từ chối khi bảng có trigger | Xong-có-bằng-chứng (cú pháp SQLite); P7.2 chưa làm |
 | P8 | Chạy lại toàn bộ bộ tải, quyết định port Rust | Báo cáo Cổng 2 | Chờ P0–P7 | Chưa làm |
+
+### 2.1 Công cụ đo tự kiểm (P0.9)
+
+**Thành phần.**
+- `scripts/build-bench.sh` build mọi `cmd/*` vào `bin-main/` và ghi `bin-main/BUILD.json` (commit, dirty, thời điểm, go version). Commit được đóng dấu bằng `-ldflags -X stask/internal/buildinfo.Stamp*`, vì Go **không** ghi `vcs.*` khi build trong git worktree (đã gặp: binary build trong worktree có `revision` rỗng). `go build ./...` không ghi binary; `bin-main/` mới là nơi benchmark lấy binary.
+- `/v1/status` có thêm khối `build` (`revision`, `modified`, `time`, `go`) và `columnar` (thuộc tính khai báo) cho mỗi bảng.
+- `internal/benchcheck` (dùng trong `staskmix`, `aggbench`, `staskbench`, `staskbulk`): cờ `-stask-http` (env `STASK_HTTP`), `-expect` (env `BENCH_EXPECT`), `-allow-stale` (env `BENCH_ALLOW_STALE=1`), `-repo`, `-data-dir`.
+  - Build: so `build.revision` của staskd đang chạy với `git rev-parse HEAD`; không khớp, `modified=true`, không có `build` (binary cũ), hoặc có thay đổi `*.go`/`go.mod` chưa commit thì FAIL (với `-allow-stale` chỉ cảnh báo, ghi `allow_stale` trong meta).
+  - Tiền điều kiện (`-expect "orders,columnar,agg,min=N,max=M;..."`), kiểm trước và sau lượt đo: bảng tồn tại, có thuộc tính columnar và view (hoặc `row` nếu cố ý đo đường dòng), số dòng live trong khoảng, và với `agg` thì một truy vấn aggregate thăm dò qua `/v1/query` phải trả `plan.engine=columnar`.
+  - Mọi JSON kết quả có `meta` (commit, flags, build của tool và server, số lõi, CPU client, load average, dung lượng đĩa trống, danh sách kiểm tra đã qua), `valid` và `invalid_reasons`. Lượt INVALID in biểu ngữ ra stderr và thoát mã **3**.
+  - Mặc định: `staskmix` tự đòi `orders` columnar + aggregate dùng columnar khi lớp `agg` chạy (muốn cố ý đo đường dòng: `-expect orders,row`); `aggbench` đòi `orders,agg`.
+- Script đã chuyển (dùng `bin-main`, `bench_require_build`, đặt `STASK_HTTP`, `-expect` ở bước nạp, `bench_valid` ở cuối, thoát khác 0 nếu có kết quả INVALID): `scale.sh`, `aggab.sh`, `sqlcol.sh`, `colprof.sh`, `colvarchar.sh`, `bench.sh`, `bulk.sh`, `mixcompare.sh`.
+
+**Thử nghiệm (VM, cỡ 20–30 nghìn dòng, đã xoá dữ liệu tạm).**
+| Tình huống cố ý | Kết quả |
+|---|---|
+| `staskd` build từ mã trước harness (không có `build`) | `staskmix` thoát 3: "server has no build info... binary predates this harness"; với `-allow-stale` chạy được, `valid:true` kèm cảnh báo |
+| `staskd` đóng dấu commit cũ `04c23f4` | thoát 3: "server binary built from 04c23f4c3e38 but source is at ..." |
+| Tái hiện lỗi cũ: `staskmix` (mặc định `-load`) trên bảng columnar đã có dữ liệu → bị xoá và tạo lại thành bảng dòng | thoát 3 ngay sau bước nạp: "table orders is not columnar" và "aggregate on orders was answered by engine core"; `valid:false` |
+| `aggbench` trên bảng dòng (p50 q1 16,99 ms so với ~0,9 ms thăm dò columnar) | thoát 3; khai báo `-expect orders,row` thì `valid:true` |
+| `bench.sh` với `BENCH_EXPECT=orders,columnar` khi không có bảng | `staskbench` thoát 3 |
+| `scale.sh` N=30000 MIX=1 với binary đúng | mọi JSON `valid:true`, thoát 0 |
+
+Test đơn vị: `go test ./internal/benchcheck` (phân tích `-expect`, bảng columnar/hàng, thăm dò aggregate rơi về `core`, thiếu bảng, ngoài khoảng dòng, 5 trường hợp build, `-allow-stale`, `-expect` không có server).
+
+**Giới hạn, nói thẳng.**
+- Chưa chuyển: `chcompare.sh`, `clustercol.sh`, `clusterrepl.sh`, `cluster-rerun.sh`, `cluster.sh`, `memprofile.sh`, `replprof.sh`, `sqlprof.sh`, `storage.sh`, `storage-stask.sh`, `rerun0405.sh`, `run_all.sh`, `repeat.sh`, `p0batch.sh`, `rto10g.sh`, `gocompare.sh`, `latcompare.sh`, `readlat.sh`, `pglat.sh`, `wl1compare.sh`, `rediscompare.sh`, `commitlat.sh`, `replcost.sh`, `bpfdiag.sh`, `aggfloor.sh`, `bulkcompare.sh`, `cdcbench.sh`, `stress.sh`… Các script này vẫn gọi `./bin/...`; chúng chạy được (tool tự kiểm vẫn hoạt động nếu đặt `STASK_HTTP`/`BENCH_EXPECT`), nhưng không có `bench_require_build` và không tự thoát khác 0. Nên coi số cũ từ chúng là chưa kiểm chứng.
+- `cdcbench`, `notifybench`, `fsyncbench`, `gcbench`, `staskstress`, `staskchaos`, `sqlcorpus` chưa dùng thư viện.
+- Aggregate qua PG wire (`aggbench -system stask`) không trả `plan`; harness kiểm bằng truy vấn thăm dò HTTP trên cùng bảng và thuộc tính columnar. Nếu đường SQL tự rơi về quét dòng mà đường HTTP vẫn columnar thì harness không thấy; cần EXPLAIN hoặc tiêu đề plan trên PG wire (chưa làm). Bù lại, số đo q1 5,98 ms (30 nghìn dòng, đang tải) đã nằm trong báo cáo.
+- `staskbench` chỉ kiểm tiền điều kiện ở cuối lượt (bảng do chính nó nạp); `staskbulk` tương tự.
+- Kiểm tra commit dựa trên `git` tại `-repo` (mặc định thư mục hiện tại); script phải chạy trong đúng checkout. Thay đổi chưa commit ở file không phải Go (script, docs) không bị coi là dirty.
+- Chưa chạy lại benchmark nào ở 100M.
 
 ## 3. Chênh lệch giữa docs và code, tìm thấy khi đối chiếu (2026-10-29)
 

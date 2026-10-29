@@ -29,6 +29,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"stask/internal/benchcheck"
 )
 
 var statuses = []string{"new", "paid", "shipped", "cancelled"}
@@ -210,7 +212,11 @@ func main() {
 	with := flag.String("with", "", "table options for CREATE TABLE, e.g. \"columnar = true\" (STASK)")
 	serverPid := flag.Int("server-pid", 0, "also sample this process's CPU use per second (Linux), next to this client's")
 	keybase := flag.Int64("keybase", 0, "probe mode: inserts use ids from keybase up and deletes remove those rows again, so a second process does not touch the main run's insert/delete keys")
+	bo := benchcheck.Register(flag.CommandLine)
 	flag.Parse()
+	hc := benchcheck.New("staskmix", bo, flag.CommandLine)
+	hc.CheckBuild()
+	hc.Abort(map[string]any{"label": *label})
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, fmt.Sprintf("%s&pool_max_conns=%d", *url, int(300*max(*scale, 1))+20))
@@ -259,6 +265,20 @@ func main() {
 		wg.Wait()
 		pool.Exec(ctx, `ANALYZE orders`) // PostgreSQL; STASK ignores or rejects it
 		log.Printf("loaded %d rows in %v", *n, time.Since(t0).Round(time.Millisecond))
+	}
+
+	// self-check (docs/14): the table must still be what the run declares
+	// (e.g. columnar, so the agg class measures the columnar engine). The
+	// default expects the aggregate to be served by the columnar view when
+	// the agg class runs; a row-path run says -expect orders,row.
+	{
+		spec := fmt.Sprintf("orders,min=%d", *n*8/10)
+		if (*only == "" || strings.Contains(","+*only+",", ",agg,")) && !strings.Contains(*rates, "agg=0") {
+			spec = fmt.Sprintf("orders,agg,min=%d", *n*8/10)
+		}
+		hc.DefaultExpect(spec)
+		hc.Preconditions("before")
+		hc.Abort(map[string]any{"label": *label, "rows": *n})
 	}
 
 	// key space: [0, stable) is never deleted (reads, ranges, updates,
@@ -581,10 +601,13 @@ func main() {
 	pool.QueryRow(ctx, `SELECT count(*) FROM orders`).Scan(&cnt)
 	cpuLine := strings.Join(<-cpu, ", ")
 	log.Printf("cpu per second (client/server cores busy): %s", cpuLine)
-	b, _ := json.MarshalIndent(map[string]any{"label": *label, "rows": *n, "secs": secs, "classes": out, "final_count": cnt,
-		"timeline_cpu_client_server": cpuLine}, "", "  ")
+	hc.Preconditions("after")
+	res := map[string]any{"label": *label, "rows": *n, "secs": secs, "classes": out, "final_count": cnt,
+		"timeline_cpu_client_server": cpuLine}
+	code := hc.Finish(res)
+	b, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Println(string(b))
-	os.Exit(0)
+	os.Exit(code)
 }
 
 func withClause(opts string) string {

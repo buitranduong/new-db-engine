@@ -22,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"stask/internal/benchcheck"
 )
 
 type lat struct {
@@ -96,7 +98,11 @@ func main() {
 	phases := flag.String("phases", "insert,update", "insert, update, update-all, verify, read")
 	readFor := flag.Duration("read-for", 15*time.Second, "read phase: how long the readers run over the existing rows [0, n)")
 	label := flag.String("label", "", "label")
+	bo := benchcheck.Register(flag.CommandLine)
 	flag.Parse()
+	hc := benchcheck.New("staskbulk", bo, flag.CommandLine)
+	hc.CheckBuild()
+	hc.Abort(map[string]any{"label": *label})
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, fmt.Sprintf("%s&pool_max_conns=%d", *url, *workers+*readers+2))
@@ -325,7 +331,9 @@ func main() {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM orders`).Scan(&cnt); err == nil {
 		report["final_count"] = cnt
 	}
+	hc.Preconditions("after")
+	code := hc.Finish(report)
 	out, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(out))
-	os.Exit(0)
+	os.Exit(code)
 }

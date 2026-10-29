@@ -22,6 +22,16 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"stask/internal/benchcheck"
+)
+
+// hc is the self-check harness (docs/14); report() adds its meta and
+// valid flag to every result and main exits with exitCode.
+var (
+	bo       = benchcheck.Register(flag.CommandLine)
+	hc       *benchcheck.Harness
+	exitCode int
 )
 
 var (
@@ -405,6 +415,10 @@ func report(name string, res map[string]any) {
 	}
 	res["params"] = map[string]any{"duration_s": dur.Seconds(), "conc": *conc, "rate": *rate, "n": *nKeys,
 		"value_size": *valSize, "bg_writes": *bgRate, "qconc": *qconc, "warmup_s": warmup.Seconds()}
+	hc.Preconditions("after")
+	if c := hc.Finish(res); c != 0 {
+		exitCode = c
+	}
 	b, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Println(string(b))
 	if *outFile != "" {
@@ -491,6 +505,14 @@ func load(c *client, table string, n, batch, loaders int, gen func(rng *rand.Ran
 
 func main() {
 	flag.Parse()
+	hc = benchcheck.New("staskbench", bo, flag.CommandLine)
+	if *embedded != "" || *pgURL != "" || *redisAddr != "" {
+		hc.Skip("embedded, PostgreSQL-protocol or Redis mode")
+	} else {
+		hc.SetStatusURLDefault(*baseURL)
+	}
+	hc.CheckBuild()
+	hc.Abort(map[string]any{"label": *label})
 	log.SetFlags(log.Ltime)
 	c := newClient(*conc + 16)
 	switch *workload {
@@ -519,6 +541,7 @@ func main() {
 	default:
 		log.Fatalf("unknown workload %q", *workload)
 	}
+	os.Exit(exitCode)
 }
 
 // clientCPU is the client's CPU (cores) during the last run's measured window.

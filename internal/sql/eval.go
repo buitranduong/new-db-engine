@@ -18,9 +18,21 @@ import (
 type scope struct {
 	t     *schema.Table // nil when there is no FROM clause
 	alias string
+
+	merged map[string]int // typing only (paramscan.go): "alias.col" or "col" -> column of t
 }
 
 func (sc *scope) resolve(c *ColRef) (int, error) {
+	if sc.merged != nil {
+		key := c.Name
+		if c.Table != "" {
+			key = c.Table + "." + c.Name
+		}
+		if i, ok := sc.merged[key]; ok {
+			return i, nil
+		}
+		return 0, errf(codeUndefinedColumn, "column %q does not exist", c.Name)
+	}
 	if sc.t == nil {
 		return 0, errf(codeUndefinedColumn, "column %q does not exist", c.Name)
 	}

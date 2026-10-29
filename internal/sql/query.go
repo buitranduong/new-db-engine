@@ -2716,9 +2716,13 @@ func (s *Session) describeQuery(st Stmt) (*Description, error) {
 		d.Cols = append(d.Cols, Column{Name: c.name, Kind: k}.withTy(c.ty))
 	}
 	n := maxParamDeep(st)
+	pk := s.deepKinds(st)
 	d.Params = make([]Kind, n)
 	for i := range d.Params {
 		d.Params[i] = KText
+		if k, ok := pk[i+1]; ok {
+			d.Params[i] = k
+		}
 	}
 	return d, nil
 }

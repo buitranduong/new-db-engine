@@ -363,7 +363,15 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		sc.t = t
 	}
 	pk := paramKinds(st, sc)
-	n := maxParam(st)
+	if ins, ok := st.(*Insert); ok && ins.Query != nil {
+		s.insertSelectKinds(ins, sc.t, pk)
+	}
+	for n, k := range s.deepKinds(st) {
+		if _, done := pk[n]; !done {
+			pk[n] = k
+		}
+	}
+	n := max(maxParam(st), maxParamAny(st))
 	d.Params = make([]Kind, n)
 	for i := range d.Params {
 		if k, ok := pk[i+1]; ok {

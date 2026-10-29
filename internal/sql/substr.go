@@ -31,13 +31,14 @@ import (
 // SELECT carrier, count(*) ... WHERE num LIKE '%888%' GROUP BY carrier a
 // facet over the candidates.
 //
-// Freshness: SET stask.consistency = strong | bounded (default) | session |
-// eventual and SET stask.max_lag_ms = 1000. A view that cannot meet it is
+// Freshness: SET stask.consistency = strong | bounded | session (default,
+// D26) | eventual and SET stask.max_lag_ms = 1000. A view that cannot meet it is
 // waited for, then the table is scanned; EXPLAIN and SHOW stask.last_plan
 // report engine, applied_lsn and view_lag_ms.
 const (
 	SearchConsistencyVar = "stask.consistency"
 	SearchMaxLagVar      = "stask.max_lag_ms"
+	DefaultConsistency   = "session"
 	LastPlanVar          = "stask.last_plan"
 )
 
@@ -524,9 +525,9 @@ func (s *Session) substrPrepare(tx *core.Tx, t *schema.Table, sc *scope, ctx *ev
 	mode, maxLag := s.searchContract()
 	var minLSN uint64
 	if mode == "session" {
-		minLSN = tx.Snapshot()
-		if v, err := strconv.ParseUint(s.vars[MinLSNVar], 10, 64); err == nil && v > minLSN {
-			minLSN = v
+		minLSN = s.sessionLSN()
+		if minLSN == 0 {
+			mode = "eventual" // nothing written by this session: no own write to wait for
 		}
 	}
 	pl, use := sv.SubstrChoose(t.Name, best.col, mode, maxLag, minLSN)
@@ -552,7 +553,7 @@ func popcount(b uint8) (n int) {
 func (s *Session) searchContract() (string, time.Duration) {
 	mode := strings.ToLower(s.vars[SearchConsistencyVar])
 	if mode == "" {
-		mode = "bounded"
+		mode = DefaultConsistency
 	}
 	lag := time.Second
 	if v := s.vars[SearchMaxLagVar]; v != "" {

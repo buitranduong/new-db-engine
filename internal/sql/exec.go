@@ -388,6 +388,7 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 	if heavyQ != nil && s.heavy(st, params) {
 		var res *Result
 		var err error
+		defer admit(ClassHeavy)()
 		onHeavyLane(func() { res, err = s.runHere(tx, st, params) })
 		return res, err
 	}

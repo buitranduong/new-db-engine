@@ -38,6 +38,8 @@ Ngoài ra, docs/11 §2.2 ghi "trigger **và stored procedure**: Có", mâu thu�
 | P0.7 | **Xong ở 10 GB** (1,05–2,42 s, docs/04 §10.5); còn nợ số nguội ở 100M. RTO khởi động nguội, page cache trống (docs/04 §6) | S | Ghi số ở 10 GB và ở 100M |
 | P0.8 | **Ưu tiên đọc khi quá tải** (N1): xếp hàng có ưu tiên, hoặc lane riêng, trong admission. Cách chọn tham khảo CockroachDB admission control | L | Ở tải 2x, đọc được phục vụ ≥ 99% với p99 < 50 ms; các loại khác xuống cấp có kiểm soát; có báo cáo tỉ lệ phục vụ theo từng loại |
 
+**Trạng thái P0.8 (nhánh `admission`, 2026-10-29): đã cài và có test mô phỏng; chưa có số đo thật ở 2x.** Thiết kế ở docs/08 §Admission theo ưu tiên (`internal/sql/admission.go`): đọc không bao giờ xếp hàng chờ slot (trước đây đọc dùng chung slot với ghi, chỉ được xếp trước); ghi và lệnh nặng (range, quét, ghi nhiều dòng) mỗi loại có hồ slot riêng và chỉ bị trễ, không bị bỏ. Test `TestAdmissionReadPriorityUnderOverload` mô phỏng 4 core bị 96 client ghi/nặng/tx làm bão hoà: đọc đúng hạn 50 ms đạt 100% (p99 5 ms) so với 0% khi tắt admission (p99 115 ms), ghi và nặng vẫn chạy. Đây là mô hình, không phải số đo máy thật. `/v1/status` có khối `admission` với tỉ lệ phục vụ theo loại. **Chạy lại ở 2x:** `cd ~/stask && SCALES="1.5 2" bash scripts/slotsweep.sh "-admission -admission-slots 0 -heavy-workers -1"` (xem tỉ lệ `served read`), rồi so với `results/sweep-adm-x2.txt`. Lưu ý: nếu nút thắt của đọc là CPU chứ không phải hàng đợi thì còn cần giới hạn số slot ghi nhỏ hơn số core (`-admission-slots`).
+
 ## P1. Kiểu dữ liệu và schema (đổi định dạng, làm đầu tiên)
 
 | # | Việc | Cỡ | Phụ thuộc | Tiêu chí xong |

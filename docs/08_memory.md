@@ -382,3 +382,20 @@ Sửa (`proj/columnar.go`, `proj/search.go`): dựng bảng vào một cấu tr�
 | **Chia shard pin + helper tự nhường** | **24–31 ms** | **20–28 ms** | **35–38 ms** | **380–400 ms** |
 
 Aggregate chạy một mình trên máy rảnh, A/B trên cùng dữ liệu theo thứ tự tắt/bật/tắt: q1, q2, q5 trùng nhau trong biên nhiễu; q3 975 ms, nằm giữa hai lượt tắt (898–1.048); q6 nhanh hơn (3,5 s so với 4,5–4,8 s). **Không phải đánh đổi**: thao tác điểm gần về mức không có aggregate, còn aggregate giữ nguyên tốc độ.
+
+
+## Admission theo ưu tiên (P0.8)
+
+Cài ở `internal/sql/admission.go`, bật bằng `staskd -admission [-admission-slots N]`.
+
+- **Ba lớp.** `read` (select điểm, điều khiển giao dịch, DDL, mọi thứ không phải ghi): **không bao giờ chờ slot**, nên quá tải của lớp khác không làm trễ đọc ở cổng vào. `write` (INSERT/UPDATE/DELETE không nặng): giữ một trong `slots` slot khi đang chạy (không giữ khi chờ fsync), xếp hàng theo thứ tự đến. `heavy` (lệnh trên heavy lane: range, quét, ghi nhiều dòng): hồ riêng cỡ `slots/4` (ít nhất 1), nên việc nặng không chặn ghi điểm và xuống cấp trước.
+- **Vì sao đọc bỏ qua slot.** Slot chỉ để chặn số CPU mà lớp thấp giữ cùng lúc. Số slot tự co khi độ trễ scheduler của Go vượt `SchedTarget` (p99 > 1 ms) và nở khi có lệnh chờ. Đọc vẫn chia CPU với lệnh đang chạy, nhưng số lệnh đó bị chặn bởi slot.
+- **Xuống cấp có kiểm soát.** Ghi và nặng chỉ bị trễ (không bị bỏ; toàn vẹn giao dịch không phụ thuộc lúc chạy). Chưa có giới hạn độ dài hàng đợi hay từ chối; nếu cần sẽ là việc riêng.
+- **Báo cáo.** `/v1/status` có khối `admission`: `slots`, `heavy_slots`, `in_use`, `waiting` và theo từng lớp `asked`, `queued`, `served`, `served_share`, `wait_ms_total`, `wait_ms_max`.
+- **Test.** `go test ./internal/sql -run TestAdmission -v` (mô phỏng quá tải cần khoảng 7 s; bị bỏ khi `-short`).
+
+Tham khảo:
+- CockroachDB, [Admission control](https://github.com/cockroachdb/cockroach/blob/master/pkg/util/admission/doc.go) (hàng đợi theo ưu tiên và tenant, slot theo CPU, `kvSlotAdjuster`).
+- CockroachDB blog, [Rethinking the cluster scheduler: elastic admission control](https://www.cockroachlabs.com/blog/goroutine-scheduling-elastic-admission-control-cockroachdb) và [Rubbing control theory on the Go scheduler](https://www.cockroachlabs.com/blog/rubbing-control-theory/) (làm việc nền co lại theo độ trễ scheduler).
+- CockroachDB docs, [Admission control](https://www.cockroachlabs.com/docs/stable/admission-control).
+- SQL Server Resource Governor và Linux CPU cgroups (`cpu.weight`) là hướng cùng ý: tách nhóm công việc theo trọng số, đã dùng ở heavy lane (docs/08 phần CPU groups).

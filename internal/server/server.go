@@ -17,6 +17,7 @@ import (
 	"stask/internal/planner"
 	"stask/internal/proj"
 	"stask/internal/schema"
+	"stask/internal/sql"
 )
 
 type Server struct {
@@ -565,10 +566,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			"block_loads": e.Log().ZBlockLoads.Load(),
 			"wal_disk":    e.Log().DiskBytes(),
 		},
-		"views":   s.P.Views(),
-		"tables":  tables,
-		"heap_mb": ms.HeapAlloc >> 20,
-		"open_tx": openTx,
+		"admission": sql.AdmissionReport(),
+		"views":     s.P.Views(),
+		"tables":    tables,
+		"heap_mb":   ms.HeapAlloc >> 20,
+		"open_tx":   openTx,
 	})
 }
 

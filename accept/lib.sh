@@ -81,11 +81,11 @@ wait_port() { for i in $(seq 200); do (exec 3<>/dev/tcp/127.0.0.1/$1) 2>/dev/nul
 psql_run() {
   local port=$1; shift
   if command -v psql > /dev/null; then
-    env PGSSLROOTCERT=$CERTS/ca.crt "${PSQLENV[@]}" psql -X -q -w -h 127.0.0.1 -p $port -U app stask "$@"
+    env PGSSLROOTCERT=$CERTS/ca.crt "${PSQLENV[@]}" psql -X -w -h 127.0.0.1 -p $port -U app stask "$@"
   else
     local e=(); for kv in "${PSQLENV[@]}"; do e+=(-e "${kv//$CERTS//certs}"); done
     docker run --rm --network host -v $E2E_DIR:/d -v $CERTS:/certs:ro -e PGSSLROOTCERT=/certs/ca.crt "${e[@]}" postgres:16 \
-      psql -X -q -w -h 127.0.0.1 -p $port -U app stask "${@//$E2E_DIR//d}"
+      psql -X -w -h 127.0.0.1 -p $port -U app stask "${@//$E2E_DIR//d}"
   fi
 }
 cleanup_common() { stop_all; }

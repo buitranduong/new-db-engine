@@ -2361,6 +2361,9 @@ func tableFuncRows(name string, args []Datum) ([][]Datum, error) {
 			out = append(out, []Datum{IntD(lo + i)})
 		}
 	case "unnest":
+		if len(args) == 1 && args[0].IsNull() {
+			break // unnest(NULL) is no rows, as in PostgreSQL (psql \d+ relies on it)
+		}
 		if len(args) != 1 || args[0].K != KArray {
 			return nil, errf(codeUndefinedFunction, "unnest needs an array")
 		}

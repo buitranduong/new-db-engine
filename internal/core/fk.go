@@ -34,28 +34,28 @@ import (
 // and its retry sees the other's effect. Two shares never conflict, so
 // concurrent inserts under one parent do not serialize.
 
-// fkRef is a foreign key seen from the table it references.
-type fkRef struct {
-	child string
-	fk    schema.ForeignKey
+// FKRef is a foreign key seen from the table it references.
+type FKRef struct {
+	Child string
+	FK    schema.ForeignKey
 }
 
 type fkIndex struct {
-	byParent map[string][]fkRef
+	byParent map[string][]FKRef
 }
 
 var fkMu sync.Mutex
 
 // fkReferrers lists the foreign keys that reference table.
-func (e *Engine) fkReferrers(table string) []fkRef {
+func (e *Engine) fkReferrers(table string) []FKRef {
 	p := e.fkCache.Load()
 	if p == nil {
 		fkMu.Lock()
-		idx := &fkIndex{byParent: map[string][]fkRef{}}
+		idx := &fkIndex{byParent: map[string][]FKRef{}}
 		for _, t := range e.UserTables() {
 			sch := t.Schema()
 			for _, fk := range sch.ForeignKeys {
-				idx.byParent[fk.RefTable] = append(idx.byParent[fk.RefTable], fkRef{sch.Name, fk})
+				idx.byParent[fk.RefTable] = append(idx.byParent[fk.RefTable], FKRef{sch.Name, fk})
 			}
 		}
 		e.fkCache.Store(idx)
@@ -65,16 +65,9 @@ func (e *Engine) fkReferrers(table string) []fkRef {
 	return p.byParent[table]
 }
 
-// FKReferrers is fkReferrers for callers outside the engine (DROP TABLE).
-func (e *Engine) FKReferrers(table string) []schema.ForeignKey {
-	var out []schema.ForeignKey
-	for _, r := range e.fkReferrers(table) {
-		fk := r.fk
-		fk.Name = r.child + "\x00" + fk.Name
-		out = append(out, fk)
-	}
-	return out
-}
+// FKRefs lists the foreign keys that reference table (those of the table
+// itself included).
+func (e *Engine) FKRefs(table string) []FKRef { return e.fkReferrers(table) }
 
 // NotNullError: SET NULL (or another write the engine makes itself) would
 // put NULL in a NOT NULL column.
@@ -120,7 +113,7 @@ func (tx *Tx) ownWrites(t *TableState) []*pendingOp {
 
 // fkCtx carries what preConstraints learned to postConstraints.
 type fkCtx struct {
-	refs []fkRef
+	refs []FKRef
 	old  schema.Row
 	had  bool
 }
@@ -157,7 +150,7 @@ func (tx *Tx) preConstraints(op WriteOp, p *pendingOp) (*fkCtx, error) {
 	p.guard = p.del
 	if had && !p.del {
 		for _, ref := range refs {
-			for _, col := range ref.fk.RefCols {
+			for _, col := range ref.FK.RefCols {
 				i, _ := sch.Col(col)
 				p.guard = p.guard || !valuesEqual(sch.Columns[i].T, old[i], op.Row[i])
 			}
@@ -179,7 +172,7 @@ func (tx *Tx) postConstraints(op WriteOp, p *pendingOp, c *fkCtx) error {
 	}
 	for _, ref := range c.refs {
 		changed := false
-		for _, col := range ref.fk.RefCols {
+		for _, col := range ref.FK.RefCols {
 			i, _ := sch.Col(col)
 			changed = changed || !valuesEqual(sch.Columns[i].T, c.old[i], op.Row[i])
 		}
@@ -191,8 +184,8 @@ func (tx *Tx) postConstraints(op WriteOp, p *pendingOp, c *fkCtx) error {
 			return err
 		}
 		if len(kids) > 0 {
-			return &ForeignKeyError{Table: ref.child, Constraint: ref.fk.Name, Ref: sch.Name, Delete: true,
-				Detail: fmt.Sprintf("Key %s is still referenced from table %q.", describe(sch, ref.fk.RefCols, c.old), ref.child)}
+			return &ForeignKeyError{Table: ref.Child, Constraint: ref.FK.Name, Ref: sch.Name, Delete: true,
+				Detail: fmt.Sprintf("Key %s is still referenced from table %q.", describe(sch, ref.FK.RefCols, c.old), ref.Child)}
 		}
 	}
 	return nil
@@ -259,36 +252,40 @@ func (tx *Tx) probeUnique(p *pendingOp) error {
 // checkParents verifies that every foreign key of the row has its parent,
 // and registers the parents as shared for the commit.
 func (tx *Tx) checkParents(p *pendingOp, row schema.Row) error {
-	sch := p.sch
-	for _, fk := range sch.ForeignKeys {
-		vals := make([]schema.Value, len(fk.Columns))
-		null := false
-		for i, c := range fk.Columns {
-			j, _ := sch.Col(c)
-			vals[i] = row[j]
-			null = null || row[j].Null
-		}
-		if null {
-			continue // MATCH SIMPLE: a NULL column satisfies the constraint
-		}
-		parent, err := tx.e.Table(fk.RefTable)
-		if err != nil {
-			return &ForeignKeyError{Table: sch.Name, Constraint: fk.Name, Ref: fk.RefTable, Detail: err.Error()}
-		}
-		key, found, err := tx.findParent(parent, fk.RefCols, vals, sch.Name == fk.RefTable, sch, row, fk.Columns)
-		if err != nil {
+	for _, fk := range p.sch.ForeignKeys {
+		if err := tx.checkParent(p.sch, fk, row); err != nil {
 			return err
 		}
-		if !found {
-			return &ForeignKeyError{Table: sch.Name, Constraint: fk.Name, Ref: fk.RefTable,
-				Detail: fmt.Sprintf("Key %s is not present in table %q.", describe(sch, fk.Columns, row), fk.RefTable)}
+	}
+	return nil
+}
+
+func (tx *Tx) checkParent(sch *schema.Table, fk schema.ForeignKey, row schema.Row) error {
+	vals := make([]schema.Value, len(fk.Columns))
+	for i, c := range fk.Columns {
+		j, _ := sch.Col(c)
+		vals[i] = row[j]
+		if row[j].Null {
+			return nil // MATCH SIMPLE: a NULL column satisfies the constraint
 		}
-		if key != "" {
-			if tx.shares == nil {
-				tx.shares = map[pk]struct{}{}
-			}
-			tx.shares[pk{parent, key}] = struct{}{}
+	}
+	parent, err := tx.e.Table(fk.RefTable)
+	if err != nil {
+		return &ForeignKeyError{Table: sch.Name, Constraint: fk.Name, Ref: fk.RefTable, Detail: err.Error()}
+	}
+	key, found, err := tx.findParent(parent, fk.RefCols, vals, sch.Name == fk.RefTable, sch, row, fk.Columns)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return &ForeignKeyError{Table: sch.Name, Constraint: fk.Name, Ref: fk.RefTable,
+			Detail: fmt.Sprintf("Key %s is not present in table %q.", describe(sch, fk.Columns, row), fk.RefTable)}
+	}
+	if key != "" {
+		if tx.shares == nil {
+			tx.shares = map[pk]struct{}{}
 		}
+		tx.shares[pk{parent, key}] = struct{}{}
 	}
 	return nil
 }
@@ -376,16 +373,16 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 	return key, found, err
 }
 
-// children returns the primary keys of the rows of ref.child that
+// children returns the primary keys of the rows of ref.Child that
 // reference the row `parent` of table psch, as this transaction sees them.
-func (tx *Tx) children(ref fkRef, psch *schema.Table, parent schema.Row) ([]string, error) {
-	child, err := tx.e.Table(ref.child)
+func (tx *Tx) children(ref FKRef, psch *schema.Table, parent schema.Row) ([]string, error) {
+	child, err := tx.e.Table(ref.Child)
 	if err != nil {
 		return nil, err
 	}
 	csch := child.Schema()
-	vals := make([]schema.Value, len(ref.fk.RefCols))
-	for i, c := range ref.fk.RefCols {
+	vals := make([]schema.Value, len(ref.FK.RefCols))
+	for i, c := range ref.FK.RefCols {
 		j, _ := psch.Col(c)
 		if parent[j].Null {
 			return nil, nil
@@ -393,7 +390,7 @@ func (tx *Tx) children(ref fkRef, psch *schema.Table, parent schema.Row) ([]stri
 		vals[i] = parent[j]
 	}
 	match := func(r schema.Row) bool {
-		for i, c := range ref.fk.Columns {
+		for i, c := range ref.FK.Columns {
 			j, _ := csch.Col(c)
 			if !valuesEqual(csch.Columns[j].T, r[j], vals[i]) {
 				return false
@@ -404,7 +401,7 @@ func (tx *Tx) children(ref fkRef, psch *schema.Table, parent schema.Row) ([]stri
 	set := map[string]bool{}
 	var ixName string
 	for _, ix := range csch.Indexes {
-		if len(ix.Columns) >= len(ref.fk.Columns) && slices.Equal(ix.Columns[:len(ref.fk.Columns)], ref.fk.Columns) {
+		if len(ix.Columns) >= len(ref.FK.Columns) && slices.Equal(ix.Columns[:len(ref.FK.Columns)], ref.FK.Columns) {
 			ixName = ix.Name
 			break
 		}
@@ -412,7 +409,7 @@ func (tx *Tx) children(ref fkRef, psch *schema.Table, parent schema.Row) ([]stri
 	scanned := false
 	if ixName != "" {
 		var enc []byte
-		for i, c := range ref.fk.Columns {
+		for i, c := range ref.FK.Columns {
 			j, _ := csch.Col(c)
 			enc = schema.AppendKeyValue(enc, csch.Columns[j].T, vals[i])
 		}
@@ -463,7 +460,7 @@ const maxCascadeDepth = 32
 
 // onParentDelete applies the ON DELETE actions of the foreign keys that
 // reference the row `old` of psch, which this transaction deletes.
-func (tx *Tx) onParentDelete(psch *schema.Table, old schema.Row, refs []fkRef, depth int) error {
+func (tx *Tx) onParentDelete(psch *schema.Table, old schema.Row, refs []FKRef, depth int) error {
 	if depth > maxCascadeDepth {
 		return fmt.Errorf("foreign key cascade is nested too deeply")
 	}
@@ -475,21 +472,21 @@ func (tx *Tx) onParentDelete(psch *schema.Table, old schema.Row, refs []fkRef, d
 		if len(kids) == 0 {
 			continue
 		}
-		switch ref.fk.OnDelete {
+		switch ref.FK.OnDelete {
 		case "cascade":
 			for _, k := range kids {
-				if ref.child == psch.Name && k == psch.KeyOf(old) {
+				if ref.Child == psch.Name && k == psch.KeyOf(old) {
 					continue // a row that references itself
 				}
-				if err := tx.Delete(ref.child, k); err != nil {
+				if err := tx.Delete(ref.Child, k); err != nil {
 					return err
 				}
 			}
 		case "set null":
-			child, _ := tx.e.Table(ref.child)
+			child, _ := tx.e.Table(ref.Child)
 			csch := child.Schema()
 			for _, k := range kids {
-				row, ok, err := tx.Get(ref.child, k)
+				row, ok, err := tx.Get(ref.Child, k)
 				if err != nil {
 					return err
 				}
@@ -497,27 +494,27 @@ func (tx *Tx) onParentDelete(psch *schema.Table, old schema.Row, refs []fkRef, d
 					continue
 				}
 				row = slices.Clone(row)
-				for _, c := range ref.fk.Columns {
+				for _, c := range ref.FK.Columns {
 					j, _ := csch.Col(c)
 					if csch.Columns[j].NotNull || j == csch.KeyIndex() {
 						return &NotNullError{Table: csch.Name, Column: c}
 					}
 					row[j] = schema.Value{Null: true}
 				}
-				if err := tx.Put(ref.child, row); err != nil {
+				if err := tx.Put(ref.Child, row); err != nil {
 					return err
 				}
 			}
 		default: // no action, restrict
 			self := true
 			for _, k := range kids {
-				self = self && ref.child == psch.Name && k == psch.KeyOf(old)
+				self = self && ref.Child == psch.Name && k == psch.KeyOf(old)
 			}
 			if self {
 				continue
 			}
-			return &ForeignKeyError{Table: ref.child, Constraint: ref.fk.Name, Ref: psch.Name, Delete: true,
-				Detail: fmt.Sprintf("Key %s is still referenced from table %q.", describe(psch, ref.fk.RefCols, old), ref.child)}
+			return &ForeignKeyError{Table: ref.Child, Constraint: ref.FK.Name, Ref: psch.Name, Delete: true,
+				Detail: fmt.Sprintf("Key %s is still referenced from table %q.", describe(psch, ref.FK.RefCols, old), ref.Child)}
 		}
 	}
 	return nil
@@ -572,4 +569,56 @@ func (e *Engine) noteFK(r *commitReq, lsn uint64) {
 			}
 		}
 	}
+}
+
+// AddForeignKey adds a foreign key to a table that has rows: writers to
+// the table and to the referenced one wait while every existing row is
+// checked (PostgreSQL locks both tables the same way), idx (if not nil) is
+// built for the referencing columns, and the constraint is recorded.
+func (e *Engine) AddForeignKey(table string, fk schema.ForeignKey, idx *schema.IndexDef) error {
+	if e.opts.Replica {
+		return ErrReadOnly
+	}
+	t, err := e.Table(table)
+	if err != nil {
+		return err
+	}
+	parent, err := e.Table(fk.RefTable)
+	if err != nil {
+		return err
+	}
+	ts := []*TableState{t}
+	if parent != t {
+		ts = append(ts, parent)
+		sort.Slice(ts, func(i, j int) bool { return ts[i].Schema().ID < ts[j].Schema().ID })
+	}
+	unblock := e.blockWrites(ts...)
+	defer unblock()
+	sch := t.Schema()
+	tx := e.Begin(SnapshotIsolation)
+	defer tx.Abort()
+	var verr error
+	if err := tx.ScanAll(table, func(_ string, r schema.Row) bool {
+		verr = tx.checkParent(sch, fk, r)
+		return verr == nil
+	}); err != nil {
+		return err
+	}
+	if verr != nil {
+		return verr
+	}
+	if idx != nil {
+		if err := e.createIndexBlocked(t, *idx); err != nil {
+			return err
+		}
+	}
+	err = e.AlterTable(table, func(d *schema.Table) error {
+		d.CloneConstraints()
+		d.ForeignKeys = append(d.ForeignKeys, fk)
+		return nil
+	})
+	if err != nil && idx != nil {
+		e.DropIndex(table, idx.Name)
+	}
+	return err
 }

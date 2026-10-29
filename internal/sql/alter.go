@@ -29,6 +29,13 @@ func colIndex(t *schema.Table, name string) int {
 }
 
 func (s *Session) alterTable(st *AlterTable) (*Result, error) {
+	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool { return a.Kind == "add_constraint" || a.Kind == "drop_constraint" }) {
+		return s.alterConstraints(st)
+	}
+	return s.alterTableActions(st)
+}
+
+func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 	res := &Result{Tag: "ALTER TABLE"}
 	if _, err := s.E.UserTable(st.Name); err != nil {
 		if st.IfExists {
@@ -91,6 +98,9 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 				if cd.Primary || cd.Serial || cd.Identity != "" {
 					return errf(codeFeature, "ADD COLUMN with PRIMARY KEY, SERIAL or IDENTITY is not supported")
 				}
+				if len(cd.Constraints) > 0 {
+					return errf(codeFeature, "ADD COLUMN with UNIQUE or REFERENCES is not supported: add the constraint with a separate ALTER TABLE")
+				}
 				c := schema.Column{Name: cd.Name, Type: cd.Type, NotNull: cd.NotNull}
 				if cd.Default != "" {
 					v, err := s.missingValue(cd.Default, cd.Type, now)
@@ -131,6 +141,16 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 					// the view keeps column positions in its stored blocks
 					return errf(codeFeature, "DROP COLUMN is not supported yet on a time-series table")
 				}
+				// indexes and foreign keys that use the column go with it
+				for _, r := range s.E.FKRefs(d.Name) {
+					if r.Child != d.Name && slices.Contains(r.FK.RefCols, a.Column) {
+						return errf(codeDependentObjects, "cannot drop column %s of table %s because constraint %s on table %s depends on it", a.Column, d.Name, r.FK.Name, r.Child)
+					}
+				}
+				d.Indexes = slices.DeleteFunc(d.Indexes, func(ix schema.IndexDef) bool { return slices.Contains(ix.Columns, a.Column) })
+				d.ForeignKeys = slices.DeleteFunc(d.ForeignKeys, func(f schema.ForeignKey) bool {
+					return slices.Contains(f.Columns, a.Column) || f.RefTable == d.Name && slices.Contains(f.RefCols, a.Column)
+				})
 				// CHECK constraints on the column go with it, as in PostgreSQL
 				d.Checks = slices.DeleteFunc(d.Checks, func(c schema.Check) bool {
 					x, err := parseCheck(c.Expr)
@@ -160,6 +180,20 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 						return errf(codeFeature, "cannot rename column %q: CHECK constraint %q refers to it", a.Column, ck.Name)
 					}
 				}
+				for _, r := range s.E.FKRefs(d.Name) {
+					if r.Child != d.Name && slices.Contains(r.FK.RefCols, a.Column) {
+						return errf(codeFeature, "cannot rename column %q: foreign key %q of table %q references it", a.Column, r.FK.Name, r.Child)
+					}
+				}
+				for j := range d.Indexes {
+					d.Indexes[j].Columns = renameIn(d.Indexes[j].Columns, a.Column, a.NewName)
+				}
+				for j := range d.ForeignKeys {
+					d.ForeignKeys[j].Columns = renameIn(d.ForeignKeys[j].Columns, a.Column, a.NewName)
+					if d.ForeignKeys[j].RefTable == d.Name {
+						d.ForeignKeys[j].RefCols = renameIn(d.ForeignKeys[j].RefCols, a.Column, a.NewName)
+					}
+				}
 				d.Columns[i].Name = a.NewName
 				ren := func(s *string) {
 					if *s == a.Column {
@@ -176,6 +210,16 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 			case "rename_table":
 				if s.relationExists(a.NewName) {
 					return errf(codeDuplicateTable, "relation %q already exists", a.NewName)
+				}
+				for _, r := range s.E.FKRefs(d.Name) {
+					if r.Child != d.Name {
+						return errf(codeFeature, "cannot rename table %q: foreign key %q of table %q references it", d.Name, r.FK.Name, r.Child)
+					}
+				}
+				for j := range d.ForeignKeys {
+					if d.ForeignKeys[j].RefTable == d.Name {
+						d.ForeignKeys[j].RefTable = a.NewName
+					}
 				}
 				d.Name = a.NewName
 			case "set_default", "drop_default":

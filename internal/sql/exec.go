@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -189,6 +190,18 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreateIndex:
+		res, err := s.createIndex(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *DropIndex:
+		res, err := s.dropIndex(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *CreateView, *DropView:
 		// applied at once, like CREATE TABLE
 		res, err := s.viewDDL(st)
@@ -246,6 +259,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 	for attempt := 0; ; attempt++ {
 		s.notes = nil // pg_notify() calls of an attempt that was retried
 		tx := s.begin(core.SnapshotIsolation)
+		tx.SetImplicit()
 		res, err := s.run(tx, st, params)
 		if err != nil {
 			tx.Abort()
@@ -354,6 +368,9 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		return nil, err
 	}
 	if t.Checks, err = checksOf(c, &t); err != nil {
+		return nil, err
+	}
+	if err := s.constraintsOf(c, &t); err != nil {
 		return nil, err
 	}
 	if _, err := s.E.CreateTable(t); err != nil {
@@ -642,6 +659,17 @@ func (s *Session) scanRows(tx *core.Tx, t *schema.Table, ctx *evalCtx, where Exp
 			}
 		}
 		return nil
+	}
+	if canUseIndex(tx, t) {
+		alias := ""
+		if ctx.sc != nil {
+			alias = ctx.sc.alias
+		}
+		if c := chooseIndex(t, alias, where, ctx, nil); c != nil {
+			if ok, err := s.scanIndex(tx, t, c, false, match, fn); err != nil || ok {
+				return err
+			}
+		}
 	}
 	var ierr error
 	err = tx.ScanAll(t.Name, func(_ string, r schema.Row) bool {
@@ -1053,6 +1081,19 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 
 	// stream rows, stopping early when the order of rows does not matter
 	early := !grouped && len(st.OrderBy) == 0 && !st.Distinct && limit >= 0
+	// ... or when an index delivers them in the order asked for
+	ordStop := false
+	var ordIx *indexChoice
+	ordDesc := false
+	if !grouped && !st.Distinct && limit > 0 && len(st.OrderBy) > 0 && sc.t != nil && len(sc.t.Indexes) > 0 && canUseIndex(tx, sc.t) {
+		if need, desc := orderColumns(st, items, orderOut, sc.t, sc.alias); need != nil {
+			ordIx, ordDesc = chooseIndex(sc.t, sc.alias, st.Where, ctx, need), desc
+			if plain := chooseIndex(sc.t, sc.alias, st.Where, ctx, nil); plain != nil && (ordIx == nil || plain.score > ordIx.score) {
+				ordIx = nil // WHERE has a better index; the rows are sorted afterwards
+			}
+			ordStop = ordIx != nil
+		}
+	}
 	var groups map[string]*group
 	var order []string
 	if grouped {
@@ -1064,7 +1105,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 			if err := project(); err != nil {
 				return false, err
 			}
-			return !early || int64(len(out)) < offset+limit, nil
+			return !(early || ordStop) || int64(len(out)) < offset+limit, nil
 		}
 		keys := make([]Datum, len(st.GroupBy))
 		for i, g := range st.GroupBy {
@@ -1137,6 +1178,15 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 			}
 			if ok {
 				groups, order, done = g, o, true
+			}
+		}
+		if !done && ordIx != nil {
+			ok, err := s.scanIndex(tx, sc.t, ordIx, ordDesc, matcher(ctx, st.Where), visit)
+			if err != nil {
+				return nil, err
+			}
+			if done = ok; !ok {
+				ordStop, out = false, nil // the index cannot serve this snapshot
 			}
 		}
 		if !done {
@@ -1800,6 +1850,23 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 			continue
 		}
 		todo = append(todo, n)
+	}
+	for _, n := range todo {
+		for _, r := range s.E.FKRefs(n) {
+			if r.Child == n || slices.Contains(todo, r.Child) {
+				continue
+			}
+			switch {
+			case tag != "DROP TABLE":
+				return nil, errf(codeFeature, "cannot truncate a table referenced in a foreign key constraint: table %q references %q via constraint %q", r.Child, n, r.FK.Name)
+			case !cascade:
+				return nil, errf(codeDependentObjects, "cannot drop table %s because other objects depend on it: constraint %s on table %s depends on table %s", n, r.FK.Name, r.Child, n)
+			}
+			if _, err := s.dropConstraint(r.Child, r.FK.Name); err != nil {
+				return nil, AsError(err)
+			}
+			res.Notice = strings.Trim(res.Notice+"; drop cascades to constraint "+r.FK.Name+" on table "+r.Child, "; ")
+		}
 	}
 	if tag == "DROP TABLE" {
 		note, err := s.dropTableViews(todo, cascade) // 2BP01 unless CASCADE

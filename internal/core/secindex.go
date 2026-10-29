@@ -61,7 +61,7 @@ type secIndex struct {
 	dead    []deadRec // guarded by mu, in LSN order
 	colsFor atomic.Pointer[secCols]
 
-	Adds, Dead, Swept atomic.Int64
+	Adds, Dead, Swept, Scans atomic.Int64
 }
 
 type secCols struct {
@@ -540,6 +540,32 @@ func (e *Engine) IndexNameTaken(name string) (table string, taken bool) {
 	return "", false
 }
 
+// blockWrites stops writers to the tables (in ID order) and waits until the
+// writes in flight are installed; the returned function lets them go.
+func (e *Engine) blockWrites(ts ...*TableState) func() {
+	for _, t := range ts {
+		t.ddlMu.Lock()
+	}
+	chans := make([]chan struct{}, len(ts))
+	for i, t := range ts {
+		chans[i] = make(chan struct{})
+		t.blocked.Store(&chans[i])
+	}
+	for _, t := range ts {
+		for t.writers.Load() != 0 {
+			time.Sleep(100 * time.Microsecond)
+		}
+	}
+	e.waitInstalled(e.durable.Load())
+	return func() {
+		for i, t := range ts {
+			t.blocked.Store(nil)
+			close(chans[i])
+			t.ddlMu.Unlock()
+		}
+	}
+}
+
 // CreateIndex builds a secondary index and records it in the table's
 // schema. Writers to the table wait while the index is built from its rows
 // (PostgreSQL's CREATE INDEX also blocks writes; its CONCURRENTLY variant
@@ -554,8 +580,12 @@ func (e *Engine) CreateIndex(table string, def schema.IndexDef) error {
 	if err != nil {
 		return err
 	}
-	t.ddlMu.Lock()
-	defer t.ddlMu.Unlock()
+	defer e.blockWrites(t)()
+	return e.createIndexBlocked(t, def)
+}
+
+// createIndexBlocked is CreateIndex with the writers of t already stopped.
+func (e *Engine) createIndexBlocked(t *TableState, def schema.IndexDef) error {
 	sch := t.Schema()
 	for _, c := range def.Columns {
 		i, ok := sch.Col(c)
@@ -569,16 +599,6 @@ func (e *Engine) CreateIndex(table string, def schema.IndexDef) error {
 	if t.dropping.Load() {
 		return t.droppedErr()
 	}
-	// stop the writers, let the ones in flight finish and install
-	ch := make(chan struct{})
-	t.blocked.Store(&ch)
-	defer func() {
-		t.blocked.Store(nil)
-		close(ch)
-	}()
-	for t.writers.Load() != 0 {
-		time.Sleep(100 * time.Microsecond)
-	}
 	at := e.durable.Load()
 	e.waitInstalled(at)
 	si, err := e.buildSec(t, def, t.index())
@@ -587,7 +607,7 @@ func (e *Engine) CreateIndex(table string, def schema.IndexDef) error {
 	}
 	si.minSnap.Store(at)
 	t.addSec(si)
-	err = e.AlterTable(table, func(d *schema.Table) error {
+	err = e.AlterTable(sch.Name, func(d *schema.Table) error {
 		d.CloneConstraints()
 		if d.Index(def.Name) != nil {
 			return fmt.Errorf("index %q already exists", def.Name)
@@ -633,6 +653,7 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 	if pos < 0 {
 		return false, nil
 	}
+	si.Scans.Add(1)
 	defer e.enterRead().Add(-1)
 	if err := e.checkSnapshot(snap); err != nil {
 		return true, err
@@ -713,6 +734,7 @@ type SecStats struct {
 	Dead        int64
 	Swept       int64
 	Pending     int
+	Scans       int64
 }
 
 // SecIndexStats lists the secondary indexes of the user tables.
@@ -724,7 +746,7 @@ func (e *Engine) SecIndexStats() []SecStats {
 			p := len(si.dead)
 			si.mu.Unlock()
 			out = append(out, SecStats{Table: t.Schema().Name, Name: si.name, Entries: si.tr.Load().Len(),
-				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p})
+				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load()})
 		}
 	}
 	return out

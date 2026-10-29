@@ -63,6 +63,9 @@ func syntaxErr(pos int, msg string) *Error {
 // AsError maps any error to an SQL error.
 func AsError(err error) *Error {
 	var se *Error
+	if ce := fkErrorOf(err); ce != nil {
+		return ce
+	}
 	switch {
 	case errors.As(err, &se):
 		return se

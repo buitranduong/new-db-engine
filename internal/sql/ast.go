@@ -16,6 +16,8 @@ type ColDef struct {
 	Identity string   // "always" or "by default"
 	IntType  string   // smallint, integer or bigint
 	SeqOpts  *SeqOpts // IDENTITY (sequence options)
+	// column constraints UNIQUE and REFERENCES (parse_index.go)
+	Constraints []*ConstraintDef
 }
 
 // SeqOpts are the options of CREATE/ALTER SEQUENCE; nil fields are not set.
@@ -56,13 +58,14 @@ type AlterTable struct {
 // drop_column, rename_column, rename_table, set_default, drop_default,
 // set_not_null, drop_not_null, set_type, add_check, drop_constraint, owner.
 type AlterAction struct {
-	Kind     string
-	Col      ColDef // add_column
-	Column   string // the column acted on
-	NewName  string // rename_column, rename_table
-	Expr     string // set_default
-	Check    CheckDef
-	IfExists bool // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
+	Kind       string
+	Col        ColDef // add_column
+	Column     string // the column acted on
+	NewName    string // rename_column, rename_table
+	Expr       string // set_default
+	Check      CheckDef
+	Constraint *ConstraintDef // add_constraint (UNIQUE, FOREIGN KEY)
+	IfExists   bool           // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
 }
 
 // DefaultExpr is DEFAULT in INSERT ... VALUES or UPDATE ... SET.
@@ -74,7 +77,8 @@ type CheckDef struct{ Name, Expr string }
 type CreateTable struct {
 	Name        string
 	Cols        []ColDef
-	Checks      []CheckDef // table constraints
+	Checks      []CheckDef       // table constraints
+	Constraints []*ConstraintDef // UNIQUE and FOREIGN KEY, table and column constraints
 	Key         string
 	IfNotExists bool
 	Options     map[string]string // WITH (columnar = true, search = 'a,b', ...)

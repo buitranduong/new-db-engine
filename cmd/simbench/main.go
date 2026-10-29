@@ -86,8 +86,8 @@ func errKey(err error) string {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {
 		m := pe.Message
-		if len(m) > 60 {
-			m = m[:60]
+		if len(m) > 200 {
+			m = m[:200]
 		}
 		return pe.Code + " " + m
 	}
@@ -145,16 +145,21 @@ func baseStatus(i int64) string {
 
 type row struct {
 	num, carrier, status string
-	price                int64
+	price, seq           int64
+	withSeq              bool
 }
 
 func (r row) csv(b *bytes.Buffer) {
+	if r.withSeq {
+		fmt.Fprintf(b, "%s,%s,%s,%d,%d\n", r.num, r.carrier, r.status, r.price, r.seq)
+		return
+	}
 	fmt.Fprintf(b, "%s,%s,%s,%d\n", r.num, r.carrier, r.status, r.price)
 }
 
 func initialRows(n int64, emit func(row) error) error {
 	for i := int64(0); i < n; i++ {
-		if err := emit(row{numStr(i), baseCarrier(i), baseStatus(i), basePrice(i)}); err != nil {
+		if err := emit(row{num: numStr(i), carrier: baseCarrier(i), status: baseStatus(i), price: basePrice(i)}); err != nil {
 			return err
 		}
 	}
@@ -185,11 +190,11 @@ func importRows(n, n0, firstNew int64, newFrac, priceFrac float64, seed uint64, 
 		if x < newFrac {
 			i := firstNew + nn
 			nn++
-			r = row{numStr(i), carriers[rng.IntN(4)], "available", 100000 + rng.Int64N(500)*10000}
+			r = row{num: numStr(i), carrier: carriers[rng.IntN(4)], status: "available", price: 100000 + rng.Int64N(500)*10000}
 		} else {
 			i := (j*stride + off) % n0
 			j++
-			r = row{numStr(i), baseCarrier(i), baseStatus(i), basePrice(i)}
+			r = row{num: numStr(i), carrier: baseCarrier(i), status: baseStatus(i), price: basePrice(i)}
 			if (x-newFrac)/(1-newFrac) < priceFrac {
 				r.price = basePrice(i) + (1+rng.Int64N(50))*1000
 			} else {
@@ -313,6 +318,7 @@ func main() {
 			o.end = p.start
 		}
 		phases = append(phases, p)
+		fmt.Printf("[%s] phase %s begins\n", time.Now().Format("15:04:05"), name)
 		return p
 	}
 	begin("baseline")
@@ -324,6 +330,7 @@ func main() {
 		nn, d, err := runImport(ctx, m, mi, nextNew)
 		p.importDur = d
 		p.importRows = int(c.importN)
+		fmt.Printf("[%s] import %s finished in %v err=%v\n", time.Now().Format("15:04:05"), m, d.Round(time.Millisecond), err)
 		if err != nil {
 			p.importErr = errKey(err)
 			fmt.Fprintf(os.Stderr, "import %s failed: %v\n", m, err)
@@ -411,6 +418,11 @@ func setup(ctx context.Context) {
 		must(exec(ctx, `CREATE INDEX sims_cf ON sims (carrier, status, price)`))
 		fmt.Printf("setup: pg secondary indexes in %v\n", time.Since(t0).Round(time.Millisecond))
 	}
+	if c.system == "stask" && !c.noIndex {
+		t0 = time.Now()
+		must(exec(ctx, `CREATE INDEX sims_cf ON sims (carrier, status, price)`))
+		fmt.Printf("setup: stask btree (carrier,status,price) in %v\n", time.Since(t0).Round(time.Millisecond))
+	}
 	if c.history {
 		// seed old history: 3 rows for each of the first n0/10 SIMs, aged 0..89 days
 		now := time.Now().Unix()
@@ -432,7 +444,7 @@ func setup(ctx context.Context) {
 			return e
 		})
 		must(err)
-		if c.system == "pg" && !c.noIndex {
+		if !c.noIndex {
 			must(exec(ctx, `CREATE INDEX hist_num ON sim_history (number, changed_at)`))
 			must(exec(ctx, `CREATE INDEX hist_at ON sim_history (changed_at)`))
 		}
@@ -442,6 +454,11 @@ func setup(ctx context.Context) {
 		must(exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`))
 		must(exec(ctx, `CREATE INDEX sims_trgm ON sims USING gin (number gin_trgm_ops)`))
 		fmt.Printf("setup: pg_trgm GIN in %v\n", time.Since(t0).Round(time.Millisecond))
+	}
+	if c.system == "stask" && !c.noIndex && c.es {
+		t0 = time.Now()
+		must(exec(ctx, `CREATE INDEX sims_trgm ON sims USING gin (number gin_trgm_ops)`))
+		fmt.Printf("setup: stask trigram view in %v\n", time.Since(t0).Round(time.Millisecond))
 	}
 	if c.system == "pg" {
 		_ = exec(ctx, `ANALYZE`)
@@ -464,7 +481,7 @@ func explainEvidence(ctx context.Context) {
 	fmt.Println("== access-path evidence (EXPLAIN + 5x timing) ==")
 	for _, q := range qs {
 		var plan []string
-		rows, err := pool.Query(ctx, "EXPLAIN "+q.sql, q.args...)
+		rows, err := pool.Query(ctx, "EXPLAIN "+q.sql, append([]any{pgx.QueryExecModeSimpleProtocol}, q.args...)...)
 		if err != nil {
 			plan = []string{"EXPLAIN error: " + errKey(err)}
 		} else {
@@ -506,15 +523,17 @@ func runImport(ctx context.Context, m string, mi int, firstNew int64) (newCount 
 	defer func() { d = time.Since(t0) }()
 	stamp := time.Now().Unix()
 	switch m {
-	case "copy_merge", "update_from":
+	case "copy_merge", "update_from", "copy_merge_chunk":
 		_ = exec(ictx, "DROP TABLE IF EXISTS staging")
-		if err = exec(ictx, `CREATE TABLE staging (number text PRIMARY KEY, carrier text, status text, price bigint)`); err != nil {
+		if err = exec(ictx, `CREATE TABLE staging (number text PRIMARY KEY, carrier text, status text, price bigint, seq bigint)`); err != nil {
 			return
 		}
 		defer func() { _ = exec(context.Background(), "DROP TABLE IF EXISTS staging") }()
 		var nn int64
 		_, err = copyIn(ictx, "staging", func(w io.Writer) error {
-			emit, flush := csvWriter(w)
+			emit0, flush := csvWriter(w)
+			var seq int64
+			emit := func(r row) error { r.seq, r.withSeq, seq = seq, true, seq+1; return emit0(r) }
 			var e error
 			nn, e = importRows(c.importN, c.n0, firstNew, c.newFrac, c.priceFrac, seed, emit)
 			if e != nil {
@@ -533,9 +552,28 @@ SELECT %d + row_number() OVER (ORDER BY number), number, %d, carrier, status, pr
 			rec("import_history_write", time.Since(th), 0, false, herr)
 		}
 		keep := `CASE WHEN sims.status IN ('reserved','sold') THEN sims.status ELSE %s.status END`
-		if m == "copy_merge" {
+		if m == "copy_merge_chunk" {
+			// same statement as copy_merge but in key-range chunks of -batch rows (short transactions)
+			if err = exec(ictx, `CREATE INDEX staging_seq ON staging (seq)`); err != nil {
+				return
+			}
+			for lo := int64(0); lo < c.importN && err == nil; lo += int64(c.batch) {
+				q := fmt.Sprintf(`INSERT INTO sims (number,carrier,status,price,updated_at)
+SELECT number,carrier,status,price,%d FROM staging WHERE seq >= %d AND seq < %d ORDER BY number
+ON CONFLICT (number) DO UPDATE SET carrier=excluded.carrier, price=excluded.price, updated_at=excluded.updated_at, status=`+keep, stamp, lo, lo+int64(c.batch), "excluded")
+				t := time.Now()
+				for try := 0; try < 20; try++ {
+					if err = exec(ictx, q); err == nil || !retryable(err) {
+						break
+					}
+					rec("import_batch_retry", 0, 1, false, nil)
+					time.Sleep(time.Duration(try+1) * 10 * time.Millisecond)
+				}
+				rec("import_batch", time.Since(t), 0, false, err)
+			}
+		} else if m == "copy_merge" {
 			err = exec(ictx, fmt.Sprintf(`INSERT INTO sims (number,carrier,status,price,updated_at)
-SELECT number,carrier,status,price,%d FROM staging
+SELECT number,carrier,status,price,%d FROM staging ORDER BY number
 ON CONFLICT (number) DO UPDATE SET carrier=excluded.carrier, price=excluded.price, updated_at=excluded.updated_at, status=`+keep, stamp, "excluded"))
 		} else {
 			if err = exec(ictx, fmt.Sprintf(`UPDATE sims SET carrier=t.carrier, price=t.price, updated_at=%d, status=`+keep+`
@@ -789,9 +827,11 @@ func orderWorker(ctx context.Context, id int, hot *hotSet, q chan procItem) {
 		timed(op, func() (bool, int, error) {
 			lost, r, err := retry(ctx, rng, func(tx pgx.Tx) (bool, error) {
 				var total int64
-				for _, n := range nums {
+				prices := make([]int64, len(nums))
+				for pi, n := range nums {
 					var price int64
-					e := tx.QueryRow(ctx, `UPDATE sims SET status='reserved', updated_at=$2 WHERE number=$1 AND status='available' RETURNING price`, n, oid).Scan(&price)
+					var carrier string
+					e := tx.QueryRow(ctx, `UPDATE sims SET status='reserved', updated_at=$2 WHERE number=$1 AND status='available' RETURNING price, carrier`, n, oid).Scan(&price, &carrier)
 					if errors.Is(e, pgx.ErrNoRows) {
 						return true, nil // someone else got it
 					}
@@ -799,8 +839,9 @@ func orderWorker(ctx context.Context, id int, hot *hotSet, q chan procItem) {
 						return false, e
 					}
 					total += price
+					prices[pi] = price
 					if c.history {
-						if _, e = tx.Exec(ctx, `INSERT INTO sim_history (id,number,changed_at,carrier,status,price,source) SELECT $1,number,$2,carrier,status,price,'order' FROM sims WHERE number=$3`, histSeq.Add(1), oid, n); e != nil {
+						if _, e = tx.Exec(ctx, `INSERT INTO sim_history (id,number,changed_at,carrier,status,price,source) VALUES ($1,$3,$2,$4,'reserved',$5,'order')`, histSeq.Add(1), oid, n, carrier, price); e != nil {
 							return false, e
 						}
 					}
@@ -809,7 +850,7 @@ func orderWorker(ctx context.Context, id int, hot *hotSet, q chan procItem) {
 					return false, e
 				}
 				for i, n := range nums {
-					if _, e := tx.Exec(ctx, `INSERT INTO order_items (id,order_id,number,price,active) SELECT $1,$2,$3,price,1 FROM sims WHERE number=$3`, oid*10+int64(i), oid, n); e != nil {
+					if _, e := tx.Exec(ctx, `INSERT INTO order_items (id,order_id,number,price,active) VALUES ($1,$2,$3,$4,1)`, oid*10+int64(i), oid, n, prices[i]); e != nil {
 						return false, e
 					}
 				}
@@ -990,6 +1031,7 @@ func invariants(ctx context.Context, expectedNew int64, phases []*phase) []check
 	var no int64
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM orders`).Scan(&no)
 	add("orders count == committed orders", no == okOrders.Load(), "db %d client %d", no, okOrders.Load())
+	add("orders were actually committed (workload ran)", okOrders.Load() > 0, "%d committed", okOrders.Load())
 	var s1, s2 int64
 	e1 := pool.QueryRow(ctx, `SELECT coalesce(sum(total),0) FROM orders WHERE status <> 'cancelled'`).Scan(&s1)
 	e2 := pool.QueryRow(ctx, `SELECT coalesce(sum(price),0) FROM order_items WHERE active=1`).Scan(&s2)

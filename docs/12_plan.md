@@ -10,6 +10,7 @@ Cách lập (2026-10-29): đọc lại docs/03 §9, 04 §5–7, 05 §3, 06 §3�
 3. Đo trước và sau theo docs/11 §5: ghim CPU, ít nhất 3 lượt, ghi cả CPU của client.
 4. Không làm xấu loại thao tác nào. Nếu có thì ghi rõ và có hướng xử lý.
 5. Mục nào đổi định dạng trên đĩa thì cập nhật docs/09 và giữ khả năng đọc dữ liệu cũ.
+6. **Plan–target–actual (docs/14):** mỗi task khi xong phải điền kế hoạch, mục tiêu và thực tế (bằng chứng tái lập được: test, probe `cmd/claimcheck`, lệnh đo) vào docs/14, và nêu chênh lệch với docs. Task không có bằng chứng thì không được ghi "xong". Build bằng `go build -o bin-main/ ./cmd/...` trước khi đo hay probe (không dùng `bin/` cũ).
 
 Cỡ việc: **S** vài giờ, **M** 1–2 ngày, **L** 3–5 ngày, **XL** trên một tuần.
 

@@ -1,0 +1,224 @@
+// claimcheck runs one SQL probe per claim the docs make (docs/14) against a
+// running staskd and prints a markdown table: claim, probe result, verdict.
+// It is the "actual" column of the plan-target-actual report: rerun it after
+// every merge and paste the output into docs/14.
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// check: Steps run in order; the last one is compared with Want.
+// Want: "ok" (no error), "err:SQLSTATE", "val:text" (exact), "has:text" (substring).
+type check struct {
+	ID, Task, Doc string
+	Steps         []string
+	Want          string
+	Args          []any
+}
+
+func main() {
+	url := flag.String("url", "postgres://app@127.0.0.1:5432/stask?sslmode=disable", "staskd pg url")
+	only := flag.String("only", "", "run only checks whose id contains this")
+	flag.Parse()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, *url+"&default_query_exec_mode=simple_protocol")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "connect:", err)
+		os.Exit(2)
+	}
+	defer conn.Close(ctx)
+
+	cs := checks()
+	pass, total := 0, 0
+	fmt.Println("| id | task | doc | want | actual | verdict |")
+	fmt.Println("|---|---|---|---|---|---|")
+	for _, c := range cs {
+		if *only != "" && !strings.Contains(c.ID, *only) {
+			continue
+		}
+		total++
+		if conn.IsClosed() {
+			if conn, err = pgx.Connect(ctx, *url+"&default_query_exec_mode=simple_protocol"); err != nil {
+				fmt.Fprintln(os.Stderr, "reconnect:", err)
+				os.Exit(2)
+			}
+		}
+		actual, ok := run(ctx, *url, conn, c)
+		v := "FAIL"
+		if ok {
+			v, pass = "PASS", pass+1
+		}
+		fmt.Printf("| %s | %s | %s | `%s` | %s | **%s** |\n", c.ID, c.Task, c.Doc, c.Want, cell(actual), v)
+	}
+	fmt.Printf("\n%d of %d probes pass\n", pass, total)
+}
+
+func cell(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "|", "/"), "\n", " ")
+	if len(s) > 110 {
+		s = s[:110] + "…"
+	}
+	return "`" + s + "`"
+}
+
+func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool) {
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if c.Steps[0] == "@copy" { // COPY FROM STDIN text, then count
+		return runCopy(cctx, conn, c)
+	}
+	// cleanup is best effort so probes do not depend on each other
+	defer func() {
+		for _, t := range []string{"cc_t", "cc_p", "cc_c", "cc_v"} {
+			conn.Exec(ctx, "DROP VIEW IF EXISTS "+t)
+			conn.Exec(ctx, "DROP TABLE IF EXISTS "+t+" CASCADE")
+		}
+		conn.Exec(ctx, "ROLLBACK")
+		conn.Exec(ctx, "RESET statement_timeout")
+	}()
+	conn.Exec(ctx, "ROLLBACK")
+	for _, t := range []string{"cc_c", "cc_p", "cc_t"} {
+		conn.Exec(cctx, "DROP TABLE IF EXISTS "+t+" CASCADE")
+	}
+	for i, s := range c.Steps {
+		last := i == len(c.Steps)-1
+		if !last || !strings.HasPrefix(c.Want, "val:") && !strings.HasPrefix(c.Want, "has:") {
+			_, err := conn.Exec(cctx, s)
+			if last {
+				return verdict(c.Want, "", err)
+			}
+			if err != nil {
+				return "setup step failed: " + errText(err), false
+			}
+			continue
+		}
+		var out string
+		err := conn.QueryRow(cctx, "SELECT ("+strings.TrimSuffix(strings.TrimSpace(s), ";")+")::text", c.Args...).Scan(&out)
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s)), "SELECT") { // full statement given
+			err = conn.QueryRow(cctx, s, c.Args...).Scan(&out)
+		}
+		return verdict(c.Want, out, err)
+	}
+	return "no steps", false
+}
+
+func verdict(want, got string, err error) (string, bool) {
+	var pe *pgconn.PgError
+	code := ""
+	if errors.As(err, &pe) {
+		code = pe.Code
+	}
+	switch {
+	case strings.HasPrefix(want, "err:"):
+		if err == nil {
+			return "no error", false
+		}
+		return code + " " + errText(err), code == strings.TrimPrefix(want, "err:")
+	case err != nil:
+		return errText(err), false
+	case want == "ok":
+		return "ok", true
+	case strings.HasPrefix(want, "val:"):
+		return got, got == strings.TrimPrefix(want, "val:")
+	case strings.HasPrefix(want, "has:"):
+		return got, strings.Contains(got, strings.TrimPrefix(want, "has:"))
+	}
+	return "bad want", false
+}
+
+func errText(err error) string {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		return pe.Code + ": " + pe.Message
+	}
+	return err.Error()
+}
+
+func runCopy(ctx context.Context, conn *pgx.Conn, c check) (string, bool) {
+	conn.Exec(ctx, "DROP TABLE IF EXISTS cc_t")
+	if _, err := conn.Exec(ctx, "CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v TEXT)"); err != nil {
+		return errText(err), false
+	}
+	defer conn.Exec(ctx, "DROP TABLE IF EXISTS cc_t")
+	_, err := conn.PgConn().CopyFrom(ctx, bytes.NewBufferString("1\ta\n2\tb\n3\t\\N\n"), "COPY cc_t FROM STDIN")
+	if err != nil {
+		return errText(err), false
+	}
+	var n string
+	if err := conn.QueryRow(ctx, "SELECT count(*)::text FROM cc_t").Scan(&n); err != nil {
+		return errText(err), false
+	}
+	return n + " rows", n == "3"
+}
+
+const T = "CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v TEXT)"
+
+func checks() []check {
+	return []check{
+		// ---- P1.2 ALTER TABLE
+		{"alter_add_default", "P1.2", "05 §11", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "ALTER TABLE cc_t ADD COLUMN w BIGINT DEFAULT 7", "SELECT w FROM cc_t WHERE id=1"}, "val:7", nil},
+		{"alter_drop_column", "P1.2", "05 §11", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "ALTER TABLE cc_t DROP COLUMN v", "SELECT count(*) FROM cc_t"}, "val:1", nil},
+		{"alter_rename_column", "P1.2", "05 §11", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "ALTER TABLE cc_t RENAME COLUMN v TO z", "SELECT z FROM cc_t"}, "val:a", nil},
+		{"alter_set_not_null", "P1.2", "05 §11", []string{T, "ALTER TABLE cc_t ALTER COLUMN v SET NOT NULL"}, "ok", nil},
+		{"alter_set_default", "P1.2", "05 §11", []string{T, "ALTER TABLE cc_t ALTER COLUMN v SET DEFAULT 'x'"}, "ok", nil},
+		{"alter_column_type", "P1.2", "05 §11 (listed as not done)", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v BIGINT)", "ALTER TABLE cc_t ALTER COLUMN v TYPE TEXT"}, "ok", nil},
+		{"alter_rename_table", "P1.2", "05 §11", []string{T, "ALTER TABLE cc_t RENAME TO cc_p"}, "ok", nil},
+		// ---- P1.3 / P1.4
+		{"default_now", "P1.3", "05 §2", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, c TIMESTAMPTZ DEFAULT now())", "INSERT INTO cc_t (id) VALUES (1)", "SELECT count(*) FROM cc_t WHERE c IS NOT NULL"}, "val:1", nil},
+		{"check_23514", "P1.3", "05 §2", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, a BIGINT CHECK (a > 0))", "INSERT INTO cc_t VALUES (1,-1)"}, "err:23514", nil},
+		{"not_null_23502", "P1.3", "05 §2", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, a BIGINT NOT NULL)", "INSERT INTO cc_t (id) VALUES (1)"}, "err:23502", nil},
+		{"serial", "P1.4", "05 §2", []string{"CREATE TABLE cc_t (id SERIAL PRIMARY KEY, v TEXT)", "INSERT INTO cc_t (v) VALUES ('a')", "INSERT INTO cc_t (v) VALUES ('b')", "SELECT max(id) FROM cc_t"}, "val:2", nil},
+		// ---- P1.5
+		{"truncate", "P1.5", "05 §2", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "TRUNCATE cc_t", "SELECT count(*) FROM cc_t"}, "val:0", nil},
+		{"drop_table", "P1.5", "05 §2", []string{T, "DROP TABLE cc_t", "SELECT count(*) FROM cc_t"}, "err:42P01", nil},
+		{"copy_from_stdin", "P1.5", "05 §15", []string{"@copy"}, "ok", nil},
+		{"create_view", "P1.5", "05 §16", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "CREATE VIEW cc_v AS SELECT id FROM cc_t", "SELECT count(*) FROM cc_v"}, "val:1", nil},
+		// ---- P1.1 data types
+		{"ts_microseconds", "P1.1", "12 N2", []string{"SELECT '2026-01-01 00:00:00.123456+00'::timestamptz::text"}, "has:.123456", nil},
+		{"numeric_exact", "P1.1", "12 N2", []string{"SELECT (0.1::numeric + 0.2::numeric)::text"}, "val:0.3", nil},
+		{"numeric_wide", "P1.1", "12 N2", []string{"SELECT 12345678901234567890.123456789::numeric::text"}, "val:12345678901234567890.123456789", nil},
+		{"uuid_type", "P1.1", "12 N2", []string{"SELECT pg_typeof('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text"}, "val:uuid", nil},
+		{"bytea_type", "P1.1", "12 N2", []string{"SELECT pg_typeof('\\xdeadbeef'::bytea)::text"}, "val:bytea", nil},
+		{"jsonb_validates", "P1.1", "12 N2", []string{"SELECT '{bad'::jsonb"}, "err:22P02", nil},
+		{"array_literal", "P1.1", "12 N2", []string{"SELECT (ARRAY[1,2,3])[2]::text"}, "val:2", nil},
+		// ---- P2
+		{"create_index", "P2.1", "12 P2.1", []string{T, "CREATE INDEX cc_i ON cc_t (v)"}, "ok", nil},
+		{"unique_constraint_23505", "P2.2", "12 P2.2", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, e TEXT UNIQUE)", "INSERT INTO cc_t VALUES (1,'x')", "INSERT INTO cc_t VALUES (2,'x')"}, "err:23505", nil},
+		{"foreign_key_23503", "P2.2", "12 P2.2", []string{"CREATE TABLE cc_p (id BIGINT PRIMARY KEY)", "CREATE TABLE cc_c (id BIGINT PRIMARY KEY, pid BIGINT REFERENCES cc_p(id))", "INSERT INTO cc_c VALUES (1, 99)"}, "err:23503", nil},
+		{"serializable_scan", "P2.3", "12 P2.3 (scan rejected)", []string{T, "BEGIN ISOLATION LEVEL SERIALIZABLE", "SELECT count(*) FROM cc_t", "COMMIT"}, "ok", nil},
+		// ---- P4 catalog
+		{"pg_class", "P4.1", "05 §17", []string{T, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'cc_t'"}, "val:1", nil},
+		{"information_schema", "P4.1", "05 §17", []string{T, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'cc_t'"}, "val:2", nil},
+		{"regclass_cast", "P4.1", "05 §17", []string{T, "SELECT count(*) FROM pg_catalog.pg_class WHERE oid = 'cc_t'::regclass"}, "val:1", nil},
+		// ---- P5
+		{"statement_timeout", "P5.3", "05 §13", []string{"SET statement_timeout = '100ms'", "SELECT count(*) FROM generate_series(1, 100000000000)"}, "err:57014", nil},
+		{"create_role", "P5.2", "12 P5.2", []string{"CREATE ROLE cc_r LOGIN PASSWORD 'x'"}, "ok", nil},
+		{"grant_select", "P5.2", "12 P5.2", []string{T, "GRANT SELECT ON cc_t TO PUBLIC"}, "ok", nil},
+		{"pg_stat_activity", "P5.5", "12 P5.5", []string{"SELECT count(*) FROM pg_stat_activity"}, "val:1", nil},
+		// ---- P7
+		{"create_trigger", "P7.1", "12 P7.1", []string{T, "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW EXECUTE FUNCTION cc_fn()"}, "ok", nil},
+		// ---- baseline SQL the README claims
+		{"on_conflict_update", "base", "05 §1", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "INSERT INTO cc_t VALUES (1,'b') ON CONFLICT (id) DO UPDATE SET v = excluded.v", "SELECT v FROM cc_t WHERE id=1"}, "val:b", nil},
+		{"join", "base", "05 §1", []string{T, "CREATE TABLE cc_p (id BIGINT PRIMARY KEY, w TEXT)", "INSERT INTO cc_t VALUES (1,'a')", "INSERT INTO cc_p VALUES (1,'j')", "SELECT p.w FROM cc_t t JOIN cc_p p ON p.id = t.id"}, "val:j", nil},
+		{"columnar_aggregate", "base", "08", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, a DOUBLE PRECISION) WITH (columnar = true)", "INSERT INTO cc_t VALUES (1, 1.5)", "INSERT INTO cc_t VALUES (2, 2.5)", "SELECT sum(a) FROM cc_t"}, "val:4", nil},
+		{"extended_protocol_param", "base", "05", []string{"SELECT $1::bigint + 1"}, "val:2", []any{int64(1)}},
+		{"listen", "base", "10", []string{"LISTEN cc_ch"}, "ok", nil},
+		{"bool_cast_text", "base", "PG compat", []string{"SELECT true::text"}, "val:true", nil},
+		// ---- not claimed anywhere: discover gaps
+		{"unclaimed_cte", "-", "-", []string{"WITH x AS (SELECT 1 AS a) SELECT a FROM x"}, "val:1", nil},
+		{"unclaimed_window", "-", "-", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "SELECT row_number() OVER (ORDER BY id) FROM cc_t"}, "val:1", nil},
+		{"unclaimed_string_agg", "-", "-", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "SELECT string_agg(v, ',') FROM cc_t"}, "val:a", nil},
+		{"unclaimed_generate_series", "-", "-", []string{"SELECT count(*) FROM generate_series(1,10)"}, "val:10", nil},
+	}
+}

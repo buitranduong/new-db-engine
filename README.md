@@ -19,7 +19,9 @@ path from the *consistency the query asked for* and reports which plan it used
 
 ## Features
 
-Working today (each item has tests; see the linked document):
+Working today. Every claim below is backed by a test or by a probe in
+[docs/14](docs/14_plan_target_actual.md), which records the plan, the target and
+what the code actually does for each task, including where the docs were wrong:
 
 - **Storage and transactions**: segmented WAL with CRC32C frames and pipelined
   group commit; MVCC with Snapshot Isolation and Serializable for point reads;
@@ -42,8 +44,9 @@ Working today (each item has tests; see the linked document):
   [docs/05 §14](docs/05_sql_pgwire.md)).
 - **Security and operations**: TLS and SCRAM-SHA-256 on the SQL port, mutual
   TLS and challenge-response authentication on the replication port, TLS and
-  bearer tokens on the HTTP API, query cancellation, `statement_timeout`,
-  idle-session timeouts, per-query memory budget
+  bearer tokens on the HTTP API, cancellation of running table scans and
+  aggregates, `statement_timeout` (not yet applied to set-returning function scans
+  such as `generate_series`), idle-session timeouts, per-query memory budget
   ([docs/13](docs/13_http_security.md)).
 
 Not there yet: secondary indexes, foreign keys, roles and `GRANT`, exact
@@ -72,11 +75,15 @@ INSERT INTO orders VALUES (1, 42, 9.5, 'paid', now());
 SELECT status, count(*), sum(amount) FROM orders GROUP BY status;
 ```
 
-By default both listeners accept loopback connections only. Binding anywhere
-else requires authentication to be configured; the server refuses to start
-otherwise. A JSON/HTTP API on `-addr` offers the same data with a per-query
-consistency contract (`strong`, `bounded`, `session`, `eventual`); see
-[docs/README.vi.md](docs/README.vi.md) for examples.
+By default both listeners (`-addr` for HTTP, `-pg-addr` for SQL, default
+`127.0.0.1:17432`) accept loopback connections only. The HTTP API, the profiling
+endpoint and the replication port refuse to start on a non-loopback address
+unless authentication is configured. **The SQL port does not yet:** with an empty
+`-pg-password` it runs in trust mode on whatever address you give it, so only
+bind it beyond loopback together with `-pg-password` and `-pg-auth scram`
+(tracked in [docs/14](docs/14_plan_target_actual.md)). A JSON/HTTP API on `-addr`
+offers the same data with a per-query consistency contract (`strong`, `bounded`,
+`session`, `eventual`); see [docs/README.vi.md](docs/README.vi.md) for examples.
 
 ## Building and testing
 
@@ -115,6 +122,7 @@ docs/           design, measurements, specification and plan (mostly Vietnamese)
 | [docs/03_transaction_recovery.md](docs/03_transaction_recovery.md) | Log, commit, MVCC, checkpoint, recovery |
 | [docs/06_cluster.md](docs/06_cluster.md) | Replication and clustering |
 | [docs/10_interop.md](docs/10_interop.md) | CDC and PostgreSQL ecosystem interoperability |
+| [docs/14_plan_target_actual.md](docs/14_plan_target_actual.md) | Plan vs target vs actual for every task, with the probe results (`cmd/claimcheck`) |
 | [docs/12_plan.md](docs/12_plan.md) | Detailed plan: every open item, size, dependency and exit test |
 
 Most documents are written in Vietnamese. English translations are welcome (see

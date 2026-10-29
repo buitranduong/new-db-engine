@@ -232,13 +232,14 @@ type cfg struct {
 	out                         string
 	copySQL                     string
 	minFreeGB                   float64
-	history, es                 bool
+	history, es, skipPretty     bool
 }
 
 var c cfg
 var pool *pgxpool.Pool
 var seqOrder atomic.Int64
 var okOrders atomic.Int64
+var potentialNew atomic.Int64
 var ambiguousOrders atomic.Int64 // commit outcome unknown: the run was stopped while the order was committing
 var histSeq atomic.Int64
 
@@ -268,6 +269,7 @@ func main() {
 	flag.StringVar(&c.copySQL, "copy-sql", "COPY %s FROM STDIN WITH (FORMAT csv)", "COPY statement template")
 	flag.Float64Var(&c.minFreeGB, "min-free-gb", 3, "refuse to start if the filesystem of -free-path has less free space (checked by caller script too)")
 	flag.BoolVar(&c.history, "history", true, "write a sim_history row for every SIM change (import, orders) and run the history benchmarks")
+	flag.BoolVar(&c.skipPretty, "skip-pretty", false, "drop the es_pretty query (an OR of two LIKEs: full scan on both systems) to keep the CPU below saturation")
 	flag.BoolVar(&c.es, "es", true, "add Elasticsearch-style website queries: suffix, contains, pretty numbers, facet, combined filter")
 	flag.Parse()
 	if c.dsn == "" {
@@ -339,7 +341,7 @@ func main() {
 		} else {
 			expectedNew += nn
 		}
-		nextNew += nn
+		nextNew += c.importN
 	}
 	begin("after")
 	time.Sleep(time.Duration(c.afterSec) * time.Second)
@@ -650,6 +652,7 @@ status=CASE WHEN sims.status IN ('reserved','sold') THEN sims.status ELSE exclud
 		err = fmt.Errorf("unknown method %q", m)
 	}
 	if err != nil {
+		potentialNew.Add(newCount) // a failed import may have applied part of its rows (chunked / client timed out)
 		newCount = 0
 	}
 	return
@@ -687,6 +690,9 @@ func webWorker(ctx context.Context, id int) {
 		pick := rng.IntN(3)
 		if c.es && rng.IntN(2) == 0 {
 			pick = 3 + rng.IntN(6)
+			if c.skipPretty && pick == 5 {
+				pick = 4
+			}
 		}
 		switch pick {
 		case 3, 4, 5, 6, 7, 8:
@@ -1030,7 +1036,8 @@ func invariants(ctx context.Context, expectedNew int64, phases []*phase) []check
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sims`).Scan(&n); err != nil {
 		add("sims row count", false, "%v", err)
 	} else {
-		add("sims row count", n == c.n0+expectedNew, "got %d want %d (initial %d + new %d)", n, c.n0+expectedNew, c.n0, expectedNew)
+		hi := c.n0 + expectedNew + potentialNew.Load()
+		add("sims row count", n >= c.n0+expectedNew && n <= hi, "got %d want %d (initial %d + new %d) .. %d (if failed imports applied part of their rows)", n, c.n0+expectedNew, c.n0, expectedNew, hi)
 	}
 	var no int64
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM orders`).Scan(&no)

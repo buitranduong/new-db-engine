@@ -1,0 +1,23 @@
+setup: loaded 1000000 rows in 5.38s
+setup: trigram view created in 2ms
+== mode kill: 1000000 base rows, 3 rounds, 4 writers, batch 1000, view=true
+
+round 1: kill -9 after 1.8s of import, 464 batches acknowledged (464000 rows), durable_lsn 467 / substr applied_lsn 467 just before the kill
+  restart to ready: 1.72s; right after: durable_lsn 467, substr ready=false applied_lsn 0
+  view caught up to durable_lsn 4.410s after ready (ok=true)
+core count(*) = 1463531 (plan engine=none); view count (LIKE '0%', strong) = 1463531 (plan engine=substr, err=<nil>); core rows not starting with 0 = 0
+acknowledged batches: 464 (464000 rows); rows written by the import found in core: 464000 (extra over acked = batches in flight at the kill); acked rows missing from core: 0; core-view difference (core - nonzero - view) = 0
+
+round 2: kill -9 after 3.6s of import, 1352 batches acknowledged (1352000 rows), durable_lsn 1355 / substr applied_lsn 1355 just before the kill
+  restart to ready: 2.63s; right after: durable_lsn 1356, substr ready=false applied_lsn 0
+  view caught up to durable_lsn 7.088s after ready (ok=true)
+core count(*) = 2351634 (plan engine=none); view count (LIKE '0%', strong) = 2351634 (plan engine=substr, err=<nil>); core rows not starting with 0 = 0
+acknowledged batches: 1352 (1352000 rows); rows written by the import found in core: 1353000 (extra over acked = batches in flight at the kill); acked rows missing from core: 0; core-view difference (core - nonzero - view) = 0
+
+round 3: kill -9 after 3.3s of import, 2182 batches acknowledged (2182000 rows), durable_lsn 2186 / substr applied_lsn 2185 just before the kill
+  restart to ready: 3.53s; right after: durable_lsn 2187, substr ready=false applied_lsn 0
+  view caught up to durable_lsn 9.004s after ready (ok=true)
+core count(*) = 3182238 (plan engine=none); view count (LIKE '0%', strong) = 3182238 (plan engine=substr, err=<nil>); core rows not starting with 0 = 0
+acknowledged batches: 2182 (2182000 rows); rows written by the import found in core: 2184000 (extra over acked = batches in flight at the kill); acked rows missing from core: 0; core-view difference (core - nonzero - view) = 0
+
+RESULT VALID: no acknowledged row lost in any round

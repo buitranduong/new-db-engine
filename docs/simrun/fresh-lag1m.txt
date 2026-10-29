@@ -1,0 +1,27 @@
+setup: loaded 1000000 rows in 5.491s
+setup: trigram view created in 1ms
+
+== mode lag: 1000000 base rows, import 1000000 rows by 4 writers (batch 1000) in 4.15s = 240753 rows/s; view caught up 0.043s after the import returned (ok=true)
+
+-- view lag samples every 100 ms (/v1/status: durable_lsn - substr applied_lsn, lag_ms)
+phase         n      gap p50      gap p99      gap max   lag_ms p99   lag_ms max
+idle         79            0            0            0          0.0          0.0
+import       42            2          101          101        376.3        376.3
+after        10            0            0            0          0.0          0.0
+
+-- read-after-write probes (write acknowledged, then search at once by trigram LIKE '%<full number>%')
+phase    probe                  n  seen-now   stale   lat p50   lat p99  plans
+idle     insert/bounded       361       361       0     0.32ms     0.57ms  substr=361
+idle     insert/strong        360       360       0     0.31ms     0.62ms  substr=360
+idle     insert/eventual      360       360       0     0.32ms     0.59ms  substr=360  visible after p50 NaN / p99 NaN / max NaN ms, never within 3s: 0
+idle     update/bounded       360       360       0     0.34ms     1.08ms  substr=360
+idle     update/strong        360       360       0     0.34ms     1.06ms  substr=360
+import   insert/bounded       125        38       0     0.83ms    70.28ms  substr=125
+import   insert/strong        101       101       0     3.14ms   301.35ms  substr=101
+import   insert/eventual      104        29       0     0.72ms    65.31ms  substr=104  visible after p50 4.2 / p99 380.3 / max 380.3 ms, never within 3s: 0
+import   update/bounded       126       126       0     0.65ms    70.48ms  substr=126
+import   update/strong        102       102       0     3.07ms   297.11ms  substr=102
+
+-- after the import
+core count(*) = 2000399 (plan engine=none); view count (LIKE '0%', strong) = 1998988 (plan engine=substr, err=<nil>); core rows not starting with 0 = 1411
+acknowledged batches: 1000 (1000000 rows); rows written by the import found in core: 998988 (extra over acked = batches in flight at the kill); acked rows missing from core: 1012; core-view difference (core - nonzero - view) = 0

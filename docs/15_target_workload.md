@@ -95,9 +95,184 @@ STASK không có khoá dòng chờ (OCC), không có `VACUUM`, và `ALTER TABLE`
 7. Yêu cầu sẵn sàng cao: chấp nhận restart vài giây/phút, hay cần chuyển dự phòng tự động?
 8. Có yêu cầu pháp lý/bảo mật (dữ liệu khách hàng, sao lưu, nhật ký truy cập)?
 
-## 6. Kết quả `simbench`
+## 6. Kết quả `simbench` (nhánh `simrun`, lần chạy đầu tiên, 2026-10-29)
 
-(Điền bởi agent `simbench`; chưa có số liệu khi viết tài liệu này.)
+Đây là lần đầu `cmd/simbench` và `cmd/simfresh` được chạy. Mọi số dưới đây là **tương đối**, một lần chạy mỗi ô (không lặp, không có khoảng tin cậy), trên máy dùng chung. Dữ liệu thô: `docs/simrun/` (`*.txt` báo cáo, `*.json` số liệu, `fresh-*.txt` độ mới).
+
+### 6.0 Điều kiện đo (đọc trước khi đọc số)
+
+- VM 8 vCPU / 31 GB RAM, đĩa dùng chung, **agent khác chạy song song** (load average 2 đến 13 trong lúc đo). Một lần chạy STASK và PG cách nhau vài phút, không chạy đồng thời. Số tuyệt đối không dùng được; tỉ lệ trong cùng một lần chạy dùng được có dè dặt.
+- STASK: nhánh `simrun` (= `main` @ `bf32c2b` + simbench), `staskd -segment-mb 64 -prezero=false`, mặc định bền (fdatasync mỗi nhóm commit), một nút. PostgreSQL 16 trong Docker (`postgres:16`), `fsync=on`, `synchronous_commit=on`, `shared_buffers=1GB`, không chỉnh gì khác. Cùng máy khách (`pgx/v5`, ứng dụng phía client giống hệt, STASK dùng giao thức mở rộng không cache câu lệnh, PG dùng cache câu lệnh).
+- Chỉ mục: PG có `text_pattern_ops` (tiền tố), btree `(carrier,status,price)`, GIN `pg_trgm`. STASK có btree `(carrier,status,price)` và view trigram (`CREATE INDEX .. USING gin (number gin_trgm_ops)`); không có chỉ mục tiền tố.
+- Bảng `sims(number PK, carrier, status, price, updated_at)`, `orders`, `order_items`, `sim_history` (mỗi dòng nhập và mỗi lần giữ số ghi một dòng lịch sử; có sẵn 3 dòng cho 10% SIM).
+- Tải nền: 8 worker website (tra cứu, tiền tố, lọc nhà mạng+giá, và một nửa là truy vấn kiểu ES: hậu tố `%8888`, chứa `%888%`, đuôi đẹp (OR của hai LIKE), facet theo nhà mạng, kết hợp), 8 worker đặt hàng (giữ số `UPDATE .. WHERE status='available' RETURNING` + tạo đơn, 30% nhắm tập 50 số đẹp), 2 worker xử lý đơn (thanh toán/huỷ), 1 worker đồng bộ kho (20 UPDATE/giao dịch), 1 worker CRM (GROUP BY mỗi giây). Nghỉ ngẫu nhiên 0 đến 100 ms giữa hai thao tác (`-think 50ms`).
+- Pha: 20 s nền, rồi mỗi cách nhập một pha (nền vẫn chạy), 20 s sau. Mỗi thao tác tính vào pha nó **hoàn tất**.
+- File nhập: 10% số mới, 60% đổi giá, 30% đổi trạng thái/nhà mạng. Số `reserved/sold` không bị nhập đè trạng thái. Ba cách nhập (bốn khi tính bản chia lô):
+  1. `copy_merge`: COPY vào bảng staging rồi **một** câu `INSERT .. SELECT .. ORDER BY number ON CONFLICT DO UPDATE`.
+  2. `copy_merge_chunk`: cùng câu nhưng chia theo khoảng 2000 dòng (giao dịch ngắn).
+  3. `batch_upsert`: `INSERT .. VALUES (2000 dòng) ON CONFLICT DO UPDATE`, sắp theo khoá.
+  4. `update_from`: `UPDATE .. FROM staging` rồi `INSERT` phần mới bằng LEFT JOIN anti-join.
+- Ba cấu hình tải: **đầy** (tất cả, kể cả `es_pretty` quét toàn bảng và CRM GROUP BY toàn bảng; ở các lần chạy thử 200k với nghỉ 5 ms, `staskd` dùng ~700% CPU; ở 1M với nghỉ 50 ms **không đo CPU**, nên "bão hoà" là suy đoán [chưa kiểm]), **nhẹ** (`-crm 0 -skip-pretty`: bỏ hai truy vấn quét toàn bảng; CPU không đo, giả định chưa bão hoà) và **rảnh** (không tải nền, chỉ đo tốc độ nhập).
+- Bất biến (kiểm sau mỗi lần chạy): số đơn trong DB khớp số đơn client xác nhận; tổng tiền đơn sống = tổng giá item sống; không số nào có hai item sống; tập SIM `reserved/sold` = tập số có item sống. **Giữ đúng trong mọi lần chạy hợp lệ của cả hai hệ (0 số bị bán hai lần).** Chi tiết ở 6.4.
+
+### 6.1 Trả lời ngắn cho câu hỏi chính
+
+Khi nhập 200 nghìn dòng vào bảng 1 triệu số (cấu hình nhẹ; `batch_upsert`, cách duy nhất chạy xong trên cả hai hệ):
+
+| Thao tác | STASK nền → khi nhập (p50 / p99, ms) | PG16 nền → khi nhập (p50 / p99, ms) |
+|---|---|---|
+| Website: tra số (`number = $1`) | 0,19 / 14,5 → 0,20 / 12,2 (x1,1 / x0,8) | 0,29 / 0,75 → 0,33 / 2,80 (x1,1 / **x3,7**) |
+| Website: tiền tố `0xx%` LIMIT 50 | 1,82 / 16,0 → 1,74 / 13,0 | 15,95 / 38,9 → 21,4 / 53,2 (x1,3 / x1,4) |
+| Website: lọc nhà mạng+trạng thái+giá | 0,44 / 13,9 → 0,52 / 13,3 | 1,18 / 1,73 → 1,28 / 4,93 (x1,1 / x2,8) |
+| ES: hậu tố `%8888` | 2,42 / 13,6 → 2,63 / 12,3 | 5,63 / 186 → 174 / 224 (x31 / x1,2; xem 6.5) |
+| ES: chứa `%888%` | 0,90 / 14,5 → 0,98 / 13,5 | 4,28 / 7,8 → 4,43 / 16,6 |
+| Đơn hàng: giữ số + tạo đơn | 2,05 / 18,1 → 4,58 / 45,9 (**x2,2 / x2,5**) | 2,81 / 6,65 → 3,27 / 32,3 (x1,2 / **x4,9**) |
+| Đơn hàng: giữ số đẹp (tranh chấp) | 0,55 / 15,3 → 0,47 / 14,1 | 0,72 / 4,57 → 0,86 / 6,46 |
+| Đơn hàng: thanh toán | 1,69 / 17,7 → 5,60 / 49,4 (**x3,3 / x2,8**) | 2,43 / 5,97 → 2,91 / 33,5 (x1,2 / **x5,6**) |
+| Kho: đồng bộ 20 UPDATE | 4,83 / 20,4 → 10,5 / 43,3 (**x2,2 / x2,1**) | 7,77 / 11,7 → 9,17 / 57,6 (x1,2 / **x4,9**) |
+| Thời gian nhập 200k dòng (pha) | 9,8 s | 22,8 s |
+
+(`simrun` nhẹ: `s1m-lean`, `p1m-lean`.) Đọc: ở cấu hình nhẹ, **website và ES của STASK không chậm đi** khi nhập (tỉ lệ ~1,0 đến 1,2), còn đơn hàng/kho của STASK chậm gấp 2 đến 3 lần ở p50 trong khoảng 10 s nhập; PG ít tăng p50 (~1,2 lần) nhưng **p99 tăng 3 đến 5 lần** (chờ khoá) và website tra số của PG có đuôi p99 x3,7. Tuyệt đối thì STASK nhanh hơn PG ở các ô website/ES/đơn hàng/kho của bảng này, trừ khi tải bão hoà CPU (6.3). Lưu ý: `batch_upsert` là pha nhập đầu tiên sau pha nền (có thể có thiên lệch thứ tự), và ở `copy_merge`/`chunk` của STASK tải nhẹ không có tăng độ trễ chỉ vì câu nhập không tiến triển hoặc quá chậm để tranh chấp (6.2).
+
+### 6.2 Tốc độ nhập 200k dòng vào 1M số (giây; "—" = không xong)
+
+| Cách nhập | STASK rảnh | STASK tải nhẹ | STASK tải đầy | PG rảnh | PG tải nhẹ | PG tải đầy |
+|---|---:|---:|---:|---:|---:|---:|
+| `copy_merge` (1 câu) | **8,2** | — (quá 120 s, hết hạn) | — (quá 90 s) | 16,3 | 17,9 | 22,5 |
+| `copy_merge_chunk` (2000 dòng) | 45,8 | 61,3 | — (quá 90 s) | 20,6 | 21,3 | 23,6 |
+| `batch_upsert` (2000 dòng) | 10,0 | 9,8 | 19,6 | 21,5 | 22,8 | 24,1 |
+| `update_from` | 13,9 | chưa chạy | — (quá 90 s) | 17,1 | chưa chạy | — (deadlock 40P01 sau 8,3 s) |
+
+Ở 2M số / nhập 500k, tải đầy: STASK `batch_upsert` 48,0 s, `copy_merge` và `copy_merge_chunk` không xong trong 120 s; PG `batch_upsert` 71,8 s, `copy_merge` 49,9 s, `copy_merge_chunk` 58,1 s (đều xong).
+
+**STASK nhanh hơn PG khi rảnh (2,0 lần ở `copy_merge`, 2,2 lần ở `batch_upsert`, 1,2 lần ở `update_from`), nhưng một câu ghi dài không chạy xong khi có người khác đang ghi.** Nguyên nhân (đo, chưa tìm trong mã): STASK dùng OCC, giao dịch thua bị huỷ khi commit (thấy `40001 could not serialize access due to concurrent update` ở bản 20k dòng); một câu `INSERT .. SELECT` 200k dòng chạm 200k khoá, chỉ cần một khoá bị `inv_sync`/đơn hàng ghi trước là cả câu làm lại, nên với ghi nền ~100 giao dịch/s nó không bao giờ qua. PG chờ khoá thay vì huỷ nên xong (14 đến 22 s) nhưng làm 5 đến 11 phiên khác chờ khoá cùng lúc (số phiên chờ khoá trung bình 4,5 đến 7,1 ở `copy_merge` và, ở bản 200k, `update_from`; 0,0 đến 0,3 ở `batch_upsert`/chunk). Cách chạy được trên STASK hiện nay là nhập theo lô nhỏ (`batch_upsert`); phiên bản chia khoảng bằng `INSERT .. SELECT` từ staging xong ở tải nhẹ nhưng chậm (45 đến 61 s, so với PG 21 s).
+
+### 6.3 Cấu hình tải đầy và tải bão hoà
+
+Cấu hình đầy (1M số, nhập 200k, `batch_upsert`; `s1m`, `p1m`):
+
+| Thao tác | STASK nền → nhập (p50 / p99 ms) | PG16 nền → nhập (p50 / p99 ms) |
+|---|---|---|
+| tra số | 0,28 / 18,1 → 0,90 / 16,7 (x3,2 / x0,9) | 0,37 / 8,3 → 0,29 / 4,0 |
+| lọc | 0,60 / 17,7 → 2,33 / 19,0 (x3,9 / x1,1) | 1,28 / 8,1 → 1,33 / 7,0 |
+| giữ số | 5,54 / 84,1 → 21,1 / 207 (x3,8 / x2,5) | 3,65 / 24,9 → 3,07 / 14,2 |
+| thanh toán | 4,44 / 76,8 → 22,8 / 182 (x5,1 / x2,4) | 3,14 / 22,4 → 2,65 / 11,6 |
+| đồng bộ kho | 10,3 / 152 → 38,3 / 265 (x3,7 / x1,7) | 11,5 / 58,9 → 10,1 / 28,5 |
+| CRM đếm theo nhà mạng+trạng thái (quét toàn bảng) | 688 / 1008 → 1123 / 1764 | 399 / 609 → 384 / 434 |
+| CRM doanh thu theo ngày | 1,50 / 16,4 → 15,1 / 61,5 (x10) | 1,37 / 4,89 → 4,21 / 6,95 (x3,1) |
+
+Ở 2M số / nhập 500k, tải đầy (`s2m`, `p2m`): STASK tra số 0,21 → 1,92 ms (x9,0), giữ số 2,88/61 → 24,95/255 ms, thanh toán 2,37/58 → 24,98/234 ms; PG tra số 0,32 → 0,32 ms, giữ số 2,73/17,7 → 3,55/28,2 ms, thanh toán 2,15/15,5 → 3,14/26,7 ms.
+
+**Ở cấu hình tải đầy (có các truy vấn quét toàn bảng), STASK thua rõ**: p50 của đơn hàng tăng 4 đến 10 lần khi nhập, PG gần như không đổi. Nguyên nhân giả thuyết [chưa kiểm]: lõi STASK đã gần hết CPU từ pha nền do hai truy vấn quét toàn bảng (`es_pretty` 1,3 đến 1,6 s, CRM 0,7 đến 1,4 s ở 1M đến 2M số, PG 0,25 s và 0,4 đến 0,6 s), nên bất kỳ việc ghi nào thêm vào đều xếp hàng. Đây là điều kiện dễ gặp ở sản xuất nếu CRM/ES kiểu `OR` chạy trên cùng nút.
+
+Biến thể tải "OLTP" (`s1m-oltp`, `p1m-oltp`: tắt ES và CRM, STASK **không có** view trigram nên tiền tố là quét toàn bảng 1,2 s) cũng cho tỉ lệ p50 x3 đến x8 ở STASK: không dùng làm kết luận vì web_prefix quét toàn bảng tự bão hoà CPU.
+
+### 6.4 Tranh chấp điểm nóng và bất biến
+
+- Tập nóng 50 số, 30% đơn nhắm vào đó, xử lý đơn thay số đã bán bằng số khác. Tổng cộng ~16 nghìn lần thử trên số nóng mỗi lần chạy 1M: ~97% "thua" vì số đã bị giữ (kết quả đúng), STASK có 1 đến 5 lần phải làm lại, PG 0; không có đơn nào thất bại. **Thiết kế này không tạo hàng đợi khoá thật sự** (số nóng bị bán hết nhanh nên ít đụng nhau); chưa đo kịch bản "10 nghìn người giành cùng 5 số".
+- Bất biến (giữ đúng): số liệu từng lần chạy nằm cuối mỗi `docs/simrun/*.txt`, mục `== invariants`. Mọi lần chạy hợp lệ: số đơn khớp, tổng tiền khớp, không số nào hai item sống, tập đã giữ/bán = tập item sống (ví dụ `s1m-lean`: 15.337 đơn, 0 trùng; `p1m-lean`: 0 trùng).
+- Lần chạy `s2m` bị đánh dấu INVALID bởi chính harness do **lỗi kiểm tra của harness, không phải vi phạm bất biến**: `copy_merge_chunk` hết hạn phía client sau khi đã commit một phần các khoảng, nên số dòng `sims` lớn hơn "ban đầu + số mới của các lần nhập thành công" 7.523 dòng (nhỏ hơn 50.000 số mới tối đa của file nhập đó). Đã sửa harness (chấp nhận khoảng [thành công, thành công + tối đa của lần nhập lỗi]); `s2m` không chạy lại.
+- Giới hạn của harness: lần chạy bị huỷ ở cuối pha "sau" có thể có đơn đang commit (client không biết kết quả: `+1`/`+4` trong báo cáo); đã tính vào phép so khớp số đơn.
+
+### 6.5 Truy vấn kiểu Elasticsearch và chỉ mục phụ
+
+Nền (không nhập), 1M số, p50 ms (`s1m-lean`/`p1m-lean`; 2M ở `s2m`/`p2m`):
+
+| Truy vấn | STASK | PG16 |
+|---|---:|---:|
+| tra số `= $1` | 0,19 | 0,29 |
+| tiền tố `0xx%` LIMIT 50 | 1,82 (view trigram) | 15,95 (bitmap GIN) |
+| lọc nhà mạng+trạng thái+giá LIMIT 50 | 0,44 (btree phụ) | 1,18 |
+| hậu tố `%8888` LIMIT 50 | 2,42 | 5,63 |
+| chứa `%888%` LIMIT 50 | 0,90 | 4,28 |
+| (2M) đuôi đẹp, `OR` của hai LIKE | 1.234 (quét toàn bảng, view không dùng cho `OR`) | 247 |
+| (2M) CRM đếm theo nhà mạng+trạng thái | 1.362 (1M bản đầy: 688) | 586 (1M bản đầy: 399) |
+
+- Không có view trigram, tiền tố trên STASK là **quét toàn bảng 1,1 đến 1,3 s ở 1M** (đo `prefix_hit` lần đầu); có view thì 1,0 đến 2,5 ms.
+- `CREATE INDEX .. USING gin (number gin_trgm_ops)` trả về sau 1 ms nhưng view dựng ngầm: ở 1M số **3 truy vấn đầu (≈3,5 s) vẫn đi bằng quét lõi 1,0 đến 1,3 s** (đúng, nhưng chậm); kế hoạch ghi rõ `engine=core reason="no trigram index"`.
+- `EXPLAIN` của STASK in `Seq Scan on sims` cho truy vấn lọc dù btree phụ đang được dùng (truy vấn trả 0 dòng mất 0,11 ms trên 1M, nên chắc chắn dùng chỉ mục). Kế hoạch btree không hiện trong `EXPLAIN`. `EXPLAIN UPDATE ..` báo lỗi cú pháp.
+- PG: `es_suffix` (`%8888`) có p50 ≈5 ms ở pha nền của bản nhẹ nhưng ≈175 ms trong và sau mọi lần nhập (x31), ở bản 200k x13; chưa tìm nguyên nhân (nghi đổi kế hoạch hoặc danh sách chờ GIN, **chưa kiểm**).
+- Chạy lại `searchbench` (docs/15 §6.S, 2M số, trong tiến trình) không nằm trong phạm vi lần này.
+
+### 6.6 Lịch sử (tĩnh, sau khi chạy)
+
+1M số (`s1m`, `p1m`; STASK có btree `(number, changed_at)` và `(changed_at)`): lịch sử 200 dòng gần nhất của một SIM 0,14 đến 0,32 ms (STASK) và 0,30 đến 0,84 ms (PG); đếm dòng trong 60 ngày 362 ms (STASK) và 82 ms (PG) trên ~1,1 triệu dòng lịch sử; `DELETE` quá 60 ngày 781 ms (STASK) và 222 ms (PG). STASK thua 3,5 đến 4,4 lần ở hai thao tác quét toàn bảng lịch sử.
+
+### 6.7 Đo độ mới (`cmd/simfresh`; ghi đè câu hỏi "view trễ bao nhiêu khi nhập")
+
+`cmd/simfresh -mode lag` tự dựng `staskd`, nạp 1M số, tạo view trigram, rồi nhập 1M dòng bằng 4 kết nối ghi (1000 dòng mỗi câu `INSERT .. ON CONFLICT`, số dòng mới trộn với dòng đã có), **không có tải nền khác**; trong lúc đó (a) lấy mẫu `/v1/status` mỗi 100 ms (`durable_lsn` trừ `applied_lsn` của view `substr`, và `lag_ms`), (b) 5 kết nối thăm dò: ghi một dòng (autocommit, đã xác nhận) rồi **ngay lập tức** tìm bằng `LIKE '%<số đầy đủ>%'` (đi view trigram; xác nhận bằng `SHOW stask.last_plan`) ở `bounded` (mặc định), `strong`, `eventual`, và sửa giá một dòng có sẵn rồi tìm lại.
+
+| Chỉ số (2 lần chạy cùng cấu hình) | Lần 1 | Lần 2 |
+|---|---:|---:|
+| Tốc độ nhập (4 kết nối, kèm thăm dò) | 225.000 dòng/s | 241.000 dòng/s |
+| Trễ view khi rảnh | 0 | 0 |
+| Chênh `durable_lsn - applied_lsn` khi nhập (p50 / p99 / max, đơn vị commit) | 2 / 80 / 80 | 2 / 101 / 101 |
+| `lag_ms` khi nhập (p99 = max trên 42 đến 44 mẫu) | 332 ms | 376 ms |
+| View bắt kịp sau khi nhập xong | 1 ms | 43 ms |
+| Thăm dò chèn, `bounded`: thấy ngay | 52/135 (**39%**) | 38/125 (30%) |
+| Thăm dò chèn, `strong`: thấy ngay | 111/111 (100%), độ trễ p50 2,8 ms, p99 294 ms | 101/101 (100%), p50 3,1 ms, p99 301 ms |
+| Thăm dò chèn, `eventual`: thấy ngay | 48/113 (42%); hiện sau p50 4,2 ms, p99 320 ms; không có dòng nào quá 3 s | 29/104 (28%); p50 4,2 ms, p99 380 ms |
+| Thăm dò sửa giá, `bounded` và `strong`: thấy giá mới | 100% (136/136 và 110/110) | 100% (126/126 và 102/102) |
+| Khi rảnh, trước nhập: chèn `bounded`/`strong`/`eventual`, sửa | 100% (361/361 mỗi loại) | 100% |
+
+Lần chạy 200k số / nhập 100k bằng 2 kết nối (111.000 dòng/s, ngắn 0,9 s): khi rảnh `bounded` thấy ngay 210/221 (95%), `eventual` 215/220; khi nhập `bounded` 23/31 (74%); view bắt kịp sau 1 ms, trễ ≤ 9 ms.
+
+Đọc kết quả:
+1. **Hợp đồng đúng**: không một lần nào view trả giá cũ cho dòng đã sửa (cả `bounded`); dòng mới có thể **chưa thấy** trong khoảng trễ (đã được tài liệu hoá ở docs/05), đúng như lo ngại về "CDC trễ" nhưng ở cỡ **mili-giây đến ~0,4 s** chứ không phải phút, và chỉ trong lúc nhập 225 đến 241 nghìn dòng/s.
+2. `strong` không bao giờ bỏ sót nhưng **trả giá bằng độ trễ truy vấn**: p99 ≈ 300 ms trong lúc nhập (chờ view bắt kịp), p50 ≈ 3 ms. `bounded` thấy dòng mới chỉ 30 đến 39% số lần ngay sau khi ghi trong lúc nhập. Ứng dụng cần "ghi xong thấy ngay" phải dùng `session`/`strong` hoặc đọc theo khoá chính.
+3. Tốc độ áp dụng của view (≈350k dòng/s đo ở nhánh `search`) lớn hơn tốc độ nhập thử ở đây (≈240k dòng/s) nên trễ không tích luỹ: sau nhập xong bắt kịp trong ≤ 43 ms. **Chưa đo** khi nhập nhanh hơn tốc độ áp dụng (COPY nhiều luồng), và chưa đo song song với tải nền đầy.
+4. Chưa so với Elasticsearch/CDC của người dùng (không có hệ đó để đo); chỉ có thể nói STASK trễ ≤ 0,4 s trong thí nghiệm này.
+
+**`kill -9` giữa lúc nhập** (`simfresh -mode kill`: 1M số, 4 kết nối ghi lô 1000 dòng, 3 vòng; mỗi vòng giết `staskd` sau 1,8 đến 3,6 s nhập, khởi động lại cùng thư mục, so sánh):
+
+| Vòng | Lô đã xác nhận trước khi giết | Khởi động xong | View sẵn sàng sau khởi động | Dòng đã xác nhận mất ở lõi | Lõi so với view (strong) |
+|---|---:|---:|---:|---:|---|
+| 1 | 464 (464.000 dòng) | 1,72 s (view chưa sẵn sàng) | +4,41 s | **0** | 1.463.531 = 1.463.531 |
+| 2 | 1.352 (tích luỹ) | 2,63 s | +7,09 s | **0** | 2.351.634 = 2.351.634 |
+| 3 | 2.182 (tích luỹ) | 3,53 s | +9,00 s | **0** | 3.182.238 = 3.182.238 |
+
+Trước mỗi lần giết view chỉ trễ 0 đến 1 commit. Sau phục hồi: lõi giữ mọi dòng đã xác nhận (cộng 1 đến 2 lô đang bay, đã commit trọn lô), view dựng lại từ lõi trong 4 đến 9 s cho 1,5 đến 3,2 triệu dòng, và khi sẵn sàng đếm khớp lõi tuyệt đối. **Chưa đo**: độ trễ truy vấn trong 4 đến 9 s view chưa sẵn sàng (theo hợp đồng `strong`/`bounded` sẽ rơi về quét lõi, chưa xác nhận bằng số), `kill -9` giữa một câu `COPY`/`INSERT..SELECT` rất lớn, và so sánh với PG (WAL + replication slot).
+
+### 6.8 SQL và hành vi STASK chưa hỗ trợ hoặc có vấn đề, tìm thấy khi chạy simbench
+
+1. `INSERT .. SELECT $1, col, $2 ... FROM t WHERE c = $3` (tham số trong danh sách cột của `INSERT..SELECT`) bị từ chối ở giai đoạn Bind: `08P01 bind message supplies 3 parameters, but prepared statement "" requires 0`. Toàn bộ luồng đặt hàng hỏng (0 đơn nào commit) cho tới khi viết lại bằng `VALUES`. (Không tách riêng được lỗi do tham số dùng hai lần `$3` trong câu `order_items`: hai chỗ cùng bị viết lại.)
+2. `WHERE NOT EXISTS (SELECT 1 FROM sims s WHERE s.number = t.number)` không được chuyển thành anti-join: tích lồng nhau; 50k × 200k dòng quá 60 s (bị ngắt), trong khi `LEFT JOIN .. WHERE s.number IS NULL` xong sau 1,4 s. Đây là lý do `update_from` ban đầu quá hạn ngay cả khi rảnh.
+3. `EXPLAIN` chỉ nhận `SELECT`; không hiện btree phụ (xem 6.5); với tham số `$n` qua giao thức mở rộng (pgx `QueryExecModeExec`) trả 0 dòng (chưa tách rõ nguyên nhân), qua giao thức đơn giản thì có kế hoạch.
+4. Không có đường tiền tố bằng btree (đã biết). `OR` của hai `LIKE` không dùng view (đã ghi ở docs/05).
+5. Không có khoá dòng: ghi dài thua ghi ngắn (6.2). Không phải lỗi, là đánh đổi OCC; cần tài liệu cho người vận hành (nhập hàng phải chia lô, ứng dụng phải thử lại `40001`).
+6. `INSERT .. SELECT .. ORDER BY` chia khoảng chậm (45,8 s cho 200k dòng, 100 câu, khi rảnh) so với `batch_upsert` (10,0 s) và `copy_merge` (8,2 s): nghi chi phí mỗi câu (đọc khoảng staging + tạo giao dịch), chưa phân tích.
+
+Sửa trong chính simbench (không sửa engine): bỏ tham số trong danh sách cột của `INSERT..SELECT`; `LEFT JOIN` thay `NOT EXISTS`; `EXPLAIN` qua giao thức đơn giản; chỉ mục STASK (btree + trigram + lịch sử); `ORDER BY number` trong `copy_merge` (PG từng báo `40P01` ở bản 20k dòng khi thiếu); cờ `-skip-pretty`; bản chia khoảng `copy_merge_chunk`; kiểm tra "có đơn nào commit" (lần đầu `VALID` giả với 0 đơn); sửa so khớp số đơn khi bị huỷ lúc đang commit; sửa lọc tên pha `import_batch_upsert` bị bỏ khỏi bảng tỉ lệ; sửa kiểm tra số dòng khi một lần nhập lỗi một phần; `cmd/simfresh` mới.
+
+### 6.9 Chỗ STASK thua PG (tổng hợp, trong lần đo này)
+
+- Một câu ghi hàng trăm nghìn dòng **không hoàn thành** khi có ghi đồng thời (OCC); PG hoàn thành (dù làm người khác chờ khoá, p99 đơn hàng tăng 2,6 đến 7,7 lần, có lần 2,3 đến 2,7 giây ở bản 200k).
+- Khi CPU đã bão hoà bởi truy vấn quét toàn bảng, ghi và đơn hàng của STASK chậm gấp 4 đến 10 lần (p50) khi nhập, PG gần như không đổi.
+- Quét/gộp toàn bảng (CRM GROUP BY) chậm hơn 1,7 đến 2,3 lần; `OR` của hai `LIKE` chậm hơn 4 đến 6 lần; đếm/xoá trên bảng lịch sử chậm hơn 3,5 đến 4,4 lần.
+- `bounded` (mặc định) không đảm bảo "ghi xong thấy ngay" khi nhập nhanh; `strong` trả p99 ≈300 ms.
+- Chậm khi view mới tạo hoặc sau khởi động lại (3,5 s đến 9 s đi bằng quét lõi).
+- Chia khoảng `INSERT..SELECT` chậm hơn PG 2 đến 3 lần.
+- Điểm thắng của STASK: nhập bằng 1 câu hoặc lô khi rảnh nhanh hơn PG 1,2 đến 2,2 lần; ở tải nhẹ website/ES không chậm đi khi nhập (tỉ lệ ~1,0), tuyệt đối nhanh hơn PG 1,5 đến 8,8 lần ở tra số, tiền tố, lọc, hậu tố, chứa; không có hàng đợi khoá nên không có đuôi p99 hàng giây ở website; `kill -9` không mất dữ liệu đã xác nhận.
+
+### 6.10 Chưa được chứng minh / không đo được
+
+- Chưa chạy ở 30 đến 50 triệu số (tối đa 2M số, nhập 500k); không chạy trên máy riêng; mỗi ô một lần chạy, không lặp.
+- Chưa có mô hình "hàng trăm lần cập nhật mỗi SIM trong 60 ngày"; bảng lịch sử chỉ ~1,1 triệu dòng.
+- Chưa đo ES/CDC thật của người dùng; chưa đo Superset/báo cáo.
+- Chưa đo song song nhiều luồng COPY, chưa đo hai người dùng giành cùng vài số nóng, chưa đo `--iso serializable` (có cờ `-iso`, chưa chạy), chưa đo PG với `synchronous_commit` khác.
+- STASK chưa kiểm ở các biến thể cấu hình (`-heavy-workers`, `-admission`) có thể ảnh hưởng 6.3.
+
+### 6.11 Tái lập
+
+```sh
+go build -o /tmp/simrun-bin/ ./cmd/...
+scripts/simrun.sh stask 1000000 200000 s1m-lean -think 50ms -crm 0 -skip-pretty -imp-timeout 120s -methods batch_upsert,copy_merge_chunk,copy_merge
+scripts/simrun.sh pg    1000000 200000 p1m-lean -think 50ms -crm 0 -skip-pretty -imp-timeout 120s -methods batch_upsert,copy_merge_chunk,copy_merge
+# cấu hình đầy: bỏ -crm 0 -skip-pretty; rảnh: -web 0 -orders 0 -proc 0 -inv 0 -crm 0 -base-sec 1 -after-sec 1
+/tmp/simrun-bin/simfresh -mode lag  -sims 1000000 -rows 1000000 -writers 4 -idle-sec 8
+/tmp/simrun-bin/simfresh -mode kill -sims 1000000 -writers 4 -rounds 3
+```
+`scripts/simrun.sh` dùng cổng 28450 (PG, container `simrun-pg`), 28451/28452 (staskd), từ chối chạy khi đĩa trống dưới `MINFREE` (mặc định 3) GB, tự xoá container, thư mục dữ liệu và tiến trình khi thoát.
 
 ### 6.S Kết quả tìm kiếm số SIM trong SQL (nhánh `search`, 2026-10-29)
 

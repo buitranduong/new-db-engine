@@ -1,4 +1,5 @@
 #!/bin/bash
+# NOTE: superseded by scripts/simrun.sh (ports 28450-28453, per-run output in /tmp/simrun-out).
 # Runs simbench against STASK and PostgreSQL. Refuses to start with < MINFREE GB free.
 # Usage: scripts/simbench.sh [sims] [import_rows]   (defaults 1000000 200000)
 set -u

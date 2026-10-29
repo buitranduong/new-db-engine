@@ -1,0 +1,25 @@
+setup: loaded 1000000 rows in 5.453s
+setup: trigram view created in 1ms
+
+== mode lag: 1000000 base rows, import 1000000 rows by 4 writers (batch 1000) in 4.44s = 225363 rows/s; view caught up 0.001s after the import returned (ok=true)
+
+-- view lag samples every 100 ms (/v1/status: durable_lsn - substr applied_lsn, lag_ms)
+phase         n      gap p50      gap p99      gap max   lag_ms p99   lag_ms max
+idle         79            0            0            0          0.0          0.0
+import       44            2           80           80        332.3        332.3
+after        10            0            0            0          0.0          0.0
+
+-- read-after-write probes (write acknowledged, then search at once by trigram LIKE '%<full number>%')
+phase    probe                  n  seen-now   stale   lat p50   lat p99  plans
+idle     insert/bounded       361       361       0     0.33ms     0.62ms  substr=361
+idle     insert/strong        361       361       0     0.32ms     0.63ms  substr=361
+idle     insert/eventual      361       361       0     0.32ms     0.63ms  substr=361  visible after p50 NaN / p99 NaN / max NaN ms, never within 3s: 0
+idle     update/bounded       361       361       0     0.34ms     0.63ms  substr=361
+idle     update/strong        361       361       0     0.33ms     0.64ms  substr=361
+import   insert/bounded       135        52       0     0.91ms    73.02ms  substr=135
+import   insert/strong        111       111       0     2.78ms   293.88ms  substr=111
+import   insert/eventual      113        48       0     0.81ms    68.01ms  substr=113  visible after p50 4.2 / p99 320.0 / max 320.0 ms, never within 3s: 0
+import   update/bounded       136       136       0     0.99ms    68.11ms  substr=136
+import   update/strong        110       110       0     2.79ms   292.37ms  substr=110
+
+-- after the import

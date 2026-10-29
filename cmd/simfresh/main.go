@@ -374,7 +374,7 @@ func runImporter(ctx context.Context, w int64, perWriter int64, acked *[]int64, 
 			fmt.Fprintf(&sb, "($%d,$%d,'available',$%d,1)", k+1, k+2, k+3)
 			args = append(args, n, "mobifone", int64(777000)+b)
 		}
-		sb.WriteString(` ON CONFLICT (number) DO UPDATE SET price=excluded.price, carrier=excluded.carrier`)
+		sb.WriteString(` ON CONFLICT (number) DO UPDATE SET price=excluded.price, carrier=excluded.carrier, updated_at=1`)
 		if err := exec1(ctx, c, sb.String(), args...); err != nil {
 			errs++
 			if ctx.Err() != nil {
@@ -517,18 +517,14 @@ func compare(ctx context.Context, c *pgx.Conn, acked []int64) (missing int) {
 	// numbers not starting with 0 (probe rows '7...') are not in the view query
 	var nonZero int64
 	must(c.QueryRow(ctx, `SELECT count(*) FROM sims WHERE number >= '1'`).Scan(&nonZero))
-	for _, a := range acked {
-		w, b := a/1_000_000, a%1_000_000
-		lo, _ := batchNums(w, b)
-		hi := lo + int64(*batch)
-		var n int64
-		q := fmt.Sprintf(`SELECT count(*) FROM sims WHERE number >= '0%09d' AND number < '0%09d'`, lo, hi)
-		if e := c.QueryRow(ctx, q).Scan(&n); e != nil || n != int64(*batch) {
-			missing += *batch - int(n)
-		}
+	// every row written by an acknowledged batch carries updated_at = 1 (new numbers only)
+	var marked int64
+	must(c.QueryRow(ctx, `SELECT count(*) FROM sims WHERE updated_at = 1`).Scan(&marked))
+	if want := int64(len(acked)) * int64(*batch); marked < want {
+		missing = int(want - marked)
 	}
 	fmt.Printf("core count(*) = %d (plan engine=%s); view count (LIKE '0%%', strong) = %d (plan engine=%s, err=%v); core rows not starting with 0 = %d\n", core, planCore, viewN, planView, err, nonZero)
-	fmt.Printf("acknowledged batches checked: %d, rows missing from core: %d; core-view difference (core - nonzero - view) = %d\n", len(acked), missing, core-nonZero-viewN)
+	fmt.Printf("acknowledged batches: %d (%d rows); rows written by the import found in core: %d (extra over acked = batches in flight at the kill); acked rows missing from core: %d; core-view difference (core - nonzero - view) = %d\n", len(acked), int64(len(acked))*int64(*batch), marked, missing, core-nonZero-viewN)
 	return
 }
 

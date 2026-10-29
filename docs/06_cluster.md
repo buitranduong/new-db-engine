@@ -134,6 +134,26 @@ staskd -replica-of 10.0.0.1:17500 -repl-tls-ca ca.crt -repl-tls-cert replica.crt
 | Một secret cho mọi replica, không phân biệt từng replica | Hoãn: cần thì dùng mTLS (mỗi replica một chứng chỉ) |
 | Replica xác thực sai sẽ thử lại mỗi giây và ghi log mỗi lần | Chấp nhận: giống standby của PG; lỗi hiện rõ trong log |
 
+## 2a. Đọc-ghi-của-mình qua replica (P6.1, đã cài đặt)
+
+Replica đọc dữ liệu cũ hơn leader một khoảng bằng độ trễ nhân bản. Client vừa ghi rồi đọc ở replica có thể không thấy bản ghi của mình. Cách xử lý: **client mang LSN** của lần ghi cuối, replica chờ tới LSN đó trước khi lấy ảnh chụp. Cùng cách này có ở [PostgreSQL `pg_last_wal_replay_lsn`/`WAIT FOR LSN`](https://www.postgresql.org/docs/current/sql-wait-for.html), [Aurora/RDS `aurora_replica_read_consistency`](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-mysql-replication-readcheck.html) và token nhất quán của CockroachDB/Spanner.
+
+Mã: `Engine.WaitDurable` (`internal/core/waitlsn.go`), `internal/sql/minlsn.go`, middleware trong `internal/server/server.go`, bộ điều hướng `internal/router` (lệnh `cmd/staskroute`).
+
+**pgwire / SQL** (biến phiên):
+```
+SHOW stask.last_lsn;            -- LSN của commit cuối của phiên này (qua leader)
+SET stask.min_lsn = 12345;      -- trên phiên ở replica: chờ tới LSN đó trước mỗi lệnh lấy ảnh chụp mới
+SET stask.min_lsn_timeout = '2s';  -- mặc định 5s; hết hạn thì lỗi SQLSTATE 55000 (client thử lại hoặc đọc ở leader)
+```
+Lệnh trong giao dịch tường minh không chờ (ảnh chụp đã lấy ở `BEGIN`); `SET`, `SHOW`, `COMMIT`, `ROLLBACK` không chờ. `last_lsn` cập nhật sau mỗi commit (cả `COPY`), không `SET` được.
+
+**HTTP**: ghi và commit giao dịch trả header `X-Stask-Lsn` (cũng có trong body). Request kèm `X-Stask-Min-Lsn: N` (và tuỳ chọn `X-Stask-Min-Lsn-Timeout: ms`, mặc định 5000) thì node chờ tới N trước khi chạy request; quá hạn trả 503 + `Retry-After`, chưa chạy gì.
+
+**Bộ điều hướng** (`staskroute -leader URL -replicas URL,URL`): ghi, giao dịch, DDL, admin và mọi thứ không biết đều tới leader; `GET /v1/get|history|tables` và `POST /v1/query` tới replica xoay vòng. Router nhớ LSN lớn nhất leader trả về theo phiên (header `X-Stask-Session`, không có thì theo địa chỉ client) và gắn `X-Stask-Min-Lsn` vào đọc. Replica trả 503 hoặc không trả lời thì thử replica kế, hết thì đọc ở leader. Giới hạn: router không tự phát hiện leader đổi (cần P6.2 nối vào); không điều hướng pgwire (phía client dùng `SET stask.min_lsn`); bảng phiên giới hạn 100.000 mục, tràn thì xóa hết (phiên mất token chỉ mất đảm bảo đọc-ghi-của-mình lần kế).
+
+**Đã kiểm chứng** (`internal/router/router_test.go`, có `-race`): `TestReadYourWritesRouter` (300 vòng ghi-rồi-đọc ngay qua router, replica thật qua giao thức nhân bản, mọi lần đọc đều thấy), `TestMinLSNHeader` (chờ đúng, LSN ở tương lai trả 503 sau đúng hạn), `TestSQLMinLSN` (200 vòng INSERT ở leader, `SET stask.min_lsn` ở phiên replica, SELECT luôn thấy; hết hạn thì lỗi). Chưa đo chi phí độ trễ của việc chờ trên tải thật, và chưa thử `psql`/pgx đầu-cuối cho biến phiên (chỉ qua `sql.Session`).
+
 ## 3. Kết quả đo giai đoạn A (leader 3 core, replica 1 core, 3 lượt, trung vị)
 
 | Cấu hình | 1x trang p99 | 1x agg p99 | 1,5x trang p99 | 1,5x read/write/tx phục vụ | 1,5x agg p99 |
@@ -189,8 +209,52 @@ staskd -replica-of 10.0.0.1:17500 -repl-tls-ca ca.crt -repl-tls-cert replica.crt
 | Giai đoạn | Nội dung | Tiêu chí đạt |
 |---|---|---|
 | A (đo) | Agg chạy trên replica, so với PG16 có hot standby, cùng số core | Ở tải cao, trang p99 và đọc trên leader không đổi khi có agg; agg p99 tốt hơn PG |
-| A2 | Đọc ghi-của-mình trên replica (client mang LSN, replica chờ tới LSN đó); bộ điều hướng tự động | Đọc ngay sau ghi qua replica luôn thấy ghi đó |
-| B | Xác nhận ghi theo đa số, Raft failover, lease cho leader | Chaos: giết leader, chia mạng, 0 ghi đã xác nhận bị mất; đo thời gian chuyển leader |
+| A2 (đã làm, §2a) | Đọc ghi-của-mình trên replica (client mang LSN, replica chờ tới LSN đó); bộ điều hướng tự động | Đọc ngay sau ghi qua replica luôn thấy ghi đó |
+| B (làm một phần, §5) | Xác nhận ghi theo đa số, Raft failover, lease cho leader | Chaos: giết leader, chia mạng, 0 ghi đã xác nhận bị mất; đo thời gian chuyển leader |
 | C | Phân mảnh theo dải key, giao dịch xuyên shard | Sức ghi tăng gần tuyến tính theo số shard |
 
 Giới hạn phần cứng hiện tại: chỉ có 1 VM 8 core. Giai đoạn A được đo bằng cách chia core giữa leader và replica, nên chúng vẫn dùng chung đĩa và bộ nhớ. Kết luận cuối cùng về cách ly cần các máy riêng.
+
+## 5. Giai đoạn B: đồng thuận theo đa số (P6.2 và P6.3, làm một phần)
+
+### 5.1 `internal/raft` (đã cài đặt, kiểm bằng mô phỏng)
+
+Raft kiểu [bài báo](https://raft.github.io/raft.pdf) và [luận án của Ongaro](https://github.com/ongardie/dissertation). Tham khảo thiết kế: [etcd/raft](https://github.com/etcd-io/raft) (máy trạng thái chạy theo tick, không có I/O, nên test điều khiển được bằng thời gian ảo), [hashicorp/raft](https://github.com/hashicorp/raft) (tách Storage và Transport), [lease read của TiKV](https://tikv.org/blog/lease-read/).
+
+Có: bầu leader với **pre-vote** (node bị cô lập không đẩy term lên), nhân bản log và commit theo đa số (chỉ commit entry của term hiện tại, leader mới ghi một entry no-op), trả lời từ chối có gợi ý để lùi nhanh, **check-quorum** (leader mất đa số thì tự xuống), **lease** (`Node.LeaseValid`: đa số đã trả lời tin gửi trong `LeaseTicks`; follower từ chối bầu cho người khác trong `ElectionTicks` sau khi nghe leader, nên không có hai leader cùng có lease), `FileStorage` (log thêm vào cuối, CRC, fsync, cắt đuôi hỏng khi mở lại) và `MemStorage`, `Group` (ticker + `Propose` chờ commit; `ErrLeadershipLost` khi mất quyền trước khi commit, kết quả khi đó là không biết trước).
+
+Giao diện tách khỏi core: gói không import gì của STASK. Entry là byte mờ; `Storage`, `Config.Send`, `Config.Apply` do bên gọi cấp.
+
+**Nối vào đường commit**: `core.Quorum` (`internal/core/quorum.go`), một hàm `Replicate(lastLSN, endPos)`. Sau `fdatasync` cục bộ của một batch và trước khi công bố/trả lời, committer gọi nó; nil (mặc định) thì bỏ qua và một node không đổi hành vi hay tốc độ. Lỗi thì engine dừng ghi (như fsync lỗi) và các request của batch nhận `ErrUnknownOutcome`. Test: `TestQuorumHook`, `TestNoQuorumDefault`.
+
+**Đã kiểm chứng** (`internal/raft/sim_test.go`; mô phỏng mạng làm rơi, trễ, nhân đôi, đảo thứ tự tin; chia mạng; giết và khởi động lại node giữ Storage; mọi thứ theo seed):
+- `TestChaos`: 150 seed, 3 hoặc 5 node, 3000 bước mỗi seed, giết leader/giết node ngẫu nhiên/chia đôi/cô lập leader/lành lại. Bất biến kiểm mỗi bước: mỗi term một leader; mọi node áp cùng entry tại cùng index; không node nào có lease hợp lệ trong khi node khác là leader term cao hơn. Cuối: lành mạng, phải có leader, mọi node cùng commit index, **mọi entry đã xác nhận cho client (leader áp entry của chính nó ở đúng term) có trong log đã commit**. Lần chạy: 83.892 entry xác nhận, không mất; 343.651 lần kiểm lease.
+- `TestFailoverTime`: giết leader của cụm đã ổn định, đếm tick tới khi leader mới commit được một entry (ElectionTicks = 10, nên timeout ngẫu nhiên 10–19 tick): nhỏ nhất 20, trung vị 27, p95 61, lớn nhất 92 tick (100 lượt, 3 và 5 node, không rơi tin). Nhân với độ dài tick: tick 10 ms cho trung vị khoảng 270 ms. **Đây là số trong mô phỏng, không phải đo trên mạng thật.**
+- `TestMinorityCannotCommit`: leader bị cô lập không commit, mất lease, tự xuống; đa số bầu leader mới; entry ghi vào leader cô lập không bao giờ được xác nhận.
+- `TestSingleNode`, `TestFileStorage` (ghi đè index, đuôi hỏng, khoảng trống bị từ chối).
+- Kiểm tra đột biến: sửa quy tắc commit thành "thiếu một phiếu" thì `TestChaos` bắt ngay (hai node áp hai entry khác nhau tại một index). Bỏ việc từ chối bầu trong lease thì **chaos ngẫu nhiên không bắt được** (sự kiện đó cần cắt mạng đúng lúc lease còn hạn và timeout của ứng viên ngắn hơn); bất biến lease vì vậy mới được kiểm yếu.
+
+### 5.2 Việc còn dở của P6.2 (chưa làm)
+
+| Còn thiếu | Ghi chú |
+|---|---|
+| Nối thật với engine: adapter `core.Quorum` đưa byte log của batch vào entry Raft; follower áp bằng `Engine.Apply` | Hiện chỉ có giao diện và test với bản giả. Lớp nhân bản bất đồng bộ (`internal/repl`) vẫn là đường chạy thật |
+| Transport mạng (TCP/TLS, dùng lại bảo mật của cổng nhân bản) | Chỉ có mô phỏng |
+| Nén log và snapshot của Raft | Log Raft lớn mãi. Cần gắn với checkpoint và base backup |
+| Đổi thành viên (thêm/bớt node), chuyển quyền leader, learner không bỏ phiếu | Tập bỏ phiếu cố định |
+| Đọc theo lease trong engine (`LeaseValid` chưa được `Get` dùng); router chưa theo dõi leader đổi | Cần adapter trước |
+| `Quorum.Replicate` chặn tầng sync của committer, nên mỗi batch chờ một vòng mạng, không pipeline các batch | Đo chi phí khi có transport thật |
+| Kiểm Jepsen/đồng hồ lệch/đĩa lỗi (torn write trong mô phỏng không có) | Mô phỏng cho node chết giữa các bước, không giữa một lần ghi |
+| Lease giả định đồng hồ chạy cùng tốc độ (trôi nhỏ hơn `ElectionTicks-LeaseTicks`) | Mô phỏng dùng đồng hồ ảo đồng bộ, không thử độ trôi |
+
+### 5.3 Slot, publication, replica identity đi qua log (P6.3, đã cài đặt phần lõi)
+
+Mã: `internal/core/cdcmirror.go`. Trước đây chúng nằm trong file của leader (`slots/`, `cdc.json`) nên replica được nâng lên không có gì. Giờ mỗi thay đổi cũng được ghi vào bảng hệ thống ẩn `__stask_cdc` (như bảng sequence) qua đường commit thường, nên đi tới replica đúng từng byte:
+- `catalog`: publication và replica identity, ghi trước khi ghi file.
+- `slot:<tên>`: `SlotInfo` (vị trí segment/offset, LSN). Vì log giống từng byte giữa các node nên vị trí có cùng nghĩa trên replica.
+- Vị trí slot khi subscriber xác nhận chỉ được ghi vào log tối đa mỗi giây một lần, và không ghi khi đoạn log vừa vượt qua chỉ là chính các ghi này (tránh vòng lặp). Sau failover, vị trí slot ở server có thể tụt tối đa khoảng 1 giây so với điều subscriber đã xác nhận; walsender dùng vị trí subscriber yêu cầu khi `START_REPLICATION`, nên không mất và không trùng (chưa kiểm bằng subscriber PG thật qua failover, xem dưới).
+- Lúc mở thư mục không phải replica (khởi động lại không có `-replica-of`, tức nâng cấp), `Open` dựng catalog và slot từ bảng nếu file không có hoặc tụt sau.
+
+Test: `internal/repl/failover_test.go` (`TestCDCStateSurvivesFailover`): leader tạo publication, identity FULL, slot; subscriber nhận 5 giao dịch và xác nhận; ghi thêm 3; replica bắt kịp; leader chết; mở thư mục replica làm leader: publication, identity, slot ở đúng vị trí đã xác nhận, và slot stream đúng 3 giao dịch chưa xác nhận (không mất, không trùng), rồi nhận được ghi mới.
+
+Còn dở: nâng cấp vẫn là khởi động lại thủ công (chưa có promote nóng và chưa gắn với bầu cử của `internal/raft`); chưa chạy `accept/pgsub.sh` (subscriber PG thật) qua failover; replica chạy sống không tự làm mới catalog trong bộ nhớ khi bảng thay đổi (chỉ khi mở lại, đủ cho nâng cấp bằng khởi động lại); slot bị xóa trên leader mà file vẫn nằm trên một node từng là leader sẽ xuất hiện lại; tải ghi thêm: mỗi lần đổi catalog hoặc xác nhận slot (tối đa 1/giây/slot) là một commit.

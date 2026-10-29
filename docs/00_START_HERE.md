@@ -43,7 +43,7 @@ Repo: `github.com/buitranduong/new-db-engine` (nhánh `main` là nguồn sự th
 | `cmd/staskd` | Server | |
 | `cmd/claimcheck` | **Bằng chứng**: probe SQL cho từng tuyên bố trong docs (≥86 probe) | |
 | `cmd/pgdiff` + `scripts/pgdiff/` | **So sánh trực tiếp với PostgreSQL 16** trên 859 câu SQL | |
-| `cmd/simbench` | Benchmark kịch bản SIM (kho/CRM/web/nhập hàng/lịch sử); **chưa chạy lần nào** | |
+| `cmd/simbench` | Benchmark kịch bản SIM (kho/CRM/web/nhập hàng/lịch sử) + `cmd/simfresh` (độ mới); đã chạy ở 200k-2M số, kết quả ở `docs/15 §6` và `docs/simrun/` | |
 | `cmd/staskbench`, `staskmix`, `aggbench`, `staskbulk`, `staskchaos`, `staskstress`, … | Công cụ đo và chaos | |
 | `scripts/` | `merge-gate.sh` (cổng trước khi gộp), `bench.sh`, `scale.sh`, `simbench.sh` | |
 | `docs/` | Tài liệu (xem mục 6) | |

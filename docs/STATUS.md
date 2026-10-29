@@ -6,7 +6,7 @@ Mọi dòng có bằng chứng tái lập được. Chi tiết từng task: `14_
 
 STASK có lõi vững (log, MVCC, phục hồi, nhân bản, view cột/tìm kiếm/lịch sử) và lớp tương thích PostgreSQL đã tiến xa. Trên bộ so sánh trực tiếp với **PostgreSQL 16 (933 câu SQL)**: **750 giống hệt (80,4%)**, thêm 76 câu chỉ khác thông điệp lỗi, tức **826 (88,5%) cho cùng kết quả**; khi đo lần đầu (859 câu) chỉ 45,5% giống hệt. Với đúng kịch bản kho SIM (nhóm d): **138/140 giống hệt**; khởi động Liquibase giả lập (nhóm e): 59/74. `claimcheck`: **251/262 (95,8%)**.
 
-Nhưng vẫn **chưa thể chạy thật thay PostgreSQL + Elasticsearch của người dùng**: chưa chạy Liquibase/Jmix/Debezium/Superset thật (VM không có Java), `simbench` chưa có số đo (đang chạy bởi nhánh `simrun`), lịch sử 60 ngày chưa phù hợp nếu mỗi SIM thật sự có hàng trăm phiên bản, chưa có chế độ bóng.
+Nhưng vẫn **chưa thể chạy thật thay PostgreSQL + Elasticsearch của người dùng**: chưa chạy Liquibase/Jmix/Debezium/Superset thật (VM không có Java), `simbench` đã chạy lần đầu nhưng mới tới 2M số (xem §4 mục 1), lịch sử 60 ngày chưa phù hợp nếu mỗi SIM thật sự có hàng trăm phiên bản, chưa có chế độ bóng.
 
 Ước lượng: **65-75% backlog docs/12 đã có mã và test**; phần đã kiểm chứng ở mức hệ thống thấp hơn. Backlog cũng tăng thêm khi đo (lịch sử 60 ngày, chế độ bóng, phần PG còn lại).
 
@@ -53,18 +53,21 @@ Lịch sử đo (859 câu cũ, PASS): 391 (lần đầu) → 496 (sau gộp đ�
 
 ## 4. Chưa đạt, và vì sao quan trọng với bài toán SIM
 
-Xếp theo mức chặn triển khai:
+Xếp theo mức chặn triển khai. **Mục 1-5 là phát hiện của `simbench`/`simfresh`** (200k-2M số, 8 vCPU dùng chung, mỗi ô một lần, chỉ có giá trị tương đối; chi tiết docs/15 §6, thô docs/simrun/). Điều kiện chưa đo: 30-50M số, tranh chấp điểm nóng thật, "hàng trăm cập nhật mỗi SIM", so với Elasticsearch/CDC thật.
 
-1. **Chưa chạy client thật.** Liquibase (VM không có Java/Gradle; hiện chỉ giả lập theo vết JDBC), Jmix/Hibernate, Debezium, Superset, JDBC. `psql` 16 thật đã thử (`accept/psql.sh`) và đã tìm ra một lỗi.
-2. **Lịch sử 60 ngày: tính năng có, quy mô lớn chưa.** Giữ theo thời gian, `AS OF`, `stask_history` đã làm. Nhưng GC phải đi dọc chuỗi phiên bản của từng khoá nên tốn O(độ sâu chuỗi): đo ở 3.000 SIM × 200 phiên bản mất 4 phút 42 giây GC cho 75 MB ghi; ở 40M SIM × 200 tính ra ~3×10⁵ lần đọc ngẫu nhiên/giây liên tục, GC sẽ tụt lại (**tính từ số đo, chưa chạy ở quy mô đó**). 40M × 5 phiên bản thì ổn (~10-34 GB sau nén). **Cần số thật của người dùng** (docs/15 §7.8) trước khi chọn hướng sửa (cỡ L-XL).
-3. **`simbench` chưa có số.** Nhánh `simrun` đang chạy lần đầu (nhập hàng triệu dòng đồng thời với website/đơn hàng; độ mới; `kill -9` giữa lúc nhập). Số duy nhất hiện có: view trigram bắt kịp ~350k dòng/s riêng lẻ, lõi nhận ~65k dòng/s.
-4. **Ghi chậm khi có nhiều index** (3-5 index: gấp 2,5-3 lần) và **entry index chưa nằm trong checkpoint** (dựng lại khi khởi động, chưa đo ở 100M dòng).
-5. **Tìm kiếm văn bản BM25 từ SQL** chưa có; tìm theo mẫu thua PG 1,5-10× ở kết quả hàng chục nghìn dòng (cần đếm trực tiếp trên view, D19).
-6. **Khác biệt PG còn lại** (xem §3): collation (so chuỗi theo byte), thông điệp lỗi (76 câu), `CREATE SCHEMA/EXTENSION/FUNCTION/TEMP/CTAS`, toán tử jsonb và hàm mảng, kiểu mảng đúng OID, `serializable` cho quét, trigger kiểu PG (`EXECUTE FUNCTION`), `ON CONFLICT` trên chỉ mục unique không phải khoá chính, `ALTER ADD PRIMARY KEY` trên bảng có dòng, tra khoá chính ghép còn quét bảng.
-7. **Cô lập tải báo cáo (Superset) khỏi giao dịch**: cùng tiến trình, chưa đo; chưa có bộ truy vấn Superset trong `pgdiff`.
-8. **Chế độ bóng PG → STASK** (docs/16 §4): chưa làm; STASK chưa có công cụ nhận dữ liệu từ PG qua logical replication.
-9. **Raft** đóng băng (D18): chưa có đọc tuyến tính, đổi thành viên, thử trên máy riêng.
-10. **Dữ liệu lớn hơn RAM**: `pindex` chưa nối (D17); `spill` chỉ một số dạng truy vấn.
+1. **Câu ghi dài không xong khi có ghi đồng thời (D24).** `copy_merge` 200k dòng: khi rảnh 8,2 s (PG 16,3 s), khi có ~100 giao dịch/s ghi nền thì không xong trong 90-120 s (PG xong 17,9-22,5 s, nhưng 5-11 phiên chờ khoá; `update_from` của PG bị deadlock). Nguyên nhân (OCC làm lại cả câu) gắn [chưa kiểm]. Cách chạy được ngay: nhập theo lô 1.000-5.000 dòng (STASK 19,6 s so với PG 24,1 s).
+2. **Đơn hàng chậm khi đang nhập (D25).** Tải nhẹ: p50 gấp 2,2-2,5×, p99 vẫn dưới PG ở nhiều ô; tải đầy (thêm CRM GROUP BY và quét `es_pretty`): p50 gấp 3,8-10×, PG gần như không đổi.
+3. **Quét toàn bảng cùng chạy làm STASK thua rõ (D27).** CRM `GROUP BY` chậm 1,7-2,3× PG (688 ms so với 399 ms ở 1M); `OR` của hai `LIKE` chậm 4-6×; đếm/xoá lịch sử 60 ngày chậm 3,5-4,4×. Bảng `columnar` không dùng được vì `numeric` bị từ chối.
+4. **Độ mới (D26).** View trễ p99 332-376 ms khi nhập ~230k dòng/s, bắt kịp ≤43 ms sau khi xong, không tích luỹ. Nhưng mặc định `bounded` chỉ thấy ngay 30-39% dòng vừa ghi; `strong` 100% (p99 ≈ 300 ms). Sửa giá rồi tìm: 100% thấy ở cả `bounded` và `strong`. **`kill -9` giữa lúc nhập (3 vòng): 0 dòng đã xác nhận bị mất, số đếm lõi = số đếm view**; khởi động lại 1,7-3,5 s, view sẵn sàng thêm 4-9 s. Chưa đo nhập nhanh hơn ~350k dòng/s (tốc độ áp dụng view) và chưa đo độ trễ truy vấn trong 4-9 s view chưa sẵn sàng.
+5. **Khoảng trống SQL (D28).** `INSERT..SELECT $1,col,$2 ...` báo `08P01` (luồng đơn hàng hỏng cho tới khi viết lại bằng `VALUES`); `NOT EXISTS` tương quan là tích lồng; `EXPLAIN` chỉ nhận `SELECT` và in "Seq Scan" dù btree đang chạy; `CREATE INDEX .. gin_trgm_ops` trả sau 1 ms nhưng view dựng ngầm ~3,5 s ở 1M (3 truy vấn đầu quét lõi 1,0-1,3 s).
+6. **Lịch sử 60 ngày: tính năng có, quy mô lớn chưa.** Giữ theo thời gian, `AS OF`, `stask_history` đã làm. Nhưng GC phải đi dọc chuỗi phiên bản của từng khoá nên tốn O(độ sâu chuỗi): đo ở 3.000 SIM × 200 phiên bản mất 4 phút 42 giây GC cho 75 MB ghi; ở 40M SIM × 200 tính ra ~3×10⁵ lần đọc ngẫu nhiên/giây liên tục, GC sẽ tụt lại (**tính từ số đo, chưa chạy ở quy mô đó**). 40M × 5 phiên bản thì ổn (~10-34 GB sau nén). **Cần số thật của người dùng** (docs/15 §7.8) trước khi chọn hướng sửa (cỡ L-XL).
+7. **Ghi chậm khi có nhiều index** (3-5 index: gấp 2,5-3 lần) và **entry index chưa nằm trong checkpoint** (dựng lại khi khởi động, chưa đo ở 100M dòng).
+8. **Tìm kiếm văn bản BM25 từ SQL** chưa có; tìm theo mẫu thua PG 1,5-10× ở kết quả hàng chục nghìn dòng (cần đếm trực tiếp trên view, D19).
+9. **Khác biệt PG còn lại** (xem §3): collation (so chuỗi theo byte), thông điệp lỗi (76 câu), `CREATE SCHEMA/EXTENSION/FUNCTION/TEMP/CTAS`, toán tử jsonb và hàm mảng, kiểu mảng đúng OID, `serializable` cho quét, trigger kiểu PG (`EXECUTE FUNCTION`), `ON CONFLICT` trên chỉ mục unique không phải khoá chính, `ALTER ADD PRIMARY KEY` trên bảng có dòng, tra khoá chính ghép còn quét bảng.
+10. **Cô lập tải báo cáo (Superset) khỏi giao dịch**: cùng tiến trình, chưa đo; chưa có bộ truy vấn Superset trong `pgdiff`.
+11. **Chế độ bóng PG → STASK** (docs/16 §4): chưa làm; STASK chưa có công cụ nhận dữ liệu từ PG qua logical replication.
+12. **Raft** đóng băng (D18): chưa có đọc tuyến tính, đổi thành viên, thử trên máy riêng.
+13. **Dữ liệu lớn hơn RAM**: `pindex` chưa nối (D17); `spill` chỉ một số dạng truy vấn.
 
 ## 5. Lỗi và rủi ro đã biết
 
@@ -77,11 +80,13 @@ Xếp theo mức chặn triển khai:
 | B5 | Đo aggregate 100M của p05-gc/p05b không hợp lệ; P0.5 chưa có kết luận | **Mở**: harness tự kiểm đã có, cần máy riêng để chạy lại |
 | B6 | Số đo cũ có thể dùng binary cũ | **Một phần**: harness từ chối binary cũ/dirty; mới chuyển 8/46 script đo, **38 script còn lại chưa tự kiểm**; điểm mù: aggregate qua PG wire không trả `plan` |
 | B7 | Số "hơn Redis" trong docs/04 khác nhau theo điều kiện đo | **Mở** |
-| B8 | `simbench` chưa chạy | **Mở** (chặn bởi cổng/đĩa; đĩa đã thoáng 13 GB) |
+| B8 | `simbench` chưa chạy | **Đã chạy** (200k-2M số); kết quả ở §4. Chưa chạy 30-50M (cần máy riêng) |
 | B9 | Test nhạy thời gian (`TestCancelRequest` đòi huỷ trong 100 ms, `TestStatementTimeout`) chập chờn khi máy quá tải | **Mở**, có thể làm CI đỏ trên runner chậm |
 | B10 | Chuỗi gộp đã làm lộ 2 lỗi tương tác (literal `numeric` với index `float`; hai `DROP INDEX`). Đã sửa; có thể còn tương tác khác test chưa phủ | **Theo dõi**: chạy lại `pgdiff` + `claimcheck` sau mỗi lần gộp |
 | B11 | `-race` trên bản gộp cuối | **Đã chạy: sạch** cho `core`, `sql`, `pgwire`, `repl`, `wal` (`merge-gate` với `RACE=1`) |
 | B13 | `internal/cluster` `TestProcSecure` trượt khi chạy cả bộ | **Đã sửa, nguyên nhân là lỗi của test (không phải lỗ hổng):** so số bản ghi nút 3 đã áp dụng với hằng 20 thay vì với giá trị trước khi đổi bí mật; và chỉ đọc phản hồi từ chối một lần trong khi nó đến thành hai gói TCP. Qua 5/5 riêng và cả gói dưới tải |
+| B14 | Một lần đo mỗi ô, máy chung, tối đa 2M số, `s2m` bị harness đánh INVALID do lỗi kiểm tra số dòng (đã sửa harness, không chạy lại) | **Mở**: số `simbench` là tương đối, cần lặp lại nhiều lần trên máy riêng |
+| B15 | PG `es_suffix` (`%8888`) tăng từ p50 5,6 ms lên ~175 ms sau lần nhập đầu (nghi đổi kế hoạch, chưa kiểm) | **Mở**, ảnh hưởng độ công bằng của so sánh |
 | B12 | Gộp `history` + `types`: `AS OF` theo thời điểm coi datum thời gian là mili giây trong khi sau P1.1 là micro giây, nên trả trạng thái hiện tại | **Đã sửa**; bắt được nhờ `TestSQLAsOf`. Cùng loại với B10: lỗi chỉ lộ khi chạy test chung |
 
 ## 6. Nhánh git

@@ -482,7 +482,35 @@ Bộ thực thi tổng quát (JOIN, subquery, hàm trả tập) giữ các dòng
 - Phần dành sẵn được lấy theo từng bước 1 MB (một phép atomic trên mỗi MB, không phải trên mỗi dòng) và trả lại khi truy vấn kết thúc.
 - Không áp dụng cho đường nhanh (đọc theo khoá, aggregate trên view cột), vì chúng không dựng dòng vào RAM.
 
-Hạn chế: kích thước được ước lượng theo `Datum` và độ dài chuỗi, chưa tính overhead của map trong hash join. Spill ra đĩa thay cho lỗi được hoãn sang P2.
+Hạn chế: kích thước được ước lượng theo `Datum` và độ dài chuỗi (ước lượng thấp hơn thực tế khoảng 25%, đo ở §12.1). Khi bật spill (mặc định), truy vấn vượt ngân sách không còn hỏng ngay mà chạy lại ở chế độ tràn đĩa, xem §12.1.
+
+### 12.1 Tràn xuống đĩa (P2.4, 2026-10-29)
+
+Mã nguồn: `internal/spill` (toán tử, không biết gì về SQL), `internal/sql/spillexec.go` (nối vào bộ thực thi), `cmd/staskd/main.go` (cờ). Test: `internal/spill/spill_test.go`, `internal/sql/spillexec_test.go`, `internal/sql/spillbig_test.go`.
+
+**Cách các hệ khác làm** (tham khảo, đọc theo trí nhớ về thiết kế, chưa kiểm lại từng trang trong phiên này): PostgreSQL giới hạn mỗi toán tử bằng `work_mem` (hash còn nhân `hash_mem_multiplier`), vượt thì sort ghi các run ra file tạm rồi trộn ngoài (`tuplesort.c`), hash join chia thành nhiều batch trên đĩa (`nodeHash.c`), tổng file tạm của một session bị chặn bởi `temp_file_limit` ([docs](https://www.postgresql.org/docs/current/runtime-config-resource.html)). DuckDB tách aggregate theo phân vùng radix, phân vùng nào không vừa thì ghi ra file tạm ([external aggregation](https://duckdb.org/2024/03/29/external-aggregation.html), [quản lý bộ nhớ](https://duckdb.org/2024/07/09/memory-management.html)). ClickHouse đặt ngưỡng riêng cho từng toán tử: `max_bytes_before_external_group_by`, `max_bytes_before_external_sort`, và `join_algorithm = grace_hash` ([settings](https://clickhouse.com/docs/operations/settings/settings)). STASK theo mô hình chung của ba hệ: mỗi toán tử có ngưỡng RAM riêng, vượt ngưỡng mới chạm đĩa, file tạm có hạn mức.
+
+**Cơ chế.** Truy vấn chạy bình thường trước. Nếu gặp `53200` và `SpillDir` được đặt, truy vấn được chạy lại **một lần** ở chế độ tràn đĩa (`runPlan`), nên truy vấn vừa RAM không tốn gì thêm và không có đường mã mới nào chạy cho chúng. Ở chế độ này, một `SELECT` thuộc các dạng nêu dưới đây được chạy như chuỗi nguồn đẩy (scan, hash join, lọc, aggregate, chiếu, DISTINCT, ORDER BY, LIMIT) thay vì các bảng quan hệ dựng sẵn trong RAM. Scan không còn dựng cả bảng vào RAM.
+
+| Toán tử | Cách tràn | Giới hạn RAM |
+|---|---|---|
+| ORDER BY | Sort ngoài: sắp từng run trong RAM, ghi run ra file, trộn bằng heap (tối đa 64 file một lượt, nhiều hơn thì trộn nhiều lượt). Ổn định (đồng khoá giữ thứ tự vào) | `-spill-op-mb` |
+| JOIN (inner, left, right, full, có residual) | Grace hash join: build bên phải vào bảng băm; vượt ngưỡng thì cả hai bên chia thành 32 phân vùng theo hash của khoá, mỗi cặp phân vùng join riêng, phân vùng build vẫn quá lớn thì chia tiếp (tối đa 4 mức, hash khác mỗi mức). Dòng có khoá NULL không bao giờ khớp nhưng vẫn được báo cho outer join | `-spill-op-mb` |
+| GROUP BY | Hash aggregate: nhóm đã có trong bảng tiếp tục được cộng dồn; dòng của nhóm mới khi bảng đã đầy ghi vào 32 phân vùng, xử lý đệ quy sau khi xả bảng. Nhóm không bao giờ bị tách làm hai | `-spill-op-mb` |
+| DISTINCT | Cùng cơ chế với GROUP BY | `-spill-op-mb` |
+
+Dạng được hỗ trợ: không có hàm cửa sổ, hàm trả tập trong select list, `DISTINCT ON`, `LIMIT BY`, grouping sets/ROLLUP; aggregate chỉ gồm loại có trạng thái cố định (`count sum avg min max bool_* stddev/variance any anyLast argMin argMax` và các biến thể `-If`, không `DISTINCT`, không `ORDER BY` trong lời gọi). Dạng khác chạy như cũ và vẫn hỏng `53200` khi vượt ngân sách. Join không có điều kiện bằng thì giữ vế phải trong RAM (tính vào ngân sách) và quét vế trái dạng luồng. Join LATERAL, hàm bảng, CTE, subquery trong FROM vẫn là quan hệ dựng sẵn (bị tính vào ngân sách). Kết quả cuối cùng cũng nằm trong RAM (giao thức trả `Result.Rows`) và bị tính vào ngân sách: truy vấn trả hàng chục triệu dòng vẫn hỏng `53200`.
+
+**File tạm.** Mỗi truy vấn có thư mục riêng `<spill-dir>/stask-spill-<pid>-<n>`. File được mở rồi `unlink` ngay, nên mọi lối thoát (lỗi, huỷ, panic, tiến trình chết) đều không để lại dữ liệu; thư mục bị xoá khi truy vấn xong dù thành công hay lỗi. Khi khởi động, `staskd` xoá mọi thư mục `stask-spill-*` còn sót trong `-spill-dir`. Mỗi bản ghi có độ dài + CRC-32C; đọc lại sai CRC hoặc cụt thì truy vấn hỏng `58030`. Hạn mức dung lượng một truy vấn `-spill-max-mb` (vượt thì `53100`). Huỷ câu lệnh và `statement_timeout` được kiểm tra mỗi 2048 bản ghi ghi/đọc và trong vòng lặp join/lọc, trả `57014` như thường.
+
+| Cờ | Mặc định | Ý nghĩa |
+|---|---|---|
+| `-spill` | `true` | Tắt (`false`) thì giữ hành vi cũ: vượt ngân sách là `53200` |
+| `-spill-dir` | `<dir>/spill` | Thư mục file tạm (nên cùng ổ nhanh, khác ổ với log nếu có) |
+| `-spill-max-mb` | 0 (không giới hạn) | Dung lượng file tạm tối đa của một truy vấn |
+| `-spill-op-mb` | 0 = `-query-mem-mb` / 6 | RAM mỗi toán tử trước khi tràn; phần này được giữ chỗ trong ngân sách của truy vấn |
+
+**Hạn chế đã biết.** (1) Truy vấn tràn đĩa làm việc đến lúc hết ngân sách một lần rồi làm lại; hàm có tác dụng phụ trong SELECT (như `nextval`) có thể chạy hai lần. Có thể tránh bằng ước lượng kích thước trước từ số dòng của bảng, chưa làm. (2) Đường nhanh một bảng (`selectRows`: `SELECT ... FROM t GROUP BY/ORDER BY` không join) không đi qua ngân sách này nên cũng chưa có spill. (3) Ước lượng bộ nhớ thấp hơn thực tế; khoá lệch (một khoá có nhiều dòng hơn RAM của toán tử) sau 4 mức chia thì hỏng `53200` thay vì chạy tiếp. (4) Hash join luôn build bên phải và chưa giữ phân vùng đầu trong RAM (hybrid đúng nghĩa), nên khi tràn thì ghi cả hai bên ra đĩa. (5) Tổng RAM nhiều toán tử lồng nhau có thể lên tới ba phần sáu ngân sách. (6) Sort chưa có đường top-k cho `ORDER BY ... LIMIT`. (7) Aggregate có trạng thái tăng theo nhóm (`array_agg`, `string_agg`, `uniq`, quantile, `DISTINCT` trong lời gọi) chưa tràn. (8) Cộng số thực theo thứ tự khác nên kết quả `sum/avg` của double có thể khác ở chữ số cuối so với chạy trong RAM (test so sánh sau khi làm tròn 9 chữ số).
 
 ## 13. Huỷ câu lệnh, timeout của session, trần tuổi snapshot (2026-10-29)
 

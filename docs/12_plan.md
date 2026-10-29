@@ -58,7 +58,7 @@ Ngoài ra, docs/11 §2.2 ghi "trigger **và stored procedure**: Có", mâu thu�
 | P2.1 | **Index phụ**: `CREATE [UNIQUE] INDEX` trên một hoặc nhiều cột, duy trì trong đường ghi, lưu trong checkpoint, dựng lại khi khởi động. Có MVCC (index trỏ vào khoá chính, kiểm tra visibility) | XL | P1.1 | Planner dùng index cho `=`, `IN`, khoảng, `ORDER BY ... LIMIT`; đo chi phí ghi khi có 1, 3 và 5 index |
 | P2.2 | `UNIQUE` ngoài khoá chính (dựa trên P2.1) và khoá ngoại (`REFERENCES`, `ON DELETE CASCADE/RESTRICT/SET NULL`) | L | P2.1 | SQLSTATE 23505 và 23503; test có giao dịch đồng thời |
 | P2.3 | **Serializable cho cả quét** (hiện quét bị từ chối): SSI theo khoảng của index, như PG | L | P2.1 | Bộ test bất thường write skew của PG qua; WL-5 ở mức serializable |
-| P2.4 | Bộ thực thi nhiều bảng tràn xuống đĩa khi vượt bộ nhớ (hash join, sort, aggregate) | L | — | Join 2 bảng 10M dòng với giới hạn bộ nhớ 1 GB: chạy xong, không OOM |
+| P2.4 | Bộ thực thi nhiều bảng tràn xuống đĩa khi vượt bộ nhớ (hash join, sort, aggregate, DISTINCT). **Đã làm** ở nhánh `spill`: `internal/spill`, docs/05 §12.1 | L | — | Join 2 bảng 10M dòng với giới hạn bộ nhớ 1 GB: chạy xong, không OOM |
 
 ## P3. Dữ liệu lớn hơn RAM, lưu trữ
 

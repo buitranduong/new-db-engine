@@ -224,12 +224,10 @@ func (s *Session) relExists(name string) bool {
 // ---- CREATE TABLE AS / CREATE MATERIALIZED VIEW ----
 
 func (s *Session) createAs(tx *core.Tx, st *CreateAs, params []Datum) (*Result, error) {
-	tag := "CREATE TABLE AS"
-	what := "table"
+	tag := "CREATE TABLE AS" // the tag of a statement that stores no rows (WITH NO DATA, IF NOT EXISTS)
 	if st.Mat {
-		tag, what = "CREATE MATERIALIZED VIEW", "materialized view"
+		tag = "CREATE MATERIALIZED VIEW"
 	}
-	_ = what
 	exists := false
 	if st.Temp {
 		_, exists = s.tempReal(st.Name)
@@ -238,7 +236,7 @@ func (s *Session) createAs(tx *core.Tx, st *CreateAs, params []Datum) (*Result, 
 	}
 	if exists {
 		if st.IfNotExists {
-			return &Result{Tag: "SELECT 0", Notice: fmt.Sprintf("relation %q already exists, skipping", st.Name)}, nil
+			return &Result{Tag: tag, Notice: fmt.Sprintf("relation %q already exists, skipping", st.Name)}, nil
 		}
 		return nil, errf(codeDuplicateTable, "relation %q already exists", st.Name)
 	}
@@ -291,7 +289,9 @@ func (s *Session) createAs(tx *core.Tx, st *CreateAs, params []Datum) (*Result, 
 			return fail(err)
 		}
 	}
-	_ = tag
+	if st.NoData {
+		return &Result{Tag: tag}, nil
+	}
 	return &Result{Tag: fmt.Sprintf("SELECT %d", len(res.Rows))}, nil
 }
 
@@ -498,6 +498,9 @@ func rowSig(r schema.Row, cols []int) string {
 func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Result, error) {
 	t, err := s.matTable(st.Name)
 	if err != nil {
+		if e, ok := err.(*Error); ok && e.Code == codeWrongObject {
+			e.Code = codeFeature // PostgreSQL: 0A000 for REFRESH of a table
+		}
 		return nil, err
 	}
 	if st.NoData {
@@ -599,16 +602,19 @@ func (s *Session) dropMat(st *DropMat) (*Result, error) {
 	var todo []string
 	for _, n := range st.Names {
 		if _, err := s.matTable(n); err != nil {
-			if e, ok := err.(*Error); ok && e.Code == codeUndefinedTable && st.IfExists {
-				res.Notice = fmt.Sprintf("materialized view %q does not exist, skipping", n)
-				continue
+			if e, ok := err.(*Error); ok && e.Code == codeUndefinedTable {
+				if st.IfExists {
+					res.Notice = fmt.Sprintf("materialized view %q does not exist, skipping", n)
+					continue
+				}
+				e.Msg = fmt.Sprintf("materialized view %q does not exist", n)
 			}
 			return nil, err
 		}
 		todo = append(todo, n)
 	}
 	if len(todo) > 0 {
-		if _, err := s.dropOrTruncate(&DropTable{Names: todo, Cascade: st.Cascade}); err != nil {
+		if _, err := s.dropOrTruncate(&DropTable{Names: todo, Cascade: st.Cascade, Mat: true}); err != nil {
 			return nil, err
 		}
 	}
@@ -630,4 +636,10 @@ func (s *Session) truncateClosure(names []string) (all []string, added []string)
 		}
 	}
 	return all, added
+}
+
+// dropsMat reports whether st is the DROP TABLE that DROP MATERIALIZED VIEW runs.
+func (s *Session) dropsMat(st Stmt) bool {
+	d, ok := st.(*DropTable)
+	return ok && d.Mat
 }

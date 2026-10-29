@@ -184,6 +184,7 @@ type DropTable struct {
 	Names    []string
 	IfExists bool
 	Cascade  bool // also drop the views that read the tables
+	Mat      bool // DROP MATERIALIZED VIEW (ctas.go)
 }
 
 // Truncate is TRUNCATE [TABLE] name [, ...].

@@ -500,3 +500,26 @@ func (p *parser) exprListDefault() ([]Expr, error) {
 		}
 	}
 }
+
+// maxParamExt is maxParamAny for the statements of this file.
+func maxParamExt(st Stmt) int {
+	switch q := st.(type) {
+	case *CreateAs:
+		return maxParamAny(q.Query)
+	case *Merge:
+		items := []SelItem{{X: q.On}}
+		for _, w := range q.Whens {
+			if w.And != nil {
+				items = append(items, SelItem{X: w.And})
+			}
+			for _, a := range w.Set {
+				items = append(items, SelItem{X: a.X})
+			}
+			for _, x := range w.Values {
+				items = append(items, SelItem{X: x})
+			}
+		}
+		return maxParamDeep(&Select{Items: items, Rel: q.Source})
+	}
+	return 0
+}

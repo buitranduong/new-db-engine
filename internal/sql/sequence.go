@@ -367,7 +367,7 @@ func (s *Session) rowValues(t *schema.Table, cols []int, exprs []Expr, ctx *eval
 		}
 		c := &t.Columns[ci]
 		switch {
-		case c.Identity == "always" && overriding != "system":
+		case c.Identity == "always" && overriding == "":
 			return nil, nil, errf("428C9", "cannot insert a non-DEFAULT value into column %q: column %q is an identity column defined as GENERATED ALWAYS (use OVERRIDING SYSTEM VALUE to override)", c.Name, c.Name)
 		case c.Identity != "" && overriding == "user":
 			continue

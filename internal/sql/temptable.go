@@ -240,7 +240,6 @@ func (s *Session) tempCatalog() []*schema.Table {
 	return out
 }
 
-
 // ---- catalogs ----
 
 const nsTempBase = 99000

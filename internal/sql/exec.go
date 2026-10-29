@@ -2105,6 +2105,9 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 	}
 	var todo []string
 	for _, n := range names {
+		if ts, err := s.userTable(n); err == nil && ts.Schema().MatView != "" && !s.dropsMat(st) {
+			return nil, errf(codeWrongObject, "%q is not a table", n)
+		}
 		if _, err := s.userTable(n); err != nil {
 			if s.isView(n) {
 				return nil, errf(codeWrongObjectType, "%q is not a table", n)

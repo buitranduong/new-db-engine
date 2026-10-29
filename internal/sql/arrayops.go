@@ -7,7 +7,7 @@ import (
 	"stask/internal/schema"
 )
 
-// PostgreSQL arrays beyond the text form of datum.go (docs/05 section 26,
+// PostgreSQL arrays beyond the text form of datum.go (docs/05 section 25,
 // branch jsonarr). An array value stays a KArray datum (S = the PostgreSQL
 // text form, I = the element kind); this file reads and writes that text
 // as a rectangular, possibly multi-dimensional array, and implements the

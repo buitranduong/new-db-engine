@@ -11,7 +11,7 @@ import (
 	"stask/internal/schema"
 )
 
-// json and jsonb operators and functions (docs/05 section 26, branch
+// json and jsonb operators and functions (docs/05 section 25, branch
 // jsonarr). Values stay KJSON (text as given) and KJSONB (normalized text);
 // operators parse the text into a jn tree, work on it and print it again.
 // jsonb results are normalized by schema.NormalizeJSONB, so key order and

@@ -54,6 +54,7 @@ type Session struct {
 
 	role      string               // role the session runs as; "" = bootstrap superuser (roles.go)
 	needCache map[Stmt]cachedNeeds // privileges each statement needs
+	pendingQ  string               // text of the statement about to run (SetQuery)
 	act       *Activity            // pg_stat_activity entry (activity.go)
 }
 

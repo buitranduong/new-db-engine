@@ -55,6 +55,9 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/health", s.health)
 	m.HandleFunc("POST /v1/admin/checkpoint", s.checkpoint)
 	m.HandleFunc("POST /v1/admin/gc", s.gcRound)
+	m.HandleFunc("GET /metrics", s.metrics)
+	m.HandleFunc("POST /v1/admin/scrub", s.scrub)
+	m.HandleFunc("GET /v1/admin/scrub", s.scrub)
 	s.cdcRoutes(m)
 	if s.Fault != nil {
 		m.HandleFunc("POST /v1/admin/fault", s.setFault)

@@ -105,6 +105,10 @@ func main() {
 	flag.Var(pgTime{&stmtTimeout}, "statement-timeout", "default statement_timeout of PostgreSQL sessions: cancel statements running longer (SQLSTATE 57014); ms without a unit, or us/ms/s/min/h/d; 0 = off")
 	flag.Var(pgTime{&idleInTxTimeout}, "idle-in-transaction-session-timeout", "default idle_in_transaction_session_timeout: end sessions idle inside a transaction this long (SQLSTATE 25P03), releasing their snapshot; 0 = off")
 	flag.Var(pgTime{&idleTimeout}, "idle-session-timeout", "default idle_session_timeout: end sessions idle outside a transaction this long (SQLSTATE 57P05); 0 = off")
+	slowQuery := flag.Duration("slow-query", 0, "log SQL statements that take at least this long, with user, pid and text (PostgreSQL's log_min_duration_statement; 0 = off). Passwords of CREATE/ALTER ROLE are never logged")
+	pgRolesOnly := flag.Bool("pg-roles-only", false, "once a stored superuser role that can log in exists (CREATE ROLE ... SUPERUSER LOGIN PASSWORD), refuse the shared -pg-password login: only roles connect")
+	scrubEvery := flag.Duration("scrub-interval", 0, "run the CRC scrub of log segments and checkpoints this often (0 = only on POST /v1/admin/scrub); errors are logged and counted in /metrics")
+	scrubRate := flag.Int64("scrub-rate-mb", 32, "read cap of the background scrub (MB/s; 0 = unthrottled)")
 	maxSnapAge := flag.Duration("max-snapshot-age", 24*time.Hour, "a stale transaction snapshot older than this stops holding back log reclamation; its transaction then fails with snapshot too old (0 = no cap)")
 	pgKeepIdle := flag.Duration("pg-tcp-keepalives-idle", time.Minute, "idle time before TCP keepalive probes on PostgreSQL connections (0 = system default)")
 	pgKeepInterval := flag.Duration("pg-tcp-keepalives-interval", 10*time.Second, "time between TCP keepalive probes (0 = system default)")
@@ -176,6 +180,9 @@ func main() {
 	}
 	sql.StartScanControl()
 	go sql.RuntimeStats(10*time.Second, log.Printf)
+	if *slowQuery > 0 {
+		sql.SetSlowQueryLog(*slowQuery, log.Printf)
+	}
 	// Fewer GC cycles shorten commit tail latency; the soft limit makes the
 	// collector run more often instead of letting the heap grow past it.
 	if os.Getenv("GOGC") == "" {
@@ -308,7 +315,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("pg listen: %v", err)
 		}
-		pg = &pgwire.Server{E: e, Password: *pgPassword, Auth: *pgAuth, TLSRequire: *pgTLSRequire, MaxConns: *pgMaxConns, Views: p,
+		pg = &pgwire.Server{E: e, Password: *pgPassword, Auth: *pgAuth, TLSRequire: *pgTLSRequire, MaxConns: *pgMaxConns, Views: p, RolesOnly: *pgRolesOnly,
 			StatementTimeout: stmtTimeout, IdleInTxTimeout: idleInTxTimeout, IdleSessionTimeout: idleTimeout,
 			KeepAliveIdle: *pgKeepIdle, KeepAliveInterval: *pgKeepInterval, KeepAliveCount: *pgKeepCount, TCPUserTimeout: *pgUserTimeout}
 		if (*pgTLSCert == "") != (*pgTLSKey == "") {
@@ -325,6 +332,15 @@ func main() {
 			}
 		}()
 		log.Printf("postgres protocol on %s", *pgAddr)
+	}
+	if *scrubEvery > 0 {
+		go func() {
+			for range time.Tick(*scrubEvery) {
+				if e.StartScrub(*scrubRate << 20) {
+					log.Printf("scrub: started")
+				}
+			}
+		}()
 	}
 	log.Printf("staskd ready on %s (dir=%s, lsn=%d, startup=%v)", *addr, *dir, e.DurableLSN(), time.Since(t0))
 

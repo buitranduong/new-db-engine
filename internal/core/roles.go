@@ -1,10 +1,10 @@
 package core
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"stask/internal/schema"
@@ -50,38 +50,65 @@ type Role struct {
 	Grants      map[string]uint8 // table -> privileges
 }
 
-type roleAttrs struct {
-	Super bool `json:"super,omitempty"`
-	Login bool `json:"login,omitempty"`
-	Repl  bool `json:"repl,omitempty"`
-}
-
 var roleMu sync.Mutex // read-modify-write of role rows
 
 func roleSchema() schema.Table {
 	return schema.Table{Name: roleTableName, Key: "name", System: true, Columns: []schema.Column{
-		{Name: "name", Type: "string"}, {Name: "attrs", Type: "text"},
+		{Name: "name", Type: "string"}, {Name: "flags", Type: "int"},
 		{Name: "verifier", Type: "text"}, {Name: "grants", Type: "text"}}}
 }
 
+// The row: flags (bit 0 superuser, 1 login, 2 replication), the verifier,
+// and the grants as "bits\x01table" records separated by NUL. (Checked for
+// every statement of a restricted session, so it is cheap to decode.)
+const (
+	flagSuper = 1 << iota
+	flagLogin
+	flagRepl
+)
+
 func roleRow(r *Role) schema.Row {
-	attrs, _ := json.Marshal(roleAttrs{r.Super, r.Login, r.Replication})
-	g := map[string]uint8{}
+	var flags int64
+	if r.Super {
+		flags |= flagSuper
+	}
+	if r.Login {
+		flags |= flagLogin
+	}
+	if r.Replication {
+		flags |= flagRepl
+	}
+	tables := make([]string, 0, len(r.Grants))
 	for t, p := range r.Grants {
 		if p != 0 {
-			g[t] = p
+			tables = append(tables, t)
 		}
 	}
-	grants, _ := json.Marshal(g)
-	return schema.Row{{S: r.Name}, {S: string(attrs)}, {S: r.Verifier}, {S: string(grants)}}
+	sort.Strings(tables)
+	var b strings.Builder
+	for i, t := range tables {
+		if i > 0 {
+			b.WriteByte(0)
+		}
+		b.WriteByte('0' + r.Grants[t])
+		b.WriteByte(1)
+		b.WriteString(t)
+	}
+	return schema.Row{{S: r.Name}, {I: flags}, {S: r.Verifier}, {S: b.String()}}
 }
 
 func roleOfRow(row schema.Row) *Role {
 	r := &Role{Name: row[0].S, Verifier: row[2].S}
-	var a roleAttrs
-	_ = json.Unmarshal([]byte(row[1].S), &a)
-	r.Super, r.Login, r.Replication = a.Super, a.Login, a.Repl
-	_ = json.Unmarshal([]byte(row[3].S), &r.Grants)
+	f := row[1].I
+	r.Super, r.Login, r.Replication = f&flagSuper != 0, f&flagLogin != 0, f&flagRepl != 0
+	if g := row[3].S; g != "" {
+		r.Grants = map[string]uint8{}
+		for _, rec := range strings.Split(g, "\x00") {
+			if len(rec) > 2 && rec[1] == 1 {
+				r.Grants[rec[2:]] = rec[0] - '0'
+			}
+		}
+	}
 	return r
 }
 

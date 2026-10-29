@@ -341,9 +341,13 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	case *Insert:
 		table, ret = st.Table, st.Returning
 	case *Update:
-		table, ret = st.Table, st.Returning
+		table, ret, sc.alias = st.Table, st.Returning, st.Alias
 	case *Delete:
-		table, ret = st.Table, st.Returning
+		table, ret, sc.alias = st.Table, st.Returning, st.Alias
+	case *Explain:
+		d.HasRows = true
+		d.Cols = []Column{{Name: "QUERY PLAN", Kind: KText}}
+		return d, nil
 	case *Show:
 		d.HasRows = true
 		d.Cols = []Column{{Name: showColumn(st.Name), Kind: KText}}

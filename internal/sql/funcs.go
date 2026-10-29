@@ -1360,6 +1360,9 @@ func funcKind(name string, args []Kind) Kind {
 		}
 		return KFloat
 	case "sign", "abs", "mod", "modulo", "div":
+		if name == "sign" && arg(0) == KInt { // sign(int) goes through double precision
+			return KFloat
+		}
 		if arg(0) == KInt && (len(args) < 2 || arg(1) == KInt) {
 			return KInt
 		}

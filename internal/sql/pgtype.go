@@ -203,6 +203,12 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		switch e.Op {
 		case "+", "-", "*", "/", "%", "&", "|", "#", "<<", ">>":
 			l, r := inferTy(e.L, leaf), inferTy(e.R, leaf)
+			if _, ok := e.L.(*Param); ok && r.isInt() { // $1 + 1: the parameter takes the other side's type
+				l = r
+			}
+			if _, ok := e.R.(*Param); ok && l.isInt() {
+				r = l
+			}
 			if l.isInt() && r.isInt() {
 				return widerInt(l, r)
 			}

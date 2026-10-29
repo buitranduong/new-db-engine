@@ -178,7 +178,9 @@ func parseWithFormat(s, f string) (time.Time, error) {
 	return t, nil
 }
 
-func isAlnum(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+func isAlnum(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
 
 func pow10i(n int) int {
 	r := 1

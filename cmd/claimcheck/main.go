@@ -105,7 +105,7 @@ func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool
 		}
 		var out string
 		err := conn.QueryRow(cctx, "SELECT ("+strings.TrimSuffix(strings.TrimSpace(s), ";")+")::text", c.Args...).Scan(&out)
-		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(s)), "SELECT") { // full statement given
+		if u := strings.ToUpper(strings.TrimSpace(s)); strings.HasPrefix(u, "SELECT") || strings.HasPrefix(u, "SHOW") || strings.HasPrefix(u, "WITH") { // full statement given
 			err = conn.QueryRow(cctx, s, c.Args...).Scan(&out)
 		}
 		return verdict(c.Want, out, err)
@@ -217,6 +217,47 @@ func checks() []check {
 		{"extended_protocol_param", "base", "05", []string{"SELECT $1::bigint + 1"}, "val:2", []any{int64(1)}},
 		{"listen", "base", "10", []string{"LISTEN cc_ch"}, "ok", nil},
 		{"bool_cast_text", "base", "PG compat", []string{"SELECT true::text"}, "val:true", nil},
+		// ---- found by cmd/pgdiff (docs/14 Phụ lục B): each is a difference from PostgreSQL 16
+		{"pd_table_without_pk", "pgdiff", "a: Liquibase databasechangelog", []string{"CREATE TABLE cc_t (id VARCHAR(255) NOT NULL, author VARCHAR(255))"}, "ok", nil},
+		{"pd_composite_pk", "pgdiff", "c: keys", []string{"CREATE TABLE cc_t (a INT, b INT, PRIMARY KEY (a, b))"}, "ok", nil},
+		{"pd_savepoint", "pgdiff", "a: transactions", []string{"BEGIN", "SAVEPOINT cc_sp", "ROLLBACK TO SAVEPOINT cc_sp"}, "ok", nil},
+		{"pd_varchar_len_22001", "pgdiff", "a: constraints", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v VARCHAR(2))", "INSERT INTO cc_t VALUES (1, 'abc')"}, "err:22001", nil},
+		{"pd_numeric_scale_rounds", "pgdiff", "d: SIM price", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, n NUMERIC(12,2))", "INSERT INTO cc_t VALUES (1, 1.005)", "SELECT n::text FROM cc_t"}, "val:1.01", nil},
+		{"pd_numeric_overflow_22003", "pgdiff", "a: constraints", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, n NUMERIC(4,2))", "INSERT INTO cc_t VALUES (1, 999.99)"}, "err:22003", nil},
+		{"pd_numeric_mul_exact", "pgdiff", "d: SIM price", []string{"SELECT (1500000.00::numeric * 1.1)::text"}, "val:1650000.000", nil},
+		{"pd_int_overflow_22003", "pgdiff", "b: arithmetic", []string{"SELECT 2147483647 + 1"}, "err:22003", nil},
+		{"pd_bigint_overflow_22003", "pgdiff", "b: arithmetic", []string{"SELECT 9223372036854775807 + 1"}, "err:22003", nil},
+		{"pd_int_literal_type", "pgdiff", "b: types", []string{"SELECT pg_typeof(1)::text"}, "val:integer", nil},
+		{"pd_timestamp_type", "pgdiff", "b: timestamps", []string{"SELECT pg_typeof('2026-01-15 10:00:00'::timestamp)::text"}, "val:timestamp without time zone", nil},
+		{"pd_timestamp_no_seconds", "pgdiff", "b: timestamps", []string{"SELECT '2026-01-15 10:00'::timestamp::text"}, "val:2026-01-15 10:00:00", nil},
+		{"pd_time_type", "pgdiff", "b: timestamps", []string{"SELECT '10:30:45'::time::text"}, "val:10:30:45", nil},
+		{"pd_at_time_zone", "pgdiff", "b: timestamps", []string{"SELECT ('2026-01-15 10:00:00+00'::timestamptz AT TIME ZONE 'UTC')::text"}, "val:2026-01-15 10:00:00", nil},
+		{"pd_to_timestamp", "pgdiff", "b: timestamps", []string{"SELECT to_timestamp('2026-03-15', 'YYYY-MM-DD')::date::text"}, "val:2026-03-15", nil},
+		{"pd_bad_date_22008", "pgdiff", "c: sqlstate", []string{"SELECT '2026-02-30'::date"}, "err:22008", nil},
+		{"pd_bad_timestamptz_22007", "pgdiff", "c: sqlstate", []string{"SELECT 'notadate'::timestamptz"}, "err:22007", nil},
+		{"pd_data_modifying_cte", "pgdiff", "b: CTE", []string{T, "WITH i AS (INSERT INTO cc_t VALUES (1, 'a') RETURNING id) SELECT id FROM i", "SELECT count(*) FROM cc_t"}, "val:1", nil},
+		{"pd_update_alias", "pgdiff", "a: Hibernate", []string{T, "INSERT INTO cc_t VALUES (1, 'a')", "UPDATE cc_t x SET v = 'b' WHERE x.id = 1"}, "ok", nil},
+		{"pd_update_row_value", "pgdiff", "a: DML", []string{T, "INSERT INTO cc_t VALUES (1, 'a')", "UPDATE cc_t SET (id, v) = (1, 'q') WHERE id = 1"}, "ok", nil},
+		{"pd_bitwise_or", "pgdiff", "b: operators", []string{"SELECT 5 | 3"}, "val:7", nil},
+		{"pd_power_operator", "pgdiff", "b: operators", []string{"SELECT 2 ^ 10"}, "val:1024", nil},
+		{"pd_dollar_quote", "pgdiff", "b: strings", []string{"SELECT $$a'b$$"}, "val:a'b", nil},
+		{"pd_is_unknown", "pgdiff", "b: NULL logic", []string{"SELECT CASE WHEN NULL::boolean IS UNKNOWN THEN 'y' ELSE 'n' END"}, "val:y", nil},
+		{"pd_like_escape", "pgdiff", "b: LIKE", []string{"SELECT CASE WHEN 'a_b' LIKE 'a!_b' ESCAPE '!' THEN 'y' ELSE 'n' END"}, "val:y", nil},
+		{"pd_similar_to", "pgdiff", "b: LIKE", []string{"SELECT CASE WHEN 'Alice' SIMILAR TO '(A|a)l%' THEN 'y' ELSE 'n' END"}, "val:y", nil},
+		{"pd_collation_order", "pgdiff", "b: ORDER BY (PG locale en_US.utf8)", []string{"CREATE TABLE cc_t (id BIGINT PRIMARY KEY, v TEXT)", "INSERT INTO cc_t VALUES (1, 'B'), (2, 'a')", "SELECT v FROM cc_t ORDER BY v LIMIT 1"}, "val:a", nil},
+		{"pd_read_only_txn_25006", "pgdiff", "c: transactions", []string{T, "BEGIN READ ONLY", "INSERT INTO cc_t VALUES (1, 'a')"}, "err:25006", nil},
+		{"pd_default_isolation", "pgdiff", "c: transactions", []string{"SHOW transaction_isolation"}, "val:read committed", nil},
+		{"pd_jsonb_arrow", "pgdiff", "b: casts", []string{"SELECT '{\"a\":1}'::jsonb ->> 'a'"}, "val:1", nil},
+		{"pd_sqrt_negative_2201F", "pgdiff", "c: arithmetic", []string{"SELECT sqrt(-1)"}, "err:2201F", nil},
+		{"pd_unknown_stmt_42601", "pgdiff", "c: syntax", []string{"SELEC 1"}, "err:42601", nil},
+		{"pd_unknown_type_42704", "pgdiff", "c: missing objects", []string{"SELECT 1::nosuchtype"}, "err:42704", nil},
+		{"pd_on_conflict_no_index_42P10", "pgdiff", "a: ON CONFLICT", []string{T, "INSERT INTO cc_t VALUES (1, 'q') ON CONFLICT (v) DO NOTHING"}, "err:42P10", nil},
+		{"pd_limit_negative_2201W", "pgdiff", "b: LIMIT", []string{T, "SELECT id FROM cc_t LIMIT -1"}, "err:2201W", nil},
+		{"pd_where_not_boolean_42804", "pgdiff", "c: types", []string{"SELECT 1 FROM (VALUES (1)) t(a) WHERE a"}, "err:42804", nil},
+		{"pd_ctas", "pgdiff", "c: DDL", []string{"CREATE TABLE cc_c AS SELECT 1 AS a"}, "ok", nil},
+		{"pd_create_temp_table", "pgdiff", "c: DDL", []string{"CREATE TEMP TABLE cc_t (a INT)"}, "ok", nil},
+		{"pd_explain", "pgdiff", "c: DDL", []string{"EXPLAIN SELECT 1"}, "ok", nil},
+		{"pd_uuid_type_oid", "pgdiff", "b: casts", []string{"SELECT pg_typeof(gen_random_uuid())::text"}, "val:uuid", nil},
 		// ---- not claimed anywhere: discover gaps
 		{"unclaimed_cte", "-", "-", []string{"WITH x AS (SELECT 1 AS a) SELECT a FROM x"}, "val:1", nil},
 		{"unclaimed_window", "-", "-", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "SELECT row_number() OVER (ORDER BY id) FROM cc_t"}, "val:1", nil},

@@ -516,6 +516,8 @@ type cachedNeeds struct {
 func collectNeeds(st Stmt) (needs []need, ddl string) {
 	w := &needWalker{}
 	switch st := st.(type) {
+	case *Explain:
+		return collectNeeds(st.Stmt)
 	case *Select, *SetOp:
 		w.walk(reflect.ValueOf(st), nil)
 	case *Insert:

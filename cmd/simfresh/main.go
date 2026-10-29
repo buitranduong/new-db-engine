@@ -4,7 +4,7 @@
 //	-mode lag   view lag samples (/v1/status: durable_lsn vs substr applied_lsn, lag_ms)
 //	            during a bulk import, and read-after-write probes: a row is
 //	            written (INSERT / UPDATE) and searched for immediately with
-//	            stask.consistency = bounded / strong / eventual.
+//	            stask.consistency = bounded / strong / eventual / session / (unset: server default).
 //	-mode kill  kill -9 staskd in the middle of an import, restart on the same
 //	            directory, compare acknowledged writes, core (primary index)
 //	            and the view.
@@ -319,7 +319,9 @@ func probeUpdate(ctx context.Context, c *pgx.Conn, rng *rand.Rand, r *probeRes) 
 func probeLoop(ctx context.Context, consistency string, kind string, out *probeRes, stopAt <-chan struct{}, seed uint64) {
 	c := connect(ctx)
 	defer c.Close(context.Background())
-	_ = exec1(ctx, c, "SET stask.consistency = '"+consistency+"'")
+	if consistency != "default" {
+		_ = exec1(ctx, c, "SET stask.consistency = '"+consistency+"'")
+	}
 	rng := rand.New(rand.NewPCG(seed, 1))
 	for {
 		select {
@@ -419,8 +421,11 @@ func modeLag() {
 		{"insert/bounded", "bounded", "insert"},
 		{"insert/strong", "strong", "insert"},
 		{"insert/eventual", "eventual", "insert"},
+		{"insert/session", "session", "insert"},
+		{"insert/default", "default", "insert"}, // no SET: the server default (D26: session)
 		{"update/bounded", "bounded", "update"},
 		{"update/strong", "strong", "update"},
+		{"update/default", "default", "update"},
 	}
 	runProbes := func(phase string, fn func()) map[string]*probeRes {
 		res := map[string]*probeRes{}

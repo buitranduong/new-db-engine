@@ -180,7 +180,7 @@ func sessionDefaults() map[string]string {
 		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
 		"max_identifier_length": "63", "default_transaction_read_only": "off", "transaction_read_only": "off",
 		"extra_float_digits": "1", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8",
-		SearchConsistencyVar: "bounded", SearchMaxLagVar: "1000", LastPlanVar: "",
+		SearchConsistencyVar: DefaultConsistency, SearchMaxLagVar: "1000", LastPlanVar: "",
 	}
 }
 
@@ -223,6 +223,12 @@ func (s *Session) resetVar(name string) error {
 // writesStatement reports whether st changes data or schema (refused in a
 // READ ONLY transaction, 25006).
 func writesStatement(st Stmt) (bool, string) {
+	if e, ok := st.(*Explain); ok {
+		if e.Analyze {
+			return writesStatement(e.Stmt)
+		}
+		return false, ""
+	}
 	switch st.(type) {
 	case *WithDML:
 		return true, "WITH"

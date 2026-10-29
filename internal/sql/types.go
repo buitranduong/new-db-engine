@@ -347,6 +347,14 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	case *Explain:
 		d.HasRows = true
 		d.Cols = []Column{{Name: "QUERY PLAN", Kind: KText}}
+		pk := s.deepKinds(st.Stmt)
+		d.Params = make([]Kind, maxParamAny(st))
+		for i := range d.Params {
+			d.Params[i] = KText
+			if k, ok := pk[i+1]; ok {
+				d.Params[i] = k
+			}
+		}
 		return d, nil
 	case *Show:
 		d.HasRows = true
@@ -363,7 +371,15 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		sc.t = t
 	}
 	pk := paramKinds(st, sc)
-	n := maxParam(st)
+	if ins, ok := st.(*Insert); ok && ins.Query != nil {
+		s.insertSelectKinds(ins, sc.t, pk)
+	}
+	for n, k := range s.deepKinds(st) {
+		if _, done := pk[n]; !done {
+			pk[n] = k
+		}
+	}
+	n := max(maxParam(st), maxParamAny(st))
 	d.Params = make([]Kind, n)
 	for i := range d.Params {
 		if k, ok := pk[i+1]; ok {

@@ -62,6 +62,12 @@ func (c *evalCtx) session() *Session {
 	return nil
 }
 
+// dialectCH reports a ClickHouse-dialect session (looser numeric errors).
+func (c *evalCtx) dialectCH() bool {
+	s := c.session()
+	return s != nil && s.clickHouse()
+}
+
 func (c *evalCtx) eval(x Expr) (Datum, error) {
 	if c.qx != nil {
 		// every operator that evaluates an expression per row (filter,
@@ -138,6 +144,12 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			}
 			return BoolD(v.I == 0), nil
 		}
+		if e.Op == "~" {
+			if v.K != KInt {
+				return Null, errf(codeUndefinedFunction, "operator does not exist: ~ %s", v.K)
+			}
+			return IntD(^v.I), nil
+		}
 		switch v.K {
 		case KInt:
 			return IntD(-v.I), nil
@@ -154,7 +166,13 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		}
 		return Null, errf(codeUndefinedFunction, "operator does not exist: - %s", v.K)
 	case *Binary:
-		return c.binary(e)
+		d, err := c.binary(e)
+		if e.W != 0 && err == nil && d.K == KInt {
+			if lo, hi, tn := widthRange(e.W); d.I < lo || d.I > hi {
+				return Null, errf(codeNumericOutOfRange, "%s out of range", tn)
+			}
+		}
+		return d, err
 	case *IsNull:
 		v, err := c.eval(e.X)
 		if err != nil {
@@ -521,6 +539,23 @@ func arith(op string, l, r Datum) (Datum, error) {
 			return IntD(c), nil
 		case "&":
 			return IntD(a & b), nil
+		case "|":
+			return IntD(a | b), nil
+		case "#":
+			return IntD(a ^ b), nil
+		case "<<":
+			if b < 0 || b > 63 {
+				return IntD(0), nil
+			}
+			return IntD(a << uint(b)), nil
+		case ">>":
+			if b < 0 || b > 63 {
+				if a < 0 {
+					return IntD(-1), nil
+				}
+				return IntD(0), nil
+			}
+			return IntD(a >> uint(b)), nil
 		case "/", "%":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
@@ -539,23 +574,31 @@ func arith(op string, l, r Datum) (Datum, error) {
 		if r.K == KInt {
 			b = float64(r.I)
 		}
+		chk := func(r float64) (Datum, error) {
+			if math.IsInf(r, 0) && !math.IsInf(a, 0) && !math.IsInf(b, 0) {
+				return Null, errf(codeNumericOutOfRange, "value out of range: overflow")
+			}
+			return FloatD(r), nil
+		}
 		switch op {
 		case "+":
-			return FloatD(a + b), nil
+			return chk(a + b)
 		case "-":
-			return FloatD(a - b), nil
+			return chk(a - b)
 		case "*":
-			return FloatD(a * b), nil
+			return chk(a * b)
 		case "/":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
 			}
-			return FloatD(a / b), nil
+			return chk(a / b)
 		case "%":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
 			}
 			return FloatD(math.Mod(a, b)), nil
+		case "^":
+			return chk(math.Pow(a, b))
 		}
 	}
 	return Null, errf(codeUndefinedFunction, "operator does not exist: %s %s %s", l.K, op, r.K)
@@ -661,6 +704,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			n, err := coerce(args[2], KInt)
 			if err != nil {
 				return Null, err
+			}
+			if n.I < 0 && !c.dialectCH() {
+				return Null, errf("22011", "negative substring length not allowed")
 			}
 			to = from + int(n.I)
 		}

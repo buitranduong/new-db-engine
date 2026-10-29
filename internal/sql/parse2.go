@@ -393,7 +393,7 @@ func (p *parser) selectCore() (*Select, error) {
 			return nil, err
 		}
 		if s.Where != nil {
-			w = &Binary{"and", s.Where, w}
+			w = &Binary{Op: "and", L: s.Where, R: w}
 		}
 		s.Where = w
 	}

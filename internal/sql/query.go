@@ -463,7 +463,7 @@ func rebuild(x Expr, f func(Expr) (Expr, error)) (Expr, error) {
 	case *Unary:
 		out = &Unary{e.Op, m(e.X)}
 	case *Binary:
-		out = &Binary{e.Op, m(e.L), m(e.R)}
+		out = &Binary{Op: e.Op, L: m(e.L), R: m(e.R), W: e.W}
 	case *Func:
 		nf := *e
 		nf.Args, nf.Params = ms(e.Args), ms(e.Params)
@@ -656,7 +656,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 					if keep == nil {
 						keep = cnd
 					} else {
-						keep = &Binary{"and", keep, cnd}
+						keep = &Binary{Op: "and", L: keep, R: cnd}
 					}
 				}
 			}
@@ -853,7 +853,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				ak[i] = staticKind(x, sk)
 			}
 			sk = append(sk, funcKind(f.Name, ak))
-			st2 = append(st2, pgTy{})
+			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: w.args, Over: f.Over}, slotTy).forKind(sk[len(sk)-1]))
 		}
 		post = &wb
 	}
@@ -877,6 +877,15 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			}
 			return nil, false
 		})
+		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) { // pg_typeof knows static types
+			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
+				if n := staticTypeName(f.Args[0], inferTy(f.Args[0], slotTy), staticKind(f.Args[0], sk)); n != "" {
+					return &Lit{TextD(n)}, true
+				}
+			}
+			return nil, false
+		})
+		markWidths(bx, slotTy)
 		p.items = append(p.items, bx)
 		ik := staticKind(bx, sk)
 		p.cols = append(p.cols, relCol{name: itemName(it), kind: ik, ty: inferTy(bx, slotTy).forKind(ik)})
@@ -1222,6 +1231,9 @@ func limitValues(ctx *evalCtx, lx, ox Expr) (limit, offset int64, err error) {
 				return 0, 0, err
 			}
 			limit = v.I
+			if limit < 0 && !ctx.dialectCH() {
+				return 0, 0, errf("2201W", "LIMIT must not be negative")
+			}
 		}
 	}
 	if ox != nil {
@@ -1338,6 +1350,11 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			return KBool
 		case "||":
 			return KText
+		case "^":
+			if l, r := staticKind(e.L, kinds), staticKind(e.R, kinds); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
+				return KNumeric
+			}
+			return KFloat
 		}
 		l, r := staticKind(e.L, kinds), staticKind(e.R, kinds)
 		switch {
@@ -1867,6 +1884,9 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			rc := relCol{qual: qual, name: name, kind: staticKind(vp.rows[0][i], nil)}
 			rc.ty = inferTy(vp.rows[0][i], func(Expr) (pgTy, bool) { return pgTy{}, false })
 			for _, r := range vp.rows[1:] {
+				if l, ok := r[i].(*Lit); ok && l.V.IsNull() {
+					continue
+				}
 				if inferTy(r[i], func(Expr) (pgTy, bool) { return pgTy{}, false }) != rc.ty {
 					rc.ty = pgTy{}
 				}
@@ -1922,7 +1942,7 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			if li < 0 || ri < 0 {
 				return nil, errf(codeUndefinedColumn, "column %q specified in USING clause does not exist in both tables", u)
 			}
-			conds = append(conds, &Binary{"=", &Slot{I: li}, &Slot{I: jp.nl + ri}})
+			conds = append(conds, &Binary{Op: "=", L: &Slot{I: li}, R: &Slot{I: jp.nl + ri}})
 			jp.c[jp.nl+ri].hidden = true
 			if f.Kind == "right" || f.Kind == "full" {
 				jp.merge = append(jp.merge, [2]int{li, jp.nl + ri})
@@ -1964,7 +1984,7 @@ func (jp *joinPlan) addCond(cnd Expr) {
 	if jp.residual == nil {
 		jp.residual = cnd
 	} else {
-		jp.residual = &Binary{"and", jp.residual, cnd}
+		jp.residual = &Binary{Op: "and", L: jp.residual, R: cnd}
 	}
 }
 
@@ -2613,7 +2633,7 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 	for _, row := range rel.rows {
 		res := BoolD(true)
 		for i, v := range lv {
-			r, err := (&evalCtx{}).binary(&Binary{op, &Lit{v}, &Lit{row[i]}})
+			r, err := (&evalCtx{}).binary(&Binary{Op: op, L: &Lit{v}, R: &Lit{row[i]}})
 			if err != nil {
 				return Null, err
 			}

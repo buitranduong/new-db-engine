@@ -1101,7 +1101,7 @@ func (p *parser) orExpr() (Expr, error) {
 	for err == nil && p.acceptKw("or") {
 		var r Expr
 		if r, err = p.andExpr(); err == nil {
-			l = &Binary{"or", l, r}
+			l = &Binary{Op: "or", L: l, R: r}
 		}
 	}
 	return l, err
@@ -1112,7 +1112,7 @@ func (p *parser) andExpr() (Expr, error) {
 	for err == nil && p.acceptKw("and") {
 		var r Expr
 		if r, err = p.notExpr(); err == nil {
-			l = &Binary{"and", l, r}
+			l = &Binary{Op: "and", L: l, R: r}
 		}
 	}
 	return l, err
@@ -1127,7 +1127,7 @@ func (p *parser) notExpr() (Expr, error) {
 }
 
 func (p *parser) predicate() (Expr, error) {
-	l, err := p.addExpr()
+	l, err := p.bitExpr()
 	if err != nil {
 		return nil, err
 	}
@@ -1168,18 +1168,18 @@ func (p *parser) predicate() (Expr, error) {
 				l = &AnyAll{X: l, Op: op, All: all, Q: q}
 				continue
 			}
-			r, err := p.addExpr()
+			r, err := p.bitExpr()
 			if err != nil {
 				return nil, err
 			}
-			l = &Binary{op, l, r}
+			l = &Binary{Op: op, L: l, R: r}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
-			r, err := p.addExpr()
+			r, err := p.bitExpr()
 			if err != nil {
 				return nil, err
 			}
-			var x Expr = &Func{Name: "regexp_like", Args: []Expr{l, r, &Lit{TextD(map[bool]string{true: "i", false: ""}[strings.HasSuffix(t.s, "*")])}}}
+			var x Expr = &Func{Name: "regexp_like", Disp: "?column?", Args: []Expr{l, r, &Lit{TextD(map[bool]string{true: "i", false: ""}[strings.HasSuffix(t.s, "*")])}}}
 			if strings.HasPrefix(t.s, "!") {
 				x = &Unary{"not", x}
 			}
@@ -1190,7 +1190,7 @@ func (p *parser) predicate() (Expr, error) {
 			case p.acceptKw("null"):
 				l = &IsNull{l, not}
 			case p.acceptKw("distinct", "from"):
-				r, err := p.addExpr()
+				r, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
@@ -1198,11 +1198,13 @@ func (p *parser) predicate() (Expr, error) {
 				if not {
 					name = "is_not_distinct_from"
 				}
-				l = &Func{Name: name, Args: []Expr{l, r}}
+				l = &Func{Name: name, Disp: "?column?", Args: []Expr{l, r}}
+			case p.acceptKw("unknown"):
+				l = &IsNull{l, not}
 			case p.acceptKw("true"), p.acceptKw("false"):
 				want := p.toks[p.i-1].s == "true"
 				// IS [NOT] TRUE/FALSE never yields NULL
-				x := Expr(&Binary{"=", &Func{Name: "coalesce", Args: []Expr{l, &Lit{BoolD(!want)}}}, &Lit{BoolD(want)}})
+				x := Expr(&Binary{Op: "=", L: &Func{Name: "coalesce", Args: []Expr{l, &Lit{BoolD(!want)}}}, R: &Lit{BoolD(want)}})
 				if not {
 					x = &Unary{"not", x}
 				}
@@ -1242,19 +1244,19 @@ func (p *parser) predicate() (Expr, error) {
 				l = &InList{l, list, not}
 			case p.acceptKw("between"):
 				sym := p.acceptKw("symmetric")
-				lo, err := p.addExpr()
+				lo, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
 				if err := p.expectKw("and"); err != nil {
 					return nil, err
 				}
-				hi, err := p.addExpr()
+				hi, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
 				if sym { // either order of the bounds
-					l = &Binary{"or", &Between{l, lo, hi, false}, &Between{l, hi, lo, false}}
+					l = &Binary{Op: "or", L: &Between{l, lo, hi, false}, R: &Between{l, hi, lo, false}}
 					if not {
 						l = &Unary{"not", l}
 					}
@@ -1263,7 +1265,7 @@ func (p *parser) predicate() (Expr, error) {
 				}
 			case p.acceptKw("like"), p.acceptKw("ilike"):
 				ic := p.toks[p.i-1].s == "ilike"
-				pat, err := p.addExpr()
+				pat, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
@@ -1278,25 +1280,51 @@ func (p *parser) predicate() (Expr, error) {
 	}
 }
 
+// bitExpr: the "other operators" of PostgreSQL, looser than + and -.
+func (p *parser) bitExpr() (Expr, error) {
+	l, err := p.addExpr()
+	for err == nil && (p.isOp("|") || p.isOp("&") || p.isOp("#") || p.isOp("<<") || p.isOp(">>")) {
+		op := p.next().s
+		var r Expr
+		if r, err = p.addExpr(); err == nil {
+			l = &Binary{Op: op, L: l, R: r}
+		}
+	}
+	return l, err
+}
+
 func (p *parser) addExpr() (Expr, error) {
 	l, err := p.mulExpr()
 	for err == nil && (p.isOp("+") || p.isOp("-") || p.isOp("||")) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.mulExpr(); err == nil {
-			l = &Binary{op, l, r}
+			l = &Binary{Op: op, L: l, R: r}
 		}
 	}
 	return l, err
 }
 
 func (p *parser) mulExpr() (Expr, error) {
-	l, err := p.unary()
-	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%") || p.isOp("&")) {
+	l, err := p.powExpr()
+	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%")) {
 		op := p.next().s
 		var r Expr
+		if r, err = p.powExpr(); err == nil {
+			l = &Binary{Op: op, L: l, R: r}
+		}
+	}
+	return l, err
+}
+
+// powExpr is the exponent operator ^ (left associative, tighter than * /).
+func (p *parser) powExpr() (Expr, error) {
+	l, err := p.unary()
+	for err == nil && p.isOp("^") {
+		p.next()
+		var r Expr
 		if r, err = p.unary(); err == nil {
-			l = &Binary{op, l, r}
+			l = &Binary{Op: "^", L: l, R: r}
 		}
 	}
 	return l, err
@@ -1319,6 +1347,10 @@ func (p *parser) unary() (Expr, error) {
 	}
 	if p.acceptOp("+") {
 		return p.unary()
+	}
+	if p.acceptOp("~") { // bitwise NOT
+		x, err := p.unary()
+		return &Unary{"~", x}, err
 	}
 	x, err := p.primary()
 	for err == nil {
@@ -1546,7 +1578,7 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &Func{Name: "strpos", Args: []Expr{b, a}}, p.expectOp(")")
+			return &Func{Name: "strpos", Disp: "position", Args: []Expr{b, a}}, p.expectOp(")")
 		}
 		if err := p.expectOp(","); err != nil { // ClickHouse position(haystack, needle)
 			return nil, err
@@ -1554,6 +1586,7 @@ func (p *parser) funcCall(name string) (Expr, error) {
 		rest, err := p.exprList(")")
 		return &Func{Name: "strpos", Args: append([]Expr{a}, rest...)}, err
 	case "substring", "substr":
+		disp := name
 		x, err := p.expr()
 		if err != nil {
 			return nil, err
@@ -1572,16 +1605,16 @@ func (p *parser) funcCall(name string) (Expr, error) {
 				}
 				args = append(args, n)
 			}
-			return &Func{Name: "substr", Args: args}, p.expectOp(")")
+			return &Func{Name: "substr", Disp: disp, Args: args}, p.expectOp(")")
 		}
 		if p.acceptOp(")") {
-			return &Func{Name: "substr", Args: []Expr{x}}, nil
+			return &Func{Name: "substr", Disp: disp, Args: []Expr{x}}, nil
 		}
 		if err := p.expectOp(","); err != nil {
 			return nil, err
 		}
 		rest, err := p.exprList(")")
-		return &Func{Name: "substr", Args: append([]Expr{x}, rest...)}, err
+		return &Func{Name: "substr", Disp: disp, Args: append([]Expr{x}, rest...)}, err
 	case "trim":
 		fn := "btrim"
 		switch {

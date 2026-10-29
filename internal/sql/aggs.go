@@ -265,7 +265,7 @@ func (a *basicAgg) result() (Datum, error) {
 		}
 		return IntD(a.isum), nil
 	}
-	if a.numer && !a.float {
+	if !a.float && a.kind != KInterval { // integers and numerics average to numeric
 		x, err := pgnum.Div(pgnum.Add(a.nsum, pgnum.FromInt64(a.isum)), pgnum.FromInt64(a.n))
 		return NumericD(x), err
 	}

@@ -144,7 +144,7 @@ func formatInterval(d Datum) string {
 	months, ms := int64(d.F), d.I // ms is in microseconds
 	var parts []string
 	plural := func(n int64, unit string) string {
-		if n == 1 || n == -1 {
+		if n == 1 { // PostgreSQL prints "-1 days"
 			return strconv.FormatInt(n, 10) + " " + unit
 		}
 		return strconv.FormatInt(n, 10) + " " + unit + "s"
@@ -153,7 +153,7 @@ func formatInterval(d Datum) string {
 		parts = append(parts, plural(y, "year"))
 	}
 	if m := months % 12; m != 0 {
-		parts = append(parts, strconv.FormatInt(m, 10)+" mon"+map[bool]string{true: "", false: "s"}[m == 1 || m == -1])
+		parts = append(parts, strconv.FormatInt(m, 10)+" mon"+map[bool]string{true: "", false: "s"}[m == 1])
 	}
 	if days := ms / usPerDay; days != 0 {
 		parts = append(parts, plural(days, "day"))

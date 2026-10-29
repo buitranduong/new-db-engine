@@ -250,9 +250,11 @@ type Unary struct {
 type Binary struct {
 	Op   string // = <> < <= > >= + - * / % || and or
 	L, R Expr
+	W    uint8 // 2 or 4: an int2/int4 result that must fit (22003), see markWidths
 }
 type Func struct {
 	Name     string
+	Disp     string // column name when it differs from Name ("substring" for substr)
 	Args     []Expr
 	Star     bool // count(*)
 	Distinct bool

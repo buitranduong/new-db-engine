@@ -894,7 +894,7 @@ func (a *aggState) result() Datum {
 		if a.count == 0 {
 			return Null
 		}
-		if a.isNum && !a.isFloat {
+		if !a.isFloat {
 			x, _ := pgnum.Div(pgnum.Add(a.sumN, pgnum.FromInt64(a.sumI)), pgnum.FromInt64(a.count))
 			return NumericD(x)
 		}
@@ -1192,6 +1192,9 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				return nil, err
 			}
 			limit = v.I
+			if limit < 0 && !s.clickHouse() {
+				return nil, errf("2201W", "LIMIT must not be negative")
+			}
 		}
 	}
 	if st.Offset != nil {
@@ -1483,6 +1486,9 @@ func (st *Select) plan(sc *scope) (*selectPlan, error) {
 	}
 	p.cols = make([]Column, len(p.items))
 	pk := paramKinds(st, sc)
+	for _, it := range p.items {
+		markWidths(it.X, sc.leafTy)
+	}
 	for i, it := range p.items {
 		p.cols[i] = itemCol(it, sc, pk)
 	}
@@ -1533,11 +1539,28 @@ func itemName(it SelItem) string {
 	case *ColRef:
 		return e.Name
 	case *Func:
+		if e.Disp != "" {
+			return e.Disp
+		}
+		if e.Name == "stask_subscript" && len(e.Args) > 0 { // (ARRAY[1,2])[3] is named by the array
+			return itemName(SelItem{X: e.Args[0]})
+		}
 		return e.Name
 	case *Cast:
-		return itemName(SelItem{X: e.X})
+		// the operand's name when it has one, else the type's
+		if n := itemName(SelItem{X: e.X}); n != "?column?" {
+			return n
+		}
+		return castName(e)
 	case *Case:
 		return "case"
+	case *Subquery:
+		if s, ok := e.Q.(*Select); ok && !e.Array && len(s.Items) == 1 {
+			return itemName(s.Items[0])
+		}
+		if e.Array {
+			return "array"
+		}
 	}
 	return "?column?"
 }

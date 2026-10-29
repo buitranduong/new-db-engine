@@ -33,6 +33,11 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			return KBool
 		case "||":
 			return KText
+		case "^":
+			if l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
+				return KNumeric
+			}
+			return KFloat
 		}
 		l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)
 		tl, tr := isTime(l) || l == KDate, isTime(r) || r == KDate
@@ -85,7 +90,7 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if e.Name == "round" && len(e.Args) == 1 && arg() == KInt {
 				return KInt
 			}
-			if arg() == KNumeric && e.Name != "extract_epoch" && e.Name != "epoch" {
+			if arg() == KNumeric && e.Name != "extract_epoch" && e.Name != "epoch" || e.Name == "avg" && arg() == KInt {
 				return KNumeric
 			}
 			return KFloat

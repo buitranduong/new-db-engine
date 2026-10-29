@@ -200,7 +200,16 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
-		return FloatD(fn(x)), nil
+		if !c.dialectCH() {
+			if err := mathDomain(f.Name, x); err != nil {
+				return Null, err
+			}
+		}
+		r := fn(x)
+		if math.IsInf(r, 0) && !math.IsInf(x, 0) && !c.dialectCH() && f.Name != "ln" && f.Name != "log" {
+			return Null, errf(codeNumericOutOfRange, "value out of range: overflow")
+		}
+		return FloatD(r), nil
 	}
 	switch f.Name {
 	// ---- strings ----
@@ -404,6 +413,14 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if !c.dialectCH() {
+			switch {
+			case n == 0:
+				return Null, errf("54000", "null character not permitted")
+			case n < 0 || n > 0x10FFFF:
+				return Null, errf(codeInvalidParameter, "requested character too large for encoding: %d", n)
+			}
+		}
 		return TextD(string(rune(n))), nil
 	case "lowerutf8":
 		return TextD(strings.ToLower(str(0))), nil
@@ -477,6 +494,14 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		y, err := fl(1)
 		if err != nil {
 			return Null, err
+		}
+		if !c.dialectCH() {
+			switch {
+			case x == 0 && y < 0:
+				return Null, errf("2201F", "zero raised to a negative power is undefined")
+			case x < 0 && y != math.Trunc(y):
+				return Null, errf("2201F", "a negative number raised to a non-integer power yields a complex result")
+			}
 		}
 		return FloatD(math.Pow(x, y)), nil
 	case "sqrt":
@@ -1280,7 +1305,8 @@ func funcKind(name string, args []Kind) Kind {
 		"toquarter", "toyyyymm", "toyyyymmdd", "tounixtimestamp", "toisoweek", "datediff", "date_diff",
 		"toint8", "toint16", "toint32", "toint64", "toint128", "touint8", "touint16", "touint32", "touint64",
 		"toint64orzero", "toint32orzero", "toint64ornull", "intdiv", "array_length", "cardinality",
-		"row_number", "rank", "dense_rank", "ntile", "countif", "uniq", "uniqexact":
+		"row_number", "rank", "dense_rank", "ntile", "countif", "uniq", "uniqexact",
+		"nextval", "currval", "setval", "lastval":
 		return KInt
 	case "avg", "sqrt", "cbrt", "exp", "ln", "log", "log10", "log2", "power", "pow", "pi", "random", "rand",
 		"sin", "cos", "tan", "degrees", "radians", "date_part", "datepart", "tofloat32", "tofloat64",
@@ -1290,6 +1316,9 @@ func funcKind(name string, args []Kind) Kind {
 		"extract_epoch", "epoch":
 		if (name == "round" || name == "floor" || name == "ceil" || name == "ceiling" || name == "trunc") && arg(0) == KInt && len(args) == 1 {
 			return KInt
+		}
+		if (arg(0) == KInt || arg(0) == KBool) && (name == "avg") {
+			return KNumeric
 		}
 		if arg(0) == KNumeric && name != "extract_epoch" && name != "epoch" && name != "date_part" &&
 			(name == "avg" || name == "avgif" || name == "round" || name == "floor" || name == "ceil" || name == "ceiling" || name == "trunc") {

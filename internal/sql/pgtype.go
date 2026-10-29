@@ -550,3 +550,70 @@ func specName(spec string) string {
 	}
 	return spec
 }
+
+// staticTypeName is pg_typeof of an expression whose static type is t and
+// Kind k, or "" when only the value can tell.
+func staticTypeName(x Expr, t pgTy, k Kind) string {
+	if l, ok := x.(*Lit); ok {
+		switch {
+		case l.V.IsNull(), l.V.K == KText:
+			return "unknown"
+		}
+	}
+	if t = t.forKind(k); t.oid != 0 {
+		return pgTyName(t)
+	}
+	switch k {
+	case KNull, KArray:
+		return ""
+	case KInt:
+		return "bigint"
+	}
+	return pgKindName(k)
+}
+
+// widthRange is the range and name of int2 (w = 2) and int4 (w = 4).
+func widthRange(w uint8) (lo, hi int64, name string) {
+	if w == 2 {
+		return math.MinInt16, math.MaxInt16, "smallint"
+	}
+	return math.MinInt32, math.MaxInt32, "integer"
+}
+
+// markWidths flags the integer arithmetic of x whose static type is int2
+// or int4, so that evaluation refuses results outside that width (22003).
+func markWidths(x Expr, leaf func(Expr) (pgTy, bool)) {
+	walk(x, func(e Expr) {
+		b, ok := e.(*Binary)
+		if !ok {
+			return
+		}
+		switch b.Op {
+		case "+", "-", "*":
+			switch inferTy(b, leaf).oid {
+			case tyInt4:
+				b.W = 4
+			case tyInt2:
+				b.W = 2
+			}
+		}
+	})
+}
+
+// mathDomain refuses the arguments PostgreSQL's math functions refuse.
+func mathDomain(name string, x float64) error {
+	switch name {
+	case "sqrt":
+		if x < 0 {
+			return errf("2201F", "cannot take square root of a negative number")
+		}
+	case "ln", "log", "log10", "log2":
+		if x == 0 {
+			return errf("2201E", "cannot take logarithm of zero")
+		}
+		if x < 0 {
+			return errf("2201E", "cannot take logarithm of a negative number")
+		}
+	}
+	return nil
+}

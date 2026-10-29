@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"fmt"
 	"sort"
 
 	"stask/internal/schema"
@@ -24,23 +25,23 @@ func init() {
 		"relrowsecurity:b relforcerowsecurity:b relispopulated:b relreplident:t relispartition:b relrewrite:i "+
 		"relfrozenxid:i relminmxid:i relacl:a reloptions:a relpartbound:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
-		rel := func(oid int64, name string, am int64, kind string, natts, checks int, hasIndex bool, ident string) {
+		rel := func(oid int64, name string, am int64, kind string, natts, checks int, hasIndex bool, ident string, opts Datum) {
 			rows = append(rows, []Datum{IntD(oid), TextD(name), IntD(nsPublic), IntD(0), IntD(0), IntD(ownerOID),
 				IntD(am), IntD(oid), IntD(0), IntD(0), FloatD(-1), IntD(0), IntD(0), BoolD(hasIndex), BoolD(false),
 				TextD("p"), TextD(kind), IntD(int64(natts)), IntD(int64(checks)), BoolD(false), BoolD(false), BoolD(false),
 				BoolD(false), BoolD(false), BoolD(true), TextD(ident), BoolD(false), IntD(0),
-				IntD(0), IntD(0), Null, Null, Null})
+				IntD(0), IntD(0), Null, opts, Null})
 		}
 		for _, t := range c.tables {
 			ident := "d"
 			if c.s.E.ReplicaIdentityFull(t.Name) {
 				ident = "f"
 			}
-			rel(tableOID(t), t.Name, heapAMOID, "r", len(t.Columns), len(t.Checks), true, ident)
-			rel(indexOID(t), pkeyName(t), btreeAMOID, "i", 1, 0, false, "n")
+			rel(tableOID(t), t.Name, heapAMOID, "r", maxNum(t), len(t.Checks), true, ident, relOptions(t))
+			rel(indexOID(t), pkeyName(t), btreeAMOID, "i", 1, 0, false, "n", Null)
 		}
 		for _, q := range c.seqs {
-			rel(seqOID(q.Name), q.Name, 0, "S", 3, 0, false, "n")
+			rel(seqOID(q.Name), q.Name, 0, "S", 3, 0, false, "n", Null)
 		}
 		return rows
 	})
@@ -50,28 +51,46 @@ func init() {
 		"atthasmissing:b attidentity:t attgenerated:t attisdropped:b attislocal:b attinhcount:i attcollation:i "+
 		"attacl:a attoptions:a attfdwoptions:a attmissingval:a", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
-		att := func(rel int64, name string, typ int64, num int, notNull, def bool, ident string) {
+		att := func(rel int64, name string, typ int64, num int, notNull, def bool, ident string, missing, dropped bool) {
 			ty := pgTypeByOID[typ]
 			coll := int64(0)
 			if ty.cat == "S" {
 				coll = 100
 			}
+			if dropped { // PostgreSQL keeps the slot: no type, a placeholder name
+				name, typ, notNull, def, ident, coll = fmt.Sprintf("........pg.dropped.%d........", num), 0, false, false, "", 0
+			}
 			rows = append(rows, []Datum{IntD(rel), TextD(name), IntD(typ), IntD(-1), IntD(ty.len), IntD(int64(num)),
 				IntD(0), IntD(-1), IntD(-1), BoolD(ty.len > 0 && ty.len <= 8), TextD("d"), TextD("p"), TextD(""),
-				BoolD(notNull), BoolD(def), BoolD(false), TextD(ident), TextD(""), BoolD(false), BoolD(true), IntD(0),
+				BoolD(notNull), BoolD(def), BoolD(missing), TextD(ident), TextD(""), BoolD(dropped), BoolD(true), IntD(0),
 				IntD(coll), Null, Null, Null, Null})
 		}
 		for _, t := range c.tables {
+			// live and dropped columns in attnum order
+			type ac struct {
+				col     schema.Column
+				dropped bool
+			}
+			var all []ac
 			for _, col := range t.Columns {
-				att(tableOID(t), col.Name, colTypeOID(col), col.Num, col.NotNull || col.Name == t.Key, hasDef(col), identityChar(col))
+				all = append(all, ac{col, false})
+			}
+			for _, col := range t.Dropped {
+				all = append(all, ac{col, true})
+			}
+			sort.SliceStable(all, func(i, j int) bool { return all[i].col.Num < all[j].col.Num })
+			for _, a := range all {
+				col := a.col
+				att(tableOID(t), col.Name, colTypeOID(col), col.Num, col.NotNull || col.Name == t.Key, hasDef(col),
+					identityChar(col), col.Missing != nil, a.dropped)
 			}
 			k := keyCol(t)
-			att(indexOID(t), k.Name, colTypeOID(k), 1, false, false, "")
+			att(indexOID(t), k.Name, colTypeOID(k), 1, false, false, "", false, false)
 		}
 		for _, q := range c.seqs {
-			att(seqOID(q.Name), "last_value", 20, 1, true, false, "")
-			att(seqOID(q.Name), "log_cnt", 20, 2, true, false, "")
-			att(seqOID(q.Name), "is_called", 16, 3, true, false, "")
+			att(seqOID(q.Name), "last_value", 20, 1, true, false, "", false, false)
+			att(seqOID(q.Name), "log_cnt", 20, 2, true, false, "", false, false)
+			att(seqOID(q.Name), "is_called", 16, 3, true, false, "", false, false)
 		}
 		return rows
 	})
@@ -102,14 +121,14 @@ func init() {
 
 	defCat("pg_index", "indexrelid:i indrelid:i indnatts:i indnkeyatts:i indisunique:b indnullsnotdistinct:b "+
 		"indisprimary:b indisexclusion:b indimmediate:b indisclustered:b indisvalid:b indcheckxmin:b indisready:b "+
-		"indislive:b indisreplident:b indkey:a indcollation:a indclass:a indoption:a indexprs:t indpred:t",
+		"indislive:b indisreplident:b indkey:t indcollation:t indclass:t indoption:t indexprs:t indpred:t",
 		func(c *catSnap) [][]Datum {
 			var rows [][]Datum
 			for _, t := range c.tables {
 				k := keyCol(t)
 				rows = append(rows, []Datum{IntD(indexOID(t)), IntD(tableOID(t)), IntD(1), IntD(1), BoolD(true), BoolD(false),
 					BoolD(true), BoolD(false), BoolD(true), BoolD(false), BoolD(true), BoolD(false), BoolD(true),
-					BoolD(true), BoolD(false), i2vec(k.Num), i2vec(0), i2vec(0), i2vec(0), Null, Null})
+					BoolD(true), BoolD(false), vecText(k.Num), vecText(0), vecText(0), vecText(0), Null, Null})
 			}
 			return rows
 		})
@@ -179,13 +198,40 @@ func init() {
 			return rows
 		})
 
+	// the relations psql's \d and the drivers join but that hold nothing here
+	defCat("pg_auth_members", "roleid:i member:i grantor:i admin_option:b inherit_option:b set_option:b", nil)
+	defCat("pg_policy", "oid:i polname:t polrelid:i polcmd:t polpermissive:b polroles:a polqual:t polwithcheck:t", nil)
+	defCat("pg_statistic_ext", "oid:i stxrelid:i stxname:t stxnamespace:i stxowner:i stxstattarget:i stxkeys:a "+
+		"stxkind:a", nil)
+	defCat("pg_publication_namespace", "oid:i pnpubid:i pnnspid:i", nil)
+	defCat("pg_rewrite", "oid:i rulename:t ev_class:i ev_type:t ev_enabled:t is_instead:b ev_qual:t ev_action:t", nil)
+	defCat("pg_enum", "oid:i enumtypid:i enumsortorder:f enumlabel:t", nil)
+	defCat("pg_range", "rngtypid:i rngsubtype:i rngmultitypid:i rngcollation:i rngsubopc:i rngcanonical:t rngsubdiff:t", nil)
+	defCat("pg_stat_activity", "datid:i datname:t pid:i usesysid:i usename:t application_name:t client_addr:t "+
+		"client_port:i backend_start:t state:t query:t", nil)
+	defCat("pg_publication_rel", "oid:i prpubid:i prrelid:i prqual:t prattrs:a", func(c *catSnap) [][]Datum {
+		var rows [][]Datum
+		for i, p := range c.s.E.Publications() {
+			if p.AllTables {
+				continue
+			}
+			for _, t := range c.tables {
+				if p.Has(t.Name) {
+					rows = append(rows, []Datum{IntD(int64(0x50000000) + tableOID(t)), IntD(int64(16384 + i)), IntD(tableOID(t)), Null, Null})
+				}
+			}
+		}
+		return rows
+	})
 	defCat("pg_description", "objoid:i classoid:i objsubid:i description:t", nil)
 	defCat("pg_inherits", "inhrelid:i inhparent:i inhseqno:i inhdetachpending:b", nil)
 	defCat("pg_trigger", "oid:i tgrelid:i tgparentid:i tgname:t tgfoid:i tgtype:i tgenabled:t tgisinternal:b "+
 		"tgconstrrelid:i tgconstrindid:i tgconstraint:i tgdeferrable:b tginitdeferred:b tgnargs:i tgattr:a "+
 		"tgargs:t tgqual:t tgoldtable:t tgnewtable:t", nil)
-	defCat("pg_proc", "oid:i proname:t pronamespace:i proowner:i prolang:i prokind:t prorettype:i "+
-		"proargtypes:a proargnames:a prosrc:t", nil)
+	defCat("pg_proc", "oid:i proname:t pronamespace:i proowner:i prolang:i procost:f prorows:f provariadic:i "+
+		"prosupport:t prokind:t prosecdef:b proleakproof:b proisstrict:b proretset:b provolatile:t proparallel:t "+
+		"pronargs:i pronargdefaults:i prorettype:i proargtypes:t proallargtypes:a proargmodes:a proargnames:a "+
+		"proargdefaults:t protrftypes:a prosrc:t probin:t prosqlbody:t proconfig:a proacl:a", nil)
 	defCat("pg_extension", "oid:i extname:t extowner:i extnamespace:i extrelocatable:b extversion:t", nil)
 
 	defCat("pg_am", "oid:i amname:t amhandler:t amtype:t", func(c *catSnap) [][]Datum {

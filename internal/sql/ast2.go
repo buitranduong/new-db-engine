@@ -88,7 +88,10 @@ type LimitBy struct {
 }
 
 // Subquery expressions.
-type Subquery struct{ Q Stmt } // scalar
+type Subquery struct {
+	Q     Stmt
+	Array bool // ARRAY(subquery): the rows of the one column as an array
+} // scalar
 type Exists struct{ Q Stmt }
 type InSub struct {
 	X   Expr

@@ -982,7 +982,16 @@ func (p *parser) predicate() (Expr, error) {
 				all := p.next().s == "all"
 				p.next()
 				if !p.isKw("select") && !p.isKw("with") && !p.isKw("values") {
-					return nil, errf(codeFeature, "ANY/ALL over an array is not supported")
+					// x op ANY (array expression), as catalog queries write it
+					arr, err := p.expr()
+					if err != nil {
+						return nil, err
+					}
+					if err := p.expectOp(")"); err != nil {
+						return nil, err
+					}
+					l = &Func{Name: "stask_anyarr", Args: []Expr{l, arr, &Lit{TextD(op)}, &Lit{BoolD(all)}}}
+					continue
 				}
 				q, err := p.queryStmt()
 				if err != nil {
@@ -1118,7 +1127,7 @@ func (p *parser) addExpr() (Expr, error) {
 
 func (p *parser) mulExpr() (Expr, error) {
 	l, err := p.unary()
-	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%")) {
+	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%") || p.isOp("&")) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.unary(); err == nil {
@@ -1153,7 +1162,8 @@ func (p *parser) unary() (Expr, error) {
 				x = &Cast{x, t}
 			}
 			continue
-		case p.isOp("[") && p.i > 0 && p.toks[p.i-1].s == ")": // (array)[i]
+		case p.isOp("[") && p.i > 0 && (p.toks[p.i-1].s == ")" || p.toks[p.i-1].s == "]" && p.toks[p.i-1].k == tOp ||
+			p.toks[p.i-1].k == tIdent && !reserved[p.toks[p.i-1].s] || p.toks[p.i-1].k == tQuoted): // (array)[i], col[i]
 			p.next()
 			var i Expr
 			if i, err = p.expr(); err == nil {
@@ -1232,6 +1242,9 @@ func (p *parser) primary() (Expr, error) {
 		return nil, p.errHere("syntax error at or near %q", t.s)
 	case tQuoted:
 		p.next()
+		if p.isOp("(") { // "substring"(x, 7): a function named in quotes, as DBeaver writes it
+			return p.funcCall(t.s)
+		}
 		return p.columnRest(t.s)
 	case tIdent:
 		switch t.s {
@@ -1284,7 +1297,7 @@ func (p *parser) primary() (Expr, error) {
 				if err != nil {
 					return nil, err
 				}
-				return &Func{Name: "array_sub", Args: []Expr{&Subquery{Q: q}}}, p.expectOp(")")
+				return &Subquery{Q: q, Array: true}, p.expectOp(")")
 			}
 		case "interval":
 			// INTERVAL '1 day', INTERVAL '2' HOUR, ClickHouse INTERVAL 2 HOUR

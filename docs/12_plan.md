@@ -71,7 +71,7 @@ Ngoài ra, docs/11 §2.2 ghi "trigger **và stored procedure**: Có", mâu thu�
 
 | # | Việc | Cỡ | Phụ thuộc | Tiêu chí xong |
 |---|---|---|---|---|
-| P4.1 | `pg_catalog` (`pg_class`, `pg_attribute`, `pg_type`, `pg_index`, `pg_namespace`, `pg_constraint`…) và `information_schema`, đủ cho psql `\d`, JDBC `DatabaseMetaData`, DBeaver | L | P1, P2.1 | psql `\d`, `\dt`, `\di` chạy; DBeaver duyệt được schema |
+| P4.1 | **Đã làm 2026-10-29, chưa thử với psql/DBeaver/JDBC thật** (docs/05 §17): `pg_catalog` (`pg_class`, `pg_attribute` kể cả cột đã xoá, `pg_type`, `pg_index`, `pg_namespace`, `pg_constraint`, `pg_attrdef`, `pg_depend`…) và `information_schema`, cùng các hàm `pg_get_expr`, `format_type`, `regclass`… Các câu của psql 16 `\d`, `\dt`, `\di`, `\ds`, `\d tbl`, `\l`, pgjdbc `getTables/getColumns/getPrimaryKeys/getIndexInfo` và DBeaver chạy qua pgx. **Còn lại:** thử với psql, JDBC, DBeaver thật; ghi gói tin của chúng để đối chiếu; index phụ, khoá ngoại, view, `COMMENT ON` trong catalog (cùng với P1/P2.1); `regclass` in tên | L | P1, P2.1 | psql `\d`, `\dt`, `\di` chạy; DBeaver duyệt được schema |
 | P4.2 | **Nghiệm thu bằng ứng dụng thật**: một ứng dụng Jmix 2 (Hibernate/EclipseLink + Liquibase) chạy với STASK làm datastore chính | L | P4.1, P1, P2.2 | Liquibase tạo schema; CRUD qua UI; bộ test của ứng dụng qua |
 | P4.3 | Debezium chạy thật: ghi lại các truy vấn catalog nó gửi, rồi bổ sung | M | P4.1 | Debezium Server stream 1M thay đổi, không mất, đúng thứ tự |
 | P4.4 | Xuất snapshot khi tạo slot (`USE_SNAPSHOT`, `SET TRANSACTION SNAPSHOT`, `COPY ... TO STDOUT`) cho `copy_data = true` | M | P1.5 | `CREATE SUBSCRIPTION` mặc định (copy_data) chạy; Debezium snapshot ban đầu đúng |
@@ -168,7 +168,7 @@ Lý do của thứ tự:
 | "Một bảng mỗi truy vấn, không JOIN/subquery" | docs/03 §9 | Đã có bộ thực thi tổng quát (docs/05 §9) |
 | "HTTP/JSON là nút thắt của WL-1" | docs/04 §5.1 | Đã sửa (docs/04 §8.1). Giờ nút thắt là client đo, xem N3 |
 | "Một node, không replication" | docs/03 §9, 04 §6 | Giai đoạn A xong; B ở P6.2 |
-| `pg_catalog` | docs/05 §3 | Có một phần; phần còn lại ở P4.1 |
+| `pg_catalog` | docs/05 §3, §14 | Đã có phần đọc schema hiện có; phần còn lại ở P4.1 |
 | Aggregate làm thao tác điểm phải chờ | docs/08 §7 #4 | Đã sửa (docs/08 §8.5) |
 | `/v1/status` treo khi dựng view | docs/08 §8.4 | Đã sửa |
 | Thu gom log | docs/04 §6 | Đã có |

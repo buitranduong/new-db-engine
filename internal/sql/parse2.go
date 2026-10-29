@@ -785,6 +785,12 @@ func (p *parser) fromItem() (FromNode, error) {
 		return n, err
 	}
 	t := p.peek()
+	if t.k == tIdent && (t.s == "pg_catalog" || t.s == "public") && p.peekN(1).s == "." && p.peekN(1).k == tOp &&
+		p.peekN(2).k == tIdent && p.peekN(3).s == "(" && p.peekN(3).k == tOp {
+		p.next() // pg_catalog.generate_series(...)
+		p.next()
+		t = p.peek()
+	}
 	if (t.k == tIdent || t.k == tQuoted) && p.peekN(1).s == "(" && p.peekN(1).k == tOp {
 		p.next()
 		x, err := p.funcCall(t.s)

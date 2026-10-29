@@ -147,7 +147,7 @@ func lex(src string) ([]token, error) {
 				i += 2
 				continue
 			}
-			if strings.IndexByte("=<>+-*/%(),.;[]?:~{}", c) < 0 {
+			if strings.IndexByte("=<>+-*/%(),.;[]?:~{}&", c) < 0 {
 				return nil, syntaxErr(i, fmt.Sprintf("unexpected character %q", c))
 			}
 			out = append(out, token{tOp, string(c), start})

@@ -47,7 +47,9 @@ var catalogRels = map[string]int64{
 	"pg_database": 1262, "pg_namespace": pgNspRelOID, "pg_constraint": pgConstrOID, "pg_index": pgIndexRelOID,
 	"pg_attrdef": 2604, "pg_description": 2609, "pg_am": 2601, "pg_sequence": 2224, "pg_authid": 1260,
 	"pg_trigger": 2620, "pg_inherits": 2611, "pg_depend": 2608, "pg_collation": 3456,
-	"pg_tablespace": 1213, "pg_extension": 3079, "pg_settings": 12000, "pg_roles": 12001, "pg_user": 12002,
+	"pg_auth_members": 1261, "pg_policy": 3256, "pg_statistic_ext": 3381, "pg_publication_namespace": 6237,
+	"pg_publication_rel": 6106, "pg_publication": 6104, "pg_rewrite": 2618, "pg_enum": 3501, "pg_range": 3541,
+	"pg_stat_activity": 12007, "pg_tablespace": 1213, "pg_extension": 3079, "pg_settings": 12000, "pg_roles": 12001, "pg_user": 12002,
 	"pg_tables": 12003, "pg_indexes": 12004, "pg_views": 12005, "pg_matviews": 12006,
 }
 
@@ -246,3 +248,52 @@ func quoteIdent(s string) string {
 }
 
 func itoa(i int64) string { return strconv.FormatInt(i, 10) }
+
+// vecText is an int2vector or oidvector value as PostgreSQL prints it:
+// the elements separated by spaces ("1 2"), which for the one-column
+// indexes here is "1". Clients (DBeaver) split it themselves.
+func vecText(n ...int) Datum {
+	s := make([]string, len(n))
+	for i, v := range n {
+		s[i] = strconv.Itoa(v)
+	}
+	return TextD(strings.Join(s, " "))
+}
+
+// maxNum is the highest attnum of a table, dropped columns included
+// (pg_class.relnatts counts them).
+func maxNum(t *schema.Table) int {
+	n := 0
+	for _, c := range t.Columns {
+		n = max(n, c.Num)
+	}
+	for _, c := range t.Dropped {
+		n = max(n, c.Num)
+	}
+	return n
+}
+
+// relOptions are the WITH (...) options of a table as pg_class.reloptions.
+func relOptions(t *schema.Table) Datum {
+	var o []Datum
+	add := func(s string) { o = append(o, TextD(s)) }
+	if t.Columnar {
+		add("columnar=true")
+	}
+	if len(t.Search) > 0 {
+		add("search=" + strings.Join(t.Search, ","))
+	}
+	if t.AppendOnly {
+		add("append_only=true")
+	}
+	if t.TimeColumn != "" {
+		add("time_column=" + t.TimeColumn)
+	}
+	if t.SeriesColumn != "" {
+		add("series_column=" + t.SeriesColumn)
+	}
+	if len(o) == 0 {
+		return Null
+	}
+	return arrayD(o)
+}

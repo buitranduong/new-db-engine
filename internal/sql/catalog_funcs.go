@@ -21,8 +21,39 @@ var catalogFuncKinds = map[string]Kind{
 	"current_schemas": KArray, "current_user": KText, "session_user": KText, "current_role": KText,
 	"current_catalog": KText, "pg_get_viewdef": KText, "pg_relation_size": KInt, "pg_total_relation_size": KInt,
 	"pg_table_size": KInt, "pg_indexes_size": KInt, "array_lower": KInt, "array_upper": KInt,
-	"stask_subscript": KNull, "stask_field": KInt, "_pg_expandarray": KText,
+	"stask_subscript": KNull, "stask_field": KInt, "_pg_expandarray": KText, "stask_anyarr": KBool,
+	"current_setting": KText, "to_regclass": KInt, "to_regtype": KInt, "pg_relation_is_publishable": KBool,
+	"pg_get_statisticsobjdef_columns": KText, "pg_get_triggerdef": KText, "pg_get_ruledef": KText,
+	"pg_get_partkeydef": KText, "pg_backend_pid": KInt, "pg_database_size": KInt, "pg_my_temp_schema": KInt,
+	"pg_is_other_temp_schema": KBool, "pg_is_in_recovery": KBool, "pg_get_function_arguments": KText, "pg_get_function_result": KText,
 }
+
+// vecElems are the elements of an array value, or of an int2vector or
+// oidvector, which pg_index prints as text ("1 2") and which PostgreSQL
+// subscripts from 0 (zero is true for those).
+func vecElems(d Datum) (el []Datum, zero bool) {
+	if d.K == KArray {
+		return parseArrayText(d), false
+	}
+	if t := strings.TrimSpace(d.String()); strings.HasPrefix(t, "{") { // an array literal or parameter in text form
+		return parseArrayText(Datum{K: KArray, S: t, I: int64(KText)}), false
+	}
+	for _, f := range strings.Fields(d.String()) {
+		v, err := coerce(TextD(f), KInt)
+		if err != nil {
+			return nil, true
+		}
+		el = append(el, v)
+	}
+	return el, true
+}
+
+// settingDefaults are the settings current_setting answers that a session
+// does not hold as variables.
+var settingDefaults = map[string]string{"server_version_num": "160000", "max_index_keys": "32",
+	"max_identifier_length": "63", "block_size": "8192", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8",
+	"is_superuser": "on", "session_authorization": roleName, "in_hot_standby": "off", "wal_level": "logical",
+	"default_with_oids": "off", "transaction_read_only": "off", "extra_float_digits": "1"}
 
 func init() {
 	for n := range catalogFuncKinds {
@@ -162,6 +193,52 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			return arrayD([]Datum{TextD("pg_catalog"), TextD("public")}), nil
 		}
 		return arrayD([]Datum{TextD("public")}), nil
+	case "pg_backend_pid":
+		return IntD(1), nil
+	case "pg_my_temp_schema":
+		return IntD(0), nil
+	case "current_setting": // current_setting(name [, missing_ok])
+		if len(args) == 0 || args[0].IsNull() {
+			return Null, nil
+		}
+		n := strings.ToLower(args[0].String())
+		if v, ok := s.vars[n]; ok {
+			return TextD(v), nil
+		}
+		if v, ok := settingDefaults[n]; ok {
+			return TextD(v), nil
+		}
+		if len(args) > 1 && args[1].Bool() {
+			return Null, nil
+		}
+		return Null, errf(codeUndefinedObject, "unrecognized configuration parameter %q", args[0].String())
+	case "format_type": // the type modifier may be NULL
+		if len(args) == 0 || args[0].IsNull() {
+			return Null, nil
+		}
+		oid, _ := coerce(args[0], KInt)
+		if oid.I == 0 {
+			return TextD("-"), nil
+		}
+		if t, ok := pgTypeByOID[oid.I]; ok {
+			return TextD(t.sqlName), nil
+		}
+		return TextD("???"), nil
+	case "to_regclass", "to_regtype":
+		if len(args) == 0 || args[0].IsNull() {
+			return Null, nil
+		}
+		var d Datum
+		var err error
+		if name == "to_regclass" {
+			d, err = s.regclass(args[0].String())
+		} else {
+			d, err = regtype(args[0].String())
+		}
+		if err != nil {
+			return Null, nil
+		}
+		return d, nil
 	}
 	for _, a := range args {
 		if a.IsNull() {
@@ -179,6 +256,55 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return d.I
 	}
 	switch name {
+	case "stask_anyarr": // x op ANY|ALL (array)
+		el, _ := vecElems(arg(1))
+		op, all := arg(2).String(), arg(3).Bool()
+		x := arg(0)
+		res, sawNull := all, false
+		for _, e := range el {
+			if e.IsNull() {
+				sawNull = true
+				continue
+			}
+			cmp, err := compare(x, e)
+			if err != nil {
+				return Null, err
+			}
+			var ok bool
+			switch op {
+			case "=":
+				ok = cmp == 0
+			case "<>":
+				ok = cmp != 0
+			case "<":
+				ok = cmp < 0
+			case "<=":
+				ok = cmp <= 0
+			case ">":
+				ok = cmp > 0
+			default:
+				ok = cmp >= 0
+			}
+			if all && !ok {
+				return BoolD(false), nil
+			}
+			if !all && ok {
+				return BoolD(true), nil
+			}
+		}
+		if sawNull {
+			return Null, nil
+		}
+		return BoolD(res), nil
+	case "pg_relation_is_publishable":
+		return BoolD(true), nil
+	case "pg_get_statisticsobjdef_columns", "pg_get_triggerdef", "pg_get_ruledef", "pg_get_partkeydef",
+		"pg_get_function_arguments", "pg_get_function_result":
+		return Null, nil
+	case "pg_database_size":
+		return IntD(0), nil
+	case "pg_is_other_temp_schema", "pg_is_in_recovery":
+		return BoolD(false), nil
 	case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible":
 		return BoolD(true), nil // everything is in pg_catalog or public, both on the search path
 	case "pg_get_userbyid":
@@ -194,11 +320,6 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return TextD(""), nil
 	case "quote_ident":
 		return TextD(quoteIdent(arg(0).String())), nil
-	case "format_type":
-		if t, ok := pgTypeByOID[argInt(0)]; ok {
-			return TextD(t.sqlName), nil
-		}
-		return TextD("???"), nil
 	case "pg_relation_size", "pg_total_relation_size", "pg_table_size", "pg_indexes_size":
 		return IntD(0), nil
 	case "pg_get_indexdef":
@@ -238,7 +359,8 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		}
 		return Null, nil
 	case "array_lower", "array_upper":
-		n := len(parseArrayText(arg(0)))
+		el, _ := vecElems(arg(0))
+		n := len(el)
 		if n == 0 || argInt(1) != 1 {
 			return Null, nil
 		}
@@ -247,8 +369,11 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		}
 		return IntD(int64(n)), nil
 	case "stask_subscript": // a[i]
-		el := parseArrayText(arg(0))
+		el, zero := vecElems(arg(0))
 		i := argInt(1)
+		if zero { // int2vector and oidvector count from 0
+			i++
+		}
 		if i < 1 || int(i) > len(el) {
 			return Null, nil
 		}
@@ -257,7 +382,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		// information_schema._pg_expandarray(a) is a set of (x, n) records;
 		// STASK's arrays here (an index's or constraint's columns) have one
 		// element, so this is its one row.
-		el := parseArrayText(arg(0))
+		el, _ := vecElems(arg(0))
 		switch len(el) {
 		case 0:
 			return Null, nil

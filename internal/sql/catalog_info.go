@@ -177,6 +177,25 @@ func init() {
 		return rows
 	})
 
+	// every table is owned by the one role, which may do everything
+	defInfo("table_privileges", "grantor:t grantee:t table_catalog:t table_schema:t table_name:t privilege_type:t "+
+		"is_grantable:t with_hierarchy:t", func(c *catSnap) [][]Datum {
+		var rows [][]Datum
+		for _, t := range c.tables {
+			for _, p := range []string{"INSERT", "SELECT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
+				rows = append(rows, []Datum{TextD(roleName), TextD(roleName), cat, pub, TextD(t.Name), TextD(p), TextD("YES"), TextD("YES")})
+			}
+		}
+		return rows
+	})
+	defInfo("routines", "specific_catalog:t specific_schema:t specific_name:t routine_catalog:t routine_schema:t "+
+		"routine_name:t routine_type:t data_type:t routine_definition:t external_language:t", nil)
+	defInfo("triggers", "trigger_catalog:t trigger_schema:t trigger_name:t event_manipulation:t "+
+		"event_object_catalog:t event_object_schema:t event_object_table:t action_order:i action_condition:t "+
+		"action_statement:t action_orientation:t action_timing:t", nil)
+	defInfo("domains", "domain_catalog:t domain_schema:t domain_name:t data_type:t", nil)
+	defInfo("parameters", "specific_catalog:t specific_schema:t specific_name:t ordinal_position:i parameter_mode:t "+
+		"parameter_name:t data_type:t", nil)
 	defInfo("referential_constraints", "constraint_catalog:t constraint_schema:t constraint_name:t "+
 		"unique_constraint_catalog:t unique_constraint_schema:t unique_constraint_name:t match_option:t "+
 		"update_rule:t delete_rule:t", nil)

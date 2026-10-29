@@ -354,6 +354,9 @@ func (b *binder) bind(x Expr) (Expr, error) {
 		if len(p.outCols()) != 1 {
 			return nil, errf(codeSyntax, "subquery must return only one column")
 		}
+		if e.Array {
+			return &boundSub{kind: "array", plan: p}, nil
+		}
 		return &boundSub{kind: "scalar", plan: p}, nil
 	case *Exists:
 		p, err := b.c.compile(e.Q, b.sc)
@@ -1324,6 +1327,9 @@ func staticKind(x Expr, kinds []Kind) Kind {
 	case *boundSub:
 		if e.kind == "scalar" {
 			return e.plan.outCols()[0].kind
+		}
+		if e.kind == "array" {
+			return KArray
 		}
 		return KBool
 	case *Case:
@@ -2385,6 +2391,16 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 		return rel, err
 	}
 	switch b.kind {
+	case "array":
+		rel, err := run()
+		if err != nil {
+			return Null, err
+		}
+		el := make([]Datum, len(rel.rows))
+		for i, r := range rel.rows {
+			el[i] = r[0]
+		}
+		return arrayD(el), nil
 	case "scalar":
 		rel, err := run()
 		if err != nil {

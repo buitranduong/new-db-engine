@@ -401,6 +401,8 @@ func arith(op string, l, r Datum) (Datum, error) {
 			return IntD(a - b), nil
 		case "*":
 			return IntD(a * b), nil
+		case "&":
+			return IntD(a & b), nil
 		case "/", "%":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")

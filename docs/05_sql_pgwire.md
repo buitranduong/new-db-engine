@@ -633,3 +633,31 @@ Mã nguồn: `internal/sql/catalog*.go`. Các bảng ảo, dựng từ schema c�
 **Giới hạn đã biết.** Kiểu hiển thị theo kiểu wire của engine: `integer`/`smallint` hiện `bigint`, `timestamp` hiện `timestamp with time zone`, `varchar(n)` hiện `text` (không có độ dài). `relpages`/`reltuples` là 0/-1. Mọi index là khoá chính, nên `getIndexInfo` trả đúng một dòng mỗi bảng. `regclass` in ra số. Không có view (`relkind` `v`) cho tới khi `CREATE VIEW` có.
 
 **Kiểm chứng.** `internal/sql/catalog_test.go` (từng bảng catalog, `information_schema`, hàm, DDL đổi thì catalog đổi, bảng cột, sequence, `ALTER`/`DROP COLUMN`), `internal/sql/catalog_queries_test.go` (các câu psql 16 `\dt` `\d` `\di` `\ds` `\dn` `\d tbl` `\l` `\dT` `\du`, pgjdbc 42.7 `getTables`/`getColumns`/`getPrimaryKeys`/`getIndexInfo`/`getSchemas`/`getCatalogs`/`getTypeInfo`/`getImportedKeys`, DBeaver, viết lại từ trí nhớ về mã nguồn các client này, chưa đối chiếu với gói tin thật), `internal/pgwire/catalog_wire_test.go` (qua pgx, giao thức mở rộng có tham số và giao thức đơn giản).
+
+## 18. CREATE TRIGGER và DROP TRIGGER (2026-10-29)
+
+Trigger thân SQL theo [SQLite](https://www.sqlite.org/lang_createtrigger.html); [PostgreSQL](https://www.postgresql.org/docs/16/sql-createtrigger.html) cho tên gọi, thứ tự chạy (theo tên) và mã lỗi. Không có ngôn ngữ thủ tục (docs/10 §5).
+
+```sql
+CREATE [OR REPLACE] TRIGGER [IF NOT EXISTS] name {BEFORE | AFTER} {INSERT | UPDATE | DELETE} [OR ...]
+    ON table [FOR [EACH] ROW] [WHEN (condition)]
+BEGIN statement; ... END
+DROP TRIGGER [IF EXISTS] name [ON table]
+```
+
+Thân là các câu `INSERT`, `UPDATE`, `DELETE`, `SELECT` (kể cả `WITH`); `NEW.col` và `OLD.col` là dòng đang ghi (`OLD` là NULL khi INSERT, `NEW` là NULL khi DELETE; dùng `OLD` trong trigger chỉ INSERT hay `NEW` trong trigger chỉ DELETE là lỗi 42P17 lúc tạo). Hai mở rộng:
+
+- `SET NEW.col = expr [, NEW.col2 = expr2]` trong trigger BEFORE INSERT/UPDATE đổi dòng sắp ghi (SQLite không cho; PostgreSQL làm bằng hàm plpgsql). `RETURNING` thấy giá trị đã đổi. Trigger sau thấy `NEW` đã đổi.
+- `SELECT RAISE(ABORT, 'msg') [WHERE cond]` hoặc `SELECT CASE WHEN cond THEN RAISE(ABORT, 'msg') END` làm câu lệnh lỗi `P0001`. `ABORT`, `FAIL`, `ROLLBACK` đều làm cùng việc: câu lệnh lỗi (autocommit thì cả giao dịch bị huỷ; trong `BEGIN` thì giao dịch chuyển sang trạng thái lỗi). `IGNORE` chưa hỗ trợ.
+
+**Chạy.** Mỗi dòng bị INSERT/UPDATE/DELETE chạm tới (kể cả `INSERT ... SELECT`, `UPDATE ... FROM`, `DELETE ... USING`, `ON CONFLICT DO UPDATE`, `COPY FROM`) chạy trigger BEFORE trước khi ghi và trigger AFTER ngay sau khi ghi dòng đó, **trong cùng giao dịch**: thứ trigger ghi thấy được trong giao dịch, commit hay rollback cùng câu lệnh. Đổi khoá chính là một UPDATE. `ON CONFLICT DO NOTHING` bỏ qua dòng thì không chạy AFTER. `ON CONFLICT DO UPDATE` chạy BEFORE INSERT, rồi BEFORE/AFTER UPDATE (như PG). `TRUNCATE` không chạy trigger. Trigger ghi vào bảng có trigger thì chạy tiếp; sâu quá 16 tầng thì lỗi 54001 (`stack depth limit exceeded`) và câu lệnh gốc bị huỷ, nên đệ quy vô hạn dừng và không để lại gì. Không có trigger nào chạy trên replica: replica áp dụng các dòng leader đã ghi (kể cả dòng do trigger ghi), mỗi dòng đúng một lần.
+
+**Lưu trữ.** Như view: một dòng của bảng hệ thống ẩn `__stask_triggers` (khoá `bảng\x1ftên`, cột `tbl, name, timing, events, cond, body`), nên đi qua WAL, checkpoint, replay và nhân bản; ẩn khỏi client, publication và CDC. DDL áp dụng ngay như `CREATE TABLE`. `DROP TABLE` xoá trigger của bảng; `ALTER TABLE ... RENAME TO` bị từ chối (0A000) khi bảng có trigger. Lúc tạo, thân được biên dịch và kiểm tra theo bảng (cột lạ: 42703).
+
+**Giá phải trả.** `Engine.Triggers(bảng)` đọc một con trỏ nguyên tử tới map đã dựng sẵn (bị huỷ mỗi lần tạo/xoá trigger, dựng lại ở lần đọc sau; `gen` chặn lần dựng đua với thay đổi): bảng không có trigger chỉ tốn một lần tra map rỗng mỗi câu lệnh, không thêm cấp phát. Thân được biên dịch một lần cho mỗi định nghĩa (`NEW.col` thành tham số `$n`); mỗi lần chạy tốn chừng 5 µs cho một thân `INSERT` một dòng (`BenchmarkWriteTrigger`).
+
+**Catalog.** `pg_trigger` (tgtype theo bit của PG), `pg_class.relhastriggers`, `pg_tables.hastriggers`. `pg_get_triggerdef` trả NULL, `information_schema.triggers` còn trống.
+
+**Chưa làm.** `UPDATE OF col`, trigger mức câu lệnh, `INSTEAD OF` (cả trên view), `REFERENCING`, `RAISE(IGNORE)`, `CREATE FUNCTION`/`EXECUTE FUNCTION` (P7.2), trigger `DEFERRABLE`, `ALTER TABLE ... DISABLE TRIGGER`.
+
+**Kiểm chứng.** `internal/sql/trigger_test.go` (AFTER và mọi dạng ghi, BEFORE `SET`/`RAISE`, rollback, đệ quy, DDL và lỗi, tham số, khôi phục qua replay và checkpoint, CDC, COPY, catalog), `internal/repl/trigger_repl_test.go` (replica), `BenchmarkWriteNoTrigger`/`BenchmarkWriteTrigger`.

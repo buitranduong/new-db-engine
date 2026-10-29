@@ -28,7 +28,7 @@ func init() {
 		rel := func(oid int64, name string, am int64, kind string, natts, checks int, hasIndex bool, ident string, opts Datum) {
 			rows = append(rows, []Datum{IntD(oid), TextD(name), IntD(nsPublic), IntD(0), IntD(0), IntD(ownerOID),
 				IntD(am), IntD(oid), IntD(0), IntD(0), FloatD(-1), IntD(0), IntD(0), BoolD(hasIndex), BoolD(false),
-				TextD("p"), TextD(kind), IntD(int64(natts)), IntD(int64(checks)), BoolD(false), BoolD(false), BoolD(false),
+				TextD("p"), TextD(kind), IntD(int64(natts)), IntD(int64(checks)), BoolD(false), BoolD(kind == "r" && c.s.E.Triggers(name) != nil), BoolD(false),
 				BoolD(false), BoolD(false), BoolD(true), TextD(ident), BoolD(false), IntD(0),
 				IntD(0), IntD(0), Null, opts, Null})
 		}
@@ -227,7 +227,7 @@ func init() {
 	defCat("pg_inherits", "inhrelid:i inhparent:i inhseqno:i inhdetachpending:b", nil)
 	defCat("pg_trigger", "oid:i tgrelid:i tgparentid:i tgname:t tgfoid:i tgtype:i tgenabled:t tgisinternal:b "+
 		"tgconstrrelid:i tgconstrindid:i tgconstraint:i tgdeferrable:b tginitdeferred:b tgnargs:i tgattr:a "+
-		"tgargs:t tgqual:t tgoldtable:t tgnewtable:t", nil)
+		"tgargs:t tgqual:t tgoldtable:t tgnewtable:t", pgTriggerRows)
 	defCat("pg_proc", "oid:i proname:t pronamespace:i proowner:i prolang:i procost:f prorows:f provariadic:i "+
 		"prosupport:t prokind:t prosecdef:b proleakproof:b proisstrict:b proretset:b provolatile:t proparallel:t "+
 		"pronargs:i pronargdefaults:i prorettype:i proargtypes:t proallargtypes:a proargmodes:a proargnames:a "+
@@ -297,7 +297,7 @@ func init() {
 		var rows [][]Datum
 		for _, t := range c.tables {
 			rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(roleName), Null, BoolD(true), BoolD(false),
-				BoolD(false), BoolD(false)})
+				BoolD(c.s.E.Triggers(t.Name) != nil), BoolD(false)})
 		}
 		return rows
 	})

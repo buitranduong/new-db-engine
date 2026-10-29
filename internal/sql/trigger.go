@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"hash/fnv"
 	"slices"
 	"strconv"
 	"strings"
@@ -743,4 +744,47 @@ func (s *Session) alterTableTriggers(st *AlterTable) error {
 		}
 	}
 	return nil
+}
+
+// ---- catalog ----
+
+// trigOID is the OID of a trigger in pg_trigger.
+func trigOID(table, name string) int64 {
+	h := fnv.New32a()
+	h.Write([]byte(table + "\x1f" + name))
+	return trigOIDBase + int64(h.Sum32()&0x0fffffff)
+}
+
+const trigOIDBase = 0x70000000
+
+// pgTriggerRows lists the triggers for pg_catalog.pg_trigger. tgtype has
+// the bits of PostgreSQL: ROW 1, BEFORE 2, INSERT 4, DELETE 8, UPDATE 16.
+func pgTriggerRows(c *catSnap) [][]Datum {
+	var rows [][]Datum
+	for _, tg := range c.s.E.AllTriggers() {
+		var rel int64
+		for _, t := range c.tables {
+			if t.Name == tg.Table {
+				rel = tableOID(t)
+			}
+		}
+		if rel == 0 {
+			continue
+		}
+		typ := int64(1)
+		if tg.Timing == "before" {
+			typ |= 2
+		}
+		for _, ev := range tg.Events {
+			typ |= map[string]int64{"insert": 4, "delete": 8, "update": 16}[ev]
+		}
+		qual := Null
+		if tg.When != "" {
+			qual = TextD(tg.When)
+		}
+		rows = append(rows, []Datum{IntD(trigOID(tg.Table, tg.Name)), IntD(rel), IntD(0), TextD(tg.Name), IntD(0),
+			IntD(typ), TextD("O"), BoolD(false), IntD(0), IntD(0), IntD(0), BoolD(false), BoolD(false), IntD(0),
+			Null, TextD(""), qual, Null, Null})
+	}
+	return rows
 }

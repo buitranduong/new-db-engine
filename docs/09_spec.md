@@ -305,6 +305,7 @@ Bản Rust chỉ được dùng thay bản Go khi qua **toàn bộ** các mục 
 | A7 | Bền vững | `staskchaos` (kill -9, đầy đĩa, fsync EIO) và `scripts/powercut.py` (dm-flakey) | 0 giao dịch đã ACK bị mất, 0 giao dịch thấy một phần |
 | A8 | Recovery | 10 GB log (`scripts/rto10g.sh`) | RTO < 5 s |
 | A9 | Hiệu năng | các benchmark ở docs/08, docs/06 và docs/10 §4, cấu hình giống hệt | theo tiêu chí chuyển đổi (docs/11) |
+| A11 | Trigger | `TestTrigger*` (`internal/sql`), `TestReplicaTrigger` (`internal/repl`): trigger thân SQL chạy trong giao dịch ghi, rollback cùng nhau, bền qua replay và checkpoint, không chạy lại trên replica; bảng hệ thống `__stask_triggers` (docs/05 §18) | toàn bộ PASS với server Rust, cùng dòng trong `pg_trigger` |
 | A10 | CDC và NOTIFY | `TestSQLLogicalDecoding`, `TestSQLPublicationsAndIdentity`, `TestCDCHTTP`, `TestListenNotify` chạy với server Rust; `accept/logrepl` và `accept/pgsub.sh` (subscriber PG 16 thật) trỏ vào server Rust; slot do Go tạo được Rust đọc tiếp và ngược lại | chuỗi test_decoding/wal2json giống từng byte; `logrepl` PASS; `pgsub` mọi dòng OK; sau khi đổi bản, stream tiếp đúng sau giao dịch đã xác nhận |
 
 Từ giờ, mọi thay đổi định dạng ở bản Go đều phải tăng số phiên bản (header checkpoint, magic `STZ1`/`STASKREPL1`) và cập nhật tài liệu này trong cùng thay đổi.

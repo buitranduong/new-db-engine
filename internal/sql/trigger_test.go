@@ -326,3 +326,49 @@ func TestTriggerCDC(t *testing.T) {
 		t.Fatalf("changes missing:\n%s", out)
 	}
 }
+
+func TestTriggerCopy(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	trigSetup(t, s)
+	run(t, s, auditAll)
+	run(t, s, `CREATE TRIGGER st BEFORE INSERT ON acct BEGIN SET NEW.upd = 42; END`)
+	cs, ok, err := ParseCopy(`COPY acct FROM STDIN`)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	ci, err := s.CopyFrom(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ci.Write([]byte("1\ta\t5\t0\n2\tb\t6\t0\n\\.\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ci.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if got := render(run(t, s, `SELECT id, upd FROM acct ORDER BY id`)); got != "1,42;2,42" {
+		t.Fatalf("before trigger on COPY: %s", got)
+	}
+	if got := render(run(t, s, `SELECT op, nb FROM audit ORDER BY id`)); got != "ins,5;ins,6" {
+		t.Fatalf("after trigger on COPY: %s", got)
+	}
+}
+
+func TestTriggerCatalog(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	trigSetup(t, s)
+	run(t, s, auditAll)
+	run(t, s, `CREATE TRIGGER b1 BEFORE INSERT OR UPDATE ON audit BEGIN SELECT 1; END`)
+	got := render(run(t, s, `SELECT c.relname, t.tgname, t.tgtype FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid ORDER BY 1, 2`))
+	if got != "acct,acct_del,9;acct,acct_ins,5;acct,acct_upd,17;audit,b1,23" {
+		t.Fatalf("pg_trigger: %s", got)
+	}
+	if got := render(run(t, s, `SELECT relname FROM pg_class WHERE relhastriggers ORDER BY 1`)); got != "acct;audit" {
+		t.Fatalf("relhastriggers: %s", got)
+	}
+	if got := render(run(t, s, `SELECT tablename FROM pg_tables WHERE hastriggers ORDER BY 1`)); got != "acct;audit" {
+		t.Fatalf("pg_tables.hastriggers: %s", got)
+	}
+}

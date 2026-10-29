@@ -24,7 +24,7 @@ for i in $(seq 100); do curl -s 127.0.0.1:$PORT/v1/health > /dev/null && break; 
 ./bin-main/claimcheck -url "postgres://app@127.0.0.1:$((PORT+1))/stask?sslmode=disable" | tee "$D/claimcheck.md" | tail -1
 now=$(tail -1 "$D/claimcheck.md" | awk '{print $1}')
 if [ -f docs/claimcheck_baseline.txt ]; then
-  base=$(cat docs/claimcheck_baseline.txt)
+  base=$(awk '"'"'{for(i=1;i<=NF;i++) if($i=="pass") print $(i+1)}'"'"' docs/claimcheck_baseline.txt)
   [ "$now" -ge "$base" ] || { echo "claimcheck regressed: $now < baseline $base"; exit 1; }
 fi
 echo; echo "merge-gate: OK (claimcheck passes: $now)"

@@ -177,6 +177,7 @@ func sessionDefaults() map[string]string {
 		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
 		"max_identifier_length": "63", "default_transaction_read_only": "off", "transaction_read_only": "off",
 		"extra_float_digits": "1", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8",
+		SearchConsistencyVar: "bounded", SearchMaxLagVar: "1000", LastPlanVar: "",
 	}
 }
 

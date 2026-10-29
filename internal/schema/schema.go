@@ -213,6 +213,8 @@ type Table struct {
 	// REFERENCES constraints of this (child) table.
 	Indexes     []IndexDef   `json:"indexes,omitempty"`
 	ForeignKeys []ForeignKey `json:"foreign_keys,omitempty"`
+	// Substr are the substring (trigram) search indexes (substr.go).
+	Substr []SubstrIndex `json:"substr_indexes,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN
@@ -367,6 +369,9 @@ func (t *Table) Init() error {
 				return fmt.Errorf("column %q: numeric is not supported on columnar tables", c.Name)
 			}
 		}
+	}
+	if err := t.checkSubstr(); err != nil {
+		return err
 	}
 	if t.TimeColumn != "" {
 		i, ok := t.idx[t.TimeColumn]

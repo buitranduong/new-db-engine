@@ -98,3 +98,46 @@ STASK không có khoá dòng chờ (OCC), không có `VACUUM`, và `ALTER TABLE`
 ## 6. Kết quả `simbench`
 
 (Điền bởi agent `simbench`; chưa có số liệu khi viết tài liệu này.)
+
+### 6.S Kết quả tìm kiếm số SIM trong SQL (nhánh `search`, 2026-10-29)
+
+Đo trên VM 8 vCPU / 32 GB, **2.000.000 số** sinh ngẫu nhiên (`09x`/`03x`/... + 7 chữ số, ~2% đuôi đẹp), bảng `sim(num TEXT PRIMARY KEY, carrier, status, price)`, 5 nhà mạng, 1/4 số `sold`. STASK đo trong tiến trình (không qua dây pgwire, `cmd/searchbench`, trung vị 5 lần; "quét" = cùng câu không có view); PG16.15 + pg_trgm trong container `search-pg`, đo thời gian client của `psql \timing` (có vòng khứ hồi cục bộ, ~0,1–0,2 ms), trung vị 5 lần, sau `VACUUM ANALYZE`, có thêm btree `text_pattern_ops` cho tiền tố. Kích thước PG: heap 125 MB, GIN trigram 45 MB, btree tiền tố 60 MB, pkey 77 MB. Số kết quả của hai bên **trùng nhau** ở mọi câu đếm (8112; 1651; 21394; 20065; 25; 261; 16055).
+
+| Truy vấn (2M số) | STASK quét (ms) | STASK view trigram (ms) | PG16 + pg_trgm/btree (ms) | Ai nhanh hơn |
+|---|---:|---:|---:|---|
+| tiền tố 7 số `LIKE '0901234%'` LIMIT 50 (11 kết quả) | 3257* | 0,44 | 0,23 (btree) | PG 1,9× |
+| tiền tố 3 số `LIKE '090%'` LIMIT 50 | 1999* | 1,40 | 0,52 (btree) | PG 2,7× |
+| tiền tố 4 số `LIKE '0901%'` count (8112) | 705 | 25,6 | 4,6 (btree) | **PG 5,6×** |
+| đuôi `LIKE '%8888'` LIMIT 50 | 97 | 2,8 | 4,9 | STASK 1,7× |
+| đuôi `LIKE '%8888'` count (1651) | 755 | 10,4 | 10,3 | hoà |
+| đuôi 2 số `LIKE '%88'` count (21394) | 809 | 349 | 35,9 | **PG 9,7×** (mẫu ngắn hơn trigram: STASK duyệt giá trị) |
+| chứa `LIKE '%888%'` count (20065) | 772 | 51,3 | 35,0 | PG 1,5× |
+| chứa `LIKE '%888%'` LIMIT 50 | 17,6 | 0,79 | 1,87 | STASK 2,4× |
+| chứa `LIKE '%123456%'` count (25) | 658 | 0,47 | 3,96 | STASK 8,4× |
+| regex `~ '^09[0-3].*8888$'` count (261) | 925 | 10,7 | 22,9 | STASK 2,1× |
+| tứ quý LIMIT 50 (STASK `sim_pretty(num,'quad')`; PG regex `(.)\1\1\1$`) | 8,8 | 0,27 | 19,7 | STASK 73× |
+| tứ quý count (16055) | 705 | 53,1 | 2547 | STASK 48× (PG không có chỉ mục cho backref) |
+| tiến `sim_pretty(num,'asc')` count (14063) / lặp (31900) | 771 / 1178 | 49,3 / 106 | — (PG cần regex liệt kê) | — |
+| lọc: đuôi 8888 + carrier + status + giá, LIMIT 50 | 341 | 4,2 | 6,6 | STASK 1,6× |
+| facet: carrier, chứa 888 | 924 | 60,8 | 41,6 | PG 1,5× |
+| facet: carrier, đuôi 8888 + status | 1087 | 18,1 | 11,1 | PG 1,6× |
+| facet: carrier, tứ quý | 2016 | 126,9 | 2568 | STASK 20× |
+
+\* Hai số "quét" đầu là phép đo đầu tiên của lần chạy (bộ nhớ đệm lạnh), nhiễu; quét đầy đủ 2M dòng thường 650–900 ms. Chạy lại 200k dòng trước khi tối ưu `LIKE` cho thấy quét chậm 7,5× hơn (≈2,9 µs/dòng so với 0,38 µs/dòng): nhánh này cũng thêm đường nhanh không cấp phát cho mẫu chỉ có `%` vào `likeMatch` (`likeSimple`, có test đối chiếu 200.000 cặp ngẫu nhiên), nên cột "quét" ở trên đã là quét **sau** tối ưu.
+
+**Đọc kết quả trung thực.**
+- Trên cùng số liệu, STASK nhanh hơn quét của chính nó 2,3–7500× (tuỳ độ chọn lọc), và **thua pg_trgm ở các truy vấn trả hàng chục nghìn dòng** (đếm `%88`, `%888%`, tiền tố 4 số) và ở tiền tố (PG dùng btree; STASK chưa có đường này nhanh hơn trigram). Nguyên nhân: mỗi ứng viên STASK đọc lại dòng từ lõi (`tx.Get` + tính lại WHERE, ~1–3 µs/dòng) để bảo đảm không bao giờ trả dữ liệu cũ, còn PG đếm trên bitmap rồi quét heap theo trang. Muốn đếm nhanh hơn cần đếm thẳng trên view khi view đã tới snapshot (bỏ đọc lại) — chưa làm.
+- STASK thắng ở truy vấn chọn lọc cao (chuỗi dài), regex có đoạn chữ, và số đẹp (lớp được tính sẵn lúc nạp, còn PG phải quét regex backref 2,5 s).
+- Mọi so sánh với PG dùng 1 kết nối, không đo song song; STASK không qua dây (cộng thêm cỡ 0,1–0,3 ms mỗi câu khi qua pgwire).
+- Dựng chỉ mục trên 2M dòng đã có: 10,5 s (STASK, trong tiến trình) so với PG: `CREATE INDEX gin` 23,7 s + btree 18,7 s.
+
+**Độ mới và tốc độ áp dụng của view (câu hỏi về trễ tích luỹ).** Test `TestSubstrFreshness` (sửa nhà mạng/giá rồi tìm ngay với `strong` thấy giá mới trong 300 vòng ghi-rồi-đọc) và `TestSubstrLagContract` (giữ view lại bằng `Substr.Hold()`: `bounded` với ngưỡng 50 ms khi view trễ >100 ms thì rơi về lõi, trả dữ liệu mới, kế hoạch ghi `engine=core ... view lag exceeds`; trong ngưỡng 5 s view trả lời kèm `view_lag_ms`; `eventual` đọc view và nói rõ; thả view thì `strong` thấy đủ). Nạp hàng loạt 1M dòng (INSERT 1000 dòng/câu, một luồng ghi):
+
+| Mục | Kết quả |
+|---|---|
+| Lõi nhận ghi (không view / có view trigram / cột / BM25) | 65k / 61k / 53k / 44k dòng/s |
+| View bắt kịp sau khi nạp xong | 0,01–0,02 s ở cả ba view (không tích trễ ở tốc độ ghi này) |
+| Tốc độ áp dụng riêng của view trigram (giữ view lại trong lúc nạp 1M dòng, thả ra, đo thời gian bắt kịp) | **~350k dòng/s** (2,9 s cho 1M), gấp ~4,5× tốc độ ghi INSERT của lõi (79k dòng/s lúc đó) |
+| Heap thêm của view trigram | ~145 MB cho 1M dòng |
+
+Kết luận: ở tốc độ ghi qua SQL một luồng (≤80k dòng/s) view trigram không tích trễ; mỗi view có **một luồng áp dụng** (`Follower`), nên giới hạn là ~350k dòng/s cho trigram (tính trigram nằm trong luồng đó). Chưa đo tốc độ áp dụng riêng của cột/BM25 (không có `Hold`), chỉ biết chúng theo kịp 44–53k dòng/s. Nếu tốc độ ghi vượt ngưỡng đó (COPY nhiều luồng), trễ sẽ tăng — lúc đó `bounded`/`strong` chuyển sang chờ rồi quét lõi (đúng, nhưng chậm) thay vì trả dữ liệu cũ. Cách xử lý nếu cần: băm tính trigram ra nhiều luồng trong `Apply` (hiện tuần tự trong luồng follower); chưa làm vì chưa có nút thắt đo được.

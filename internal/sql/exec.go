@@ -255,6 +255,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreateSubstrIndex, *DropSubstrIndex, *Explain:
+		return s.execSubstr(st)
 	case *DropTable, *Truncate:
 		// applied at once, not at commit, like CREATE TABLE (PostgreSQL
 		// runs both inside the transaction)
@@ -395,6 +397,10 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
 			return nil, err
 		}
+	case SearchConsistencyVar, SearchMaxLagVar:
+		if err := checkSearchVar(name, strings.Trim(st.Value, "'\"")); err != nil {
+			return nil, err
+		}
 	case LastLSNVar:
 		return nil, errf("55000", "parameter %q cannot be changed", LastLSNVar)
 	case ReadStalenessVar:
@@ -436,6 +442,12 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 			for _, f := range strings.Split(v, ",") {
 				if f = strings.TrimSpace(f); f != "" {
 					t.Search = append(t.Search, f)
+				}
+			}
+		case "trigram":
+			for _, f := range strings.Split(v, ",") {
+				if f = strings.TrimSpace(f); f != "" {
+					t.Substr = append(t.Substr, schema.SubstrIndex{Name: c.Name + "_" + f + "_trgm_idx", Col: f})
 				}
 			}
 		case "time_column":
@@ -1294,14 +1306,15 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				groups, order, done = g, o, true
 			}
 		}
+		cand := s.substrPrepare(tx, sc.t, sc, ctx, st.Where)
 		// an equality or IN on an index beats the parallel scan of a whole
 		// table (a range may match most of it, which the scan reads faster)
 		selective := false
-		if grouped && !done && len(sc.t.Indexes) > 0 && canUseIndex(tx, sc.t) {
+		if grouped && !done && cand == nil && len(sc.t.Indexes) > 0 && canUseIndex(tx, sc.t) {
 			c := chooseIndex(sc.t, sc.alias, st.Where, ctx, nil)
 			selective = c != nil && c.score >= 2
 		}
-		if grouped && !done && !selective {
+		if grouped && !done && cand == nil && !selective {
 			g, o, ok, err := groupParallel(tx, st, sc.t, ctx, aggs)
 			if err != nil {
 				return nil, err
@@ -1310,7 +1323,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				groups, order, done = g, o, true
 			}
 		}
-		if !done && ordIx != nil {
+		if !done && cand == nil && ordIx != nil {
 			ok, err := s.scanIndex(tx, sc.t, ordIx, ordDesc, matcher(ctx, st.Where), visit)
 			if err != nil {
 				return nil, err
@@ -1319,7 +1332,15 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				ordStop, out = false, nil // the index cannot serve this snapshot
 			}
 		}
-		if !done {
+		if !done && cand != nil {
+			hint := int64(0)
+			if !grouped && len(st.OrderBy) == 0 && !st.Distinct && limit > 0 {
+				hint = limit + offset
+			}
+			if err := s.scanCandidates(tx, cand, ctx, st.Where, hint, visit); err != nil {
+				return nil, err
+			}
+		} else if !done {
 			if err := s.scanRows(tx, sc.t, ctx, st.Where, visit); err != nil {
 				return nil, err
 			}

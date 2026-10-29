@@ -20,9 +20,11 @@ type Platform struct {
 	Col  *proj.Columnar
 	Srch *proj.Search
 	TS   *proj.TimeSeries
+	Sub  *proj.Substr // substring (trigram) view, substr.go
 	ColF *core.Follower
 	SF   *core.Follower
 	TSF  *core.Follower
+	SubF *core.Follower
 }
 
 func Start(e *core.Engine) *Platform {
@@ -30,6 +32,8 @@ func Start(e *core.Engine) *Platform {
 	p.ColF = e.Follow(p.Col)
 	p.SF = e.Follow(p.Srch)
 	p.TSF = e.Follow(p.TS)
+	p.Sub = proj.NewSubstr()
+	p.SubF = e.Follow(p.Sub)
 	return p
 }
 
@@ -366,7 +370,7 @@ type ViewStatus struct {
 
 func (p *Platform) Views() []ViewStatus {
 	var out []ViewStatus
-	for _, f := range []*core.Follower{p.ColF, p.SF, p.TSF} {
+	for _, f := range []*core.Follower{p.ColF, p.SF, p.TSF, p.SubF} {
 		out = append(out, ViewStatus{f.Name(), f.Ready(), f.Applied(), ms(f.Lag()), ms(f.BootTime())})
 	}
 	return out

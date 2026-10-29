@@ -51,10 +51,10 @@ func TestTruncTime(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := ref(unit, time.UnixMilli(ms).UTC()).UnixMilli()
+		want := ref(unit, time.UnixMicro(ms).UTC()).UnixMicro()
 		if got != want {
-			t.Fatalf("date_trunc(%s, %s) = %s, want %s", unit, time.UnixMilli(ms).UTC(),
-				time.UnixMilli(got).UTC(), time.UnixMilli(want).UTC())
+			t.Fatalf("date_trunc(%s, %s) = %s, want %s", unit, time.UnixMicro(ms).UTC(),
+				time.UnixMicro(got).UTC(), time.UnixMicro(want).UTC())
 		}
 	}
 	if _, err := TruncTime("fortnight", 0); err == nil {

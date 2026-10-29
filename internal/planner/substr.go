@@ -31,6 +31,11 @@ func (p *Platform) SubstrChoose(table, col, mode string, maxLag time.Duration, m
 	use, pl := p.choose(p.SubF, has, "substr", c, "bounded")
 	if !has && p.SubF.Ready() {
 		pl.Reason = fmt.Sprintf("no trigram index on %s(%s)", table, col)
+		for _, x := range t.Schema().Substr {
+			if x.Col == col {
+				pl.Reason = fmt.Sprintf("trigram index %s on %s(%s) is still being built (CREATE INDEX CONCURRENTLY or not finished): the table is scanned", x.Name, table, col)
+			}
+		}
 	}
 	return pl, use
 }
@@ -47,3 +52,13 @@ func (p *Platform) SubstrScan(table string, q *proj.SubstrReq, after uint64, max
 
 // SubstrApplied is the view's applied LSN and lag, for plans and metrics.
 func (p *Platform) SubstrApplied() (uint64, time.Duration) { return p.SubF.Applied(), p.SubF.Lag() }
+
+// SubstrBuilt reports whether the view has applied lsn and holds the trigram
+// index on table.col: CREATE INDEX waits for it unless CONCURRENTLY.
+func (p *Platform) SubstrBuilt(table, col string, lsn uint64) bool {
+	t, err := p.E.UserTable(table)
+	if err != nil {
+		return true // dropped meanwhile: nothing to wait for
+	}
+	return p.SubF.Ready() && p.SubF.Applied() >= lsn && p.Sub.Has(t.Schema().ID, col)
+}

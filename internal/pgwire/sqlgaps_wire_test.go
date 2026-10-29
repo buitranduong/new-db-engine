@@ -3,6 +3,7 @@ package pgwire
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -82,5 +83,64 @@ func TestInsertSelectParams(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// EXPLAIN takes every statement, through both protocols, with parameters.
+func TestExplainWire(t *testing.T) {
+	ctx := context.Background()
+	url := startServer(t, "")
+	for _, m := range []pgx.QueryExecMode{pgx.QueryExecModeCacheStatement, pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol} {
+		cfg, _ := pgx.ParseConfig(url)
+		cfg.DefaultQueryExecMode = m
+		conn, err := pgx.ConnectConfig(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tb := fmt.Sprintf("ex_%d", m)
+		for _, q := range []string{
+			`CREATE TABLE ` + tb + ` (id BIGINT PRIMARY KEY, k TEXT, v BIGINT)`,
+			`CREATE INDEX ` + tb + `_k ON ` + tb + ` (k)`,
+		} {
+			if _, err := conn.Exec(ctx, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		plan := func(q string, args ...any) string {
+			rows, err := conn.Query(ctx, q, args...)
+			if err != nil {
+				t.Fatalf("mode %v %s: %v", m, q, err)
+			}
+			defer rows.Close()
+			var out string
+			for rows.Next() {
+				var l string
+				if err := rows.Scan(&l); err != nil {
+					t.Fatal(err)
+				}
+				out += l + "\n"
+			}
+			if rows.Err() != nil {
+				t.Fatal(rows.Err())
+			}
+			return out
+		}
+		check := func(out, want string) {
+			t.Helper()
+			if !strings.Contains(out, want) {
+				t.Fatalf("mode %v: want %q in\n%s", m, want, out)
+			}
+		}
+		check(plan(`EXPLAIN SELECT * FROM `+tb+` WHERE id = $1`, int64(5)), tb+"_pkey")
+		check(plan(`EXPLAIN SELECT * FROM `+tb+` WHERE k = $1`, "a"), "Index Scan using "+tb+"_k")
+		check(plan(`EXPLAIN UPDATE `+tb+` SET v = $1 WHERE id = $2`, int64(1), int64(5)), "Update on "+tb)
+		check(plan(`EXPLAIN DELETE FROM `+tb+` WHERE k = $1`, "a"), "Delete on "+tb)
+		check(plan(`EXPLAIN INSERT INTO `+tb+` VALUES ($1, $2, $3)`, int64(1), "a", int64(1)), "Insert on "+tb)
+		check(plan(`EXPLAIN ANALYZE INSERT INTO `+tb+` VALUES ($1, $2, $3)`, int64(1), "a", int64(1)), "rows=1")
+		var n int64
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM `+tb).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("EXPLAIN ANALYZE INSERT: count %d %v", n, err)
+		}
+		conn.Close(ctx)
 	}
 }

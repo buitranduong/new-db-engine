@@ -53,6 +53,7 @@ type SubstrViews interface {
 type CreateSubstrIndex struct {
 	Name, Table, Col string
 	IfNotExists      bool
+	Concurrently     bool // return at once; the view is built in the background
 }
 type DropSubstrIndex struct {
 	Names    []string
@@ -77,7 +78,7 @@ func (p *parser) createSubstrIndex() (st Stmt, ok bool, err error) {
 		return fail()
 	}
 	c := &CreateSubstrIndex{}
-	p.acceptKw("concurrently")
+	c.Concurrently = p.acceptKw("concurrently")
 	c.IfNotExists = p.acceptKw("if", "not", "exists")
 	if !p.isKw("on") {
 		if c.Name, err = p.ident(); err != nil {
@@ -221,6 +222,11 @@ func (s *Session) createSubstrIndex(c *CreateSubstrIndex) (*Result, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if !c.Concurrently {
+		if err := s.waitSubstrBuilt(c.Table, c.Col); err != nil {
+			return nil, err
+		}
 	}
 	return &Result{Tag: "CREATE INDEX"}, nil
 }

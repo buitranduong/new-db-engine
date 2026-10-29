@@ -145,6 +145,7 @@ type Harness struct {
 	repoDirt  bool
 	checks    []string
 	unchecked bool
+	skipped   bool
 	http      *http.Client
 }
 
@@ -168,7 +169,6 @@ func (h *Harness) refreshUnchecked() {
 		if len(h.specs) > 0 {
 			h.invalid("-expect given without -stask-http: preconditions cannot be checked")
 		}
-		h.warn("%s: -stask-http not set, server build and preconditions are NOT verified", h.Tool)
 	}
 }
 
@@ -437,6 +437,9 @@ func (h *Harness) Meta() map[string]any {
 // a loud banner when INVALID, and returns the exit code the tool must use
 // after it has written res (0 or ExitInvalid).
 func (h *Harness) Finish(res map[string]any) int {
+	if h.unchecked && !h.skipped {
+		h.warn("%s: -stask-http not set, server build and preconditions were NOT verified", h.Tool)
+	}
 	res["meta"] = h.Meta()
 	res["valid"] = h.Valid()
 	if len(h.warnings) > 0 {
@@ -471,7 +474,7 @@ func (h *Harness) DefaultExpect(spec string) {
 // Skip marks the run as not against a staskd (PostgreSQL, ClickHouse,
 // Redis, embedded): no server checks apply; meta says so.
 func (h *Harness) Skip(why string) {
-	h.unchecked = true
+	h.unchecked, h.skipped = true, true
 	h.specs = nil
 	h.reasons, h.warnings = nil, nil
 	h.checks = append(h.checks, "server checks skipped: "+why)

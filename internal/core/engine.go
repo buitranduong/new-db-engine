@@ -1334,11 +1334,43 @@ func (e *Engine) Write(ops []WriteOp) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := checkRepeatedKeys(p); err != nil {
+		return 0, err
+	}
 	r := &commitReq{ops: p}
 	if err := e.submit(r); err != nil {
 		return 0, err
 	}
 	return r.lsn, nil
+}
+
+// checkRepeatedKeys gives IfAbsent operations their meaning when a batch
+// holds several operations on one key, which apply in order: the committer
+// checks each against the version before the batch, so one that follows a
+// put of the key in the batch must fail, and one that follows a delete of
+// it is a plain write.
+func checkRepeatedKeys(ops []pendingOp) error {
+	if len(ops) < 2 {
+		return nil
+	}
+	var wrote map[pk]bool // key -> written live earlier in the batch
+	for i := range ops {
+		op := &ops[i]
+		k := pk{op.t, op.key}
+		live, again := wrote[k]
+		if again {
+			if op.ifAbsent {
+				if live {
+					return &KeyExistsError{Table: op.t.Schema().Name, Column: op.t.Schema().Key, Key: op.key}
+				}
+				op.ifAbsent = false
+			}
+		} else if wrote == nil {
+			wrote = make(map[pk]bool, len(ops))
+		}
+		wrote[k] = !op.del
+	}
+	return nil
 }
 
 func (e *Engine) CreateTable(t schema.Table) (*schema.Table, error) {

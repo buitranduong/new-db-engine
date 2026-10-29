@@ -329,9 +329,10 @@ func (e *Engine) applyRecord(r *wal.Record, clones map[*TableState]*tree) error 
 		key := string(op.Key)
 		loc := wal.Loc{Ok: true, Seg: r.Pos.Seg, Off: uint32(r.Pos.Off), Idx: uint16(i)}
 		if r.Kind != wal.KindMove {
-			// skip a record applied again
+			// skip a version newer than this record; an equal LSN is the same
+			// transaction (several operations on one key apply in order)
 			old, had := tr.get(key)
-			if had && old.lsn >= r.LSN {
+			if had && old.lsn > r.LSN {
 				continue
 			}
 			wasLive := had && old.flags&entDeleted == 0

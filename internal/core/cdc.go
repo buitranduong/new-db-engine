@@ -580,6 +580,18 @@ func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) erro
 		return 0, err
 	}
 	n := 0
+	// An earlier operation of this transaction on the same key is what a
+	// later one replaces: Prev of every operation names the version before
+	// the transaction, so the in-transaction state is tracked here.
+	type txKey struct {
+		table uint32
+		key   string
+	}
+	type txState struct {
+		live bool
+		row  schema.Row
+	}
+	seen := map[txKey]txState{}
 	for _, r := range frames {
 		for _, op := range r.Ops {
 			t := e.TableByID(op.Table)
@@ -591,15 +603,27 @@ func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) erro
 			}
 			c := &Change{LSN: last.LSN, TS: last.TS, Pos: r.Pos, Table: t.Schema(), Key: string(op.Key)}
 			live, known := true, true
-			if op.Prev.Ok {
+			tk := txKey{op.Table, string(op.Key)}
+			earlier, inTx := seen[tk]
+			switch {
+			case inTx:
+				live = earlier.live
+			case op.Prev.Ok:
 				live, known = e.prevLive(op.Prev)
-			} else {
+			default:
 				live = false
 			}
 			c.OldUnknown = !known
 			if live && known && e.ReplicaIdentityFull(t.Schema().Name) {
-				c.OldRow = e.prevRow(t.Schema(), op.Prev)
+				if inTx {
+					c.OldRow = earlier.row
+				} else {
+					c.OldRow = e.prevRow(t.Schema(), op.Prev)
+				}
 				c.OldUnknown = c.OldRow == nil
+			}
+			if op.Kind == wal.OpDel {
+				seen[tk] = txState{}
 			}
 			if op.Kind == wal.OpDel {
 				if !live {
@@ -616,6 +640,7 @@ func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) erro
 				if live {
 					c.Kind = ChangeUpdate
 				}
+				seen[tk] = txState{live: true, row: row}
 			}
 			if err := fn(c); err != nil {
 				return n, err

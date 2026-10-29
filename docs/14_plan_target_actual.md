@@ -155,6 +155,12 @@ Test đơn vị: `go test ./internal/benchcheck` (phân tích `-expect`, bảng 
 
 Ước lượng của tôi, không phải số đo: **khoảng 25 / 118 ngày công ≈ 22%** backlog trong docs/12, **khoảng 30%** theo các dòng "có" của Cổng 1 (docs/11 §2.2). Theo bằng chứng probe hôm nay, **31/46 probe qua trên `main` sau khi gộp `ops` và `cluster`**, nhưng 20 probe trong đó là SQL cơ bản; các probe về kiểu dữ liệu, index, ràng buộc, vai trò, trigger đều chưa qua. Probe không phải là thước đo mức độ hoàn thành, chỉ là bằng chứng cho từng tuyên bố.
 
+## 5. Lỗi đã biết
+
+| # | Lỗi | Nguyên nhân gốc | Mức ảnh hưởng | Trạng thái |
+|---|---|---|---|---|
+| L1 | Một lần `Engine.Write` (hoặc một commit) có NHIỀU thao tác trên CÙNG MỘT khoá: sau khi mở lại (phát lại log) hoặc trên replica, **thao tác đầu thắng** thay vì thao tác cuối; trạng thái dựng lại từ log khác trạng thái trước khi tắt (vi phạm I2/I3 của docs/01). Ví dụ put rồi delete: sau restart dòng vẫn sống; put 1 rồi put 2: sau restart còn 1 | `replay` (`recovery.go`) và `applyRecord` (`replica.go`) bỏ qua phiên bản khi `old.lsn >= r.LSN`. Mọi thao tác của một giao dịch mang cùng LSN, nên thao tác thứ hai trở đi trên cùng khoá bị coi là "đã áp dụng" và bị bỏ. Đường sống (`prepare`/`installBatch`) áp dụng theo thứ tự nên cuối cùng thắng. Log ghi đúng (đủ cả hai thao tác theo thứ tự), định dạng không đổi | Chỉ các đường ghi **không đi qua `Tx`**: `Engine.Write` với khoá lặp (đường SQL/`Tx` gộp theo khoá qua `widx`, nên SQL không bị; `InsertUnique` đã được lớp SQL chặn khoá trùng). Mất/sai dữ liệu thật xảy ra với bất kỳ người gọi `Write` nào có khoá lặp trong một lô rồi khởi động lại hoặc failover sang replica; log đã ghi vẫn đủ thông tin nên **sửa mã replay là dữ liệu cũ tự đúng lại khi mở**, không cần di trú. Ngoài ra: CDC phát sai loại sự kiện (`Prev` của cả hai thao tác trỏ phiên bản trước giao dịch: put-put khoá mới ra hai `I`, put-delete khoá mới mất sự kiện `D`); `IfAbsent` hai lần cùng khoá trong một lô lọt qua (đáng ra `ErrExists`) | Đã sửa trên nhánh `fixbatch`: `old.lsn > r.LSN` ở replay và replica; `emitTx` theo dõi trạng thái trong giao dịch; `Engine.Write` kiểm `IfAbsent` với khoá lặp. Test: `core/samekey_test.go` (xác định + property 25 seed: engine liên tục = mở lại = replica = mô hình map, CDC đúng thứ tự), `sql/samekey_test.go`, `proj/samekey_test.go`. Đã xác nhận test đỏ trước sửa. Chưa kiểm: log thật của pcol |
+
 ## Phụ lục A. Kết quả `claimcheck` trên `main` @ merge nhánh `trigger` (xem tái lập ở đầu tài liệu)
 
 | id | task | doc | want | actual | verdict |

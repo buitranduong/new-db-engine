@@ -51,6 +51,56 @@ type Tx struct {
 	unindexed bool
 	onCommit  func(lsn uint64)
 	intr      func() bool
+	// constraints (fk.go): parents shared by the children written, unique
+	// keys written (index name, 0, value -> primary key); implicit marks a
+	// single-statement transaction, whose commit does the unique checks
+	shares   map[pk]struct{}
+	uniq     map[string]string
+	implicit bool
+}
+
+// SetImplicit marks the transaction as one statement that commits at once:
+// the statement-time unique probe is skipped, the commit checks it.
+func (tx *Tx) SetImplicit() { tx.implicit = true }
+
+// HasWrites reports whether the transaction has written to table.
+func (tx *Tx) HasWrites(table string) bool {
+	for i := range tx.writes {
+		if tx.writes[i].t.Schema().Name == table {
+			return true
+		}
+	}
+	return false
+}
+
+// IndexScan reads table through the secondary index idx (see
+// Engine.IndexScan) at the transaction's snapshot. It does not see the
+// transaction's own writes (check HasWrites) and is not available to
+// serializable transactions, which cannot scan. ok is false if the index
+// cannot serve this snapshot.
+func (tx *Tx) IndexScan(table, idx, lo, hi string, desc bool, fn func(pk string, r schema.Row) bool) (bool, error) {
+	if err := tx.check(); err != nil {
+		return false, err
+	}
+	if tx.iso == Serializable {
+		return false, ErrScanSerializable
+	}
+	t, err := tx.e.Table(table)
+	if err != nil {
+		return false, err
+	}
+	n := 0
+	return tx.e.IndexScan(t, idx, tx.snap, lo, hi, desc, func(pk string, r schema.Row) bool {
+		if tx.intr != nil {
+			if n++; n == interruptRows {
+				n = 0
+				if tx.intr() {
+					return false
+				}
+			}
+		}
+		return fn(pk, r)
+	})
 }
 
 // Begin starts a transaction. Its snapshot is pinned against log
@@ -235,6 +285,10 @@ func (tx *Tx) add(op WriteOp) error {
 	if err != nil {
 		return err
 	}
+	fc, err := tx.preConstraints(op, &p0)
+	if err != nil {
+		return err
+	}
 	p := [1]pendingOp{p0}
 	if p[0].t == tx.lastT && p[0].key == tx.lastKey {
 		p[0].seen, p[0].seenOk = tx.lastHead, true
@@ -249,11 +303,11 @@ func (tx *Tx) add(op WriteOp) error {
 			p[0].ifAbsent = p[0].ifAbsent || tx.writes[i].ifAbsent
 		}
 		tx.writes[i] = p[0]
-		return nil
+		return tx.postConstraints(op, &p[0], fc)
 	}
 	tx.widx[k] = len(tx.writes)
 	tx.writes = append(tx.writes, p[0])
-	return nil
+	return tx.postConstraints(op, &p[0], fc)
 }
 
 func (tx *Tx) Put(table string, r schema.Row) error {
@@ -288,6 +342,11 @@ func (tx *Tx) InsertUniqueAs(table string, sch *schema.Table, r schema.Row) erro
 	p, err := tx.e.pendingOf(WriteOp{Table: table, Row: r, IfAbsent: true, Schema: sch})
 	if err != nil {
 		return err
+	}
+	if len(p.sch.ForeignKeys) > 0 {
+		if err := tx.checkParents(&p, r); err != nil {
+			return err
+		}
 	}
 	tx.unindexed = true
 	tx.writes = append(tx.writes, p)
@@ -339,6 +398,9 @@ func (tx *Tx) Commit() (uint64, error) {
 	}
 	r := &commitReq{ops: tx.writes, reads: tx.reads, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
 		onCommit: tx.onCommit}
+	for k := range tx.shares {
+		r.shares = append(r.shares, k)
+	}
 	if err := tx.e.submit(r); err != nil {
 		return 0, err
 	}

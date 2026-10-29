@@ -12,7 +12,9 @@ import (
 	"stask/internal/schema"
 )
 
-func encInt(v int64) string { return string(schema.AppendKeyValue(nil, schema.TInt, schema.Value{I: v})) }
+func encInt(v int64) string {
+	return string(schema.AppendKeyValue(nil, schema.TInt, schema.Value{I: v}))
+}
 
 // scanEq returns the primary keys of the rows with n = v at snap, via the index.
 func scanEq(t *testing.T, e *Engine, table, idx string, snap uint64, v int64) []string {

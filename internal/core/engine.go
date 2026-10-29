@@ -194,6 +194,13 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
+	// foreign keys (fk.go): the cache of who references whom, and the
+	// committer's record of the newest commit that shared or guarded a key
+	fkCache atomic.Pointer[fkIndex]
+	fkShare map[pk]uint64
+	fkGuard map[pk]uint64
+	fkSweep int
+
 	seqMu  sync.Mutex
 	seqs   map[string]*seqState // sequences in use (sequence.go)
 	slotMu sync.Mutex
@@ -411,6 +418,7 @@ func (e *Engine) addTable(t *schema.Table) (*TableState, error) {
 	ts := &TableState{e: e}
 	ts.sch.Store(t)
 	ts.durable.Store(t)
+	e.fkCache.Store(nil)
 	ts.idx.Store(newTree(&ts.keys))
 	if t.DroppedLSN == 0 {
 		// a new table is empty; a table from a checkpoint gets its
@@ -455,6 +463,7 @@ func (e *Engine) alterTable(ts *TableState, t *schema.Table) (*TableState, error
 		ts.sch.Store(t)
 	}
 	ts.durable.Store(t)
+	e.fkCache.Store(nil)
 	if err := e.reconcileSec(ts, t, nil); err != nil {
 		e.logf("alter table %s: indexes: %v", t.Name, err)
 	}
@@ -524,6 +533,7 @@ func (e *Engine) AlterTable(name string, f func(*schema.Table) error) error {
 // dropTable removes t from the names once its drop (at lsn) is durable or
 // replayed. A TRUNCATE then registers the replacing table under the name.
 func (e *Engine) dropTable(t *TableState, lsn uint64) {
+	e.fkCache.Store(nil)
 	e.tmu.Lock()
 	t.dropping.Store(true)
 	t.droppedLSN.Store(lsn)
@@ -1151,6 +1161,7 @@ type pendingOp struct {
 	seen     *Version // head looked up before commit (see seenSeq)
 	seenOk   bool
 	sk       []secKey // index keys of the row, per sch.Indexes (secindex.go)
+	guard    bool     // deletes or re-keys a row that foreign keys reference (fk.go)
 }
 
 type readKey struct {
@@ -1179,6 +1190,7 @@ type commitReq struct {
 	alterBase   *schema.Table
 	moves       []moveOp // log reclamation: relocate or drop heads
 	own         *reqOwn  // checkUnique: the request's ops by key
+	shares      []pk     // parents of the children written (fk.go)
 	lsn         uint64
 	err         error
 	done        chan struct{}
@@ -1215,6 +1227,7 @@ func (e *Engine) pendingOf(op WriteOp) (pendingOp, error) {
 			return pendingOp{}, ErrAppendOnly
 		}
 		p.key, p.del = op.Key, true
+		p.guard = len(e.fkReferrers(sch.Name)) > 0
 		return p, nil
 	}
 	if len(op.Row) != len(sch.Columns) {
@@ -1760,6 +1773,9 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					}
 				}
 			}
+			if verr == nil && r.checkWrites {
+				verr = e.checkFK(r)
+			}
 			if verr != nil {
 				if verr == ErrConflict {
 					e.Stats.Conflicts.Add(1)
@@ -1953,6 +1969,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 				lo = hi
 			}
 		}
+		e.noteFK(r, lsn)
 		e.tsRing[lsn&(tsRingSize-1)].Store(now)
 		lsn++
 		b.placed = append(b.placed, r)

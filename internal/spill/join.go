@@ -12,7 +12,7 @@ const (
 	MaxDepth = 4
 	// entryOverhead approximates the map and slice cost of a table entry
 	// beyond the row and key themselves.
-	entryOverhead = 96
+	entryOverhead = 160
 )
 
 // Entry is a build-side row of a join with its match flag, which the

@@ -3,6 +3,7 @@ package sql
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -145,13 +146,16 @@ func TestSpillRefusalsAndLimits(t *testing.T) {
 	}
 	SpillMaxBytes = 0
 	// statement_timeout inside a spilling query
-	run(t, s, `SET statement_timeout = '30ms'`)
-	start := time.Now()
+	run(t, s, `SET statement_timeout = '600ms'`)
+	start, files := time.Now(), spill.Snapshot().Files
 	_, err := tryRun(s, `SELECT count(*) FROM a x JOIN a y ON x.id % 50 = y.id % 50 JOIN a z ON z.id % 50 = y.id % 50`)
-	if code(err) != "57014" || time.Since(start) > 5*time.Second {
-		t.Fatalf("timeout: %v after %v", err, time.Since(start))
+	if code(err) != "57014" || time.Since(start) > 5*time.Second || spill.Snapshot().Files == files {
+		t.Fatalf("timeout in the spilling pass: %v after %v, %d temp files", err, time.Since(start), spill.Snapshot().Files-files)
 	}
 	run(t, s, `SET statement_timeout = 0`)
+	if ents, _ := os.ReadDir(SpillDir); len(ents) != 0 {
+		t.Fatalf("%d temp directories left after the cancelled and failed queries", len(ents))
+	}
 	if n := SQLMemInUse(); n != 0 {
 		t.Fatalf("%d bytes still reserved", n)
 	}

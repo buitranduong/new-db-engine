@@ -885,14 +885,19 @@ Ghép nhiều điều kiện trên cùng cột thì gộp (giao trigram, AND ki�
 **Hợp đồng nhất quán** (`internal/planner/substr.go`, dùng lại `choose`):
 
 ```sql
-SET stask.consistency = 'strong' | 'bounded' (mặc định) | 'session' | 'eventual';
+SET stask.consistency = 'strong' | 'bounded' | 'session' (mặc định, D26) | 'eventual';
 SET stask.max_lag_ms = 1000;      -- ngưỡng cho bounded
 ```
 
 - `strong`: view phải tới LSN bền (chờ ≤2 s) rồi mới trả lời, không kịp thì **rơi về quét lõi**.
 - `bounded`: view trễ ≤ ngưỡng thì dùng ngay; trễ hơn thì chờ tối đa ngưỡng, không kịp thì quét lõi. Trong ngưỡng, dòng mới ghi có thể chưa thấy (đã công bố độ trễ); dòng đã sửa/xoá không bao giờ hiện giá trị cũ vì mỗi ứng viên đọc lại từ lõi.
-- `session`: view phải tới `max(snapshot, stask.min_lsn)`. `eventual`: dùng nguyên trạng.
+- `session` (**mặc định từ nhánh `sqlgaps`, D26**): view phải tới LSN commit cuối của chính phiên (`stask.last_lsn`) hoặc `stask.min_lsn` nếu lớn hơn; chờ tối đa 500 ms rồi rơi về quét lõi (vẫn thấy dòng của mình). Phiên chưa ghi gì thì đọc view nguyên trạng. Khác bản cũ (`max(snapshot, min_lsn)`): không chờ ghi của phiên khác. Đo `simfresh` 1M, đang nhập: `insert/default` thấy ngay dòng vừa ghi 175/285 (61%) -> 328/328 (100%); p50 0,65 -> 0,86 ms, p99 8,3 -> 18,0 ms (một lần chạy, máy dùng chung). Phạm vi là *phiên* (kết nối): pool chia truy vấn ra nhiều kết nối thì không có bảo đảm giữa các kết nối.
+- `eventual`: dùng nguyên trạng.
 - Có tồn tại khoảng "mất dòng mới" duy nhất: dòng mới/được sửa thành khớp mà view chưa nhận, trong ngưỡng bounded hoặc ở eventual. Với strong thì không.
+
+**CREATE INDEX chờ dựng xong (nhánh `sqlgaps`).** `CREATE INDEX .. gin_trgm_ops` chỉ trả khi view đã áp DDL và dựng chỉ mục (chờ tối đa `SubstrBuildTimeout`=30 phút, huỷ được; hết hạn thì trả kèm chỉ mục tiếp tục dựng ngầm). `CREATE INDEX CONCURRENTLY` trả ngay như cũ; trong lúc dựng, `EXPLAIN` hiện `Seq Scan` kèm `reason="trigram index X on t(c) is still being built ..."` và truy vấn quét lõi.
+
+**EXPLAIN mọi câu.** `EXPLAIN [ANALYZE]` nhận SELECT, INSERT, UPDATE, DELETE, WITH (kể cả CTE ghi), UNION; hiện `Index Scan using t_pkey`, `Index Scan using <btree>` (kể cả quét theo thứ tự thay Sort), `Trigram Scan` (kèm applied_lsn/view_lag_ms), `Seq Scan`, `Hash Join`, `Hash Semi/Anti Join` (EXISTS/IN đã giải tương quan), HashAggregate, Sort, Limit; dùng chính các hàm chọn đường của bộ thực thi. `ANALYZE` chạy thật (ghi thật; bọc BEGIN..ROLLBACK để hoàn tác), báo dòng, thời gian, spill, dùng view cột. Bộ thực thi chung (JOIN, truy vấn con) đọc cả bảng, không đẩy chỉ mục (nói rõ trong kế hoạch). Không có ước lượng chi phí (không thống kê). Có tham số `$n`.
 
 **Quan sát.** `EXPLAIN SELECT ...` (một bảng) trả `Trigram Scan on t using idx`, điều kiện, chế độ và dòng chi tiết: `engine=substr|core mode= applied_lsn= view_lag_ms= waited_ms= reason=`. Sau mỗi SELECT có chỉ mục: `SHOW stask.last_plan` cho cùng nội dung (kể cả khi đã rơi về quét: `Seq Scan on t (trigram index .. not used) engine=core .. reason="view lag exceeds .."`). `/v1/views` liệt kê thêm view `substr` với applied/lag.
 

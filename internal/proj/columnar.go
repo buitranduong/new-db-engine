@@ -60,6 +60,9 @@ type colVec struct {
 	nulls  []uint64
 	stored bool
 	text   bool // a TEXT column, kept dictionary-encoded while it has few distinct values
+	// num: a numeric(p<=18,s) column held as value*10^scale in ints (colnum.go)
+	num   bool
+	scale uint8
 	// derive maps a stored integer to the group value (date_trunc buckets
 	// to their first millisecond); nil: the integer itself
 	derive func(int64) int64
@@ -104,6 +107,14 @@ func newColTable(t *schema.Table) *colTable {
 		ct.kcol, ct.kidx = k, &intPosIndex{}
 	}
 	for i, c := range t.Columns {
+		if c.T == schema.TNumeric {
+			if sc, ok := numScaleOf(&c); ok {
+				ct.cols[i] = colVec{t: schema.TInt, stored: true, num: true, scale: uint8(sc)}
+			} else {
+				ct.cols[i].t = schema.TNumeric // not held by the view
+			}
+			continue
+		}
 		ct.cols[i].t = c.T.Store()
 		ct.cols[i].stored = true
 		if c.T.Store() == schema.TText {
@@ -134,6 +145,12 @@ func (ct *colTable) alterLocked(t *schema.Table) {
 		j := slices.IndexFunc(ct.schema.Columns, func(o schema.Column) bool { return o.Num == c.Num })
 		if j >= 0 && j < len(ct.cols) {
 			cols[i] = ct.cols[j]
+			// ALTER COLUMN TYPE to or from a numeric, or to another scale
+			sc, isNum := numScaleOf(&c)
+			if (c.T == schema.TNumeric || cols[i].num || cols[i].t == schema.TNumeric) &&
+				!(isNum && cols[i].num && int(cols[i].scale) == sc) {
+				cols[i] = colVec{t: c.T.Store()}
+			}
 		} else {
 			cols[i] = colVec{t: c.T.Store()}
 		}
@@ -329,6 +346,10 @@ func (ct *colTable) put(key string, r schema.Row) {
 		if v.Null {
 			cv.nulls = setBit(cv.nulls, pos)
 		}
+		if cv.num {
+			cv.putNum(v)
+			continue
+		}
 		switch cv.t {
 		case schema.TInt, schema.TTime, schema.TBool:
 			cv.ints.push(v.I)
@@ -481,6 +502,8 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 	if ct == nil {
 		return nil, fmt.Errorf("table is not columnar")
 	}
+	qc := *q // numeric group columns and top-k are set on a copy
+	q = &qc
 	ct.mu.RLock()
 	t, colTypes := ct.schema, make([]schema.ColType, len(ct.cols)) // ALTER TABLE replaces both
 	for i := range ct.cols {
@@ -490,6 +513,16 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 	distinctX := -1
 	if hasDistinct(q.Aggs) {
 		if len(q.GroupBy) > 1 {
+			for _, g := range q.GroupBy {
+				if ci, ok := t.Col(g); ok && t.Columns[ci].T == schema.TNumeric {
+					return nil, fmt.Errorf("count(DISTINCT) with several group columns, one numeric: not supported by the view")
+				}
+			}
+			for _, a := range q.Aggs {
+				if ci, ok := t.Col(a.Col); ok && a.Distinct && t.Columns[ci].T == schema.TNumeric {
+					return nil, fmt.Errorf("count(DISTINCT numeric) with several group columns: not supported by the view")
+				}
+			}
 			return aggregateDistinct(t, q, func(inner *AggQuery) (*Result, error) { return c.Aggregate(tableID, inner) })
 		}
 		xi, err := distinctCol(t, q)
@@ -498,7 +531,7 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 		}
 		distinctX = xi
 	}
-	fs, err := compileFilters(t, q.Filters)
+	fs, err := compileFilters(t, q.Filters, true)
 	if err != nil {
 		return nil, err
 	}
@@ -507,6 +540,7 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 		return nil, err
 	}
 	var gcols []int
+	var gscale []int
 	for _, g := range q.GroupBy {
 		ci, ok := t.Col(g)
 		if !ok {
@@ -516,6 +550,14 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 			return nil, fmt.Errorf("cannot group by %s column %q", t.Columns[ci].Type, g)
 		}
 		gcols = append(gcols, ci)
+		sc, isNum := numScaleOf(&t.Columns[ci])
+		if !isNum {
+			sc = -1
+		}
+		gscale = append(gscale, sc)
+		if isNum {
+			q.gscale = gscale
+		}
 	}
 	if len(q.GroupTrunc) > len(q.GroupBy) {
 		return nil, fmt.Errorf("group_trunc has more entries than group_by")
@@ -549,6 +591,13 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 	}
 
 	notStored := func(ci int) error {
+		if ci < len(t.Columns) && t.Columns[ci].T == schema.TNumeric {
+			sc, ok := numScaleOf(&t.Columns[ci])
+			if cv := &ct.cols[ci]; !ok || !cv.stored || !cv.num || int(cv.scale) != sc {
+				return fmt.Errorf("column %q (%s) is not in the columnar view; it is read from the rows", t.Columns[ci].Name, t.Columns[ci].Type)
+			}
+			return nil
+		}
 		if ct.cols[ci].stored {
 			return nil
 		}
@@ -585,6 +634,14 @@ func (c *Columnar) Aggregate(tableID uint32, q *AggQuery) (*Result, error) {
 	workers = min(workers, max(nchunks, 1))
 	for i := range specs {
 		specs[i].nullEmpty = q.SQLNulls
+		if s := &specs[i]; s.num && (s.fn == "sum" || s.fn == "avg") {
+			s.wide = ct.wideNeeded(&ct.cols[s.col])
+		}
+		// the order of numeric averages and wide sums is not kept exactly
+		// by the top-k: the caller orders and limits the groups
+		if s := &specs[i]; s.num && s.name == q.OrderBy && (s.fn == "avg" || s.wide) {
+			q.OrderBy, q.Limit = "", 0
+		}
 	}
 	if distinctX >= 0 {
 		if err := notStored(distinctX); err != nil {
@@ -835,6 +892,15 @@ func (ct *colTable) accumulateBatch(accs []acc, specs []aggSpec, keys []int32, s
 					a.fsum += vals[sel[i]&chunkMask]
 				}
 			}
+		case s.wide: // 128-bit sums of a numeric column
+			for i := 0; i < len(sel); {
+				ci := sel[i] >> chunkShift
+				vals := cv.ints.arr(int(ci))
+				for ; i < len(sel) && sel[i]>>chunkShift == ci; i++ {
+					accs[int(keys[i])*na+ai].addWide(vals[sel[i]&chunkMask])
+				}
+				cv.ints.release(int(ci), vals)
+			}
 		case cv.t == schema.TInt || cv.t == schema.TTime || cv.t == schema.TBool:
 			for i := 0; i < len(sel); {
 				ci := sel[i] >> chunkShift
@@ -868,6 +934,8 @@ func (ct *colTable) add(a *acc, s *aggSpec, pos uint32) {
 	case schema.TInt, schema.TTime, schema.TBool:
 		if s.minmax {
 			a.addInt(cv.ints.at(int(pos)))
+		} else if s.wide {
+			a.addWide(cv.ints.at(int(pos)))
 		} else {
 			a.n++
 			a.isum += cv.ints.at(int(pos))

@@ -31,13 +31,14 @@ import (
 // SELECT carrier, count(*) ... WHERE num LIKE '%888%' GROUP BY carrier a
 // facet over the candidates.
 //
-// Freshness: SET stask.consistency = strong | bounded (default) | session |
-// eventual and SET stask.max_lag_ms = 1000. A view that cannot meet it is
+// Freshness: SET stask.consistency = strong | bounded | session (default,
+// D26) | eventual and SET stask.max_lag_ms = 1000. A view that cannot meet it is
 // waited for, then the table is scanned; EXPLAIN and SHOW stask.last_plan
 // report engine, applied_lsn and view_lag_ms.
 const (
 	SearchConsistencyVar = "stask.consistency"
 	SearchMaxLagVar      = "stask.max_lag_ms"
+	DefaultConsistency   = "session"
 	LastPlanVar          = "stask.last_plan"
 )
 
@@ -52,6 +53,7 @@ type SubstrViews interface {
 type CreateSubstrIndex struct {
 	Name, Table, Col string
 	IfNotExists      bool
+	Concurrently     bool // return at once; the view is built in the background
 }
 type DropSubstrIndex struct {
 	Names    []string
@@ -76,7 +78,7 @@ func (p *parser) createSubstrIndex() (st Stmt, ok bool, err error) {
 		return fail()
 	}
 	c := &CreateSubstrIndex{}
-	p.acceptKw("concurrently")
+	c.Concurrently = p.acceptKw("concurrently")
 	c.IfNotExists = p.acceptKw("if", "not", "exists")
 	if !p.isKw("on") {
 		if c.Name, err = p.ident(); err != nil {
@@ -149,17 +151,33 @@ func (p *parser) dropSubstrIndex() (Stmt, bool, error) {
 func (p *parser) explainStmt() (Stmt, error) {
 	p.next()
 	e := &Explain{}
-	if p.acceptOp("(") { // EXPLAIN (ANALYZE, ...): options are accepted and ignored
+	if p.acceptOp("(") { // EXPLAIN (ANALYZE [bool], VERBOSE, COSTS off, FORMAT text ...): only ANALYZE changes the output
 		for !p.acceptOp(")") {
-			if p.next().k == tEOF {
+			t := p.next()
+			if t.k == tEOF {
 				return nil, p.errHere("syntax error in EXPLAIN")
+			}
+			if t.k == tIdent && (t.s == "analyze" || t.s == "analyse") {
+				e.Analyze = true
+				if n := p.peek(); n.k == tIdent && (n.s == "false" || n.s == "off") {
+					e.Analyze = false
+					p.next()
+				} else if n.k == tIdent && (n.s == "true" || n.s == "on") {
+					p.next()
+				}
 			}
 		}
 	}
-	e.Analyze = p.acceptKw("analyze")
+	if p.acceptKw("analyze") || p.acceptKw("analyse") {
+		e.Analyze = true
+	}
 	p.acceptKw("verbose")
 	var err error
-	e.Stmt, err = p.queryStmt()
+	if p.isKw("insert") || p.isKw("update") || p.isKw("delete") {
+		e.Stmt, err = p.statement()
+	} else {
+		e.Stmt, err = p.queryStmt()
+	}
 	return e, err
 }
 
@@ -204,6 +222,11 @@ func (s *Session) createSubstrIndex(c *CreateSubstrIndex) (*Result, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if !c.Concurrently {
+		if err := s.waitSubstrBuilt(c.Table, c.Col); err != nil {
+			return nil, err
+		}
 	}
 	return &Result{Tag: "CREATE INDEX"}, nil
 }
@@ -524,9 +547,9 @@ func (s *Session) substrPrepare(tx *core.Tx, t *schema.Table, sc *scope, ctx *ev
 	mode, maxLag := s.searchContract()
 	var minLSN uint64
 	if mode == "session" {
-		minLSN = tx.Snapshot()
-		if v, err := strconv.ParseUint(s.vars[MinLSNVar], 10, 64); err == nil && v > minLSN {
-			minLSN = v
+		minLSN = s.sessionLSN()
+		if minLSN == 0 {
+			mode = "eventual" // nothing written by this session: no own write to wait for
 		}
 	}
 	pl, use := sv.SubstrChoose(t.Name, best.col, mode, maxLag, minLSN)
@@ -552,7 +575,7 @@ func popcount(b uint8) (n int) {
 func (s *Session) searchContract() (string, time.Duration) {
 	mode := strings.ToLower(s.vars[SearchConsistencyVar])
 	if mode == "" {
-		mode = "bounded"
+		mode = DefaultConsistency
 	}
 	lag := time.Second
 	if v := s.vars[SearchMaxLagVar]; v != "" {
@@ -647,48 +670,7 @@ func max64(a, b int64) int64 {
 
 // ---- EXPLAIN ----
 
-func (s *Session) explain(e *Explain) (*Result, error) {
-	var lines []string
-	if st, ok := e.Stmt.(*Select); ok && st.From != "" && st.Rel == nil {
-		t, err := s.table(st.From)
-		if err != nil {
-			return nil, err
-		}
-		sc := &scope{t: t, alias: st.Alias}
-		ctx := &evalCtx{sc: sc, now: nowMicros(), sess: s}
-		tx := s.tx
-		if tx == nil {
-			tx = s.begin(core.SnapshotIsolation)
-			defer tx.Abort()
-		}
-		s.vars[LastPlanVar] = ""
-		cand := s.substrPrepare(tx, t, sc, ctx, st.Where)
-		switch {
-		case cand != nil:
-			lines = append(lines, fmt.Sprintf("Trigram Scan on %s using %s", t.Name, cand.idx),
-				"  Index Cond: "+strings.Join(cand.conds, " AND "))
-		default:
-			lines = append(lines, "Seq Scan on "+t.Name)
-		}
-		if cand != nil || s.vars[LastPlanVar] != "" {
-			mode, lag := s.searchContract()
-			pl := cand
-			_ = pl
-			lines = append(lines, fmt.Sprintf("  Consistency: %s (max_lag_ms=%d)", mode, lag.Milliseconds()))
-			lines = append(lines, "  Detail: "+s.vars[LastPlanVar])
-		}
-		if len(st.GroupBy) > 0 {
-			lines = append(lines, "  Group: facet over the rows found")
-		}
-	} else {
-		lines = append(lines, "Query (plan detail is given for single-table SELECT)")
-	}
-	res := &Result{Cols: []Column{{Name: "QUERY PLAN", Kind: KText}}, Tag: "EXPLAIN", HasRows: true}
-	for _, l := range lines {
-		res.Rows = append(res.Rows, []Datum{TextD(l)})
-	}
-	return res, nil
-}
+func (s *Session) explain(e *Explain) (*Result, error) { return s.explainAny(e, nil) }
 
 func (s *Session) execSubstr(st Stmt) (*Result, error) {
 	var res *Result

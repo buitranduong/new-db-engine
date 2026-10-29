@@ -86,8 +86,8 @@ func TestCatalogPsql(t *testing.T) {
 	// \d items
 	expectRows(t, s, qs[5], tbl+",public,items")
 	expectRows(t, s, qs[6], "1,r,true,false,false,false,false,false,false,NULL,0,,p,d,heap") // PostgreSQL gives an empty string: NULL || array is NULL here (arrays are text); psql shows both as nothing
-	expectRows(t, s, qs[7], "id,bigint,nextval('items_id_seq'::regclass),true,NULL,,;name,text,'x',true,NULL,,;qty,bigint,0,false,NULL,,;"+
-		"created,timestamp with time zone,now(),false,NULL,,;price,double precision,NULL,false,NULL,,;extra,bigint,NULL,false,NULL,,;"+
+	expectRows(t, s, qs[7], "id,integer,nextval('items_id_seq'::regclass),true,NULL,,;name,text,'x',true,NULL,,;qty,bigint,0,false,NULL,,;"+
+		"created,timestamp with time zone,now(),false,NULL,,;price,double precision,NULL,false,NULL,,;extra,integer,NULL,false,NULL,,;"+
 		"note,text,'n',false,NULL,,")
 	expectRows(t, s, qs[8], "items_pkey,true,true,false,true,CREATE UNIQUE INDEX items_pkey ON public.items USING btree (id),PRIMARY KEY (id),p,false,false,false,0")
 	expectRows(t, s, qs[9], "items_qty_check,CHECK (qty >= 0)")
@@ -124,12 +124,12 @@ func TestCatalogJDBC(t *testing.T) {
 	expectRows(t, s, qs[22], "NULL,public,ident_id_seq,SEQUENCE,NULL,,,,,;NULL,public,items_id_seq,SEQUENCE,NULL,,,,,;"+
 		"NULL,public,s1,SEQUENCE,NULL,,,,,;NULL,public,ev,TABLE,NULL,,,,,;NULL,public,ident,TABLE,NULL,,,,,;NULL,public,items,TABLE,NULL,,,,,")
 	// getColumns: the dropped column is skipped and attnum is the row number
-	expectRows(t, s, qs[23], "public,items,id,20,true,-1,8,-1,1,NULL,NULL,nextval('items_id_seq'::regclass),NULL,0,b;"+
+	expectRows(t, s, qs[23], "public,items,id,23,true,-1,4,-1,1,NULL,NULL,nextval('items_id_seq'::regclass),NULL,0,b;"+
 		"public,items,name,25,true,-1,-1,-1,2,NULL,NULL,'x',NULL,0,b;"+
 		"public,items,qty,20,false,-1,8,-1,3,NULL,NULL,0,NULL,0,b;"+
 		"public,items,created,1184,false,-1,8,-1,4,NULL,NULL,now(),NULL,0,b;"+
 		"public,items,price,701,false,-1,8,-1,5,NULL,NULL,NULL,NULL,0,b;"+
-		"public,items,extra,20,false,-1,8,-1,6,NULL,NULL,NULL,NULL,0,b;"+
+		"public,items,extra,23,false,-1,4,-1,6,NULL,NULL,NULL,NULL,0,b;"+
 		"public,items,note,25,false,-1,-1,-1,7,NULL,NULL,'n',NULL,0,b")
 	expectRows(t, s, qs[24], "NULL,public,items,id,1,items_pkey")
 	expectRows(t, s, qs[25], "NULL,public,items,false,NULL,items_pkey,3,1,id,A,-1,0,NULL")
@@ -181,12 +181,12 @@ func TestCatalogRelations(t *testing.T) {
 	// pg_attribute: dropped slot between created and price
 	expectRows(t, s, `SELECT attnum, attname, atttypid, attnotnull, atthasdef, atthasmissing, attidentity, attisdropped, attlen
 		FROM pg_attribute WHERE attrelid = 'items'::regclass AND attnum > 0 ORDER BY attnum`,
-		"1,id,20,true,true,false,,false,8;2,name,25,true,true,false,,false,-1;3,qty,20,false,true,false,,false,8;"+
+		"1,id,23,true,true,false,,false,4;2,name,25,true,true,false,,false,-1;3,qty,20,false,true,false,,false,8;"+
 			"4,created,1184,false,true,false,,false,8;5,........pg.dropped.5........,0,false,false,false,,true,-1;"+
-			"6,price,701,false,false,false,,false,8;7,extra,20,false,false,false,,false,8;8,note,25,false,true,true,,false,-1")
+			"6,price,701,false,false,false,,false,8;7,extra,23,false,false,false,,false,4;8,note,25,false,true,true,,false,-1")
 	expectRows(t, s, `SELECT attname, attidentity, atthasdef FROM pg_attribute WHERE attrelid = 'ident'::regclass AND attnum > 0 ORDER BY attnum`,
 		"id,a,false;label,,false")
-	expectRows(t, s, `SELECT attname, atttypid FROM pg_attribute WHERE attrelid = 'items_pkey'::regclass`, "id,20")
+	expectRows(t, s, `SELECT attname, atttypid FROM pg_attribute WHERE attrelid = 'items_pkey'::regclass`, "id,23")
 	expectRows(t, s, `SELECT attname, atttypid, attnum FROM pg_attribute WHERE attrelid = 's1'::regclass ORDER BY attnum`,
 		"last_value,20,1;log_cnt,20,2;is_called,16,3")
 	expectRows(t, s, `SELECT count(*) FROM pg_attribute WHERE attrelid = 'ev'::regclass AND attnum > 0 AND NOT attisdropped`, "4")
@@ -243,12 +243,12 @@ func TestCatalogInformationSchema(t *testing.T) {
 		"stask,public,ev,BASE TABLE,YES;stask,public,ident,BASE TABLE,YES;stask,public,items,BASE TABLE,YES")
 	expectRows(t, s, `SELECT column_name, ordinal_position, column_default, is_nullable, data_type, udt_name, numeric_precision, is_identity, identity_generation
 		FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position`,
-		"id,1,nextval('items_id_seq'::regclass),NO,bigint,int8,64,NO,NULL;"+
+		"id,1,nextval('items_id_seq'::regclass),NO,integer,int4,32,NO,NULL;"+
 			"name,2,'x',NO,text,text,NULL,NO,NULL;"+
 			"qty,3,0,YES,bigint,int8,64,NO,NULL;"+
 			"created,4,now(),YES,timestamp with time zone,timestamptz,NULL,NO,NULL;"+
 			"price,6,NULL,YES,double precision,float8,53,NO,NULL;"+
-			"extra,7,NULL,YES,bigint,int8,64,NO,NULL;"+
+			"extra,7,NULL,YES,integer,int4,32,NO,NULL;"+
 			"note,8,'n',YES,text,text,NULL,NO,NULL")
 	expectRows(t, s, `SELECT column_name, column_default, is_identity, identity_generation, identity_start, identity_increment
 		FROM information_schema.columns WHERE table_name = 'ident' ORDER BY ordinal_position`,

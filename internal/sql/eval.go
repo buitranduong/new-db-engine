@@ -261,6 +261,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if d.K == KFloat && d.S != "" {
+			d.S = "" // a real cast to double precision prints with double digits
+		}
 		if e.PG != "" {
 			if d, err = applyPG(e.PG, d, true); err != nil {
 				return Null, err

@@ -1559,7 +1559,7 @@ func itemName(it SelItem) string {
 		return e.Name
 	case *Cast:
 		// the operand's name when it has one, else the type's
-		if n := itemName(SelItem{X: e.X}); n != "?column?" {
+		if n := castOperandName(e.X); n != "?column?" {
 			return n
 		}
 		return castName(e)
@@ -1806,6 +1806,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
+	}
+	if st.OnConflict != nil {
+		if err := checkConflictTarget(t, st.OnConflict.Target); err != nil {
+			return nil, err
+		}
 	}
 	n := 0
 	inserted := make(map[string]bool, len(st.Rows))

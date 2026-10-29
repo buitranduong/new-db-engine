@@ -95,6 +95,7 @@ type Assign struct {
 }
 
 type OnConflict struct {
+	Target    []string // ON CONFLICT (cols); nil: none given
 	DoNothing bool
 	Set       []Assign
 	Where     Expr

@@ -99,6 +99,54 @@ func (s *Session) targetRows(tx *core.Tx, t *schema.Table, table, alias string, 
 	return rows, vals, nil
 }
 
+// foreignRefs are the column references of a RETURNING list that name no
+// column of the target table: they belong to the FROM / USING tables and
+// are evaluated by the query that finds the rows.
+func foreignRefs(items []SelItem, t *schema.Table, qual string) []*ColRef {
+	var out []*ColRef
+	for _, it := range items {
+		walk(it.X, func(e Expr) {
+			c, ok := e.(*ColRef)
+			if !ok {
+				return
+			}
+			if c.Table == "" || c.Table == qual || c.Table == t.Name {
+				if _, ok := t.Col(c.Name); ok || c.Table != "" {
+					return
+				}
+			}
+			out = append(out, c)
+		})
+	}
+	return out
+}
+
+// bindForeign replaces the foreign references of items by the values the
+// query found for the row.
+func bindForeign(items []SelItem, refs []*ColRef, vals []Datum) []SelItem {
+	if len(refs) == 0 {
+		return items
+	}
+	out := make([]SelItem, len(items))
+	for i, it := range items {
+		out[i] = it
+		if it.X == nil {
+			continue
+		}
+		out[i].X, _ = rebuildDeep(it.X, func(e Expr) (Expr, bool) {
+			if c, ok := e.(*ColRef); ok {
+				for j, r := range refs {
+					if r == c {
+						return &Lit{V: vals[j]}, true
+					}
+				}
+			}
+			return nil, false
+		})
+	}
+	return out
+}
+
 func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params []Datum) (*Result, error) {
 	extra := make([]Expr, len(st.Set))
 	cols := make([]int, len(st.Set))
@@ -109,11 +157,19 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 		}
 		cols[i], extra[i] = ci, a.X
 	}
+	qual := st.Alias
+	if qual == "" {
+		qual = st.Table
+	}
+	fx := foreignRefs(st.Returning, t, qual)
+	for _, r := range fx {
+		extra = append(extra, r)
+	}
 	rows, vals, err := s.targetRows(tx, t, st.Table, st.Alias, st.From, st.Where, extra, params)
 	if err != nil {
 		return nil, err
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
@@ -133,7 +189,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 		if upd, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
 			return nil, err
 		}
-		if err := s.returning(sc, ctx, st.Returning, upd, res); err != nil {
+		if err := s.returning(sc, ctx, bindForeign(st.Returning, fx, vals[ri][len(cols):]), upd, res); err != nil {
 			return nil, err
 		}
 	}
@@ -142,22 +198,31 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 }
 
 func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params []Datum) (*Result, error) {
-	rows, _, err := s.targetRows(tx, t, st.Table, st.Alias, st.Using, st.Where, nil, params)
+	qual := st.Alias
+	if qual == "" {
+		qual = st.Table
+	}
+	fx := foreignRefs(st.Returning, t, qual)
+	extra := make([]Expr, len(fx))
+	for i, r := range fx {
+		extra[i] = r
+	}
+	rows, vals, err := s.targetRows(tx, t, st.Table, st.Alias, st.Using, st.Where, extra, params)
 	if err != nil {
 		return nil, err
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
-	for _, r := range rows {
+	for ri, r := range rows {
 		if err := s.deleteRow(tx, t, tgs, r); err != nil {
 			return nil, err
 		}
-		if err := s.returning(sc, ctx, st.Returning, r, res); err != nil {
+		if err := s.returning(sc, ctx, bindForeign(st.Returning, fx, vals[ri]), r, res); err != nil {
 			return nil, err
 		}
 	}

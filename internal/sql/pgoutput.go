@@ -236,6 +236,9 @@ func (o *PgOutput) relation(t *schema.Table, ident byte) []byte {
 
 // PgTypeOID is the PostgreSQL type of a column.
 func PgTypeOID(c schema.Column) uint32 {
+	if t := colTy(&c); t.oid != 0 { // declared int2/int4/real/varchar/char/date/time
+		return t.oid
+	}
 	switch c.T {
 	case schema.TInt:
 		return 20 // int8
@@ -307,7 +310,7 @@ func (o *PgOutput) tuple(b []byte, t *schema.Table, row schema.Row) []byte {
 			if d.K == KArray {
 				val, ok = ArrayBinary(d, elemKindOf(col), elemOID(PgTypeOID(col)))
 			} else {
-				val, ok = BinaryValue(d)
+				val, ok = BinaryValueFor(PgTypeOID(col), d)
 			}
 			if ok {
 				b = append(b, 'b')

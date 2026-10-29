@@ -53,32 +53,6 @@ const (
 	oidTime        = 1083
 )
 
-// narrowBinary is the binary form of d in a column whose type is narrower
-// than its Kind (int2, int4, real, time); nil when OID needs no special form.
-func narrowBinary(oid uint32, d sql.Datum) []byte {
-	switch oid {
-	case oidInt4:
-		if d.K == sql.KInt {
-			return binary.BigEndian.AppendUint32(nil, uint32(int32(d.I)))
-		}
-	case oidInt2:
-		if d.K == sql.KInt {
-			return binary.BigEndian.AppendUint16(nil, uint16(int16(d.I)))
-		}
-	case oidFloat4:
-		if d.K == sql.KFloat {
-			return binary.BigEndian.AppendUint32(nil, math.Float32bits(float32(d.F)))
-		}
-	case oidTime:
-		if d.K == sql.KText {
-			if us, ok := sql.TimeOfDayMicros(d.S); ok {
-				return binary.BigEndian.AppendUint64(nil, uint64(us))
-			}
-		}
-	}
-	return nil
-}
-
 // dataCols are the columns the rows of portal p are announced with.
 func dataCols(p *portal) []sql.Column {
 	if p.ps.desc != nil && len(p.ps.desc.Cols) == len(p.res.Cols) {
@@ -1121,15 +1095,15 @@ func (c *conn) dataRow(row []sql.Datum, formats []int16, cols []sql.Column) erro
 		}
 		if format(formats, i) == 1 {
 			var b []byte
-			if i < len(cols) && cols[i].OID != 0 {
-				b = narrowBinary(cols[i].OID, d)
-			}
 			switch {
-			case b != nil:
 			case d.K == sql.KArray:
 				b = textArrayBinary(d.S)
 			default:
-				if v, ok := sql.BinaryValue(d); ok {
+				oid := uint32(0)
+				if i < len(cols) {
+					oid = cols[i].OID
+				}
+				if v, ok := sql.BinaryValueFor(oid, d); ok {
 					b = v
 				} else {
 					b = []byte(d.S)

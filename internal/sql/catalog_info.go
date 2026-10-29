@@ -35,7 +35,9 @@ func numericInfo(oid int64) (prec, radix, scale, dt Datum) {
 		prec, radix, scale = IntD(16), IntD(2), IntD(0)
 	case 701:
 		prec, radix = IntD(53), IntD(2)
-	case 1184, 1114:
+	case 700:
+		prec, radix = IntD(24), IntD(2)
+	case 1184, 1114, 1083:
 		dt = IntD(6) // microseconds
 	case 1082:
 		dt = IntD(0)
@@ -88,9 +90,15 @@ func init() {
 			for _, col := range t.Columns {
 				dataType, udt, ty := colTypeInfo(col)
 				prec, radix, scale, dt := numericInfo(ty.oid)
-				octet := Null
+				octet, charLen := Null, Null
 				if ty.cat == "S" {
 					octet = IntD(1073741824)
+				}
+				if ct := colTy(&col); (ct.oid == tyVarchar || ct.oid == tyBpchar) && ct.mod >= 4 {
+					charLen, octet = IntD(int64(ct.mod)-4), IntD(4*(int64(ct.mod)-4))
+				}
+				if p, sc, ok := schema.NumericMod(col.Type); ok {
+					prec, radix, scale = IntD(int64(p)), IntD(10), IntD(int64(sc))
 				}
 				def := Null
 				if hasDef(col) {
@@ -107,7 +115,7 @@ func init() {
 					}
 				}
 				rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD(col.Name), IntD(int64(col.Num)), def,
-					TextD(boolStr(!(col.NotNull || col.Name == t.Key))), TextD(dataType), Null, octet, prec, radix, scale, dt,
+					TextD(boolStr(!(col.NotNull || col.Name == t.Key))), TextD(dataType), charLen, octet, prec, radix, scale, dt,
 					Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
 					Null, Null, Null, Null, TextD(itoa(int64(col.Num))), TextD("NO"), TextD(isID), gen, idStart, idInc,
 					idMax, idMin, idCycle, TextD("NEVER"), Null, TextD("YES")})

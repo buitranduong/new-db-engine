@@ -3,6 +3,7 @@ package sql
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -718,4 +719,44 @@ func similarToRegex(p string) string {
 		}
 	}
 	return b.String()
+}
+
+// checkConflictTarget validates ON CONFLICT (cols): it must name the
+// primary key (STASK resolves every conflict by the key) or, in
+// PostgreSQL, a unique index (not supported here, said so instead of
+// silently treating it as the key).
+func checkConflictTarget(t *schema.Table, target []string) error {
+	if len(target) == 0 {
+		return nil
+	}
+	if len(target) == 1 && target[0] == t.Key {
+		return nil
+	}
+	for _, ix := range t.Indexes {
+		if ix.Unique && slices.Equal(ix.Columns, target) {
+			return errf(codeFeature, "ON CONFLICT on the unique index %q is not supported: name the primary key", ix.Name)
+		}
+	}
+	return errf("42P10", "there is no unique or exclusion constraint matching the ON CONFLICT specification")
+}
+
+// castOperandName is the name of the expression under a cast, looking
+// through further casts without taking their type names.
+func castOperandName(x Expr) string {
+	if c, ok := x.(*Cast); ok {
+		return castOperandName(c.X)
+	}
+	return itemName(SelItem{X: x})
+}
+
+// showColumn is the result column name of SHOW name.
+func showColumn(name string) string {
+	n := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(name), " . ", "."), " ", "_")
+	if n == "transaction_isolation_level" {
+		n = "transaction_isolation"
+	}
+	if c, ok := showNames[n]; ok {
+		return c
+	}
+	return n
 }

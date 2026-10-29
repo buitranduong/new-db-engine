@@ -897,7 +897,11 @@ func (p *parser) insertStmt() (Stmt, error) {
 				if p.peek().k == tEOF {
 					return nil, p.errHere("unterminated conflict target")
 				}
-				p.next()
+				if tk := p.next(); tk.k == tIdent || tk.k == tQuoted {
+					oc.Target = append(oc.Target, tk.s)
+				} else if tk.s != "," {
+					oc.Target = append(oc.Target, "") // an expression target: never matches
+				}
 			}
 		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
 			if _, err := p.ident(); err != nil {

@@ -28,10 +28,11 @@ func (s *Session) alterColumnType(table string, d *schema.Table, i int, a AlterA
 	}
 	from := c.T
 	if c.Type == a.Type {
+		c.PG = a.PG
 		return nil
 	}
 	if schema.SameEncoding(from, to) || from == to && from == schema.TNumeric { // varchar <-> text stored alike; numeric(p,s) modifier: new rows only
-		c.Type = a.Type
+		c.Type, c.PG = a.Type, a.PG
 		return nil
 	}
 	// the pairs P1.1 added (time to timestamp(tz), int/float to numeric) convert
@@ -95,7 +96,7 @@ converted:
 		}
 		c.Missing = &m
 	}
-	c.PrevType, c.Type, c.TypeLSN = c.Type, a.Type, math.MaxUint64
+	c.PrevType, c.Type, c.PG, c.TypeLSN = c.Type, a.Type, a.PG, math.MaxUint64
 	return nil
 }
 

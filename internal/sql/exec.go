@@ -23,6 +23,18 @@ const VersionString = "PostgreSQL 16.0 (STASK prototype)"
 type Column struct {
 	Name string
 	Kind Kind
+	// OID and Mod refine Kind to the PostgreSQL type (int4 for KInt,
+	// varchar(n) for KText...); OID 0 means the Kind's default type.
+	OID uint32
+	Mod int32
+}
+
+// withTy returns c typed t when t describes values of c's Kind.
+func (c Column) withTy(t pgTy) Column {
+	if t = t.forKind(c.Kind); t.oid != 0 {
+		c.OID, c.Mod = t.oid, t.mod
+	}
+	return c
 }
 
 // Result of one statement.
@@ -192,7 +204,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
 		}
-		return &Result{Cols: []Column{{name, KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
+		return &Result{Cols: []Column{{Name: name, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
 	case *CreateTable:
 		res, err := s.createTable(st)
 		if err != nil {
@@ -430,7 +442,7 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings
 		}
-		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, NotNull: cd.NotNull || cd.Primary})
+		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, NotNull: cd.NotNull || cd.Primary})
 	}
 	for k, v := range c.Options {
 		switch k {
@@ -1472,7 +1484,7 @@ func (st *Select) plan(sc *scope) (*selectPlan, error) {
 	p.cols = make([]Column, len(p.items))
 	pk := paramKinds(st, sc)
 	for i, it := range p.items {
-		p.cols[i] = Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}
+		p.cols[i] = itemCol(it, sc, pk)
 	}
 	// aggregates anywhere in the select list, HAVING or ORDER BY
 	collect := func(x Expr) {
@@ -1717,12 +1729,12 @@ func returningCols(sc *scope, items []SelItem, pk map[int]Kind) []Column {
 	var cols []Column
 	for _, it := range items {
 		if it.Star {
-			for _, c := range sc.t.Columns {
-				cols = append(cols, Column{c.Name, kindOf(c.T)})
+			for i := range sc.t.Columns {
+				cols = append(cols, tableCol(&sc.t.Columns[i]))
 			}
 			continue
 		}
-		cols = append(cols, Column{itemName(it), typeOf(it.X, sc, pk)})
+		cols = append(cols, itemCol(it, sc, pk))
 	}
 	return cols
 }

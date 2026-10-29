@@ -113,7 +113,7 @@ func (c *conn) replCommand(q string) (handled, stop bool) {
 		_, pos, _ := c.s.E.DurablePoint()
 		c.rowDescription([]sql.Column{{Name: "systemid", Kind: sql.KText}, {Name: "timeline", Kind: sql.KInt},
 			{Name: "xlogpos", Kind: sql.KText}, {Name: "dbname", Kind: sql.KText}}, nil)
-		c.dataRow([]sql.Datum{sql.TextD(systemID), sql.IntD(1), sql.TextD(pgLSNText(pos)), sql.TextD(c.dbname)}, nil)
+		c.dataRow([]sql.Datum{sql.TextD(systemID), sql.IntD(1), sql.TextD(pgLSNText(pos)), sql.TextD(c.dbname)}, nil, nil)
 		c.send(newMsg('C').str("IDENTIFY_SYSTEM"))
 		return true, false
 	case "CREATE_REPLICATION_SLOT":
@@ -153,7 +153,7 @@ func (c *conn) replCommand(q string) (handled, stop bool) {
 		}
 		c.rowDescription([]sql.Column{{Name: "slot_name", Kind: sql.KText}, {Name: "consistent_point", Kind: sql.KText},
 			{Name: "snapshot_name", Kind: sql.KText}, {Name: "output_plugin", Kind: sql.KText}}, nil)
-		c.dataRow([]sql.Datum{sql.TextD(name), sql.TextD(pgLSNText(info.Pos())), sql.Null, sql.TextD(plugin)}, nil)
+		c.dataRow([]sql.Datum{sql.TextD(name), sql.TextD(pgLSNText(info.Pos())), sql.Null, sql.TextD(plugin)}, nil, nil)
 		c.send(newMsg('C').str("CREATE_REPLICATION_SLOT"))
 		return true, false
 	case "DROP_REPLICATION_SLOT":

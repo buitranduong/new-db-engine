@@ -150,6 +150,11 @@ type Column struct {
 	Name    string `json:"name"`
 	Type    string `json:"type"`
 	NotNull bool   `json:"not_null,omitempty"`
+	// PG is the PostgreSQL type the column was declared with when Type
+	// cannot tell (int2, int4, float4, varchar(n), bpchar(n), name, date,
+	// time); empty for the default of Type (int8, float8, text...). Rows
+	// are encoded by Type alone, so old schemas without PG read as before.
+	PG string `json:"pg,omitempty"`
 	// Default is the SQL text of the column's DEFAULT expression;
 	// Identity is "always" or "by default" for an IDENTITY column.
 	Default  string `json:"default,omitempty"`

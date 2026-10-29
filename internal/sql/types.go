@@ -19,7 +19,7 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 		return KText
 	case *ColRef:
 		if i, err := sc.resolve(e); err == nil {
-			return kindOf(sc.t.Columns[i].T)
+			return colKind(&sc.t.Columns[i])
 		}
 		return KText
 	case *Unary:
@@ -186,7 +186,7 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 		for _, a := range set2 {
 			if sc.t != nil {
 				if i, ok := sc.t.Col(a.Col); ok {
-					set(a.X, kindOf(sc.t.Columns[i].T))
+					set(a.X, colKind(&sc.t.Columns[i]))
 				}
 			}
 			visit(a.X)
@@ -221,7 +221,7 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 						ci, _ = sc.t.Col(st.Cols[j])
 					}
 					if ci < len(sc.t.Columns) {
-						set(x, kindOf(sc.t.Columns[ci].T))
+						set(x, colKind(&sc.t.Columns[ci]))
 					}
 					visit(x)
 				}
@@ -331,7 +331,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		table, ret = st.Table, st.Returning
 	case *Show:
 		d.HasRows = true
-		d.Cols = []Column{{st.Name, KText}}
+		d.Cols = []Column{{Name: st.Name, Kind: KText}}
 		return d, nil
 	default:
 		return d, nil
@@ -360,11 +360,11 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 					return nil, errf(codeSyntax, "SELECT * with no tables specified is not valid")
 				}
 				for _, c := range sc.t.Columns {
-					d.Cols = append(d.Cols, Column{c.Name, kindOf(c.T)})
+					d.Cols = append(d.Cols, tableCol(&c))
 				}
 				continue
 			}
-			d.Cols = append(d.Cols, Column{itemName(it), typeOf(it.X, sc, pk)})
+			d.Cols = append(d.Cols, itemCol(it, sc, pk))
 		}
 		return d, nil
 	}

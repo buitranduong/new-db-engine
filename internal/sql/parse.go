@@ -53,6 +53,10 @@ type parser struct {
 	toks []token
 	i    int
 	src  string
+	// pgSpec is the PostgreSQL spelling of the type typeName parsed last
+	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
+	// when the schema type says it all.
+	pgSpec string
 }
 
 func (p *parser) peek() token { return p.toks[p.i] }
@@ -559,6 +563,7 @@ func (p *parser) colDef() (ColDef, error) {
 	if cd.Type, err = p.typeName(); err != nil {
 		return cd, err
 	}
+	cd.PG = p.pgSpec
 	switch raw {
 	case "smallserial", "serial", "bigserial":
 		cd.Serial, cd.NotNull = true, true
@@ -573,8 +578,8 @@ func (p *parser) colDef() (ColDef, error) {
 		}
 	}
 	switch cd.Type {
-	case "date": // stored as a timestamp at midnight
-		cd.Type = "time"
+	case "date": // stored as a timestamp at midnight, read back as a date (PG "date")
+		cd.Type = "timestamp"
 	case "interval", "array":
 		return cd, errf(codeFeature, "columns of type %s are not supported", cd.Type)
 	}
@@ -653,14 +658,19 @@ func (p *parser) colDef() (ColDef, error) {
 
 // typeName maps PostgreSQL type names to schema types.
 func (p *parser) typeName() (string, error) {
+	p.pgSpec = ""
 	t := p.next()
 	if t.k != tIdent {
 		return "", p.errHere("syntax error: expected a type name")
 	}
+	// modN is the first number of "(n[, m])", or -1
+	modN := -1
 	skipMods := func() {
 		if p.acceptOp("(") {
 			for !p.acceptOp(")") && p.peek().k != tEOF {
-				p.next()
+				if x := p.next(); x.k == tNumber && modN < 0 {
+					modN, _ = strconv.Atoi(x.s)
+				}
 			}
 		}
 	}
@@ -678,6 +688,12 @@ func (p *parser) typeName() (string, error) {
 	case "int", "integer", "int2", "int4", "int8", "bigint", "smallint", "serial", "bigserial", "smallserial",
 		"int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "tinyint", "signed", "unsigned":
 		out = "int"
+		switch t.s {
+		case "int2", "smallint", "smallserial":
+			p.pgSpec = "int2"
+		case "int", "integer", "int4", "serial":
+			p.pgSpec = "int4"
+		}
 	case "float32", "float64", "double_precision":
 		skipMods()
 		out = "float"
@@ -687,6 +703,12 @@ func (p *parser) typeName() (string, error) {
 	case "fixedstring", "enum8", "enum16", "ipv4", "ipv6", "bpchar":
 		skipMods()
 		out = "string"
+		if t.s == "bpchar" {
+			p.pgSpec = "bpchar"
+			if modN >= 1 {
+				p.pgSpec = "bpchar(" + strconv.Itoa(modN) + ")"
+			}
+		}
 	case "json", "jsonb", "bytea", "uuid":
 		out = t.s
 	case "datetime", "datetime64":
@@ -705,6 +727,9 @@ func (p *parser) typeName() (string, error) {
 	case "float", "float4", "float8", "real":
 		skipMods()
 		out = "float"
+		if t.s == "float4" || t.s == "real" || t.s == "float" && modN >= 1 && modN <= 24 {
+			p.pgSpec = "float4"
+		}
 	case "numeric", "decimal":
 		out = "numeric"
 		if p.acceptOp("(") { // numeric(precision[, scale])
@@ -732,9 +757,24 @@ func (p *parser) typeName() (string, error) {
 	case "int2vector", "oidvector":
 		out = "array"
 	case "varchar", "char", "character", "string", "name":
-		p.acceptKw("varying")
+		varying := p.acceptKw("varying")
 		skipMods()
 		out = "string"
+		switch {
+		case t.s == "string":
+		case t.s == "name":
+			p.pgSpec = "name"
+		case t.s == "varchar" || varying:
+			p.pgSpec = "varchar"
+			if modN >= 1 {
+				p.pgSpec = "varchar(" + strconv.Itoa(modN) + ")"
+			}
+		default:
+			p.pgSpec = "bpchar(1)"
+			if modN >= 1 {
+				p.pgSpec = "bpchar(" + strconv.Itoa(modN) + ")"
+			}
+		}
 	case "timestamp", "timestamptz":
 		skipMods()
 		out = t.s
@@ -749,6 +789,18 @@ func (p *parser) typeName() (string, error) {
 		}
 	case "date":
 		out = "date"
+		p.pgSpec = "date"
+	case "time":
+		skipMods()
+		out = "string" // time of day: held as "HH:MM:SS[.ffffff]" text (pgtype.go)
+		p.pgSpec = "time"
+		if p.acceptKw("with") {
+			p.acceptKw("time")
+			p.acceptKw("zone")
+		} else if p.acceptKw("without") {
+			p.acceptKw("time")
+			p.acceptKw("zone")
+		}
 	case "bool", "boolean":
 		out = "bool"
 	default:
@@ -758,6 +810,7 @@ func (p *parser) typeName() (string, error) {
 		if err := p.expectOp("]"); err != nil {
 			return "", err
 		}
+		p.pgSpec = ""
 		if et, err := schema.ParseType(out); err == nil && et != schema.TArray && et != schema.TBytea && et != schema.TJSON && et != schema.TJSONB {
 			return out + "[]", nil
 		}
@@ -1273,7 +1326,7 @@ func (p *parser) unary() (Expr, error) {
 		case p.acceptOp("::"):
 			var t string
 			if t, err = p.typeName(); err == nil {
-				x = &Cast{x, t}
+				x = &Cast{x, t, p.pgSpec}
 			}
 			continue
 		case p.isOp("[") && p.i > 0 && (p.toks[p.i-1].s == ")" || p.toks[p.i-1].s == "]" && p.toks[p.i-1].k == tOp ||
@@ -1389,7 +1442,7 @@ func (p *parser) primary() (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &Cast{x, ty}, p.expectOp(")")
+			return &Cast{x, ty, p.pgSpec}, p.expectOp(")")
 		case "exists":
 			if p.peekN(1).s == "(" {
 				p.next()
@@ -1424,20 +1477,21 @@ func (p *parser) primary() (Expr, error) {
 				if u := p.peek(); u.k == tIdent && intervalUnits[u.s] != [2]int64{} || u.k == tIdent && (u.s == "microsecond" || u.s == "microseconds") {
 					v += " " + p.next().s
 				}
-				return &Cast{&Lit{TextD(v)}, "interval"}, nil
+				return &Cast{&Lit{TextD(v)}, "interval", ""}, nil
 			}
 		case "current_date":
 			p.next()
-			return &Cast{&Func{Name: "now"}, "date"}, nil
-		case "timestamp", "timestamptz", "date", "boolean", "int", "integer", "bigint", "text":
+			return &Cast{&Func{Name: "now"}, "date", "date"}, nil
+		case "timestamp", "timestamptz", "date", "boolean", "int", "integer", "bigint", "text", "time", "smallint", "real", "varchar":
 			// typed literal: TIMESTAMP '2024-01-01'
 			if p.peekN(1).k == tString {
 				ty, err := p.typeName()
 				if err != nil {
 					return nil, err
 				}
+				pg := p.pgSpec
 				s := p.next()
-				return &Cast{&Lit{TextD(s.s)}, ty}, nil
+				return &Cast{&Lit{TextD(s.s)}, ty, pg}, nil
 			}
 		case "current_timestamp", "localtimestamp":
 			p.next()
@@ -1930,6 +1984,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				if act.Type, err = p.typeName(); err != nil {
 					return nil, err
 				}
+				act.PG = p.pgSpec
 				if p.acceptKw("using") {
 					// only the cast of the column itself: USING col::type or CAST(col AS type)
 					x, err := p.expr()

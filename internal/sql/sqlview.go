@@ -152,7 +152,7 @@ func (c *compiler) expandView(f *FromTable, qual string) (fromPlan, bool, error)
 	}
 	cols := make([]relCol, n)
 	for i := range cols {
-		cols[i] = relCol{name: def.Cols[i], kind: base[i].kind}
+		cols[i] = relCol{name: def.Cols[i], kind: base[i].kind, ty: base[i].ty}
 	}
 	return &viewPlan{sub: &subPlan{p: p, c: renameCols(cols, f.ColAliases, qual)}, n: len(base)}, true, nil
 }

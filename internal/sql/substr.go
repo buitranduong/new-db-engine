@@ -683,7 +683,7 @@ func (s *Session) explain(e *Explain) (*Result, error) {
 	} else {
 		lines = append(lines, "Query (plan detail is given for single-table SELECT)")
 	}
-	res := &Result{Cols: []Column{{"QUERY PLAN", KText}}, Tag: "EXPLAIN", HasRows: true}
+	res := &Result{Cols: []Column{{Name: "QUERY PLAN", Kind: KText}}, Tag: "EXPLAIN", HasRows: true}
 	for _, l := range lines {
 		res.Rows = append(res.Rows, []Datum{TextD(l)})
 	}

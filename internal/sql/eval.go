@@ -243,6 +243,11 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if e.PG != "" {
+			if d, err = applyPG(e.PG, d, true); err != nil {
+				return Null, err
+			}
+		}
 		switch k {
 		case KNumeric:
 			return applyTypmod(e.Type, d)

@@ -140,6 +140,9 @@ func fromCol(c *schema.Column, v schema.Value) Datum {
 	if d.K == KArray {
 		d.I = int64(elemKindOf(*c))
 	}
+	if c.PG == "date" && d.K == KTimestamp {
+		d = DateD(d.I)
+	}
 	return d
 }
 
@@ -154,10 +157,15 @@ func toValueCol(c *schema.Column, d Datum) (schema.Value, error) {
 	if d.IsNull() {
 		return schema.Value{Null: true}, nil
 	}
-	k := kindOf(c.T)
+	k := colKind(c)
 	cd, err := coerce(d, k)
 	if err != nil {
 		return schema.Value{}, err
+	}
+	if c.PG != "" {
+		if cd, err = applyPG(c.PG, cd, false); err != nil {
+			return schema.Value{}, err
+		}
 	}
 	switch k {
 	case KNumeric:

@@ -1,0 +1,107 @@
+databaseChangeLog:
+  - changeSet:
+      id: 8
+      author: app
+      changes:
+        - addColumn:
+            tableName: SIM
+            columns:
+              - column:
+                  name: CARRIER
+                  type: VARCHAR(40)
+              - column:
+                  name: DATA_MB
+                  type: BIGINT
+                  defaultValueNumeric: 0
+      rollback:
+        - dropColumn:
+            tableName: SIM
+            columnName: CARRIER
+        - dropColumn:
+            tableName: SIM
+            columnName: DATA_MB
+  - changeSet:
+      id: 9
+      author: app
+      changes:
+        - createTable:
+            tableName: SIM_EVENT
+            columns:
+              - column:
+                  name: ID
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: SIM_ID
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: KIND
+                  type: VARCHAR(20)
+              - column:
+                  name: TS
+                  type: TIMESTAMP WITHOUT TIME ZONE
+      rollback:
+        - dropTable:
+            tableName: SIM_EVENT
+  - changeSet:
+      id: 9b
+      author: app
+      labels: gap-uuid-index
+      changes:
+        - addForeignKeyConstraint:
+            baseTableName: SIM_EVENT
+            baseColumnNames: SIM_ID
+            constraintName: FK_SIMEVENT_ON_SIM
+            referencedTableName: SIM
+            referencedColumnNames: ID
+  - changeSet:
+      id: 10
+      author: app
+      changes:
+        - addNotNullConstraint:
+            tableName: SIM
+            columnName: ICCID
+            defaultNullValue: UNKNOWN
+            columnDataType: VARCHAR(32)
+      rollback:
+        - dropNotNullConstraint:
+            tableName: SIM
+            columnName: ICCID
+            columnDataType: VARCHAR(32)
+  - changeSet:
+      id: 11
+      author: app
+      changes:
+        - renameColumn:
+            tableName: CUSTOMER
+            oldColumnName: NAME
+            newColumnName: FULL_NAME
+            columnDataType: VARCHAR(255)
+      rollback:
+        - renameColumn:
+            tableName: CUSTOMER
+            oldColumnName: FULL_NAME
+            newColumnName: NAME
+            columnDataType: VARCHAR(255)
+  - changeSet:
+      id: 12
+      author: app
+      changes:
+        - createSequence:
+            sequenceName: SEQ_ORDER_NO
+            startValue: 1000
+            incrementBy: 1
+        - addDefaultValue:
+            tableName: SIM
+            columnName: CARRIER
+            defaultValue: VNPT
+      rollback:
+        - dropDefaultValue:
+            tableName: SIM
+            columnName: CARRIER
+        - dropSequence:
+            sequenceName: SEQ_ORDER_NO

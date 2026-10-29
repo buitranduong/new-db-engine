@@ -223,6 +223,12 @@ func (s *Session) resetVar(name string) error {
 // writesStatement reports whether st changes data or schema (refused in a
 // READ ONLY transaction, 25006).
 func writesStatement(st Stmt) (bool, string) {
+	if e, ok := st.(*Explain); ok {
+		if e.Analyze {
+			return writesStatement(e.Stmt)
+		}
+		return false, ""
+	}
 	switch st.(type) {
 	case *WithDML:
 		return true, "WITH"

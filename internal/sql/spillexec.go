@@ -55,6 +55,7 @@ func (qx *qexec) runPlan(p qplan) (*relation, error) {
 	qx.subCache = map[*boundSub]*relation{}
 	qx.inSets = map[*boundSub]*inSet{}
 	qx.hashSubs = nil
+	qx.s.spilled = true
 	qx.cteCache = map[*cteDef]*relation{}
 	sm := spill.NewManager(SpillDir, SpillMaxBytes, qx.s.checkInterrupt)
 	defer sm.Close()

@@ -51,6 +51,7 @@ type Session struct {
 	E        *core.Engine
 	tx       *core.Tx
 	explicit bool // inside BEGIN ... COMMIT
+	spilled  bool // the last query ran in spill mode (EXPLAIN ANALYZE)
 	failed   bool // an error occurred inside the explicit transaction
 	vars     map[string]string
 	Views    Views // nil: aggregates always scan rows
@@ -276,7 +277,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
-	case *CreateSubstrIndex, *DropSubstrIndex, *Explain:
+	case *Explain:
+		res, err := s.explainAny(st, params)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *CreateSubstrIndex, *DropSubstrIndex:
 		return s.execSubstr(st)
 	case *DropTable, *Truncate:
 		// applied at once, not at commit, like CREATE TABLE (PostgreSQL

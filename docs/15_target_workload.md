@@ -9,6 +9,7 @@ Tài liệu này ghi **bối cảnh thật** của dự án và dùng nó làm t
 | 1 PostgreSQL **Kho** | Dữ liệu hàng hoá SIM (30–50M). Mỗi SIM **không chỉ một bản ghi**: mỗi lần cập nhật đều được ghi thành lịch sử, **giữ theo chu kỳ 60 ngày gần nhất** (người dùng nói "hàng trăm lần cập nhật" mỗi SIM) |
 | 2 Elasticsearch | Một cho **website**, một cho **tra cứu kho** (đồng bộ từ PG) |
 | 1 PostgreSQL **CRM** | CSDL riêng của CRM |
+| **Superset** | Báo cáo thống kê trên một bản sao dữ liệu riêng, để không làm chậm DB nghiệp vụ |
 
 Hệ quả cho dự án:
 
@@ -39,6 +40,7 @@ Cách hiểu của tôi (cần người dùng xác nhận ở §5): mục tiêu 
 | W6 | Ba hệ chia sẻ quyền | Vai trò + `GRANT` (đã có P5.2); một số bảng chỉ đọc cho website |
 | W7 | Dùng ORM/công cụ (chưa rõ cái nào) | Tương thích PG (catalog, kiểu, câu lệnh) là điều kiện triển khai |
 | W8 | **Độ mới:** kho đổi giá/nhà mạng thì website phải thấy sớm. Hiện PG→CDC→Elasticsearch trễ, **trễ tăng theo số bản ghi**, và khi lỗi kết nối/dịch vụ dữ liệu lệch nhau (người dùng, 2026-10-29) | STASK nuôi view tìm kiếm/cột từ **cùng log**, mỗi view có `applied_lsn` và trễ công bố; truy vấn đòi `strong`/`bounded`/`session` và planner chờ hoặc rơi về core (docs/01 I5–I6, internal/planner). Sau sự cố view đuổi theo log, nên không lệch vĩnh viễn. **Chưa đo ở quy mô này** (xem dưới) |
+| W9 | **Báo cáo thống kê (Superset):** hiện phải sao chép thêm một lớp dữ liệu sang Superset để không làm chậm DB nghiệp vụ (người dùng, 2026-10-29). Tức có thêm một bản sao thứ ba (sau ES) | View cột đã tách đường phân tích khỏi đường ghi, cùng log, với trễ công bố (docs/08 §8). Superset nói giao thức PG qua SQLAlchemy nên cần `pg_catalog`/`information_schema` đủ (P4.1, đã có nhưng chưa thử với Superset thật) và aggregate đúng kiểu/hàm PG (date_trunc, to_char, percentile, window…). **Chưa đo** tải báo cáo đồng thời với nhập hàng và đơn hàng; phải chứng minh truy vấn báo cáo không làm tăng độ trễ giao dịch (cô lập workload là điểm yếu đã biết: cùng tiến trình, docs/02) |
 
 
 ### Độ mới: điều đã có, điều chưa chứng minh (2026-10-29)

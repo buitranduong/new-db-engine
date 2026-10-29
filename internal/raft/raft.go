@@ -93,7 +93,7 @@ const (
 	MsgAppResp
 	MsgHeartbeat
 	MsgHeartbeatResp
-	MsgSnap // leader to follower: the log you need is compacted away; fetch a snapshot
+	MsgSnap // leader to follower: the log you need is compacted away (PrevIndex: the leader's base); fetch a snapshot
 )
 
 func (t MsgType) String() string {
@@ -426,13 +426,26 @@ func (n *Node) Propose(data []byte) (index, term uint64, err error) {
 	if n.role != Leader {
 		return 0, 0, ErrNotLeader
 	}
-	index = n.appendLocal(Entry{Data: data})
+	if len(n.peer) == 0 {
+		return n.appendLocal(Entry{Data: data}), n.term, nil
+	}
+	// The entry goes to the followers while the leader's own copy is being
+	// synced (Raft thesis 10.2.1): the leader counts itself towards the
+	// majority only after its sync (match is set below), so nothing
+	// commits on a copy that is not durable.
+	e := Entry{Data: data, Index: n.lastIndex() + 1, Term: n.term}
+	n.log = append(n.log, e)
 	for _, p := range n.peer {
 		if !n.inflight[p] {
 			n.sendApp(p)
 		}
 	}
-	return index, n.term, nil
+	if err := n.cfg.Storage.Append([]Entry{e}); err != nil {
+		n.die(err)
+	}
+	n.match[n.cfg.ID] = e.Index
+	n.maybeCommit()
+	return e.Index, n.term, nil
 }
 
 func (n *Node) bcastApp() {
@@ -450,7 +463,7 @@ func (n *Node) sendApp(to uint64) {
 	if prev < n.base {
 		// what the follower needs is compacted away
 		n.inflight[to] = false
-		n.send(Msg{Type: MsgSnap, To: to, Term: n.term, Seq: n.now})
+		n.send(Msg{Type: MsgSnap, To: to, Term: n.term, PrevIndex: n.base, Seq: n.now})
 		return
 	}
 	hi := min(n.lastIndex(), prev+uint64(n.cfg.MaxBatch))
@@ -547,7 +560,11 @@ func (n *Node) Step(m Msg) {
 		n.handleApp(m)
 	case MsgSnap:
 		n.stepDownToLeader(m.From)
-		if n.cfg.NeedSnapshot != nil {
+		if n.commit >= m.PrevIndex {
+			// the state machine is already past the leader's base (a
+			// snapshot was installed): the committed prefix matches
+			n.send(Msg{Type: MsgAppResp, To: m.From, Term: n.term, Hint: n.commit, Seq: m.Seq})
+		} else if n.cfg.NeedSnapshot != nil {
 			n.cfg.NeedSnapshot(m.From)
 		}
 	case MsgHeartbeat:

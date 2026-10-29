@@ -10,7 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
+
+// fdatasync flushes the data and the metadata needed to read it back (the
+// size), not the timestamps: cheaper than fsync on a file that only grows.
+func fdatasync(f *os.File) error { return syscall.Fdatasync(int(f.Fd())) }
 
 // MemStorage keeps everything in memory. In a test, dropping a Node and
 // building a new one on the same MemStorage models a process restart.
@@ -211,7 +216,7 @@ func (s *FileStorage) write(body []byte) error {
 	if s.nofs {
 		return nil
 	}
-	return s.f.Sync()
+	return fdatasync(s.f)
 }
 
 func (s *FileStorage) Load() (HardState, Snapshot, []Entry, error) {

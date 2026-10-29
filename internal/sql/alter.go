@@ -40,6 +40,9 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 	if err := s.alterTableViews(st); err != nil {
 		return nil, err
 	}
+	if err := s.alterTableTriggers(st); err != nil {
+		return nil, err
+	}
 	now := nowMillis()
 	var oldName string
 	var renamed map[string]string // old column name -> new

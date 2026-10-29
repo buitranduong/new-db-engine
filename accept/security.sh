@@ -21,19 +21,19 @@ echo -n tok-rw > $S/rw.token
 C=$CERTS
 
 # --- A: everything on, strict ---
-start A $S/A -addr 127.0.0.1:$P -pg-addr 127.0.0.1:$((P+1)) -repl-addr 127.0.0.1:$((P+2)) \
+start A $S/A -segment-mb 4 -addr 127.0.0.1:$P -pg-addr 127.0.0.1:$((P+1)) -repl-addr 127.0.0.1:$((P+2)) \
   -pg-password "$PW" -pg-auth scram -pg-tls-cert $C/server.crt -pg-tls-key $C/server.key -pg-tls-require \
   -http-tls-cert $C/server.crt -http-tls-key $C/server.key -http-token tok-rw -http-token-ro tok-ro \
   -repl-secret-file $E2E_DIR/repl.secret -repl-tls-cert $C/server.crt -repl-tls-key $C/server.key -repl-tls-ca $C/ca.crt -repl-tls-client-auth -repl-require-secure
 PA=$LAST_PID
 # --- B: certificate for another name (verify-full must refuse it) ---
-start B $S/B -addr 127.0.0.1:$((P+10)) -pg-addr 127.0.0.1:$((P+11)) -repl-addr 127.0.0.1:$((P+12)) \
+start B $S/B -segment-mb 4 -addr 127.0.0.1:$((P+10)) -pg-addr 127.0.0.1:$((P+11)) -repl-addr 127.0.0.1:$((P+12)) \
   -pg-password pw -pg-auth scram -pg-tls-cert $C/wrongname.crt -pg-tls-key $C/wrongname.key \
   -repl-secret-file $E2E_DIR/repl.secret -repl-tls-cert $C/wrongname.crt -repl-tls-key $C/wrongname.key -repl-tls-ca $C/ca.crt
 # --- Cc: replication with a secret only, no TLS ---
-start Cc $S/Cc -addr 127.0.0.1:$((P+20)) -pg-addr 127.0.0.1:$((P+21)) -repl-addr 127.0.0.1:$((P+22)) -repl-secret-file $E2E_DIR/repl.secret -pg-auth password -pg-password pw
+start Cc $S/Cc -segment-mb 4 -addr 127.0.0.1:$((P+20)) -pg-addr 127.0.0.1:$((P+21)) -repl-addr 127.0.0.1:$((P+22)) -repl-secret-file $E2E_DIR/repl.secret -pg-auth password -pg-password pw
 # --- D: HTTP with client certificates as the only authentication ---
-start D $S/D -addr 127.0.0.1:$((P+30)) -pg-addr "" -http-tls-cert $C/server.crt -http-tls-key $C/server.key -http-tls-client-ca $C/ca.crt
+start D $S/D -segment-mb 4 -addr 127.0.0.1:$((P+30)) -pg-addr "" -http-tls-cert $C/server.crt -http-tls-key $C/server.key -http-tls-client-ca $C/ca.crt
 for q in $((P+1)) $((P+11)) $((P+21)); do wait_port $q || { bad "server on $q did not start"; tail -3 $S/../A.log; exit 1; }; done
 wait_port $((P+30))
 
@@ -126,25 +126,25 @@ refuse "replica side -repl-require-secure refuses a leader without TLS" bk $RC -
 log "-- a real replica (-replica-of)"
 psql_run_c() { PSQLENV=(PGPASSWORD=pw PGSSLMODE=disable); psql_run $((P+21)) "$@"; }
 check "write on the leader (Cc)" psql_run_c -c "create table t(a int primary key)" -c "insert into t values (1),(2),(3)"
-start R1 $S/R1 -addr 127.0.0.1:$((P+50)) -pg-addr 127.0.0.1:$((P+51)) -replica-of $RC -repl-secret-file $E2E_DIR/repl.secret
+start R1 $S/R1 -segment-mb 4 -addr 127.0.0.1:$((P+50)) -pg-addr 127.0.0.1:$((P+51)) -replica-of $RC -repl-secret-file $E2E_DIR/repl.secret
 R1=$LAST_PID
 RU="postgres://app:pw@127.0.0.1:$((P+51))/stask?sslmode=disable"
 for i in $(seq 100); do [ "$($BIN/e2e ping -url "$RU" -q 'select count(*) from t' 2>/dev/null)" = 3 ] && break; sleep 0.1; done
 check "replica with the right secret has the 3 rows" test "$($BIN/e2e ping -url "$RU" -q 'select count(*) from t' 2>/dev/null)" = 3
 stop_pid $R1
-start R2 $S/R2 -addr 127.0.0.1:$((P+52)) -pg-addr 127.0.0.1:$((P+53)) -replica-of $RC -repl-secret-file $E2E_DIR/repl.wrong
+start R2 $S/R2 -segment-mb 4 -addr 127.0.0.1:$((P+52)) -pg-addr 127.0.0.1:$((P+53)) -replica-of $RC -repl-secret-file $E2E_DIR/repl.wrong
 R2=$LAST_PID; sleep 3
 refuse "replica with the wrong secret gets no data" $BIN/e2e ping -url "postgres://app:pw@127.0.0.1:$((P+53))/stask?sslmode=disable" -q 'select count(*) from t'
 alive $R2 && stop_pid $R2
 
 log "== start-up refusals (non-loopback listener without authentication) =="
-NR=0
+NR=0; S_MSG=1
 startup() { # label refuse|run flags...   run staskd for 3 s; exit before then = refused
   local l=$1 want=$2; shift 2; NR=$((NR+1))
   rm -rf $S/su$NR
-  timeout 3 $BIN/staskd -dir $S/su$NR -addr 127.0.0.1:$((P+60+NR)) -pg-addr "" "$@" > $S/su$NR.log 2>&1; local rc=$?
+  timeout 3 $BIN/staskd -segment-mb 4 -dir $S/su$NR -addr 127.0.0.1:$((P+60+NR)) -pg-addr "" "$@" > $S/su$NR.log 2>&1; local rc=$?
   local got=run; [ $rc != 124 ] && got=refuse
-  if [ $got = $want ]; then ok "$l -> $got ($(grep -v '^20' $S/su$NR.log | head -1 | cut -c1-100)$(grep -m1 -E 'refus|must|require|set ' $S/su$NR.log | sed 's/^[0-9\/: ]* //' | cut -c1-120))"; else bad "$l -> $got, want $want (rc=$rc)"; tail -3 $S/su$NR.log; fi
+  if [ $got = $want ]; then ok "$l -> $got${S_MSG:+ ($(grep -v "http api" $S/su$NR.log | tail -1 | sed "s/^[0-9\/: ]* //" | cut -c1-110))}"; else bad "$l -> $got, want $want (rc=$rc)"; tail -3 $S/su$NR.log; fi
   rm -rf $S/su$NR; }
 startup "-pg-addr 0.0.0.0, no password"                 refuse -pg-addr 0.0.0.0:$((P+90))
 startup "-pg-addr 0.0.0.0 -pg-password"                 run    -pg-addr 0.0.0.0:$((P+90)) -pg-password x -pg-auth scram

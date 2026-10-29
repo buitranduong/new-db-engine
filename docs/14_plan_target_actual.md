@@ -176,3 +176,7 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 29 of 46 probes pass
 
 Ghi chú: `bool_cast_text`, `statement_timeout`, `pg_stat_activity`, `create_trigger` (cú pháp PG) ở trên là chênh lệch thật so với PostgreSQL; các dòng `unclaimed_*` là tính năng không tuyên bố mà vẫn chạy (CTE, window, `string_agg`, `generate_series`).
+
+## simbench (khối lượng thực tế Kho–CRM–web, SIM)
+
+Trạng thái: `cmd/simbench` + `scripts/simbench.sh` đã có và biên dịch, **chưa chạy, chưa có số liệu** vì đĩa VM còn < 1 GB (quy tắc dừng < 3 GB). Phần độ mới (view lag, đọc-sau-ghi, kill -9) chưa viết. Chi tiết, cách chạy cỡ nhỏ/lớn và danh sách rủi ro (SQL STASK có thể chưa hỗ trợ): docs/15_target_workload.md mục 6. Khoảng cách tính năng đã biết, chưa đo: STASK chưa có index phụ nên tìm tiền tố/hậu tố/chứa và lọc nhà mạng+giá quét toàn bảng.

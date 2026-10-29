@@ -12,11 +12,11 @@ import (
 
 func init() {
 	defCat("pg_namespace", "oid:i nspname:t nspowner:i nspacl:a", func(c *catSnap) [][]Datum {
-		return [][]Datum{
+		return c.nsExt([][]Datum{
 			{IntD(nsPgCatalog), TextD("pg_catalog"), IntD(ownerOID), Null},
 			{IntD(nsPublic), TextD("public"), IntD(ownerOID), Null},
 			{IntD(nsInfoSchema), TextD("information_schema"), IntD(ownerOID), Null},
-		}
+		})
 	})
 
 	defCat("pg_class", "oid:i relname:t relnamespace:i reltype:i reloftype:i relowner:i relam:i relfilenode:i "+
@@ -37,7 +37,12 @@ func init() {
 			if c.s.E.ReplicaIdentityFull(t.Name) {
 				ident = "f"
 			}
-			rel(tableOID(t), t.Name, heapAMOID, "r", maxNum(t), len(t.Checks), true, ident, relOptions(t))
+			kind := "r"
+			if t.MatView != "" {
+				kind = "m"
+			}
+			rel(tableOID(t), t.Name, heapAMOID, kind, maxNum(t), len(t.Checks), true, ident, relOptions(t))
+			c.relExt(rows[len(rows)-1], t)
 			if t.HasPK() {
 				rel(indexOID(t), pkeyName(t), btreeAMOID, "i", len(t.PKCols()), 0, false, "n", Null)
 			}
@@ -349,7 +354,10 @@ func init() {
 		"hastriggers:b rowsecurity:b", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, t := range c.tables {
-			rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(roleName), Null, BoolD(true), BoolD(false),
+			if t.MatView != "" {
+				continue
+			}
+			rows = append(rows, []Datum{TextD(c.nsName(t)), TextD(t.Name), TextD(roleName), Null, BoolD(true), BoolD(false),
 				BoolD(c.s.E.Triggers(t.Name) != nil), BoolD(false)})
 		}
 		return rows

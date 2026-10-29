@@ -89,6 +89,7 @@ type CreateTable struct {
 	KeyCols     []string // composite PRIMARY KEY (two columns or more); Key is then empty
 	IfNotExists bool
 	Options     map[string]string // WITH (columnar = true, search = 'a,b', ...)
+	Ext         *tableExt         // TEMP, UNLOGGED, ON COMMIT, LIKE (ctas.go)
 }
 
 type Assign struct {
@@ -154,6 +155,7 @@ type Select struct {
 	Limit    Expr
 	Offset   Expr
 	ForUpd   bool
+	Into     *IntoClause // SELECT ... INTO (ctas.go)
 
 	// general executor (query.go)
 	Rel        FromNode // FROM beyond one table; nil: From/Alias
@@ -188,6 +190,7 @@ type DropTable struct {
 type Truncate struct {
 	Names   []string
 	Restart bool // RESTART IDENTITY
+	Cascade bool // CASCADE: also the tables with a foreign key to these
 }
 type Listen struct{ Channel string }
 type Unlisten struct {

@@ -232,6 +232,12 @@ type Table struct {
 	// of the table's rows are kept for as-of and history reads; zero uses
 	// the engine-wide setting (ALTER TABLE ... SET (history_retention=...)).
 	HistoryRetention int64 `json:"history_retention_ns,omitempty"`
+	// MatView is the SQL of a materialized view's query (the table holds its
+	// rows); MatUnpopulated: created or refreshed WITH NO DATA. Unlogged:
+	// CREATE UNLOGGED TABLE (kept for the catalogs; rows are logged like any).
+	MatView        string `json:"matview,omitempty"`
+	MatUnpopulated bool   `json:"mat_unpopulated,omitempty"`
+	Unlogged       bool   `json:"unlogged,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN

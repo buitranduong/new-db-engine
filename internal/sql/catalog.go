@@ -145,6 +145,7 @@ type catSnap struct {
 	tables []*schema.Table
 	seqs   []core.Sequence
 	views  []core.View
+	temps  map[*schema.Table]bool // the session's own temporary tables (temptable.go)
 }
 
 func (s *Session) catSnap() *catSnap {
@@ -157,7 +158,14 @@ func (s *Session) catSnap() *catSnap {
 	for _, ts := range s.E.UserTables() {
 		c.tables = append(c.tables, ts.Schema().ClientView()) // without the hidden key columns
 	}
-	sort.Slice(c.tables, func(i, j int) bool { return c.tables[i].Name < c.tables[j].Name })
+	for _, t := range s.tempCatalog() {
+		if c.temps == nil {
+			c.temps = map[*schema.Table]bool{}
+		}
+		c.temps[t] = true
+		c.tables = append(c.tables, t)
+	}
+	sort.SliceStable(c.tables, func(i, j int) bool { return c.tables[i].Name < c.tables[j].Name })
 	return c
 }
 

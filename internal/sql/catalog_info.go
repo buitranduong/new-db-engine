@@ -62,7 +62,10 @@ func init() {
 		"is_insertable_into:t is_typed:t commit_action:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, t := range c.tables {
-			rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD("BASE TABLE"), Null, Null, Null, Null, Null,
+			if t.MatView != "" {
+				continue
+			}
+			rows = append(rows, []Datum{cat, TextD(c.nsName(t)), TextD(t.Name), TextD(c.tblType(t)), Null, Null, Null, Null, Null,
 				TextD("YES"), TextD("NO"), Null})
 		}
 		for _, v := range c.views {

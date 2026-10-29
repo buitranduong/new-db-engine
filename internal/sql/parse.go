@@ -144,7 +144,7 @@ func (p *parser) qualifiedName() (string, error) {
 			v, err := p.ident()
 			return infoPrefix + v, err
 		}
-		if n != "public" && n != "pg_catalog" {
+		if n != "public" && n != "pg_catalog" && n != "pg_temp" {
 			return "", errf(codeUndefinedTable, "schema %q does not exist", n)
 		}
 		return p.ident()
@@ -180,7 +180,7 @@ func (p *parser) statement() (Stmt, error) {
 	}
 	switch t.s {
 	case "select", "with", "values", "table":
-		return p.queryStmt()
+		return intoWrap(p.queryStmt())
 	case "insert":
 		return p.insertStmt()
 	case "update":
@@ -197,6 +197,9 @@ func (p *parser) statement() (Stmt, error) {
 	case "drop":
 		p.next()
 		if st, ok, err := p.dropSubstrIndex(); ok {
+			return st, err
+		}
+		if st, ok, err := p.dropMat(); ok {
 			return st, err
 		}
 		if p.acceptKw("role") || p.acceptKw("user") {
@@ -250,7 +253,7 @@ func (p *parser) statement() (Stmt, error) {
 		if t.Restart = p.acceptKw("restart", "identity"); !t.Restart {
 			p.acceptKw("continue", "identity")
 		}
-		if !p.acceptKw("cascade") {
+		if t.Cascade = p.acceptKw("cascade"); !t.Cascade {
 			p.acceptKw("restrict")
 		}
 		return t, nil
@@ -395,6 +398,9 @@ func (p *parser) statement() (Stmt, error) {
 		}
 		return &Show{Name: strings.Join(name, " ")}, nil
 	}
+	if st, ok, err := p.ctasStatement(t.s); ok {
+		return st, err
+	}
 	if st, ok, err := p.compatStatement(t.s); ok {
 		return st, err
 	}
@@ -408,6 +414,9 @@ func (p *parser) statement() (Stmt, error) {
 
 func (p *parser) createStmt() (Stmt, error) {
 	p.next()
+	if st, ok, err := p.createCtas(); ok {
+		return st, err
+	}
 	if st, ok, err := p.createSubstrIndex(); ok {
 		return st, err
 	}
@@ -459,7 +468,11 @@ func (p *parser) createStmt() (Stmt, error) {
 				return nil, err
 			}
 		}
-		if p.isKw("check") {
+		if ok, err := p.likeElem(c); ok || err != nil {
+			if err != nil {
+				return nil, err
+			}
+		} else if p.isKw("check") {
 			ck, err := p.checkDef(cname)
 			if err != nil {
 				return nil, err
@@ -542,6 +555,9 @@ func (p *parser) createStmt() (Stmt, error) {
 				return nil, err
 			}
 		}
+	}
+	if err := p.tableTail(c); err != nil {
+		return nil, err
 	}
 	return c, nil
 }

@@ -71,6 +71,10 @@ func indexableCols(t *schema.Table, cols []string) error {
 
 func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 	res := &Result{Tag: "CREATE INDEX"}
+	if r, ok := s.tempReal(c.Table); ok {
+		cp := *c
+		cp.Table, c = r, &cp
+	}
 	t, err := s.table(c.Table)
 	if err != nil {
 		return nil, err
@@ -367,7 +371,7 @@ func renameIn(cols []string, from, to string) []string {
 // as its own statement (PostgreSQL runs them as one atomic statement).
 func (s *Session) alterConstraints(st *AlterTable) (*Result, error) {
 	res := &Result{Tag: "ALTER TABLE"}
-	if _, err := s.E.UserTable(st.Name); err != nil {
+	if _, err := s.userTable(st.Name); err != nil {
 		if st.IfExists {
 			res.Notice = fmt.Sprintf("relation %q does not exist, skipping", st.Name)
 			return res, nil

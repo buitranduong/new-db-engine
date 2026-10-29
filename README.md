@@ -174,5 +174,4 @@ private security advisory on the GitHub repository instead of a public issue.
 
 ## License
 
-No license has been chosen yet, so all rights are reserved by the author until one
-is added. Open an issue if you need to use the code.
+MIT. See [LICENSE](LICENSE).

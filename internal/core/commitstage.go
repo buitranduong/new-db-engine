@@ -55,7 +55,7 @@ type stageState struct {
 
 // stageable reports whether r is big enough, and simple enough, to stage.
 func stageable(r *commitReq) bool {
-	if r.ddl != nil || r.drop != nil || r.alter != nil || r.moves != nil || len(r.ops) == 0 {
+	if r.dry || r.ddl != nil || r.drop != nil || r.alter != nil || r.moves != nil || len(r.ops) == 0 {
 		return false
 	}
 	adds := 0

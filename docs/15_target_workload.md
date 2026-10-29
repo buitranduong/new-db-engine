@@ -274,6 +274,22 @@ scripts/simrun.sh pg    1000000 200000 p1m-lean -think 50ms -crm 0 -skip-pretty 
 ```
 `scripts/simrun.sh` dùng cổng 28450 (PG, container `simrun-pg`), 28451/28452 (staskd), từ chối chạy khi đĩa trống dưới `MINFREE` (mặc định 3) GB, tự xoá container, thư mục dữ liệu và tiến trình khi thoát.
 
+### 6.12 Sửa livelock câu ghi dài (D24, nhánh `occfix`, 2026-10-30)
+
+Đo nguyên nhân trước (`STASK_OCCREPAIR=off STASK_OCCDEBUG=1`, tải nhẹ, 1M/200k): mỗi lần chạy lại `copy_merge` mất ~2,3 s, 100 ms kiểm tra commit, và **150-200 khoá trong 200k** bị giao dịch nhỏ ghi sau snapshot (mỗi lần, 9/9 lần): đúng là xác suất xung đột ~1, nên làm lại cả câu không bao giờ qua. Sửa: câu autocommit ghi nhiều dòng giải quyết xung đột **theo từng dòng** (ngữ nghĩa READ COMMITTED: đọc lại phiên bản mới nhất của dòng, áp lại UPSERT / đánh giá lại WHERE và SET của UPDATE..FROM, bỏ qua dòng hết khớp). Chi tiết thiết kế: đầu `internal/core/occ_repair.go` và `internal/sql/occ_repair.go`.
+
+| Phép đo (1M số, nhập 200k, ~100 giao dịch/s nền, lean) | Trước | Sau |
+|---|---|---|
+| `copy_merge` | không xong (cạn 8-1000 lần làm lại; 90-120 s hết hạn) | 8,2 s; 19,0 s ở lần chạy lúc máy load ~6 (kiểm tra vòng đầu mất 3 s vì tranh CPU) |
+| `update_from` (UPDATE..FROM + INSERT phần mới) | không xong ở tải đầy; chưa chạy ở tải nhẹ | 19,1 s và 21,1 s |
+| số dòng phải sửa lại / vòng | (rerun cả câu) | 169-407 dòng, 2-3 vòng, 1,1-4,4 s phụ thêm |
+
+Một lần mỗi ô, máy dùng chung: chỉ tương đối. Bất biến simbench giữ đúng (RESULT VALID). Chưa đo: tải đầy (CRM + quét), 2M/500k, chạy lại PG cùng đợt.
+
+Hạn chế đã biết: chỉ cho câu autocommit từ 256 dòng, không RETURNING, bảng không trigger / FK / bị FK tham chiếu (các trường hợp đó vẫn rerun cả câu, nay tối đa 8 lần với câu lớn); câu `UPDATE` đổi khoá không sửa theo dòng; `now()` trong SET của dòng sửa lại là thời điểm vòng sửa. Khi bị vượt quá 64 vòng hay 8 vòng liền không giảm, trả 40001 "could not serialize ... repair rounds". Từ vòng 4, các ghi khác vào cùng bảng bị giữ lại tối đa vài ms (tự mở sau 2 s) để câu dài kịp xong. Bảng có chỉ mục unique phụ dùng kiểm tra đầy đủ mỗi vòng (chậm hơn). Phát hiện phụ (có từ trước, không sửa): `UPDATE` nhiều dòng trên bảng có trigger AFTER ghi `INSERT` vào bảng khác báo `InsertUnique cannot be mixed with other writes`.
+
+Cập nhật sau tích hợp với commitfair: mỗi vòng sửa nay kiểm tra khô trước (không dàn chỉ mục), kiểm tra tăng dần dùng nhật ký batch riêng, và cổng ghi giữ tới khi câu commit (tối đa 20 s) thay vì 2 s; xem docs/14 OC1. Số đo simbench ở trên là trước thay đổi này, chưa đo lại.
+
 ### 6.S Kết quả tìm kiếm số SIM trong SQL (nhánh `search`, 2026-10-29)
 
 Đo trên VM 8 vCPU / 32 GB, **2.000.000 số** sinh ngẫu nhiên (`09x`/`03x`/... + 7 chữ số, ~2% đuôi đẹp), bảng `sim(num TEXT PRIMARY KEY, carrier, status, price)`, 5 nhà mạng, 1/4 số `sold`. STASK đo trong tiến trình (không qua dây pgwire, `cmd/searchbench`, trung vị 5 lần; "quét" = cùng câu không có view); PG16.15 + pg_trgm trong container `search-pg`, đo thời gian client của `psql \timing` (có vòng khứ hồi cục bộ, ~0,1–0,2 ms), trung vị 5 lần, sau `VACUUM ANALYZE`, có thêm btree `text_pattern_ops` cho tiền tố. Kích thước PG: heap 125 MB, GIN trigram 45 MB, btree tiền tố 60 MB, pkey 77 MB. Số kết quả của hai bên **trùng nhau** ở mọi câu đếm (8112; 1651; 21394; 20065; 25; 261; 16055).

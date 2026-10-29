@@ -38,6 +38,21 @@ Cách hiểu của tôi (cần người dùng xác nhận ở §5): mục tiêu 
 | W5 | Kho đồng bộ tồn kho liên tục; CRM truy vấn tổng hợp | Aggregate trên bảng lớn không được chặn ghi (view cột đã có) |
 | W6 | Ba hệ chia sẻ quyền | Vai trò + `GRANT` (đã có P5.2); một số bảng chỉ đọc cho website |
 | W7 | Dùng ORM/công cụ (chưa rõ cái nào) | Tương thích PG (catalog, kiểu, câu lệnh) là điều kiện triển khai |
+| W8 | **Độ mới:** kho đổi giá/nhà mạng thì website phải thấy sớm. Hiện PG→CDC→Elasticsearch trễ, **trễ tăng theo số bản ghi**, và khi lỗi kết nối/dịch vụ dữ liệu lệch nhau (người dùng, 2026-10-29) | STASK nuôi view tìm kiếm/cột từ **cùng log**, mỗi view có `applied_lsn` và trễ công bố; truy vấn đòi `strong`/`bounded`/`session` và planner chờ hoặc rơi về core (docs/01 I5–I6, internal/planner). Sau sự cố view đuổi theo log, nên không lệch vĩnh viễn. **Chưa đo ở quy mô này** (xem dưới) |
+
+
+### Độ mới: điều đã có, điều chưa chứng minh (2026-10-29)
+
+**Đã có (cấu trúc):** view và core chia sẻ một log nên không có "bản sao ngoài" để lệch vĩnh viễn; mỗi câu trả lời từ view kèm LSN và trễ; hợp đồng `bounded` chờ hoặc rơi về core thay vì trả dữ liệu cũ im lặng.
+
+**Số đo hiện có:** trễ view so với core ở workload WL-2 (ghi nền ~2.000/s): p50 41 ms, p99 208 ms, max 273 ms; sau tối ưu p99 52 ms, max 85 ms (docs/04). Đó là tải ghi **đều**, không phải đợt nhập hàng triệu dòng.
+
+**Chưa chứng minh, và là rủi ro thật:**
+1. **Thông lượng áp dụng view khi nhập hàng triệu dòng.** Nếu view áp dụng chậm hơn tốc độ core ghi thì trễ cũng tăng dần, y như CDC của họ; khác biệt duy nhất là truy vấn `bounded` sẽ rơi về core (chậm hơn, nhưng đúng) thay vì trả giá cũ. Agent `simbench` và `search` được giao đo điều này.
+2. **Thời gian hồi phục sau sự cố.** Dựng lại view cột sau khởi động mất 182 s ở 100M dòng (docs/08 §7 #3); trong lúc đó truy vấn phải đọc từ core. View tìm kiếm chưa có số tương ứng.
+3. **Tìm kiếm từ SQL chưa có**, nên website của họ chưa thể trỏ vào STASK ngay cả khi độ mới tốt.
+
+**Chính sách đọc đề xuất cho hệ thống của họ:** đọc giá/trạng thái để *đặt hàng* dùng `strong` trên core qua index khoá (không bao giờ đọc từ view tìm kiếm); danh sách/tìm kiếm trên website dùng `bounded` (ví dụ 1–2 s) và hiển thị cờ trễ; CRM tổng hợp dùng `bounded` lớn hơn.
 
 ## 3. Vì sao PostgreSQL rơi vào lock (giả thuyết cần kiểm chứng, không phải kết luận)
 

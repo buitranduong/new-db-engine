@@ -27,7 +27,7 @@ import (
 func main() {
 	stURL := flag.String("stask", "", "STASK pgx URL")
 	pgURL := flag.String("pg", "", "PostgreSQL pgx URL")
-	chURL := flag.String("ch", "", "ClickHouse HTTP base URL")
+	chURL := flag.String("ch", "", "ClickHouse HTTP base URL (empty: only the PostgreSQL queries run)")
 	load := flag.Bool("load", true, "create and fill the tables")
 	only := flag.String("only", "", "only queries whose text contains this")
 	verbose := flag.Bool("v", false, "print every failure in full")
@@ -53,9 +53,11 @@ func main() {
 				}
 			}
 		}
-		for _, s := range ddl("ch") {
-			if _, err := ch.query(s); err != nil {
-				log.Fatalf("%s: %v", s, err)
+		if *chURL != "" {
+			for _, s := range ddl("ch") {
+				if _, err := ch.query(s); err != nil {
+					log.Fatalf("%s: %v", s, err)
+				}
 			}
 		}
 		for _, ins := range inserts() {
@@ -64,8 +66,17 @@ func main() {
 					log.Fatalf("insert: %v", err)
 				}
 			}
-			if _, err := ch.query(ins); err != nil {
-				log.Fatalf("ch insert: %v", err)
+			if *chURL != "" {
+				if _, err := ch.query(ins); err != nil {
+					log.Fatalf("ch insert: %v", err)
+				}
+			}
+		}
+		for _, ins := range typedInserts() { // PostgreSQL only
+			for _, c := range []*pgx.Conn{st, pg} {
+				if _, err := c.Exec(ctx, ins); err != nil {
+					log.Fatalf("insert: %v", err)
+				}
 			}
 		}
 	}
@@ -78,10 +89,18 @@ func main() {
 		if *only != "" && !strings.Contains(q.sql, *only) {
 			continue
 		}
+		if q.dialect == "ch" && *chURL == "" {
+			continue
+		}
 		var want, got []string
 		var werr, gerr error
+		exact := strings.HasPrefix(q.cat, "type-") // compare the servers' text output verbatim
+		rowsOf := pgRows
+		if exact {
+			rowsOf = pgTextRows
+		}
 		if q.dialect == "pg" {
-			want, werr = pgRows(ctx, pg, q.sql)
+			want, werr = rowsOf(ctx, pg, q.sql)
 		} else {
 			want, werr = ch.rows(q.sql)
 		}
@@ -91,7 +110,7 @@ func main() {
 		if _, err := st.Exec(ctx, "SET sql_dialect = '"+dialect+"'"); err != nil {
 			log.Fatal(err)
 		}
-		got, gerr = pgRows(ctx, st, q.sql)
+		got, gerr = rowsOf(ctx, st, q.sql)
 		r := res{Dialect: q.dialect, Cat: q.cat, SQL: q.sql}
 		switch {
 		case werr != nil:
@@ -166,6 +185,9 @@ func ddl(dialect string) []string {
 			`CREATE TABLE orders (id BIGINT PRIMARY KEY, customer_id BIGINT, amount DOUBLE PRECISION, status TEXT, qty BIGINT, created TIMESTAMPTZ)`,
 			`CREATE TABLE items (id BIGINT PRIMARY KEY, order_id BIGINT, product TEXT, price DOUBLE PRECISION)`,
 			`CREATE TABLE tmp (id BIGINT PRIMARY KEY, v BIGINT)`,
+			`DROP TABLE IF EXISTS typed`,
+			`CREATE TABLE typed (id BIGINT PRIMARY KEY, ts TIMESTAMP, tz TIMESTAMPTZ, n NUMERIC, nn NUMERIC(10,2), u UUID,
+				b BYTEA, j JSON, jb JSONB, ia BIGINT[], ta TEXT[])`,
 		}
 	}
 	return []string{
@@ -222,6 +244,42 @@ func inserts() []string {
 		out = append(out, b.String())
 	}
 	return out
+}
+
+// typedInserts fill the table of the type queries (PostgreSQL syntax only).
+func typedInserts() []string {
+	return []string{`INSERT INTO typed (id, ts, tz, n, nn, u, b, j, jb, ia, ta) VALUES
+(1, '2024-01-02 03:04:05.123456', '2024-01-02 03:04:05.123456+00', 1.5, 1.005, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', '\xdeadbeef',
+   '{"b": 1,  "a": [1,2.50,null]}', '{"b": 1,  "a": [1,2.50,null]}', '{1,2,3}', '{a,"b c",NULL}'),
+(2, '2024-02-29 23:59:59.999999', '2024-02-29 23:59:59.999999+00', 0.10, 0.20, '00000000-0000-0000-0000-000000000001', '\x',
+   '[]', '{"x":1,"y":[true,false]}', '{}', '{}'),
+(3, '1969-12-31 23:59:59.000001', '1969-12-31 23:59:59.000001+00', 123456789012345678901234567890.123456789, -99999999.99, NULL, '\x00ff10',
+   NULL, NULL, NULL, NULL),
+(4, NULL, NULL, NULL, NULL, 'ffffffff-ffff-ffff-ffff-ffffffffffff', NULL, 'null', '"s"', '{4,5}', '{x,y}'),
+(5, '2024-01-31 10:00:00.5', '2024-01-31 10:00:00.5+00', 1.50, 3, NULL, NULL, '1.0', '1.0', '{7}', '{"q\"uote"}')`}
+}
+
+// pgTextRows is the text of every value as the server prints it.
+func pgTextRows(ctx context.Context, c *pgx.Conn, q string) ([]string, error) {
+	rows, err := c.Query(ctx, q, pgx.QueryExecModeSimpleProtocol)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		raw := rows.RawValues()
+		parts := make([]string, len(raw))
+		for i, v := range raw {
+			if v == nil {
+				parts[i] = "NULL"
+			} else {
+				parts[i] = strconv.Quote(string(v))
+			}
+		}
+		out = append(out, strings.Join(parts, ","))
+	}
+	return out, rows.Err()
 }
 
 func pgRows(ctx context.Context, c *pgx.Conn, q string) ([]string, error) {

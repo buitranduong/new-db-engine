@@ -78,6 +78,7 @@ func (p *arrParser) parse(depth int) error {
 	p.i++
 	p.skip()
 	n := 0
+	leaf, nest := false, false
 	if p.i < len(p.s) && p.s[p.i] == '}' {
 		p.i++
 		return nil
@@ -88,18 +89,18 @@ func (p *arrParser) parse(depth int) error {
 			return errf(codeInvalidText, "x")
 		}
 		if p.s[p.i] == '{' {
-			if p.leaf {
+			if leaf {
 				return errf(codeInvalidText, "x")
 			}
-			p.nest = true
+			nest = true
 			if err := p.parse(depth + 1); err != nil {
 				return err
 			}
 		} else {
-			if p.nest {
+			if nest {
 				return errf(codeInvalidText, "x")
 			}
-			p.leaf = true
+			leaf = true
 			if err := p.elem(); err != nil {
 				return err
 			}
@@ -349,7 +350,7 @@ func (a *arr) ndims() int { return len(a.dims) }
 // sub1 are the elements of a one-dimensional (or empty) array.
 func (a *arr) oneD() error {
 	if len(a.dims) > 1 {
-		return errf("2202E", "argument must be empty or one-dimensional array")
+		return errf("22000", "argument must be empty or one-dimensional array")
 	}
 	return nil
 }
@@ -584,10 +585,7 @@ func arraySubscript(args []Datum) (Datum, bool, error) {
 	if err != nil {
 		return Null, true, err
 	}
-	if len(args)-1 > len(a.dims) {
-		return Null, true, errf("2202E", "wrong number of array subscripts")
-	}
-	if len(args)-1 < len(a.dims) {
+	if len(args)-1 != len(a.dims) {
 		return Null, true, nil
 	}
 	pos, stride := 0, 1
@@ -845,7 +843,7 @@ func arrayCall(name string, args []Datum) (Datum, bool, error) {
 			return Null, true, err
 		}
 		if err := a.oneD(); err != nil {
-			return Null, true, errf("2202E", "searching for elements in multidimensional arrays is not supported")
+			return Null, true, errf("0A000", "searching for elements in multidimensional arrays is not supported")
 		}
 		start := 1
 		if n == 3 && !args[2].IsNull() {
@@ -945,7 +943,7 @@ func arrayCall(name string, args []Datum) (Datum, bool, error) {
 			}
 			v, _ := coerce(e, KInt)
 			if v.I < 0 {
-				return Null, true, errf("2202E", "array size exceeds the maximum allowed")
+				return Null, true, errf("54000", "array size exceeds the maximum allowed (134217727)")
 			}
 			dims = append(dims, int(v.I))
 			total *= int(v.I)

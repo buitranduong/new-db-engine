@@ -291,10 +291,10 @@ func (e *jpEval) steps(in []*jn, steps []jpStep) ([]*jn, error) {
 						if v := c.field(st.key); v != nil {
 							out = append(out, v)
 						} else if e.strict {
-							return nil, errf("22033", "JSON object does not contain key %q", st.key)
+							return nil, errf("2203A", "JSON object does not contain key %q", st.key)
 						}
 					} else if e.strict {
-						return nil, errf("22033", "jsonpath member accessor can only be applied to an object")
+						return nil, errf("2203C", "jsonpath member accessor can only be applied to an object")
 					}
 				}
 			case "wild":
@@ -313,14 +313,14 @@ func (e *jpEval) steps(in []*jn, steps []jpStep) ([]*jn, error) {
 				} else if !e.strict {
 					out = append(out, it)
 				} else {
-					return nil, errf("22033", "jsonpath wildcard array accessor can only be applied to an array")
+					return nil, errf("22039", "jsonpath wildcard array accessor can only be applied to an array")
 				}
 			case "idx":
 				arr := []*jn{it}
 				if it.t == 'a' {
 					arr = it.kids
 				} else if e.strict {
-					return nil, errf("22033", "jsonpath array accessor can only be applied to an array")
+					return nil, errf("22039", "jsonpath array accessor can only be applied to an array")
 				}
 				for i := st.lo; i <= st.hi; i++ {
 					if i >= 0 && i < len(arr) {

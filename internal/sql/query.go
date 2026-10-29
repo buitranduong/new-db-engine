@@ -298,7 +298,7 @@ func (b *binder) resolve(cr *ColRef) (Expr, error) {
 					s.lvl.mark()
 				}
 			}
-			return &OuterRef{Depth: depth, I: idx}, nil
+			return &OuterRef{Depth: depth, I: idx, K: sc.cols[idx].kind, Ty: sc.cols[idx].ty}, nil
 		}
 		if cr.Table == "" {
 			if x, ok := sc.scalars[cr.Name]; ok {
@@ -615,7 +615,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				return e.plan.outCols()[0].ty, true
 			}
 			return pgTy{}, true
-		case *OuterRef, *groupingFn:
+		case *OuterRef:
+			return e.Ty, true
+		case *groupingFn:
 			return pgTy{}, true
 		}
 		return pgTy{}, false
@@ -1457,6 +1459,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 		return KBool
 	case *groupingFn:
 		return KInt
+	case *OuterRef:
+		return e.K
 	case *boundSub:
 		if e.kind == "scalar" {
 			return e.plan.outCols()[0].kind

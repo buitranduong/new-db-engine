@@ -366,6 +366,9 @@ func formatType(oid uint32, mod int32) string {
 
 // castName is the name PostgreSQL gives an unnamed cast column: the type.
 func castName(c *Cast) string {
+	if n := arrayCastName(c); n != "" {
+		return n
+	}
 	if t := specTy(c.PG); t.oid != 0 {
 		switch t.oid {
 		case tyVarchar:

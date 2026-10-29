@@ -109,8 +109,12 @@ type AnyAll struct { // x op ANY|ALL (subquery)
 type RowExpr struct{ Items []Expr } // (a, b)
 
 // Bound references, produced by the binder of the general executor.
-type Slot struct{ I int }            // column I of the current row
-type OuterRef struct{ Depth, I int } // column I of the row Depth queries out
+type Slot struct{ I int } // column I of the current row
+type OuterRef struct {
+	Depth, I int // column I of the row Depth queries out
+	K        Kind
+	Ty       pgTy
+}
 
 func (*Subquery) expr() {}
 func (*Exists) expr()   {}

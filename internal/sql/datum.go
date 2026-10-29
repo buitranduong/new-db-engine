@@ -189,6 +189,9 @@ func toValueCol(c *schema.Column, d Datum) (schema.Value, error) {
 			if cd, err = applyPGArray(c.PG, cd); err != nil {
 				return schema.Value{}, err
 			}
+			if cd, err = applyTypmodArray(c.Type, cd); err != nil {
+				return schema.Value{}, err
+			}
 		}
 	}
 	switch cd.K {

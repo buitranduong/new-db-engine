@@ -273,8 +273,11 @@ func (n *jn) text(k Kind) Datum {
 			}
 		}
 	}
-	if k == KJSON && n.raw != "" {
+	if n.raw != "" && (k == KJSON || n.t == 'a' || n.t == 'o' || n.t == 'b') {
 		return TextD(n.raw)
+	}
+	if d, err := jsonbOf(n); err == nil {
+		return TextD(d.S)
 	}
 	return TextD(n.compact())
 }
@@ -618,7 +621,9 @@ func jpretty(n *jn, b *strings.Builder, ind int) {
 			pad(ind + 1)
 			jpretty(k, b, ind+1)
 		}
-		b.WriteString("\n")
+		if len(n.kids) > 0 {
+			b.WriteString("\n")
+		}
 		pad(ind)
 		b.WriteString("]")
 	case 'o':
@@ -632,7 +637,9 @@ func jpretty(n *jn, b *strings.Builder, ind int) {
 			b.WriteString(jsonQuote(n.keys[j]) + ": ")
 			jpretty(n.kids[j], b, ind+1)
 		}
-		b.WriteString("\n")
+		if len(ord) > 0 {
+			b.WriteString("\n")
+		}
 		pad(ind)
 		b.WriteString("}")
 	default:

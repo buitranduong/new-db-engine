@@ -116,6 +116,9 @@ func (c *evalCtx) callJSONArr(f *Func, args []Datum) (Datum, bool, error) {
 var jsonarrNames = map[string]bool{}
 
 func init() {
+	for _, n := range strings.Fields(`jsonb_array_length json_array_length array_upper array_lower array_ndims`) {
+		tyInt4Fn[n] = true
+	}
 	for _, n := range strings.Fields(`array stask_subscript stask_slice stask_anyarr stask_contains stask_contained stask_overlap
 		array_append array_prepend array_cat array_remove array_replace array_position array_positions array_length array_upper
 		array_lower cardinality array_ndims array_dims array_fill array_to_string string_to_array
@@ -276,9 +279,9 @@ var elemOfOID = func() map[uint32]uint32 {
 }()
 
 // IsArrayOID reports an array type; ArrayElemOID is its element type.
-func IsArrayOID(oid uint32) bool        { _, ok := elemOfOID[oid]; return ok }
-func ArrayElemOID(oid uint32) uint32    { return elemOfOID[oid] }
-func isArrayTyOID(oid uint32) bool      { return IsArrayOID(oid) }
+func IsArrayOID(oid uint32) bool     { _, ok := elemOfOID[oid]; return ok }
+func ArrayElemOID(oid uint32) uint32 { return elemOfOID[oid] }
+func isArrayTyOID(oid uint32) bool   { return IsArrayOID(oid) }
 func arrayTy(e pgTy) pgTy {
 	if a, ok := arrayOfOID[e.oid]; ok {
 		return pgTy{oid: a, mod: e.mod}
@@ -388,12 +391,15 @@ func kindOfTyOID(o uint32) Kind {
 // elemTyOf is the static type of the elements x contributes to ARRAY[x]
 // and array_agg(x).
 func elemTyOf(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy {
-	if t := arrTyFor(x, kindOf, leaf); t.oid != 0 && kindOf(x) == KArray {
-		return t // multidimensional: same element type
+	if t := arrTyFor(x, kindOf, leaf); IsArrayOID(t.oid) && kindOf(x) == KArray {
+		return pgTy{oid: ArrayElemOID(t.oid), mod: t.mod} // multidimensional: same element type
 	}
 	t := inferTy(x, leaf)
 	if t.oid == 0 {
 		if l, ok := x.(*Lit); ok && (l.V.IsNull() || l.V.K == KText) {
+			if l.V.IsNull() {
+				return pgTy{}
+			}
 			return pgTy{oid: tyText, mod: -1}
 		}
 		t = defaultTyOfKind(kindOf(x))
@@ -429,15 +435,25 @@ func arrTyFor(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 			var out pgTy
 			for _, a := range e.Args {
 				t := elemTyOf(a, kindOf, leaf)
+				if t.oid == 0 {
+					continue
+				}
 				switch {
 				case out.oid == 0:
 					out = t
 				case out == t:
 				case out.isInt() && t.isInt():
 					out = widerInt(out, t)
+				case out.oid == tyFloat8 || t.oid == tyFloat8:
+					out = pgTy{oid: tyFloat8, mod: -1}
+				case out.oid == tyNumeric || t.oid == tyNumeric:
+					out = pgTy{oid: tyNumeric, mod: -1}
 				default:
 					return pgTy{}
 				}
+			}
+			if out.oid == 0 {
+				out = pgTy{oid: tyText, mod: -1}
 			}
 			return arrayTy(out)
 		case "array_agg":
@@ -446,11 +462,15 @@ func arrTyFor(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 			}
 		case "array_append", "array_remove", "array_replace", "stask_slice", "array_cat":
 			if len(e.Args) >= 1 {
-				if t := arrTyFor(e.Args[0], kindOf, leaf); t.oid != 0 && IsArrayOID(t.oid) {
-					return t
-				}
+				t := arrTyFor(e.Args[0], kindOf, leaf)
 				if e.Name == "array_cat" && len(e.Args) == 2 {
-					return arrTyFor(e.Args[1], kindOf, leaf)
+					u := arrTyFor(e.Args[1], kindOf, leaf)
+					if !IsArrayOID(t.oid) || IsArrayOID(u.oid) && ArrayElemOID(u.oid) == tyInt8 && (ArrayElemOID(t.oid) == tyInt4 || ArrayElemOID(t.oid) == tyInt2) {
+						t = u
+					}
+				}
+				if IsArrayOID(t.oid) {
+					return t
 				}
 			}
 		case "array_prepend":
@@ -471,6 +491,15 @@ func arrTyFor(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 					return pgTy{oid: ArrayElemOID(t.oid), mod: t.mod}
 				}
 			}
+		}
+	case *boundSub:
+		if e.kind == "array" {
+			c := e.plan.outCols()[0]
+			t := c.ty
+			if t.oid == 0 {
+				t = defaultTyOfKind(c.kind)
+			}
+			return arrayTy(t)
 		}
 	case *Binary:
 		if e.Op == "||" {
@@ -653,6 +682,7 @@ var srfDefs = map[string]srfDef{
 	"jsonb_object_keys":         {[]string{"jsonb_object_keys"}, []Kind{KText}},
 	"json_object_keys":          {[]string{"json_object_keys"}, []Kind{KText}},
 	"jsonb_path_query":          {[]string{"jsonb_path_query"}, []Kind{KJSONB}},
+	"generate_subscripts":       {[]string{"generate_subscripts"}, []Kind{KInt}},
 }
 
 func isJSONArrSRF(name string) bool {
@@ -704,6 +734,24 @@ func srfRows(name string, args []Datum, ord bool) ([][]Datum, error) {
 	}
 	if name == "jsonb_path_query" {
 		return jsonPathQuery(args)
+	}
+	if name == "generate_subscripts" {
+		a, err := arrOf(args[0], KText)
+		if err != nil || len(args) < 2 || args[1].IsNull() {
+			return nil, err
+		}
+		dim, err := intArg(args[1])
+		if err != nil || dim < 1 || dim > len(a.dims) {
+			return nil, err
+		}
+		for i := 1; i <= a.dims[dim-1]; i++ {
+			v := i
+			if len(args) > 2 && args[2].Bool() {
+				v = a.dims[dim-1] - i + 1
+			}
+			add(IntD(int64(v)))
+		}
+		return out, nil
 	}
 	j, k, err := jsonIn(args[0])
 	if err != nil {
@@ -851,7 +899,6 @@ func srfKind(f *Func, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) (Kin
 	return KInt, pgTy{oid: tyInt8, mod: -1}
 }
 
-
 // arrayTypeName is the column type of element type out (an array of it),
 // setting the parser's PG spelling ("int4[]") from the element's.
 func (p *parser) arrayTypeName(out string) string {
@@ -889,4 +936,120 @@ func (p *parser) arrayTypeName(out string) string {
 	}
 	p.pgSpec = spec + "[]"
 	return out + "[]"
+}
+
+// ---- GIN indexes (accepted; reads do not use them) ----
+
+var ginOpClasses = map[string]bool{"jsonb_ops": true, "jsonb_path_ops": true, "array_ops": true}
+
+// ginColumn reports a jsonb or array column, which a GIN index covers.
+func ginColumn(t *schema.Table, col string) bool {
+	i, ok := t.Col(col)
+	if !ok {
+		return false
+	}
+	ty := t.Columns[i].T
+	return ty == schema.TJSONB || ty == schema.TArray
+}
+
+func (s *Session) createGinIndex(c *CreateSubstrIndex, t *schema.Table) (*Result, error) {
+	name := c.Name
+	if name == "" {
+		name = c.Table + "_" + c.Col + "_idx"
+	}
+	for _, ts := range s.E.Tables() {
+		d := ts.Schema()
+		for _, x := range d.Gin {
+			if x.Name == name {
+				if c.IfNotExists {
+					return &Result{Tag: "CREATE INDEX", Notice: "relation \"" + name + "\" already exists, skipping"}, nil
+				}
+				return nil, errf(codeDuplicateTable, "relation %q already exists", name)
+			}
+		}
+		for _, x := range d.Substr {
+			if x.Name == name {
+				return nil, errf(codeDuplicateTable, "relation %q already exists", name)
+			}
+		}
+		if d.Index(name) != nil {
+			return nil, errf(codeDuplicateTable, "relation %q already exists", name)
+		}
+	}
+	if s.explicit {
+		return nil, errf("25001", "CREATE INDEX cannot run inside a transaction block")
+	}
+	err := s.E.AlterTable(c.Table, func(d *schema.Table) error {
+		d.Gin = append(append([]schema.GinIndex(nil), d.Gin...), schema.GinIndex{Name: name, Col: c.Col})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Result{Tag: "CREATE INDEX"}, nil
+}
+
+// dropGinIndex drops GIN index n if there is one.
+func (s *Session) dropGinIndex(n string) (bool, error) {
+	for _, ts := range s.E.Tables() {
+		t := ts.Schema()
+		for _, x := range t.Gin {
+			if x.Name != n {
+				continue
+			}
+			err := s.E.AlterTable(t.Name, func(d *schema.Table) error {
+				d.Gin = nil
+				for _, y := range t.Gin {
+					if y.Name != n {
+						d.Gin = append(d.Gin, y)
+					}
+				}
+				return nil
+			})
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// arrayCastName is the column name of x::T[]: the element type's name.
+func arrayCastName(c *Cast) string {
+	t := specTy(c.PG)
+	if !IsArrayOID(t.oid) {
+		return ""
+	}
+	switch e := ArrayElemOID(t.oid); e {
+	case tyVarchar:
+		return "varchar"
+	case tyBpchar:
+		return "bpchar"
+	default:
+		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyInt8: "int8", tyFloat4: "float4", tyFloat8: "float8", tyBool: "bool",
+			tyText: "text", tyNumeric: "numeric", tyUUID: "uuid", tyTimestamptz: "timestamptz", tyTimestamp: "timestamp",
+			tyDate: "date", tyTime: "time", tyInterval: "interval", tyName: "name"}[e]
+	}
+}
+
+// applyTypmodArray rounds the elements of a numeric(p,s)[] column value.
+func applyTypmodArray(typ string, d Datum) (Datum, error) {
+	base, ok := schema.ElemType(typ)
+	if !ok || d.K != KArray {
+		return d, nil
+	}
+	if _, _, ok := schema.NumericMod(base); !ok {
+		return d, nil
+	}
+	a, err := parseArr(d)
+	if err != nil {
+		return Null, err
+	}
+	for i, e := range a.el {
+		if e.IsNull() {
+			continue
+		}
+		if a.el[i], err = applyTypmod(base, e); err != nil {
+			return Null, err
+		}
+	}
+	return a.datum(), nil
 }

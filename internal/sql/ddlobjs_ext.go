@@ -126,7 +126,14 @@ func (c *evalCtx) extCall(f *Func, args []Datum) (Datum, bool, error) {
 	}
 	if gated {
 		if s := c.session(); s != nil && !s.extInstalled(need) {
-			return Null, true, errf(codeUndefinedFunction, "function %s does not exist", f.Name)
+			ts := make([]string, len(args))
+			for i, a := range args {
+				ts[i] = "unknown"
+				if l, ok := f.Args[i].(*Lit); !ok || l.V.K != KText {
+					ts[i] = typeNameOfKind(a.K)
+				}
+			}
+			return Null, true, errf(codeUndefinedFunction, "function %s(%s) does not exist", f.Name, strings.Join(ts, ", "))
 		}
 	}
 	nullIn := func() bool {

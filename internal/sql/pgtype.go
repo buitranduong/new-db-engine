@@ -240,6 +240,8 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			return pgTy{}
 		}
 		switch {
+		case e.Name == "similarity":
+			return pgTy{oid: tyFloat4, mod: -1}
 		case tyInt4Fn[e.Name]:
 			return pgTy{oid: tyInt4, mod: -1}
 		case e.Name == "mod" || e.Name == "modulo":
@@ -367,6 +369,12 @@ func formatType(oid uint32, mod int32) string {
 
 // castName is the name PostgreSQL gives an unnamed cast column: the type.
 func castName(c *Cast) string {
+	if strings.HasPrefix(c.PG, "enum:") {
+		return bareName(c.PG[len("enum:"):])
+	}
+	if strings.HasPrefix(c.PG, "ut:") {
+		return bareName(c.PG[len("ut:"):])
+	}
 	if t := specTy(c.PG); t.oid != 0 {
 		switch t.oid {
 		case tyVarchar:

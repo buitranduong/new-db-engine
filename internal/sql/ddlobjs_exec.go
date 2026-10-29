@@ -99,7 +99,7 @@ func (s *Session) createEnum(st *ObjDDL) (*Result, error) {
 		return nil, err
 	}
 	if s.typeNameTaken(name) {
-		return nil, errf(codeDuplicateObject, "type %q already exists", name)
+		return nil, errf(codeDuplicateObject, "type %q already exists", bareName(name))
 	}
 	d := objData{}
 	seen := map[string]bool{}
@@ -356,7 +356,7 @@ func (s *Session) createDomain(st *ObjDDL) (*Result, error) {
 		return nil, err
 	}
 	if s.typeNameTaken(name) {
-		return nil, errf(codeDuplicateObject, "type %q already exists", name)
+		return nil, errf(codeDuplicateObject, "type %q already exists", bareName(name))
 	}
 	d := objData{Base: st.BaseType, BasePG: st.BasePG, NotNull: st.NotNull, Default: st.Default}
 	bare := bareName(name)

@@ -276,6 +276,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if d.K == KText && d.I != 0 && !strings.HasPrefix(e.PG, "enum:") { // an enum cast to text sorts as text
+			d.I, d.F = 0, 0
+		}
 		if d.K == KFloat && d.S != "" {
 			d.S = "" // a real cast to double precision prints with double digits
 		}

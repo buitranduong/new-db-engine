@@ -839,8 +839,8 @@ func (p *parser) typeName() (string, error) {
 		if unsupportedTypes[t.s] {
 			return "", errf(codeFeature, "type %q is not supported", t.s)
 		}
-		if p.userTypeName(t) { // an enum or domain: resolved when run (ddlobjs_types.go)
-			out = "string"
+		if o, ok := p.userTypeName(t); ok { // an enum or domain (ddlobjs_types.go)
+			out = o
 			break
 		}
 		return "", errf(codeUndefinedObject, "type %q does not exist", t.s)

@@ -105,7 +105,7 @@ func decodeType(kind string, o core.Obj) *userType {
 		}
 	case "domain":
 		ut.BaseType, ut.BasePG, ut.NotNull, ut.Default, ut.Checks, ut.n = d.Base, d.BasePG, d.NotNull, d.Default, d.Checks, d.N
-		t := &schema.Table{Name: "domain " + o.Name, Key: "value", Columns: []schema.Column{{Name: "value", Type: d.Base, PG: d.BasePG}}}
+		t := &schema.Table{Name: "domain " + o.Name, Key: "k", Columns: []schema.Column{{Name: "k", Type: "string"}, {Name: "value", Type: d.Base, PG: d.BasePG}}}
 		if t.Init() == nil {
 			ut.tmp = t
 		}
@@ -321,11 +321,11 @@ func (ut *userType) checkDatum(d Datum) error {
 	if len(ut.Checks) == 0 || ut.tmp == nil {
 		return nil
 	}
-	v, err := toValueCol(&ut.tmp.Columns[0], d)
+	v, err := toValueCol(&ut.tmp.Columns[1], d)
 	if err != nil {
 		return err
 	}
-	ctx := &evalCtx{sc: &scope{t: ut.tmp}, row: schema.Row{v}, now: nowMicros()}
+	ctx := &evalCtx{sc: &scope{t: ut.tmp}, row: schema.Row{{S: "k"}, v}, now: nowMicros()}
 	for _, ck := range ut.Checks {
 		x, err := parseCheck(ck.Expr)
 		if err != nil {
@@ -466,7 +466,7 @@ func (s *Session) typeDeps(ut *userType) []string {
 // userTypeName handles an identifier typeName does not know: it may name an
 // enum or domain (possibly schema-qualified), which is resolved when the
 // statement runs; the parser only records the name as "ut:<name>".
-func (p *parser) userTypeName(t token) bool {
+func (p *parser) userTypeName(t token) (string, bool) {
 	name := t.s
 	if t.k == tIdent && p.isOp(".") {
 		if n := p.peekN(1); n.k == tIdent || n.k == tQuoted {
@@ -479,8 +479,21 @@ func (p *parser) userTypeName(t token) bool {
 			}
 		}
 	}
+	if p.sess != nil { // a session knows its types now
+		ut, err := p.sess.findType(name)
+		if err != nil {
+			return "", false
+		}
+		loadUserTypes(p.sess.E)
+		if ut.Kind == "enum" {
+			p.pgSpec = "enum:" + ut.Name
+			return "string", true
+		}
+		p.pgSpec = "ut:" + ut.Name
+		return ut.BaseType, true
+	}
 	p.pgSpec = "ut:" + name
-	return true
+	return "string", true
 }
 
 // userSpecTy is specTy of "ut:<name>" for a type already in the registry.
@@ -513,4 +526,35 @@ func (s *Session) resolveActionTypes(st *AlterTable) error {
 		}
 	}
 	return nil
+}
+
+// regtypeName is text::regtype with the user types.
+func (s *Session) regtypeName(name string) (Datum, error) {
+	d, err := regtype(name)
+	if err == nil {
+		return d, nil
+	}
+	n := strings.TrimPrefix(strings.Trim(strings.TrimSpace(name), `"`), "public.")
+	if ut, uerr := s.findType(n); uerr == nil {
+		loadUserTypes(s.E)
+		return IntD(int64(ut.OID)), nil
+	}
+	return d, err
+}
+
+// typeNameOfKind is the type a value of kind k has, for messages.
+func typeNameOfKind(k Kind) string {
+	switch k {
+	case KInt:
+		return "integer"
+	case KFloat:
+		return "double precision"
+	case KBool:
+		return "boolean"
+	case KTime:
+		return "timestamp with time zone"
+	case KNull:
+		return "unknown"
+	}
+	return k.String()
 }

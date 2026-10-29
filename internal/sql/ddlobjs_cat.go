@@ -38,7 +38,7 @@ func typeByOID(oid int64) *pgType {
 			return &pgType{oid: oid, name: bareName(ut.Name), len: 4, cat: "E", sqlName: ut.Name, infoName: "USER-DEFINED"}
 		}
 		if ut.tmp != nil {
-			b := typeByOID(int64(PgTypeOID(ut.tmp.Columns[0])))
+			b := typeByOID(int64(PgTypeOID(ut.tmp.Columns[1])))
 			return &pgType{oid: oid, name: bareName(ut.Name), len: b.len, cat: b.cat, sqlName: ut.Name, infoName: b.infoName}
 		}
 	}
@@ -177,7 +177,7 @@ func init() {
 				continue
 			}
 			rows = append(rows, []Datum{TextD("stask"), TextD(schemaOfName(ut.Name)), TextD(bareName(ut.Name)),
-				TextD(typeByOID(int64(PgTypeOID(ut.tmp.Columns[0]))).infoName)})
+				TextD(typeByOID(int64(PgTypeOID(ut.tmp.Columns[1]))).infoName)})
 		}
 		return rows
 	})
@@ -224,7 +224,7 @@ func init() {
 				if ut.tmp == nil {
 					continue
 				}
-				boid := int64(PgTypeOID(ut.tmp.Columns[0]))
+				boid := int64(PgTypeOID(ut.tmp.Columns[1]))
 				b := typeByOID(boid)
 				def := Null
 				if ut.Default != "" {
@@ -234,7 +234,7 @@ func init() {
 					BoolD(b.len > 0 && b.len <= 8), TextD("d"), TextD(b.cat), BoolD(false), BoolD(true), TextD(","), IntD(0),
 					IntD(0), IntD(0), IntD(0), TextD("domain_in"), TextD(b.name + "out"), TextD("domain_recv"),
 					TextD(b.name + "send"), TextD("-"), TextD("-"), TextD("-"), TextD("i"), TextD("p"), BoolD(ut.NotNull),
-					IntD(boid), IntD(typmodOf(ut.tmp.Columns[0])), IntD(0), IntD(0), Null, def, Null})
+					IntD(boid), IntD(typmodOf(ut.tmp.Columns[1])), IntD(0), IntD(0), Null, def, Null})
 			}
 		}
 		return rows

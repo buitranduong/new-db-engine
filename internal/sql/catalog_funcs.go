@@ -142,7 +142,13 @@ func (c *evalCtx) castCatalog(v Datum, typ string) (Datum, bool, error) {
 		d, err := s.regclass(v.S)
 		return d, true, err
 	case "regtype":
-		d, err := regtype(v.S)
+		var d Datum
+		var err error
+		if s := c.session(); s != nil {
+			d, err = s.regtypeName(v.S)
+		} else {
+			d, err = regtype(v.S)
+		}
 		return d, true, err
 	case "regnamespace":
 		switch strings.Trim(v.S, `"`) {
@@ -268,7 +274,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		if name == "to_regclass" {
 			d, err = s.regclass(args[0].String())
 		} else {
-			d, err = regtype(args[0].String())
+			d, err = s.regtypeName(args[0].String())
 		}
 		if err != nil {
 			return Null, nil

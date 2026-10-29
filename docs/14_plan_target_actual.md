@@ -98,6 +98,23 @@ Bằng chứng ở cột Thực tế là test chạy được hoặc phép đo `
 | H9 | Remap trên đĩa, tra theo khoá | RAM không tỉ lệ với số khoá | Hiện nạp hết vào RAM: 100 B mỗi mục, 1–3 mục mỗi khoá ở trạng thái dừng (đo) | Chưa làm |
 | H10 | Bảng ảo `t_history` / `BETWEEN ... AND` kiểu SQL:2011 / `AS OF` cho view | — | Chưa làm (cần đẩy điều kiện xuống engine) | Chưa làm |
 
+### SR Khối lượng thực tế Kho–CRM–web (SIM) so với PostgreSQL 16 (nhánh `simrun`, 2026-10-29; docs/15 §6)
+
+Bằng chứng: `scripts/simrun.sh` (một lần chạy `cmd/simbench` trên STASK hoặc PG, cổng 28450 đến 28453, tự dọn) và `cmd/simfresh` (độ mới, `kill -9`); dữ liệu thô ở `docs/simrun/`. **Điều kiện đo: VM 8 vCPU dùng chung với agent khác (load 2 đến 13), mỗi ô một lần chạy, không lặp; chỉ có giá trị tương đối.** Chưa chạy ở 30 đến 50 triệu số (tối đa 2M số, nhập 500k).
+
+| Task | Kế hoạch | Mục tiêu (xong khi) | Thực tế | Trạng thái |
+|---|---|---|---|---|
+| SR1 | Chạy lần đầu `simbench` (STASK và PG) ở 200k/50k, 1M/200k, 2M/500k | Có số đo cùng điều kiện, bất biến đúng | Chạy được cả 3 cỡ. Lần chạy đầu lộ 3 lỗi của chính simbench (tham số trong `INSERT..SELECT`, `NOT EXISTS`, `VALID` giả khi 0 đơn commit), đã sửa; bất biến "không bán một số hai lần" đúng ở mọi lần chạy hợp lệ của cả hai hệ (docs/15 §6.4). Một lần (`s2m`) bị harness đánh INVALID do lỗi kiểm tra số dòng khi một lần nhập lỗi một phần; đã sửa harness, không chạy lại | Xong-có-bằng-chứng (cỡ ≤ 2M) |
+| SR2 | Độ trễ website/đơn hàng/CRM khi nhập hàng triệu dòng | Bảng tỉ lệ p50/p99 nền → nhập, STASK và PG | docs/15 §6.1, §6.3. Tải nhẹ, 1M số, nhập 200k bằng `batch_upsert`: STASK website/ES x1,0 đến 1,2, đơn hàng p50 x2,2, thanh toán x3,3, kho x2,2 (p99 x2,1 đến 2,8); PG website p50 x1,1 (tra số p99 x3,7), đơn/kho p50 x1,2 nhưng **p99 x4,9 đến 5,6**. Tải đầy (có quét toàn bảng): STASK đơn hàng p50 x3,8 đến x10, PG gần như không đổi | Xong-có-bằng-chứng; **STASK thua khi tải đã nặng** |
+| SR3 | Ba cách nhập + chia khoảng | Thời gian và khả năng hoàn thành | Rảnh (1M/200k, giây, STASK / PG): copy_merge 8,2 / 16,3; batch_upsert 10,0 / 21,5; update_from 13,9 / 17,1; chunk 45,8 / 20,6. **Có ghi nền: `copy_merge`, chunk (tải đầy) và `update_from` của STASK không xong trong 90 đến 120 s** (OCC: câu dài bị huỷ/làm lại bởi ghi ngắn); PG xong nhưng `update_from` deadlock 40P01, và `copy_merge` làm 5 đến 11 phiên chờ khoá | Xong-có-bằng-chứng; **STASK thua (không hoàn thành)** |
+| SR4 | Tranh chấp điểm nóng | Không bán hai lần; đo thử lại | 50 số nóng, 30% đơn; 0 số bán hai lần; STASK 1 đến 5 lần làm lại, PG 0. Thiết kế chưa tạo hàng đợi khoá thật (97% lần thử "thua" vì số đã bán) | Một phần (chưa đo "10 nghìn người giành 5 số") |
+| SR5 | Truy vấn kiểu ES + chỉ mục phụ | So view trigram và btree với pg_trgm/btree | Nền 1M, p50: tra số 0,19 / 0,29 ms; tiền tố 1,82 / 15,95; lọc 0,44 / 1,18; hậu tố 2,42 / 5,63; chứa 0,90 / 4,28 (STASK / PG). `OR` hai LIKE: STASK 4 đến 6 lần chậm hơn. Không có view: tiền tố quét toàn bảng 1,2 s; view dựng ngầm ≈3,5 s ở 1M | Xong-có-bằng-chứng |
+| SR6 | Đo độ mới (`cmd/simfresh`) | Trễ view khi nhập, đọc-sau-ghi, `kill -9` | Nhập 225 đến 241k dòng/s: `lag_ms` p99 332 đến 376 ms, view bắt kịp ≤ 43 ms sau khi nhập xong; đọc-sau-ghi dòng mới: `bounded` thấy ngay 30 đến 39%, `strong` 100% nhưng p99 ≈ 300 ms, sửa giá luôn thấy giá mới; `kill -9` 3 vòng: 0 dòng đã xác nhận mất, lõi = view sau 4 đến 9 s dựng lại | Xong-có-bằng-chứng (xem hạn chế docs/15 §6.7) |
+| SR7 | Ghi lại SQL STASK còn thiếu | Danh sách có bằng chứng | docs/15 §6.8: tham số trong danh sách cột `INSERT..SELECT` (08P01); `NOT EXISTS` tương quan thành tích lồng nhau (>60 s so với 1,4 s bằng LEFT JOIN); `EXPLAIN` chỉ `SELECT`, không hiện btree; nhập một câu dài không qua được ghi đồng thời | Xong (báo cáo, không sửa engine) |
+| SR8 | Lịch sử (1,1 triệu dòng) | Đo truy vấn lịch sử | Lịch sử một SIM 0,14 đến 0,32 ms (PG 0,30 đến 0,84); đếm 60 ngày 362 ms (PG 82); xoá quá 60 ngày 781 ms (PG 222): STASK thua 3,5 đến 4,4 lần ở hai thao tác quét | Xong-có-bằng-chứng; **STASK thua** |
+
+Chênh lệch với docs: `docs/00_START_HERE.md` và `scripts/simbench.sh` vẫn ghi `simbench` "chưa chạy lần nào" / dùng cổng 28433 đến 28435 (người điều phối cập nhật); bản chạy chuẩn là `scripts/simrun.sh`.
+
 ### P4 Hệ sinh thái
 
 | Task | Kế hoạch | Mục tiêu | Thực tế | Trạng thái |

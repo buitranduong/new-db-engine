@@ -1,0 +1,178 @@
+setup: loaded 2000000 sims in 10.439s
+setup: stask btree (carrier,status,price) in 6.936s
+setup: stask trigram view in 1ms
+== access-path evidence (EXPLAIN + 5x timing) ==
+prefix_hit   ms=[2539.826 2227.042 2097.604 3.909 3.441]
+    plan: Seq Scan on sims |   Consistency: bounded (max_lag_ms=1000) |   Detail: Seq Scan on sims (trigram index sims_trgm not used) engine=core mode=bounded applied_lsn=0 view_lag_ms=0.0 waited_ms=0.0 reason="no trigram index on sims(number)"
+prefix_miss  ms=[188.171 186.86 188.411 187.98 189.058]
+    plan: Trigram Scan on sims using sims_trgm |   Index Cond: number LIKE "x%" |   Consistency: bounded (max_lag_ms=1000) |   Detail: Trigram Scan on sims using sims_trgm (number LIKE "x%") engine=substr mode=bounded applied_lsn=10 view_lag_ms=0.0 waited_ms=0.0 reason="view lag within 1s bound"
+filter_hit   ms=[0.502 0.323 0.299 0.414 0.373]
+    plan: Seq Scan on sims
+filter_miss  ms=[0.136 0.112 0.131 0.113 0.11]
+    plan: Seq Scan on sims
+lookup       ms=[0.105 0.132 0.106 0.097 0.096]
+    plan: Seq Scan on sims
+[16:54:17] phase baseline begins
+[16:54:37] phase import_batch_upsert begins
+[16:55:25] import batch_upsert finished in 47.977s err=<nil>
+[16:55:25] phase import_copy_merge begins
+[16:57:25] import copy_merge finished in 2m0.003s err=timeout: context deadline exceeded
+import copy_merge failed: timeout: context deadline exceeded
+[16:57:25] phase import_copy_merge_chunk begins
+[16:59:25] import copy_merge_chunk finished in 2m0.034s err=timeout: context deadline exceeded
+import copy_merge_chunk failed: timeout: context deadline exceeded
+[16:59:25] phase after begins
+
+== history (quiesced) ==
+sim_history rows: 2122083
+history_of_one_sim_last200              0.36 ms err=<nil>
+history_of_one_sim_last200              0.20 ms err=<nil>
+history_of_one_sim_last200              0.18 ms err=<nil>
+history_of_one_sim_last200              0.16 ms err=<nil>
+history_of_one_sim_last200              0.15 ms err=<nil>
+history_last_60_days_count            491.21 ms err=<nil>
+history_delete_older_than_60d        1440.27 ms err=<nil>
+
+== phase baseline (20.0s)
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           5       0.2   1362.40   1942.70   1942.70      0       0     0
+crm_revenue_by_day                    6       0.3      1.24     16.20     16.20      0       0     0
+es_combined                          85       4.2     15.41     70.44     70.44      0       0     0
+es_contains                          85       4.2      1.12     22.61     22.61      0       0     0
+es_facet_carrier                     83       4.1     56.59    204.75    204.75      0       0     0
+es_prefix_count                      84       4.2     56.33    122.80    122.80      0       0     0
+es_pretty                            78       3.9   1233.98   1523.26   1523.26      0       0     0
+es_suffix                            65       3.2      4.76     47.88     47.88      0       0     0
+inv_sync                            300      15.0      6.92     87.19    128.15      0       0     0
+order_process_cancel                134       6.7      2.87     41.24     51.77      0       0     0
+order_process_pay                   524      26.2      2.37     57.86     78.35      0       0     0
+order_reserve                      1636      81.8      2.88     61.49    115.90      0       0   332
+order_reserve_hot                  1120      56.0      1.56     49.17     74.20      0       1   967
+web_filter                          162       8.1      0.55     20.93     21.40      0       0     0
+web_lookup                          154       7.7      0.21     15.88     19.63      0       0     0
+web_prefix                          144       7.2      3.21     20.97     30.26      0       0     0
+
+== phase import_batch_upsert (48.0s)  import 500000 rows: 47.98s (10422 rows/s) err=""
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status          12       0.3   1857.04   3123.87   3123.87      0       0     0
+crm_revenue_by_day                   12       0.3      5.96     39.21     39.21      0       0     0
+es_combined                         149       3.1     24.30    105.28    110.84      0       0     0
+es_contains                         138       2.9      3.33     28.68     37.59      0       0     0
+es_facet_carrier                    129       2.7    102.25    295.77    369.01      0       0     0
+es_prefix_count                     144       3.0     81.92    221.77    222.06      0       0     0
+es_pretty                           142       3.0   1591.25   3038.80   3061.39      0       0     0
+es_suffix                           140       2.9      9.90     32.00     36.90      0       0     0
+import_batch                        250       5.2    151.53    555.43    594.12      0       0     0
+import_history_write                250       5.2      3.59     16.18     28.18      0       0     0
+inv_sync                            408       8.5     37.58    253.29    337.98      0       3     0
+order_process_cancel                188       3.9     28.72    257.87    280.82      0       0     0
+order_process_pay                   816      17.0     24.98    233.78    414.53      0       0     0
+order_reserve                      2746      57.2     24.95    254.62    386.01      0       0   602
+order_reserve_hot                  1935      40.3      8.13     77.75    424.96      0       2  1878
+web_filter                          281       5.9      3.52     27.64     31.93      0       0     0
+web_lookup                          321       6.7      1.92     31.84     50.94      0       0     0
+web_prefix                          268       5.6      5.93     43.10     59.65      0       0     0
+
+== phase import_copy_merge (120.0s)  import 500000 rows: 120.00s (4167 rows/s) err="timeout: context deadline exceeded"
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status          29       0.2   2264.38   3042.01   3042.01      0       0     0
+crm_revenue_by_day                   28       0.2      8.12     43.94     43.94      0       0     0
+es_combined                         394       3.3     22.96     77.15    172.75      0       0     0
+es_contains                         393       3.3      2.29     28.73     33.53      0       0     0
+es_facet_carrier                    383       3.2     79.46    257.83    340.76      0       0     0
+es_prefix_count                     381       3.2     77.77    257.42    348.49      0       0     0
+es_pretty                           385       3.2   1632.84   2171.59   2225.98      0       0     0
+es_suffix                           378       3.1      8.04     40.92     55.99      0       0     0
+import_history_write                  1       0.0  17292.12  17292.12  17292.12      0       0     0
+inv_sync                           1274      10.6     18.54    145.28  11734.68      0       0     0
+order_process_cancel                579       4.8     10.05    104.61    116.82      0       0     0
+order_process_pay                  2515      21.0      9.12     87.05  11795.14      0       0     0
+order_reserve                      7544      62.9     10.09    100.50  11788.14      0       0  1786
+order_reserve_hot                  5242      43.7      4.80     59.23     84.55      0       0  5176
+web_filter                          780       6.5      1.96     25.07     45.44      0       0     0
+web_lookup                          782       6.5      1.64     31.08     40.52      0       0     0
+web_prefix                          806       6.7      4.54     34.99    242.26      0       0     0
+
+== phase import_copy_merge_chunk (120.0s)  import 500000 rows: 120.03s (4165 rows/s) err="timeout: context deadline exceeded"
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status          28       0.2   2171.10   2806.12   2806.12      0       0     0
+crm_revenue_by_day                   29       0.2     17.10    308.60    308.60      0       0     0
+es_combined                         402       3.3     22.96     69.12     91.09      0       0     0
+es_contains                         417       3.5      3.06     23.96     33.62      0       0     0
+es_facet_carrier                    371       3.1     91.82    283.70    427.66      0       0     0
+es_prefix_count                     350       2.9     78.56    196.22    299.53      0       0     0
+es_pretty                           374       3.1   1651.79   2279.15   2529.48      0       0     0
+es_suffix                           390       3.2      8.96     39.59     66.45      0       0     0
+import_batch                         37       0.3   2027.63   6857.29   6857.29      1       0     0
+    error x1: timeout: context deadline exceeded
+import_history_write                  1       0.0  19716.94  19716.94  19716.94      0       0     0
+inv_sync                           1204      10.0     19.57    170.68  13585.33      0       0     0
+order_process_cancel                598       5.0     10.58    313.88  13629.64      0       0     0
+order_process_pay                  2341      19.5     10.19    100.55   2152.15      0       0     0
+order_reserve                      7364      61.3     10.44    113.10  13665.18      0       0  1790
+order_reserve_hot                  4898      40.8      5.28     65.42    109.94      0       0  4863
+web_filter                          721       6.0      2.33     23.64     39.34      0       0     0
+web_lookup                          778       6.5      1.73     22.28     54.05      0       0     0
+web_prefix                          733       6.1      4.92     38.24    166.37      0       0     0
+
+== phase after (20.0s)
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           6       0.3   1675.62   2378.64   2378.64      0       0     0
+crm_revenue_by_day                    5       0.2     15.76     34.90     34.90      0       0     0
+es_combined                          61       3.0     19.42     49.95     49.95      0       0     0
+es_contains                          66       3.3      1.27     23.60     23.60      0       0     0
+es_facet_carrier                     60       3.0     70.70    268.42    268.42      0       0     0
+es_prefix_count                      64       3.2     71.72    192.81    192.81      0       0     0
+es_pretty                            75       3.7   1452.97   2019.02   2019.02      4       0     0
+    error x4: context canceled
+es_suffix                            70       3.5      7.33     29.52     29.52      0       0     0
+inv_sync                            263      13.1     13.26    110.33    114.56      0       0     0
+order_process_cancel                132       6.6      6.47     71.94     78.87      0       0     0
+order_process_pay                   518      25.9      5.60     66.54    108.47      0       0     0
+order_reserve                      1503      75.1      6.28     78.40    147.32      0       0   365
+order_reserve_hot                  1093      54.6      2.47     51.33     82.02      0       0  1089
+web_filter                          134       6.7      1.03     17.18     19.91      0       0     0
+web_lookup                          108       5.4      0.96     30.65     36.64      0       0     0
+web_prefix                          129       6.4      3.81     24.00     31.03      0       0     0
+
+== latency under import vs baseline (p50 / p99 ratio; >1 = slower)
+import_batch_upsert:
+  web_prefix             p50 3.21 -> 5.93 ms (x1.8)   p99 20.97 -> 43.10 ms (x2.1)   ops/s 7 -> 6
+  web_filter             p50 0.55 -> 3.52 ms (x6.5)   p99 20.93 -> 27.64 ms (x1.3)   ops/s 8 -> 6
+  web_lookup             p50 0.21 -> 1.92 ms (x9.0)   p99 15.88 -> 31.84 ms (x2.0)   ops/s 8 -> 7
+  order_reserve          p50 2.88 -> 24.95 ms (x8.7)   p99 61.49 -> 254.62 ms (x4.1)   ops/s 82 -> 57
+  order_reserve_hot      p50 1.56 -> 8.13 ms (x5.2)   p99 49.17 -> 77.75 ms (x1.6)   ops/s 56 -> 40
+  order_process_pay      p50 2.37 -> 24.98 ms (x10.5)   p99 57.86 -> 233.78 ms (x4.0)   ops/s 26 -> 17
+  order_process_cancel   p50 2.87 -> 28.72 ms (x10.0)   p99 41.24 -> 257.87 ms (x6.3)   ops/s 7 -> 4
+  inv_sync               p50 6.92 -> 37.58 ms (x5.4)   p99 87.19 -> 253.29 ms (x2.9)   ops/s 15 -> 9
+import_copy_merge:
+  web_prefix             p50 3.21 -> 4.54 ms (x1.4)   p99 20.97 -> 34.99 ms (x1.7)   ops/s 7 -> 7
+  web_filter             p50 0.55 -> 1.96 ms (x3.6)   p99 20.93 -> 25.07 ms (x1.2)   ops/s 8 -> 6
+  web_lookup             p50 0.21 -> 1.64 ms (x7.7)   p99 15.88 -> 31.08 ms (x2.0)   ops/s 8 -> 7
+  order_reserve          p50 2.88 -> 10.09 ms (x3.5)   p99 61.49 -> 100.50 ms (x1.6)   ops/s 82 -> 63
+  order_reserve_hot      p50 1.56 -> 4.80 ms (x3.1)   p99 49.17 -> 59.23 ms (x1.2)   ops/s 56 -> 44
+  order_process_pay      p50 2.37 -> 9.12 ms (x3.8)   p99 57.86 -> 87.05 ms (x1.5)   ops/s 26 -> 21
+  order_process_cancel   p50 2.87 -> 10.05 ms (x3.5)   p99 41.24 -> 104.61 ms (x2.5)   ops/s 7 -> 5
+  inv_sync               p50 6.92 -> 18.54 ms (x2.7)   p99 87.19 -> 145.28 ms (x1.7)   ops/s 15 -> 11
+import_copy_merge_chunk:
+  web_prefix             p50 3.21 -> 4.92 ms (x1.5)   p99 20.97 -> 38.24 ms (x1.8)   ops/s 7 -> 6
+  web_filter             p50 0.55 -> 2.33 ms (x4.3)   p99 20.93 -> 23.64 ms (x1.1)   ops/s 8 -> 6
+  web_lookup             p50 0.21 -> 1.73 ms (x8.1)   p99 15.88 -> 22.28 ms (x1.4)   ops/s 8 -> 6
+  order_reserve          p50 2.88 -> 10.44 ms (x3.6)   p99 61.49 -> 113.10 ms (x1.8)   ops/s 82 -> 61
+  order_reserve_hot      p50 1.56 -> 5.28 ms (x3.4)   p99 49.17 -> 65.42 ms (x1.3)   ops/s 56 -> 41
+  order_process_pay      p50 2.37 -> 10.19 ms (x4.3)   p99 57.86 -> 100.55 ms (x1.7)   ops/s 26 -> 20
+  order_process_cancel   p50 2.87 -> 10.58 ms (x3.7)   p99 41.24 -> 313.88 ms (x7.6)   ops/s 7 -> 5
+  inv_sync               p50 6.92 -> 19.57 ms (x2.8)   p99 87.19 -> 170.68 ms (x2.0)   ops/s 15 -> 10
+
+== invariants
+FAIL sims row count: got 2057418 want 2049895 (initial 2000000 + new 49895)
+ok   orders count == committed orders: db 16233 client 16233 (+0 with unknown outcome at stop)
+ok   orders were actually committed (workload ran): 16233 committed
+ok   sum(total of live orders) == sum(active item prices): 51645267000 vs 51645267000 (<nil> <nil>)
+ok   no number sold/held twice (live items per number <= 1): 19877 live numbers, 0 duplicated
+ok   reserved/sold sims == live items: sims held 19877, live items 19877, mismatched 0
+ok   import import_copy_merge: FAILED (not an invariant breach): timeout: context deadline exceeded
+ok   import import_copy_merge_chunk: FAILED (not an invariant breach): timeout: context deadline exceeded
+
+RESULT INVALID (stask)
+exit 1

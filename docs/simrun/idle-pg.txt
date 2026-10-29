@@ -1,0 +1,75 @@
+setup: loaded 200000 sims in 1.543s
+setup: pg secondary indexes in 884ms
+setup: pg_trgm GIN in 1.77s
+== access-path evidence (EXPLAIN + 5x timing) ==
+prefix_hit   ms=[3.339 3.182 2.918 2.465 2.462]
+    plan: Limit  (cost=40.78..86.51 rows=50 width=38) |   ->  Bitmap Heap Scan on sims  (cost=40.78..1888.43 rows=2020 width=38) |         Recheck Cond: (number ~~ '090%'::text) |         ->  Bitmap Index Scan on sims_trgm  (cost=0.00..40.27 rows=2020 width=0) |               Index Cond: (number ~~ '090%'::text)
+prefix_miss  ms=[0.681 0.344 0.349 0.356 0.285]
+    plan: Limit  (cost=0.42..8.44 rows=20 width=11) |   ->  Index Only Scan using sims_num_pat on sims  (cost=0.42..8.44 rows=20 width=11) |         Index Cond: ((number ~>=~ 'x'::text) AND (number ~<~ 'y'::text)) |         Filter: (number ~~ 'x%'::text)
+filter_hit   ms=[1.43 1.104 1.011 1.066 1.024]
+    plan: Limit  (cost=0.00..68.40 rows=50 width=19) |   ->  Seq Scan on sims  (cost=0.00..5736.00 rows=4193 width=19) |         Filter: ((price >= '200000'::bigint) AND (price <= '700000'::bigint) AND (carrier = 'viettel'::text) AND (status = 'available'::text))
+filter_miss  ms=[0.47 0.381 0.417 0.405 0.502]
+    plan: Limit  (cost=0.42..8.45 rows=1 width=19) |   ->  Index Scan using sims_cf on sims  (cost=0.42..8.45 rows=1 width=19) |         Index Cond: ((carrier = 'viettel'::text) AND (status = 'available'::text) AND (price >= '-2'::bigint) AND (price <= '-1'::bigint))
+lookup       ms=[0.631 0.351 0.314 0.3 0.232]
+    plan: Index Scan using sims_num_pat on sims  (cost=0.42..8.44 rows=1 width=38) |   Index Cond: (number = '0097772400'::text)
+[16:19:02] phase baseline begins
+[16:19:03] phase import_copy_merge begins
+[16:19:07] import copy_merge finished in 4.444s err=<nil>
+[16:19:07] phase import_copy_merge_chunk begins
+[16:19:12] import copy_merge_chunk finished in 4.803s err=<nil>
+[16:19:12] phase import_batch_upsert begins
+[16:19:17] import batch_upsert finished in 4.881s err=<nil>
+[16:19:17] phase import_update_from begins
+[16:19:21] import update_from finished in 4.052s err=<nil>
+[16:19:21] phase after begins
+
+== history (quiesced) ==
+sim_history rows: 260000
+history_of_one_sim_last200              0.97 ms err=<nil>
+history_of_one_sim_last200              0.37 ms err=<nil>
+history_of_one_sim_last200              0.41 ms err=<nil>
+history_of_one_sim_last200              0.34 ms err=<nil>
+history_of_one_sim_last200              0.29 ms err=<nil>
+history_last_60_days_count             43.20 ms err=<nil>
+history_delete_older_than_60d          23.97 ms err=<nil>
+
+== phase baseline (1.0s)  lock-wait sessions avg 0.00 max 0
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+
+== phase import_copy_merge (4.4s)  import 50000 rows: 4.44s (11251 rows/s) err=""  lock-wait sessions avg 0.00 max 0
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_history_write                  1       0.2    854.49    854.49    854.49      0       0     0
+
+== phase import_copy_merge_chunk (4.8s)  import 50000 rows: 4.80s (10409 rows/s) err=""  lock-wait sessions avg 0.00 max 0
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_batch                         25       5.2    101.38    346.33    346.33      0       0     0
+import_history_write                  1       0.2   1034.98   1034.98   1034.98      0       0     0
+
+== phase import_batch_upsert (4.9s)  import 50000 rows: 4.88s (10245 rows/s) err=""  lock-wait sessions avg 0.00 max 0
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_batch                         25       5.1    177.20    374.80    374.80      0       0     0
+import_history_write                 25       5.1      3.74     11.49     11.49      0       0     0
+
+== phase import_update_from (4.1s)  import 50000 rows: 4.05s (12340 rows/s) err=""  lock-wait sessions avg 0.00 max 0
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_history_write                  1       0.2    991.04    991.04    991.04      0       0     0
+
+== phase after (1.0s)  lock-wait sessions avg 0.00 max 0
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+
+== latency under import vs baseline (p50 / p99 ratio; >1 = slower)
+import_copy_merge:
+import_copy_merge_chunk:
+import_batch_upsert:
+import_update_from:
+
+== invariants
+ok   sims row count: got 220091 want 220091 (initial 200000 + new 20091)
+ok   orders count == committed orders: db 0 client 0 (+0 with unknown outcome at stop)
+FAIL orders were actually committed (workload ran): 0 committed
+ok   sum(total of live orders) == sum(active item prices): 0 vs 0 (<nil> <nil>)
+ok   no number sold/held twice (live items per number <= 1): 0 live numbers, 0 duplicated
+ok   reserved/sold sims == live items: sims held 0, live items 0, mismatched 0
+
+RESULT INVALID (pg)
+exit 1

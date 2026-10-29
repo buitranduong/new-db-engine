@@ -1,0 +1,855 @@
+{
+ "config": {},
+ "imports": {
+  "import_batch_upsert": {
+   "error": "",
+   "lock_wait_avg": 0,
+   "lock_wait_max": 0,
+   "rows": 200000,
+   "seconds": 9.830229644
+  },
+  "import_copy_merge": {
+   "error": "timeout: context deadline exceeded",
+   "lock_wait_avg": 0,
+   "lock_wait_max": 0,
+   "rows": 200000,
+   "seconds": 120.007423822
+  },
+  "import_copy_merge_chunk": {
+   "error": "",
+   "lock_wait_avg": 0,
+   "lock_wait_max": 0,
+   "rows": 200000,
+   "seconds": 61.340971334
+  }
+ },
+ "invariants": [
+  {
+   "Name": "sims row count",
+   "OK": true,
+   "Info": "got 1039946 want 1039946 (initial 1000000 + new 39946) .. 1059944 (if failed imports applied part of their rows)"
+  },
+  {
+   "Name": "orders count == committed orders",
+   "OK": true,
+   "Info": "db 15337 client 15337 (+4 with unknown outcome at stop)"
+  },
+  {
+   "Name": "orders were actually committed (workload ran)",
+   "OK": true,
+   "Info": "15337 committed"
+  },
+  {
+   "Name": "sum(total of live orders) == sum(active item prices)",
+   "OK": true,
+   "Info": "48704985000 vs 48704985000 (\u003cnil\u003e \u003cnil\u003e)"
+  },
+  {
+   "Name": "no number sold/held twice (live items per number \u003c= 1)",
+   "OK": true,
+   "Info": "18595 live numbers, 0 duplicated"
+  },
+  {
+   "Name": "reserved/sold sims == live items",
+   "OK": true,
+   "Info": "sims held 18595, live items 18595, mismatched 0"
+  },
+  {
+   "Name": "import import_copy_merge",
+   "OK": true,
+   "Info": "FAILED (not an invariant breach): timeout: context deadline exceeded"
+  }
+ ],
+ "phases": {
+  "after": {
+   "es_combined": {
+    "N": 215,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 10.749688134347721,
+    "P50": 6.772,
+    "P99": 19.643,
+    "Max": 20.573,
+    "Errs": {}
+   },
+   "es_contains": {
+    "N": 445,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 22.249354510626677,
+    "P50": 0.957,
+    "P99": 13.499,
+    "Max": 14.795,
+    "Errs": {}
+   },
+   "es_facet_carrier": {
+    "N": 217,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 10.849685233271886,
+    "P50": 25.603,
+    "P99": 63.905,
+    "Max": 74.524,
+    "Errs": {}
+   },
+   "es_prefix_count": {
+    "N": 264,
+    "Fail": 1,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 13.19961705798976,
+    "P50": 24.723,
+    "P99": 37.424,
+    "Max": 39.025,
+    "Errs": {
+     "context canceled": 1
+    }
+   },
+   "es_suffix": {
+    "N": 241,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 12.049650420361864,
+    "P50": 2.66,
+    "P99": 18.943,
+    "Max": 21.796,
+    "Errs": {}
+   },
+   "inv_sync": {
+    "N": 345,
+    "Fail": 1,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 17.249499564418436,
+    "P50": 4.707,
+    "P99": 21.698,
+    "Max": 25.043,
+    "Errs": {
+     "context canceled": 1
+    }
+   },
+   "order_process_cancel": {
+    "N": 142,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 7.099794023615704,
+    "P50": 1.85,
+    "P99": 15.806,
+    "Max": 17.189,
+    "Errs": {}
+   },
+   "order_process_pay": {
+    "N": 608,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 30.399118072946113,
+    "P50": 1.595,
+    "P99": 16.235,
+    "Max": 18.322,
+    "Errs": {}
+   },
+   "order_reserve": {
+    "N": 1804,
+    "Fail": 2,
+    "Retries": 0,
+    "Lost": 491,
+    "PerSec": 90.1973832295967,
+    "P50": 2.019,
+    "P99": 17.059,
+    "Max": 20.538,
+    "Errs": {
+     "context canceled": 2
+    }
+   },
+   "order_reserve_hot": {
+    "N": 1215,
+    "Fail": 2,
+    "Retries": 0,
+    "Lost": 1211,
+    "PerSec": 60.748237596430144,
+    "P50": 0.423,
+    "P99": 15.021,
+    "Max": 15.928,
+    "Errs": {
+     "context canceled": 2
+    }
+   },
+   "web_filter": {
+    "N": 451,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 22.549345807399174,
+    "P50": 0.52,
+    "P99": 13.859,
+    "Max": 15.345,
+    "Errs": {}
+   },
+   "web_lookup": {
+    "N": 466,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.29932404933041,
+    "P50": 0.201,
+    "P99": 13.973,
+    "Max": 15.401,
+    "Errs": {}
+   },
+   "web_prefix": {
+    "N": 464,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.199326950406245,
+    "P50": 1.444,
+    "P99": 15.309,
+    "Max": 18.36,
+    "Errs": {}
+   }
+  },
+  "baseline": {
+   "es_combined": {
+    "N": 255,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 12.749848746631843,
+    "P50": 6.089,
+    "P99": 19.382,
+    "Max": 22.374,
+    "Errs": {}
+   },
+   "es_contains": {
+    "N": 472,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.599720032981292,
+    "P50": 0.901,
+    "P99": 14.46,
+    "Max": 15.768,
+    "Errs": {}
+   },
+   "es_facet_carrier": {
+    "N": 225,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.249866541145742,
+    "P50": 23.262,
+    "P99": 52.645,
+    "Max": 61.968,
+    "Errs": {}
+   },
+   "es_prefix_count": {
+    "N": 242,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 12.099856457587865,
+    "P50": 21.277,
+    "P99": 33.891,
+    "Max": 34.867,
+    "Errs": {}
+   },
+   "es_suffix": {
+    "N": 211,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 10.54987484525223,
+    "P50": 2.415,
+    "P99": 13.57,
+    "Max": 18.657,
+    "Errs": {}
+   },
+   "inv_sync": {
+    "N": 336,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 16.79980070144431,
+    "P50": 4.827,
+    "P99": 20.411,
+    "Max": 37.625,
+    "Errs": {}
+   },
+   "order_process_cancel": {
+    "N": 158,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 7.899906282226788,
+    "P50": 1.844,
+    "P99": 15.197,
+    "Max": 21.236,
+    "Errs": {}
+   },
+   "order_process_pay": {
+    "N": 580,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 28.999655972731247,
+    "P50": 1.688,
+    "P99": 17.683,
+    "Max": 52.055,
+    "Errs": {}
+   },
+   "order_reserve": {
+    "N": 1792,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 373,
+    "PerSec": 89.59893707436964,
+    "P50": 2.046,
+    "P99": 18.084,
+    "Max": 47.99,
+    "Errs": {}
+   },
+   "order_reserve_hot": {
+    "N": 1195,
+    "Fail": 0,
+    "Retries": 1,
+    "Lost": 1029,
+    "PerSec": 59.74929118519628,
+    "P50": 0.551,
+    "P99": 15.282,
+    "Max": 52.043,
+    "Errs": {}
+   },
+   "web_filter": {
+    "N": 472,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.599720032981292,
+    "P50": 0.441,
+    "P99": 13.852,
+    "Max": 14.695,
+    "Errs": {}
+   },
+   "web_lookup": {
+    "N": 496,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 24.799705797370173,
+    "P50": 0.19,
+    "P99": 14.52,
+    "Max": 15.143,
+    "Errs": {}
+   },
+   "web_prefix": {
+    "N": 443,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 22.14973723434473,
+    "P50": 1.816,
+    "P99": 16.016,
+    "Max": 17.3,
+    "Errs": {}
+   }
+  },
+  "import_batch_upsert": {
+   "es_combined": {
+    "N": 123,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 12.512305777709406,
+    "P50": 6.418,
+    "P99": 15.277,
+    "Max": 17.189,
+    "Errs": {}
+   },
+   "es_contains": {
+    "N": 233,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.702172733384483,
+    "P50": 0.98,
+    "P99": 13.497,
+    "Max": 35.694,
+    "Errs": {}
+   },
+   "es_facet_carrier": {
+    "N": 114,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.596771208608718,
+    "P50": 25.059,
+    "P99": 59.057,
+    "Max": 61.789,
+    "Errs": {}
+   },
+   "es_prefix_count": {
+    "N": 116,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.800223335075538,
+    "P50": 23.426,
+    "P99": 38.419,
+    "Max": 46.948,
+    "Errs": {}
+   },
+   "es_suffix": {
+    "N": 111,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.291593018908488,
+    "P50": 2.632,
+    "P99": 12.303,
+    "Max": 16.01,
+    "Errs": {}
+   },
+   "import_batch": {
+    "N": 100,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 10.17260632334098,
+    "P50": 94.235,
+    "P99": 139.581,
+    "Max": 153.83,
+    "Errs": {}
+   },
+   "import_history_write": {
+    "N": 100,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 10.17260632334098,
+    "P50": 2.389,
+    "P99": 5.138,
+    "Max": 5.362,
+    "Errs": {}
+   },
+   "inv_sync": {
+    "N": 157,
+    "Fail": 0,
+    "Retries": 4,
+    "Lost": 0,
+    "PerSec": 15.97099192764534,
+    "P50": 10.468,
+    "P99": 43.258,
+    "Max": 47.596,
+    "Errs": {}
+   },
+   "order_process_cancel": {
+    "N": 52,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 5.28975528813731,
+    "P50": 6.316,
+    "P99": 27.824,
+    "Max": 27.824,
+    "Errs": {}
+   },
+   "order_process_pay": {
+    "N": 278,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 28.279845578887926,
+    "P50": 5.602,
+    "P99": 49.36,
+    "Max": 66.096,
+    "Errs": {}
+   },
+   "order_reserve": {
+    "N": 840,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 181,
+    "PerSec": 85.44989311606423,
+    "P50": 4.582,
+    "P99": 45.886,
+    "Max": 58.908,
+    "Errs": {}
+   },
+   "order_reserve_hot": {
+    "N": 560,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 542,
+    "PerSec": 56.96659541070949,
+    "P50": 0.47,
+    "P99": 14.109,
+    "Max": 27.214,
+    "Errs": {}
+   },
+   "web_filter": {
+    "N": 215,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 21.871103595183108,
+    "P50": 0.519,
+    "P99": 13.3,
+    "Max": 17.879,
+    "Errs": {}
+   },
+   "web_lookup": {
+    "N": 230,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.396994543684254,
+    "P50": 0.204,
+    "P99": 12.214,
+    "Max": 15.266,
+    "Errs": {}
+   },
+   "web_prefix": {
+    "N": 249,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 25.32978974511904,
+    "P50": 1.742,
+    "P99": 13.029,
+    "Max": 16.952,
+    "Errs": {}
+   }
+  },
+  "import_copy_merge": {
+   "es_combined": {
+    "N": 1352,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.265955072048312,
+    "P50": 6.836,
+    "P99": 20.226,
+    "Max": 48.719,
+    "Errs": {}
+   },
+   "es_contains": {
+    "N": 2869,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.906823300078855,
+    "P50": 0.953,
+    "P99": 14.132,
+    "Max": 20.822,
+    "Errs": {}
+   },
+   "es_facet_carrier": {
+    "N": 1399,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.6575970013281,
+    "P50": 25.949,
+    "P99": 62.386,
+    "Max": 89.904,
+    "Errs": {}
+   },
+   "es_prefix_count": {
+    "N": 1424,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.865917176476922,
+    "P50": 24.275,
+    "P99": 41.002,
+    "Max": 53.979,
+    "Errs": {}
+   },
+   "es_suffix": {
+    "N": 1471,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 12.257559105756707,
+    "P50": 2.716,
+    "P99": 17.045,
+    "Max": 21.784,
+    "Errs": {}
+   },
+   "import_history_write": {
+    "N": 1,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 0.008332807005952894,
+    "P50": 3981.292,
+    "P99": 3981.292,
+    "Max": 3981.292,
+    "Errs": {}
+   },
+   "inv_sync": {
+    "N": 2023,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 16.857268573042706,
+    "P50": 4.719,
+    "P99": 22.148,
+    "Max": 2456.371,
+    "Errs": {}
+   },
+   "order_process_cancel": {
+    "N": 858,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 7.149548411107583,
+    "P50": 1.922,
+    "P99": 17.025,
+    "Max": 190.9,
+    "Errs": {}
+   },
+   "order_process_pay": {
+    "N": 3469,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 28.90650750365059,
+    "P50": 1.685,
+    "P99": 17.108,
+    "Max": 2449.581,
+    "Errs": {}
+   },
+   "order_reserve": {
+    "N": 10457,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 2743,
+    "PerSec": 87.13616286124942,
+    "P50": 2.019,
+    "P99": 17.433,
+    "Max": 2447.192,
+    "Errs": {}
+   },
+   "order_reserve_hot": {
+    "N": 7059,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 7006,
+    "PerSec": 58.82128465502148,
+    "P50": 0.418,
+    "P99": 14.112,
+    "Max": 22.359,
+    "Errs": {}
+   },
+   "web_filter": {
+    "N": 2785,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.20686751157881,
+    "P50": 0.517,
+    "P99": 12.889,
+    "Max": 19.425,
+    "Errs": {}
+   },
+   "web_lookup": {
+    "N": 2750,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 22.91521926637046,
+    "P50": 0.196,
+    "P99": 13.087,
+    "Max": 18.998,
+    "Errs": {}
+   },
+   "web_prefix": {
+    "N": 2768,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.06520979247761,
+    "P50": 1.396,
+    "P99": 14.597,
+    "Max": 27.087,
+    "Errs": {}
+   }
+  },
+  "import_copy_merge_chunk": {
+   "es_combined": {
+    "N": 728,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.868077571218366,
+    "P50": 6.602,
+    "P99": 17.454,
+    "Max": 24.783,
+    "Errs": {}
+   },
+   "es_contains": {
+    "N": 1487,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 24.241526577474875,
+    "P50": 0.925,
+    "P99": 14.538,
+    "Max": 19.685,
+    "Errs": {}
+   },
+   "es_facet_carrier": {
+    "N": 699,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.39531074489236,
+    "P50": 25.278,
+    "P99": 59.895,
+    "Max": 63.934,
+    "Errs": {}
+   },
+   "es_prefix_count": {
+    "N": 682,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.118171570839184,
+    "P50": 23.428,
+    "P99": 38.731,
+    "Max": 79.49,
+    "Errs": {}
+   },
+   "es_suffix": {
+    "N": 733,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 11.949589092998712,
+    "P50": 2.608,
+    "P99": 16.557,
+    "Max": 26.554,
+    "Errs": {}
+   },
+   "import_batch": {
+    "N": 100,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 1.6302304356069184,
+    "P50": 412.198,
+    "P99": 1510.48,
+    "Max": 1854.833,
+    "Errs": {}
+   },
+   "import_history_write": {
+    "N": 1,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 0.016302304356069185,
+    "P50": 4088.054,
+    "P99": 4088.054,
+    "Max": 4088.054,
+    "Errs": {}
+   },
+   "inv_sync": {
+    "N": 1037,
+    "Fail": 0,
+    "Retries": 3,
+    "Lost": 0,
+    "PerSec": 16.905489617243745,
+    "P50": 4.357,
+    "P99": 28.191,
+    "Max": 2518.002,
+    "Errs": {}
+   },
+   "order_process_cancel": {
+    "N": 455,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 7.417548482011479,
+    "P50": 1.762,
+    "P99": 28.008,
+    "Max": 2530.66,
+    "Errs": {}
+   },
+   "order_process_pay": {
+    "N": 1743,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 28.41491649262859,
+    "P50": 1.523,
+    "P99": 26.499,
+    "Max": 2488.879,
+    "Errs": {}
+   },
+   "order_reserve": {
+    "N": 5182,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 1268,
+    "PerSec": 84.47854117315052,
+    "P50": 1.923,
+    "P99": 25.544,
+    "Max": 2564.766,
+    "Errs": {}
+   },
+   "order_reserve_hot": {
+    "N": 3673,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 3596,
+    "PerSec": 59.878363899842114,
+    "P50": 0.366,
+    "P99": 14.581,
+    "Max": 28.254,
+    "Errs": {}
+   },
+   "web_filter": {
+    "N": 1428,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.279690620466795,
+    "P50": 0.481,
+    "P99": 12.372,
+    "Max": 18.46,
+    "Errs": {}
+   },
+   "web_lookup": {
+    "N": 1442,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.507922881451762,
+    "P50": 0.178,
+    "P99": 12.701,
+    "Max": 18.558,
+    "Errs": {}
+   },
+   "web_prefix": {
+    "N": 1427,
+    "Fail": 0,
+    "Retries": 0,
+    "Lost": 0,
+    "PerSec": 23.263388316110724,
+    "P50": 1.49,
+    "P99": 13.729,
+    "Max": 50.691,
+    "Errs": {}
+   }
+  }
+ },
+ "result": "VALID",
+ "system": "stask"
+}

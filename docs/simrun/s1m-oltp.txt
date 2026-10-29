@@ -1,0 +1,159 @@
+setup: loaded 1000000 sims in 5.448s
+setup: stask btree (carrier,status,price) in 3.365s
+== access-path evidence (EXPLAIN + 5x timing) ==
+prefix_hit   ms=[999.107 1002.479 1000.319 1021.801 1031.994]
+    plan: Seq Scan on sims
+prefix_miss  ms=[1064.207 1052.871 1053.567 1060.509 1130.916]
+    plan: Seq Scan on sims
+filter_hit   ms=[0.472 0.339 0.299 0.321 0.307]
+    plan: Seq Scan on sims
+filter_miss  ms=[0.12 0.112 0.133 0.12 0.116]
+    plan: Seq Scan on sims
+lookup       ms=[0.11 0.104 0.103 0.099 0.1]
+    plan: Seq Scan on sims
+[16:37:43] phase baseline begins
+[16:38:03] phase import_batch_upsert begins
+[16:38:18] import batch_upsert finished in 15.489s err=<nil>
+[16:38:18] phase import_copy_merge begins
+[16:40:18] import copy_merge finished in 2m0.042s err=timeout: context deadline exceeded
+import copy_merge failed: timeout: context deadline exceeded
+[16:40:18] phase import_copy_merge_chunk begins
+[16:41:54] import copy_merge_chunk finished in 1m36.096s err=<nil>
+[16:41:54] phase import_update_from begins
+[16:43:54] import update_from finished in 2m0.01s err=timeout: context deadline exceeded
+import update_from failed: timeout: context deadline exceeded
+[16:43:54] phase after begins
+
+== history (quiesced) ==
+sim_history rows: 1125908
+history_of_one_sim_last200              0.85 ms err=<nil>
+history_of_one_sim_last200              0.22 ms err=<nil>
+history_of_one_sim_last200              0.16 ms err=<nil>
+history_of_one_sim_last200              0.17 ms err=<nil>
+history_of_one_sim_last200              0.16 ms err=<nil>
+history_last_60_days_count            206.67 ms err=<nil>
+history_delete_older_than_60d         755.04 ms err=<nil>
+
+== phase baseline (20.0s)
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+inv_sync                            257      12.8     11.36    129.21    130.56      0       0     0
+order_process_cancel                121       6.0      7.97    101.97    103.12      0       0     0
+order_process_pay                   486      24.3      5.17     75.12    112.65      0       0     0
+order_reserve                      1482      74.1      6.34     77.73    150.84      0       0   297
+order_reserve_hot                  1006      50.3      4.00     67.23     96.60      0       3   854
+web_filter                          116       5.8      0.75     16.14     21.44      0       0     0
+web_lookup                           95       4.7      0.31     17.81     17.81      0       0     0
+web_prefix                          110       5.5   1233.06   2624.51   2651.19      0       0     0
+
+== phase import_batch_upsert (15.5s)  import 200000 rows: 15.49s (12912 rows/s) err=""
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_batch                        100       6.5    151.13    230.01    240.87      0       0     0
+import_history_write                100       6.5      2.87     13.35     17.72      0       0     0
+inv_sync                            142       9.2     43.17    182.01    265.69      0       0     0
+order_process_cancel                 72       4.6     35.24    100.58    100.58      0       0     0
+order_process_pay                   295      19.0     27.23    121.28    208.42      0       0     0
+order_reserve                       959      61.9     25.97    137.33    237.37      0       1   224
+order_reserve_hot                   634      40.9     11.26     66.57     96.18      0       0   606
+web_filter                           89       5.7      2.52     20.43     20.43      0       0     0
+web_lookup                           70       4.5      2.60     16.91     16.91      0       0     0
+web_prefix                           83       5.4   1236.79   2799.24   2799.24      0       0     0
+
+== phase import_copy_merge (120.0s)  import 200000 rows: 120.04s (1666 rows/s) err="timeout: context deadline exceeded"
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_history_write                  1       0.0   6072.90   6072.90   6072.90      0       0     0
+inv_sync                           1149       9.6     36.28    183.83   3660.85      0       0     0
+order_process_cancel                642       5.3     18.02    104.67   3706.55      0       0     0
+order_process_pay                  2403      20.0     17.53     94.83   1757.36      0       0     0
+order_reserve                      7348      61.2     18.44    110.36   3703.39      0       0  1687
+order_reserve_hot                  5136      42.8     11.50     75.30   3721.50      0       2  5049
+web_filter                          580       4.8      1.99     21.88     31.57      0       0     0
+web_lookup                          591       4.9      1.84     21.29     43.68      0       0     0
+web_prefix                          634       5.3   1318.78   3025.14   3559.38      0       0     0
+
+== phase import_copy_merge_chunk (96.1s)  import 200000 rows: 96.10s (2081 rows/s) err=""
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_batch                        100       1.0    671.86   2641.46   3313.29      0       0     0
+import_history_write                  1       0.0   6174.88   6174.88   6174.88      0       0     0
+inv_sync                            908       9.4     37.86    182.13   3816.29      0       3     0
+order_process_cancel                470       4.9     23.71    135.98    185.84      0       0     0
+order_process_pay                  1818      18.9     20.12    105.97   3846.80      0       0     0
+order_reserve                      5807      60.4     19.88    119.56   3902.36      0       1  1463
+order_reserve_hot                  3980      41.4     11.48     72.04    107.52      0       0  3946
+web_filter                          481       5.0      2.47     20.75     21.97      0       0     0
+web_lookup                          548       5.7      2.54     21.87     30.68      0       0     0
+web_prefix                          517       5.4   1333.02   2654.45   3161.32      0       0     0
+
+== phase import_update_from (120.0s)  import 200000 rows: 120.01s (1667 rows/s) err="timeout: context deadline exceeded"
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+import_history_write                  1       0.0   5552.21   5552.21   5552.21      0       0     0
+inv_sync                           1208      10.1     29.98    172.48   3563.54      0       0     0
+order_process_cancel                623       5.2     19.89     99.14    204.40      0       0     0
+order_process_pay                  2457      20.5     16.80     94.87   3542.80      0       0     0
+order_reserve                      7652      63.8     17.52    103.28   3570.49      0       0  2049
+order_reserve_hot                  5184      43.2     10.53     67.48    100.30      0       0  5160
+web_filter                          665       5.5      2.73     23.20     33.33      0       0     0
+web_lookup                          691       5.8      2.40     21.47     43.04      0       0     0
+web_prefix                          666       5.5   1223.50   2623.63   3025.22      0       0     0
+
+== phase after (20.0s)
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+inv_sync                            268      13.4      7.47    134.84    145.84      0       0     0
+order_process_cancel                142       7.1      3.97     83.30     85.95      0       0     0
+order_process_pay                   490      24.5      3.96     89.38    130.62      0       0     0
+order_reserve                      1591      79.5      3.81     84.00    162.23      0       0   459
+order_reserve_hot                  1080      54.0      1.59     56.19    102.64      0       0  1075
+web_filter                          116       5.8      0.58     12.81     13.02      0       0     0
+web_lookup                          123       6.1      0.21     10.64     16.93      0       0     0
+web_prefix                          134       6.7   1010.33   2129.97   2140.96      7       0     0
+    error x7: context canceled
+
+== latency under import vs baseline (p50 / p99 ratio; >1 = slower)
+import_batch_upsert:
+  web_prefix             p50 1233.06 -> 1236.79 ms (x1.0)   p99 2624.51 -> 2799.24 ms (x1.1)   ops/s 5 -> 5
+  web_filter             p50 0.75 -> 2.52 ms (x3.3)   p99 16.14 -> 20.43 ms (x1.3)   ops/s 6 -> 6
+  web_lookup             p50 0.31 -> 2.60 ms (x8.5)   p99 17.81 -> 16.91 ms (x0.9)   ops/s 5 -> 5
+  order_reserve          p50 6.34 -> 25.97 ms (x4.1)   p99 77.73 -> 137.33 ms (x1.8)   ops/s 74 -> 62
+  order_reserve_hot      p50 4.00 -> 11.26 ms (x2.8)   p99 67.23 -> 66.57 ms (x1.0)   ops/s 50 -> 41
+  order_process_pay      p50 5.17 -> 27.23 ms (x5.3)   p99 75.12 -> 121.28 ms (x1.6)   ops/s 24 -> 19
+  order_process_cancel   p50 7.97 -> 35.24 ms (x4.4)   p99 101.97 -> 100.58 ms (x1.0)   ops/s 6 -> 5
+  inv_sync               p50 11.36 -> 43.17 ms (x3.8)   p99 129.21 -> 182.01 ms (x1.4)   ops/s 13 -> 9
+import_copy_merge:
+  web_prefix             p50 1233.06 -> 1318.78 ms (x1.1)   p99 2624.51 -> 3025.14 ms (x1.2)   ops/s 5 -> 5
+  web_filter             p50 0.75 -> 1.99 ms (x2.6)   p99 16.14 -> 21.88 ms (x1.4)   ops/s 6 -> 5
+  web_lookup             p50 0.31 -> 1.84 ms (x6.0)   p99 17.81 -> 21.29 ms (x1.2)   ops/s 5 -> 5
+  order_reserve          p50 6.34 -> 18.44 ms (x2.9)   p99 77.73 -> 110.36 ms (x1.4)   ops/s 74 -> 61
+  order_reserve_hot      p50 4.00 -> 11.50 ms (x2.9)   p99 67.23 -> 75.30 ms (x1.1)   ops/s 50 -> 43
+  order_process_pay      p50 5.17 -> 17.53 ms (x3.4)   p99 75.12 -> 94.83 ms (x1.3)   ops/s 24 -> 20
+  order_process_cancel   p50 7.97 -> 18.02 ms (x2.3)   p99 101.97 -> 104.67 ms (x1.0)   ops/s 6 -> 5
+  inv_sync               p50 11.36 -> 36.28 ms (x3.2)   p99 129.21 -> 183.83 ms (x1.4)   ops/s 13 -> 10
+import_copy_merge_chunk:
+  web_prefix             p50 1233.06 -> 1333.02 ms (x1.1)   p99 2624.51 -> 2654.45 ms (x1.0)   ops/s 5 -> 5
+  web_filter             p50 0.75 -> 2.47 ms (x3.3)   p99 16.14 -> 20.75 ms (x1.3)   ops/s 6 -> 5
+  web_lookup             p50 0.31 -> 2.54 ms (x8.3)   p99 17.81 -> 21.87 ms (x1.2)   ops/s 5 -> 6
+  order_reserve          p50 6.34 -> 19.88 ms (x3.1)   p99 77.73 -> 119.56 ms (x1.5)   ops/s 74 -> 60
+  order_reserve_hot      p50 4.00 -> 11.48 ms (x2.9)   p99 67.23 -> 72.04 ms (x1.1)   ops/s 50 -> 41
+  order_process_pay      p50 5.17 -> 20.12 ms (x3.9)   p99 75.12 -> 105.97 ms (x1.4)   ops/s 24 -> 19
+  order_process_cancel   p50 7.97 -> 23.71 ms (x3.0)   p99 101.97 -> 135.98 ms (x1.3)   ops/s 6 -> 5
+  inv_sync               p50 11.36 -> 37.86 ms (x3.3)   p99 129.21 -> 182.13 ms (x1.4)   ops/s 13 -> 9
+import_update_from:
+  web_prefix             p50 1233.06 -> 1223.50 ms (x1.0)   p99 2624.51 -> 2623.63 ms (x1.0)   ops/s 5 -> 6
+  web_filter             p50 0.75 -> 2.73 ms (x3.6)   p99 16.14 -> 23.20 ms (x1.4)   ops/s 6 -> 6
+  web_lookup             p50 0.31 -> 2.40 ms (x7.9)   p99 17.81 -> 21.47 ms (x1.2)   ops/s 5 -> 6
+  order_reserve          p50 6.34 -> 17.52 ms (x2.8)   p99 77.73 -> 103.28 ms (x1.3)   ops/s 74 -> 64
+  order_reserve_hot      p50 4.00 -> 10.53 ms (x2.6)   p99 67.23 -> 67.48 ms (x1.0)   ops/s 50 -> 43
+  order_process_pay      p50 5.17 -> 16.80 ms (x3.3)   p99 75.12 -> 94.87 ms (x1.3)   ops/s 24 -> 20
+  order_process_cancel   p50 7.97 -> 19.89 ms (x2.5)   p99 101.97 -> 99.14 ms (x1.0)   ops/s 6 -> 5
+  inv_sync               p50 11.36 -> 29.98 ms (x2.6)   p99 129.21 -> 172.48 ms (x1.3)   ops/s 13 -> 10
+
+== invariants
+ok   sims row count: got 1040037 want 1040037 (initial 1000000 + new 40037)
+ok   orders count == committed orders: db 18990 client 18990 (+0 with unknown outcome at stop)
+ok   orders were actually committed (workload ran): 18990 committed
+ok   sum(total of live orders) == sum(active item prices): 60432932000 vs 60432932000 (<nil> <nil>)
+ok   no number sold/held twice (live items per number <= 1): 23083 live numbers, 0 duplicated
+ok   reserved/sold sims == live items: sims held 23083, live items 23083, mismatched 0
+ok   import import_copy_merge: FAILED (not an invariant breach): timeout: context deadline exceeded
+ok   import import_update_from: FAILED (not an invariant breach): timeout: context deadline exceeded
+
+RESULT VALID (stask)
+exit 0

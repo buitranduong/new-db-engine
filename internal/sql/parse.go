@@ -203,6 +203,9 @@ func (p *parser) statement() (Stmt, error) {
 		if p.acceptKw("view") {
 			return p.dropView()
 		}
+		if p.acceptKw("trigger") {
+			return p.dropTrigger()
+		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err
 		}
@@ -368,6 +371,9 @@ func (p *parser) statement() (Stmt, error) {
 
 func (p *parser) createStmt() (Stmt, error) {
 	p.next()
+	if st, ok, err := p.createTrigger(); ok {
+		return st, err
+	}
 	if st, ok, err := p.createView(); ok {
 		return st, err
 	}

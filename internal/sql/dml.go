@@ -115,6 +115,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 	}
 	sc := &scope{t: t}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
@@ -129,19 +130,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 		if err := checkRow(t, upd); err != nil {
 			return nil, err
 		}
-		if ok, nk := t.KeyOf(old), t.KeyOf(upd); ok != nk {
-			if _, exists, err := tx.Get(t.Name, nk); err != nil {
-				return nil, err
-			} else if exists {
-				return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, nk)
-			}
-			if err := tx.Delete(t.Name, ok); err != nil {
-				return nil, err
-			}
-			if err := tx.InsertAs(t, upd); err != nil {
-				return nil, err
-			}
-		} else if err := tx.PutAs(t, upd); err != nil {
+		if upd, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
 			return nil, err
 		}
 		if err := s.returning(sc, ctx, st.Returning, upd, res); err != nil {
@@ -159,12 +148,13 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 	}
 	sc := &scope{t: t}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMillis(), sess: s}
+	tgs := s.E.Triggers(t.Name)
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
 	for _, r := range rows {
-		if err := tx.Delete(t.Name, t.KeyOf(r)); err != nil {
+		if err := s.deleteRow(tx, t, tgs, r); err != nil {
 			return nil, err
 		}
 		if err := s.returning(sc, ctx, st.Returning, r, res); err != nil {

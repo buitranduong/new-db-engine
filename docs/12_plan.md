@@ -129,8 +129,8 @@ Rà theo code hiện tại. Các mục **in đậm** làm trước P4.2 (chạy 
 
 | # | Việc | Cỡ | Tiêu chí xong |
 |---|---|---|---|
-| P7.1 | Trigger thân SQL kiểu SQLite: `BEFORE/AFTER INSERT/UPDATE/DELETE`, `FOR EACH ROW`, `NEW`/`OLD`, `WHEN`. Chạy trong giao dịch ghi; đo chi phí | L | Có test; khi bảng không có trigger thì ghi không chậm đi |
-| P7.2 | Cú pháp `CREATE FUNCTION ... RETURNS trigger LANGUAGE plpgsql` tối thiểu, đủ cho dạng trigger mà Liquibase và Jmix sinh ra (nếu P4.2 cần) | M | Chỉ làm nếu P4.2 gặp |
+| P7.1 | **Đã làm 2026-10-29** (docs/05 §18, docs/10 §5): trigger thân SQL kiểu SQLite: `BEFORE/AFTER INSERT/UPDATE/DELETE`, `FOR EACH ROW`, `NEW`/`OLD`, `WHEN`. Chạy trong giao dịch ghi (rollback cùng nhau), chống đệ quy (sâu tối đa 16 tầng, rồi 54001), định nghĩa bền vững như `CREATE VIEW`, không chạy lại trên replica. Thêm hai mở rộng để không cần ngôn ngữ thủ tục: `SET NEW.col = expr` trong BEFORE, và `SELECT RAISE(ABORT, 'msg') [WHERE ...]`. **Đo:** bảng không có trigger: 10,9 / 10,9 / 11,9 µs (trước) so với 11,0 / 11,3 / 11,8 µs (sau) cho insert+update+delete, cùng số cấp phát (36), tức không chậm đi; có 3 trigger mỗi trigger ghi 1 dòng: ~27–28 µs (thêm ~5,5 µs mỗi lần chạy thân). **Chưa làm:** `UPDATE OF cols`, trigger mức câu lệnh, `INSTEAD OF`, `REFERENCING`, `RAISE(IGNORE)`, `pg_get_triggerdef` (vẫn trả NULL), `information_schema.triggers` | L | Có test; khi bảng không có trigger thì ghi không chậm đi |
+| P7.2 | Cú pháp `CREATE FUNCTION ... RETURNS trigger LANGUAGE plpgsql` tối thiểu, đủ cho dạng trigger mà Liquibase và Jmix sinh ra (nếu P4.2 cần). **Chưa làm (2026-10-29):** P4.2 chưa gặp ca nào cần, và `CREATE TRIGGER ... EXECUTE FUNCTION f()` trả lỗi 0A000 rõ ràng. Khi cần, chỉ hỗ trợ thân hàm dạng `BEGIN NEW.col := expr; RETURN NEW; END` dịch sang `SET NEW.col`, còn lại từ chối | M | Chỉ làm nếu P4.2 gặp |
 | — | Stored procedure và ngôn ngữ thủ tục đầy đủ | — | **Không làm** (docs/10 §5) |
 
 ## P8. Cổng 2 và quyết định port

@@ -186,6 +186,7 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
+	trig   trigCache // row triggers (trigger.go)
 	seqMu  sync.Mutex
 	seqs   map[string]*seqState // sequences in use (sequence.go)
 	slotMu sync.Mutex

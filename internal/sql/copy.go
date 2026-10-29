@@ -665,6 +665,13 @@ func (ci *CopyIn) store(f []copyField) error {
 	if err := ci.qx.chargeN(size); err != nil {
 		return err
 	}
+	tgs := ci.s.E.Triggers(t.Name) // row triggers (trigger.go)
+	if tgs != nil {
+		var err error
+		if row, err = ci.s.fireTriggers(ci.tx, t, tgs, "before", "insert", nil, row); err != nil {
+			return err
+		}
+	}
 	if ci.own {
 		key := t.KeyOf(row)
 		if _, dup := ci.seen[key]; dup {
@@ -687,6 +694,11 @@ func (ci *CopyIn) store(f []copyField) error {
 			return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, key)
 		}
 		if err := ci.tx.InsertAs(t, row); err != nil {
+			return err
+		}
+	}
+	if tgs != nil {
+		if _, err := ci.s.fireTriggers(ci.tx, t, tgs, "after", "insert", nil, row); err != nil {
 			return err
 		}
 	}

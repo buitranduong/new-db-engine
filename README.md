@@ -143,9 +143,9 @@ tests pass, not that the feature has been proven with real applications.
 | **P2 Indexes and constraints** | Secondary indexes, `UNIQUE`, foreign keys; serializable scans (SSI); spill-to-disk joins and sorts | Secondary index, `UNIQUE`, foreign keys in progress. SSI scans and spilling open |
 | **P3 Data larger than RAM** | On-disk primary index; on-disk compressed columnar view; incremental checkpoint; time-series and search from SQL | Open. This is the largest remaining change to the storage format |
 | **P4 Ecosystem** | `pg_catalog` and `information_schema` (done, tested only against recorded client queries); acceptance with a real Jmix 2 / Hibernate / Liquibase application; Debezium; snapshot export for `copy_data` subscribers | Catalog done. Real-application acceptance, Debezium and snapshot export open |
-| **P5 Security and operations** | TLS, SCRAM, cancel and timeouts, PITR, HTTP auth (done); roles and `GRANT`, Prometheus metrics, `pg_stat_activity`, background CRC scrub (in progress) | Largely done. PITR has unit tests but no end-to-end run over TLS yet |
-| **P6 Cluster** | Read-your-writes through replicas; majority commit with leader election (Raft) and failover; replication slots that survive failover; multi-machine measurements | Asynchronous replicas exist. The rest is in progress or open. Measurements need separate machines |
-| **P7 Triggers** | SQL-bodied `BEFORE`/`AFTER` row triggers | In progress |
+| **P5 Security and operations** | TLS, SCRAM, cancel and timeouts, PITR, HTTP auth (done); roles and `GRANT`, Prometheus metrics, `pg_stat_activity`, background CRC scrub (done, tested with pgx only) | Largely done. PITR has unit tests but no end-to-end run over TLS yet |
+| **P6 Cluster** | Read-your-writes through replicas; majority commit with leader election (Raft) and failover; replication slots that survive failover; multi-machine measurements | Asynchronous replicas, read-your-writes routing and CDC state through the log are done. Raft exists as a simulated package, not yet wired into the engine (in progress). Measurements need separate machines |
+| **P7 Triggers** | SQL-bodied `BEFORE`/`AFTER` row triggers | Done for the SQL-body syntax; PostgreSQL `EXECUTE FUNCTION` triggers are not supported |
 | **P8 Language decision** | Re-run the full benchmark suite on the finished Go engine and decide whether a Rust port is justified (docs/11) | Open, after P0-P7 |
 
 Explicitly **out of scope**: stored procedures and procedural languages,

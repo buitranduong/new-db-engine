@@ -11,7 +11,6 @@ package pgwire
 import (
 	"bufio"
 	"crypto/hmac"
-	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -26,6 +25,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"stask/internal/core"
+	"stask/internal/sql"
 )
 
 // Authentication methods (Server.Auth).
@@ -36,36 +38,10 @@ const (
 )
 
 const (
-	scramIterations     = 4096 // PostgreSQL's default scram_iterations
-	scramSaltLen        = 16
 	scramNonceLen       = 18
 	tlsHandshakeTimeout = 10 * time.Second
 	alpnPostgres        = "postgresql"
 )
-
-// scramVerifier is what PostgreSQL stores in pg_authid for a SCRAM
-// password: the password itself is not needed to check a proof.
-type scramVerifier struct {
-	salt      []byte
-	iters     int
-	storedKey []byte
-	serverKey []byte
-}
-
-func newSCRAMVerifier(password string) (*scramVerifier, error) {
-	salt := make([]byte, scramSaltLen)
-	rand.Read(salt)
-	// PostgreSQL applies SASLprep and falls back to the raw bytes when that
-	// fails; for ASCII passwords without control characters SASLprep is the
-	// identity, so the raw bytes are what PostgreSQL would hash as well.
-	salted, err := pbkdf2.Key(sha256.New, password, salt, scramIterations, sha256.Size)
-	if err != nil {
-		return nil, err
-	}
-	ck := hmacSHA256(salted, "Client Key")
-	sk := sha256.Sum256(ck)
-	return &scramVerifier{salt: salt, iters: scramIterations, storedKey: sk[:], serverKey: hmacSHA256(salted, "Server Key")}, nil
-}
 
 func hmacSHA256(key []byte, s string) []byte {
 	m := hmac.New(sha256.New, key)
@@ -91,7 +67,7 @@ func (s *Server) prepareAuth() error {
 		return fmt.Errorf("pgwire: unknown auth method %q (trust, password, scram)", s.Auth)
 	}
 	if s.Auth == AuthSCRAM {
-		v, err := newSCRAMVerifier(s.Password)
+		v, err := core.NewSCRAM(s.Password)
 		if err != nil {
 			return err
 		}
@@ -193,32 +169,118 @@ func (c *conn) sendFatal(code, text string) {
 	c.send(newMsg('E').byte1('S').str("FATAL").byte1('V').str("FATAL").byte1('C').str(code).byte1('M').str(text).byte1(0))
 }
 
-// authenticate runs the configured authentication exchange; on failure the
-// error has been sent to the client.
-func (c *conn) authenticate(user string) error {
+// authenticate runs the authentication exchange for the startup user and
+// returns the role the session runs as ("" = the bootstrap superuser: the
+// server's shared password, or trust, as before roles existed).
+//
+// A user that is a stored role (CREATE ROLE, docs/05 §18) must be allowed
+// to log in and proves the role's password: by SCRAM-SHA-256 against the
+// stored verifier, or by cleartext password under -pg-auth password. A role
+// without a password logs in only under trust. Any other user name falls
+// back to the server's own settings, unless RolesOnly is set and a
+// superuser role exists. On failure the error has been sent to the client.
+func (c *conn) authenticate(user string) (string, error) {
+	role, err := c.authenticateRole(user)
+	if err != nil {
+		sql.CountAuthFailure()
+	}
+	return role, err
+}
+
+func (c *conn) authenticateRole(user string) (string, error) {
+	fail := func() (string, error) {
+		c.sendFatal("28P01", fmt.Sprintf("password authentication failed for user %q", user))
+		c.w.Flush()
+		return "", errors.New("authentication failed")
+	}
+	r, isRole := c.s.E.Role(user)
+	if isRole && user != core.PublicRole {
+		if !r.Login {
+			c.sendFatal("28000", fmt.Sprintf("role %q is not permitted to log in", user))
+			c.w.Flush()
+			return "", errors.New("role cannot log in")
+		}
+		switch {
+		case r.Verifier == "":
+			if c.s.Auth != AuthTrust {
+				return fail()
+			}
+		case c.s.Auth == AuthPassword:
+			v, err := core.ParseSCRAM(r.Verifier)
+			if err != nil {
+				return fail()
+			}
+			if err := c.send(newMsg('R').int32(3)); err != nil {
+				return "", err
+			}
+			c.w.Flush()
+			t, body, err := c.readMsg()
+			if err != nil {
+				return "", err
+			}
+			pr := &reader{b: body}
+			if t != 'p' || !v.CheckPassword(pr.str()) {
+				return fail()
+			}
+		default: // trust or scram: a role with a password always proves it
+			v, err := core.ParseSCRAM(r.Verifier)
+			if err != nil {
+				return fail()
+			}
+			if err := c.scramAuth(user, v); err != nil {
+				c.w.Flush()
+				return "", err
+			}
+		}
+		return user, nil
+	}
+	if c.s.RolesOnly && c.s.superLoginExists() {
+		// an unknown user: go through the exchange as for a real one, so
+		// that the answer does not tell users from non-users
+		if c.s.Auth != AuthTrust {
+			if c.s.Auth == AuthSCRAM {
+				if mock, err := core.NewSCRAM(user); err == nil {
+					if err := c.scramAuth(user, mock); err != nil {
+						c.w.Flush()
+						return "", err
+					}
+				}
+			}
+		}
+		return fail()
+	}
 	switch c.s.Auth {
 	case AuthPassword:
 		if err := c.send(newMsg('R').int32(3)); err != nil { // cleartext password
-			return err
+			return "", err
 		}
 		c.w.Flush()
 		t, body, err := c.readMsg()
 		if err != nil {
-			return err
+			return "", err
 		}
 		pr := &reader{b: body}
 		if t != 'p' || pr.str() != c.s.Password {
-			c.sendFatal("28P01", fmt.Sprintf("password authentication failed for user %q", user))
-			c.w.Flush()
-			return errors.New("authentication failed")
+			return fail()
 		}
 	case AuthSCRAM:
-		if err := c.scramAuth(user); err != nil {
+		if err := c.scramAuth(user, c.s.scram); err != nil {
 			c.w.Flush()
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return "", nil
+}
+
+// superLoginExists reports whether a stored superuser role can log in:
+// RolesOnly then closes the bootstrap login.
+func (s *Server) superLoginExists() bool {
+	for _, r := range s.E.Roles() {
+		if r.Super && r.Login {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -230,8 +292,7 @@ const (
 // scramAuth is the server side of SCRAM-SHA-256 in PostgreSQL's SASL
 // messages: AuthenticationSASL, SASLInitialResponse,
 // AuthenticationSASLContinue, SASLResponse, AuthenticationSASLFinal.
-func (c *conn) scramAuth(user string) error {
-	v := c.s.scram
+func (c *conn) scramAuth(user string, v *core.SCRAM) error {
 	plus := c.tls && c.s.cbHash != nil
 	m := newMsg('R').int32(10)
 	if plus {
@@ -311,7 +372,7 @@ func (c *conn) scramAuth(user string) error {
 	sn := make([]byte, scramNonceLen)
 	rand.Read(sn)
 	nonce := clientNonce + base64.StdEncoding.EncodeToString(sn)
-	serverFirst := "r=" + nonce + ",s=" + base64.StdEncoding.EncodeToString(v.salt) + ",i=" + strconv.Itoa(v.iters)
+	serverFirst := "r=" + nonce + ",s=" + base64.StdEncoding.EncodeToString(v.Salt) + ",i=" + strconv.Itoa(v.Iters)
 	c.send(newMsg('R').int32(11).bytes([]byte(serverFirst)))
 	if err := c.w.Flush(); err != nil {
 		return err
@@ -352,15 +413,15 @@ func (c *conn) scramAuth(user string) error {
 		return violation("malformed SCRAM message: invalid proof")
 	}
 	authMsg := bare + "," + serverFirst + "," + withoutProof
-	sig := hmacSHA256(v.storedKey, authMsg)
+	sig := hmacSHA256(v.StoredKey, authMsg)
 	ck := make([]byte, sha256.Size)
 	subtle.XORBytes(ck, proof, sig)
 	sk := sha256.Sum256(ck)
-	if subtle.ConstantTimeCompare(sk[:], v.storedKey) != 1 {
+	if subtle.ConstantTimeCompare(sk[:], v.StoredKey) != 1 {
 		c.sendFatal("28P01", fmt.Sprintf("password authentication failed for user %q", user))
 		return errors.New("authentication failed")
 	}
-	serverFinal := "v=" + base64.StdEncoding.EncodeToString(hmacSHA256(v.serverKey, authMsg))
+	serverFinal := "v=" + base64.StdEncoding.EncodeToString(hmacSHA256(v.ServerKey, authMsg))
 	return c.send(newMsg('R').int32(12).bytes([]byte(serverFinal)))
 }
 

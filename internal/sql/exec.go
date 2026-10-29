@@ -52,7 +52,11 @@ type Session struct {
 
 	ctl stmtCtl // cancel and timeouts of the running statement (cancel.go)
 
-	trigDepth int // nesting of row triggers being run (trigger.go)
+	trigDepth int                  // nesting of row triggers being run (trigger.go)
+	role      string               // role the session runs as; "" = bootstrap superuser (roles.go)
+	needCache map[Stmt]cachedNeeds // privileges each statement needs
+	pendingQ  string               // text of the statement about to run (SetQuery)
+	act       *Activity            // pg_stat_activity entry (activity.go)
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -92,6 +96,7 @@ func (s *Session) Close() {
 	s.explicit, s.failed = false, false
 	s.discardPending()
 	s.closeListener()
+	s.untrack()
 }
 
 // A single autocommit statement that loses a write-write race is retried
@@ -110,6 +115,12 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		case *Commit, *Rollback:
 		default:
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
+		}
+	}
+	if s.role != "" {
+		if err := s.authorize(st); err != nil {
+			s.markFailed()
+			return nil, err
 		}
 	}
 	switch st := st.(type) {
@@ -192,6 +203,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		// not transactional: applied at once (PostgreSQL's are, except
 		// for nextval and setval)
 		res, err := s.seqDDL(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *CreateRole, *AlterRole, *DropRole, *Grant:
+		// applied at once, not at commit
+		res, err := s.roleDDL(st)
 		if err != nil {
 			s.markFailed()
 		}
@@ -1847,6 +1865,9 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 		if tag == "DROP TABLE" {
 			if err = s.E.DropTable(n); err == nil {
 				err = s.E.DropTableTriggers(n)
+				if err == nil {
+					err = s.E.MoveGrants(n, "") // privileges do not outlive the table
+				}
 			}
 		} else {
 			err = s.E.TruncateTable(n)

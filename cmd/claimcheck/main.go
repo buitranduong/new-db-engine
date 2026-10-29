@@ -205,7 +205,7 @@ func checks() []check {
 		{"statement_timeout", "P5.3", "05 §13", []string{"SET statement_timeout = '100ms'", "SELECT count(*) FROM generate_series(1, 100000000000)"}, "err:57014", nil},
 		{"create_role", "P5.2", "12 P5.2", []string{"CREATE ROLE cc_r LOGIN PASSWORD 'x'"}, "ok", nil},
 		{"grant_select", "P5.2", "12 P5.2", []string{T, "GRANT SELECT ON cc_t TO PUBLIC"}, "ok", nil},
-		{"pg_stat_activity", "P5.5", "12 P5.5", []string{"SELECT count(*) FROM pg_stat_activity"}, "val:1", nil},
+		{"pg_stat_activity", "P5.5", "12 P5.5", []string{"SELECT count(*) FROM pg_stat_activity WHERE pid = pg_backend_pid()"}, "val:1", nil},
 		// ---- P7
 		{"create_trigger", "P7.1", "12 P7.1", []string{T, "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW EXECUTE FUNCTION cc_fn()"}, "ok", nil},
 		{"trigger_sql_body_fires", "P7.1", "05 §18 (SQL-body syntax)", []string{T, "CREATE TABLE cc_p (id BIGINT PRIMARY KEY, w TEXT)", "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW BEGIN INSERT INTO cc_p VALUES (NEW.id, NEW.v); END", "INSERT INTO cc_t VALUES (1, 'z')", "SELECT w FROM cc_p WHERE id = 1"}, "val:z", nil},

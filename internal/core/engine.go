@@ -90,6 +90,11 @@ type Options struct {
 	// committer and no log reclamation of its own.
 	Replica bool
 
+	// Quorum, if set, makes a batch wait after its local fdatasync until a
+	// majority of the cluster holds it (docs/06 section 5). nil, the
+	// default: a single node, no change of behavior or speed.
+	Quorum Quorum
+
 	// SlotMaxLagBytes invalidates a CDC slot that holds back more log than
 	// this (0 = no limit; see cdc.go).
 	SlotMaxLagBytes int64
@@ -186,13 +191,14 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
-	trig   trigCache // row triggers (trigger.go)
-	seqMu  sync.Mutex
-	seqs   map[string]*seqState // sequences in use (sequence.go)
-	slotMu sync.Mutex
-	slots  map[string]*slot           // CDC slots (cdc.go)
-	cdcCat atomic.Pointer[cdcCatalog] // publications, replica identities (cdccat.go)
-	opts   Options
+	trig         trigCache // row triggers (trigger.go)
+	seqMu        sync.Mutex
+	seqs         map[string]*seqState // sequences in use (sequence.go)
+	slotMu       sync.Mutex
+	slots        map[string]*slot           // CDC slots (cdc.go)
+	cdcMirrorLSN atomic.Uint64              // highest LSN of a CDC mirror write (cdcmirror.go)
+	cdcCat       atomic.Pointer[cdcCatalog] // publications, replica identities (cdccat.go)
+	opts         Options
 	// archived is the newest segment in Options.ArchiveDir (-1: none)
 	archived atomic.Int64
 	log      *wal.Log
@@ -343,6 +349,8 @@ func Open(opts Options) (*Engine, error) {
 	e.initGC()
 	e.slots = map[string]*slot{}
 	if !opts.Replica {
+		// slots and the catalog come from files and from the replicated
+		// CDC table, so a promoted replica has them (cdcmirror.go)
 		if err := e.loadSlots(); err != nil {
 			l.Close()
 			return nil, fmt.Errorf("cdc slots: %w", err)
@@ -1951,6 +1959,16 @@ func (e *Engine) syncBatch(b *commitBatch) {
 	for _, d := range b.ddls {
 		if _, err := e.addTable(d); err != nil {
 			e.logf("install ddl: %v", err)
+		}
+	}
+	if q := e.opts.Quorum; q != nil {
+		// durable here; acknowledged only when a majority has it too. An
+		// error leaves the outcome unknown: the batch may still commit
+		// under another leader, so it is not answered as failed.
+		if err := q.Replicate(b.lastLSN, b.endPos); err != nil {
+			e.fail(fmt.Errorf("quorum: %w", err), nil, b.placed, nil)
+			b.failed = true
+			return
 		}
 	}
 	e.overlayPush(b)

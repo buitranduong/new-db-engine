@@ -958,9 +958,11 @@ func (ci *CopyIn) Finish() (string, error) {
 	ci.finish()
 	if ci.own {
 		ci.s.beforeCommit(ci.tx)
-		if _, err := ci.tx.Commit(); err != nil {
+		lsn, err := ci.tx.Commit()
+		if err != nil {
 			return "", ci.end(AsError(err))
 		}
+		ci.s.noteCommit(lsn)
 	}
 	return fmt.Sprintf("COPY %d", ci.rows), ci.end(nil)
 }

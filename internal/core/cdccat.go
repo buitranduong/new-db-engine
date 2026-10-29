@@ -56,6 +56,16 @@ var (
 func (e *Engine) cdcCatalogPath() string { return filepath.Join(e.opts.Dir, "cdc.json") }
 
 func (e *Engine) loadCDCCatalog() error {
+	// the log's copy (written with every change, replicated) wins over
+	// the file, which a promoted replica does not have
+	if v, ok := e.cdcRows()["catalog"]; ok {
+		var c cdcCatalog
+		if err := json.Unmarshal([]byte(v), &c); err != nil {
+			return fmt.Errorf("cdc catalog row: %w", err)
+		}
+		e.cdcCat.Store(&c)
+		return nil
+	}
 	b, err := os.ReadFile(e.cdcCatalogPath())
 	if os.IsNotExist(err) {
 		return nil
@@ -87,6 +97,9 @@ func (e *Engine) updateCDCCatalog(fn func(c *cdcCatalog) error) error {
 		return err
 	}
 	b, _ := json.Marshal(&c)
+	if err := e.cdcMirror("catalog", b); err != nil { // through the log first: replicas get it
+		return err
+	}
 	if err := writeFileSync(e.cdcCatalogPath(), b); err != nil {
 		return err
 	}

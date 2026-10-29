@@ -119,9 +119,9 @@ Rà theo code hiện tại. Các mục **in đậm** làm trước P4.2 (chạy 
 
 | # | Việc | Cỡ | Tiêu chí xong |
 |---|---|---|---|
-| P6.1 | A2: đọc-ghi-của-mình qua replica (client mang LSN, replica chờ tới đó) và bộ điều hướng tự động | M | Đọc ngay sau khi ghi, qua replica, luôn thấy bản ghi đó |
-| P6.2 | B: xác nhận ghi theo đa số (Raft), failover, lease cho leader | XL | Chaos: giết leader và chia mạng, 0 ghi đã xác nhận bị mất; có số đo thời gian chuyển leader |
-| P6.3 | Slot, publication và replica identity đi qua log, để sống sót qua failover (docs/10 §7) | M | Subscriber PG tiếp tục sau failover, không mất, không trùng |
+| P6.1 | ~~A2: đọc-ghi-của-mình qua replica (client mang LSN, replica chờ tới đó) và bộ điều hướng tự động~~ **đã làm 2026-10-29** (docs/06 §2a; test qua, chưa thử psql/pgx đầu-cuối) | M | Đọc ngay sau khi ghi, qua replica, luôn thấy bản ghi đó |
+| P6.2 | B: xác nhận ghi theo đa số (Raft), failover, lease cho leader. **Làm một phần 2026-10-29** (docs/06 §5): `internal/raft` + mô phỏng chaos có seed qua (không mất bản ghi đã xác nhận; failover trung vị 27 tick trong mô phỏng) + giao diện `core.Quorum` mặc định tắt. **Chưa nối vào engine, chưa có transport mạng, chưa có snapshot/đổi thành viên** | XL | Chaos: giết leader và chia mạng, 0 ghi đã xác nhận bị mất; có số đo thời gian chuyển leader |
+| P6.3 | Slot, publication và replica identity đi qua log, để sống sót qua failover (docs/10 §7). **Lõi đã làm 2026-10-29** (docs/06 §5.3, test `TestCDCStateSurvivesFailover`); chưa thử subscriber PG thật qua failover, promote vẫn là khởi động lại | M | Subscriber PG tiếp tục sau failover, không mất, không trùng |
 | P6.4 | Đo cluster trên **các máy riêng** (hiện chỉ có 1 VM chia core, docs/06 §4) | M | **Cần thêm VM**: phần này phụ thuộc vào bạn |
 | P6.5 | C: phân mảnh, giao dịch xuyên shard | XL | **Sau quyết định ngôn ngữ** (docs/11): làm trên bản thắng |
 

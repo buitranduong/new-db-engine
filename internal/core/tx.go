@@ -51,6 +51,7 @@ type Tx struct {
 	unindexed bool
 	repaired  bool // occ_repair.go
 	valid     *repairVal
+	rlog      bool
 	gate      *WriteGate
 	onCommit  func(lsn uint64)
 	intr      func() bool
@@ -118,6 +119,9 @@ func (e *Engine) Begin(iso Isolation) *Tx {
 func (tx *Tx) finish() {
 	if !tx.done {
 		tx.done = true
+		if tx.rlog {
+			tx.e.repairers.Add(-1)
+		}
 		tx.e.unpinIn(int(tx.pinShard), tx.snap)
 	}
 }

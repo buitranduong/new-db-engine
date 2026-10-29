@@ -35,12 +35,13 @@ import (
 var repairMinRows = 256
 
 const (
-	repairMaxRounds   = 64   // rounds of one statement
-	repairStallRounds = 8    // rounds in a row without fewer conflicts
-	repairChunk       = 4096 // keys recomputed by one fresh snapshot
-	bigStmtRetries    = 8    // whole reruns of a statement that is repaired
-	repairGateRound   = 4    // from this round on the table's other writers wait (core.WriteGate)
-	repairGateHold    = 2 * time.Second
+	repairMaxRounds   = 64               // rounds of one statement
+	repairStallRounds = 8                // rounds in a row without fewer conflicts
+	repairChunk       = 4096             // keys recomputed by one fresh snapshot
+	bigStmtRetries    = 8                // whole reruns of a statement that is repaired
+	repairGateRound   = 3                // from this round on the table's other writers wait (core.WriteGate)
+	repairGateAfter   = 3 * time.Second  // ... or when the statement has been repairing this long
+	repairGateHold    = 20 * time.Second // until the statement commits, at most this long
 )
 
 // occTestHook, in tests, runs before every commit attempt of a repaired statement.
@@ -236,6 +237,7 @@ func (s *Session) commitAuto(tx *core.Tx, rec *repairRec, res *Result) (uint64, 
 	}
 	t0 := time.Now()
 	nOK, prev, stalled, total := tagCount(res.Tag), -1, 0, 0
+	gated := false
 	for round := 1; ; round++ {
 		if occTestHook != nil {
 			occTestHook(round)
@@ -270,7 +272,8 @@ func (s *Session) commitAuto(tx *core.Tx, rec *repairRec, res *Result) (uint64, 
 				"after %d repair rounds (%d rows repaired in %v); rerun the statement, or write in smaller batches",
 				n, round, total, time.Since(t0).Round(time.Millisecond))
 		}
-		if round == repairGateRound {
+		if !gated && (round >= repairGateRound || time.Since(t0) > repairGateAfter) {
+			gated = true
 			// overtaken again and again: hold the other writers of the table back
 			// for the few milliseconds the last rounds take
 			defer tx.CloseGate(repairGateHold)()

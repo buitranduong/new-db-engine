@@ -270,6 +270,9 @@ type Engine struct {
 	syncEWMA     atomic.Int64  // smoothed fdatasync duration (ns)
 	installSeq   atomic.Uint64 // number of commit batches installed in the index
 	gate         atomic.Pointer[WriteGate]
+	repairers    atomic.Int32   // occ_repair.go: open repairable transactions
+	rlogBase     atomic.Uint64  // batches with a greater seq are all in rlog (or not installed)
+	rlog         []*commitBatch // committer only
 	stop         chan struct{}
 	wg           sync.WaitGroup
 	nextLSN      uint64
@@ -1243,6 +1246,7 @@ type commitReq struct {
 	shares      []pk        // parents of the children written (fk.go)
 	repair      bool        // occ_repair.go: report every write-write conflict (indexes into ops)
 	gate        *WriteGate
+	dry         bool // occ_repair.go: validate only
 	conflicts   []int
 	rv          *repairVal // occ_repair.go
 	lsn         uint64
@@ -1722,6 +1726,7 @@ func (e *Engine) committer() {
 				b.placed, b.installs, b.ddls, b.remaps, b.buf, b.drops = nil, nil, nil, nil, nil, nil
 				b.sk, b.adds, b.uq = nil, nil, nil
 				recent = append(recent, b)
+				e.rlogAdd(b)
 			}
 		case <-timerC:
 			if LatDebug {
@@ -1941,6 +1946,10 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 			}
 		}
 
+		if r.dry {
+			finishReq(r, nil) // validated, nothing placed
+			continue
+		}
 		// size estimate, roll segment if needed (a transaction's first frame)
 		est := 64
 		for i, op := range r.ops {

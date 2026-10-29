@@ -75,29 +75,54 @@ func (tx *Tx) CommitRepairable() (uint64, error) {
 		tx.finish()
 		return 0, ErrSnapshotTooOld
 	}
-	r := &commitReq{ops: tx.writes, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
-		onCommit: tx.onCommit, repair: true, rv: &repairVal{}, gate: tx.gate}
-	if tx.repaired {
-		// heads are looked up again by submit, after a fresh installSeq
-		r.hasSeen = false
-		incr := tx.valid != nil && tx.valid.complete && !tx.hasUnique()
-		for i := range tx.writes {
-			w := &tx.writes[i]
-			if incr && w.base == 0 {
-				continue // unchanged since the snapshot, so its head is still the one looked up
+	mk := func(dry bool) *commitReq {
+		r := &commitReq{ops: tx.writes, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
+			onCommit: tx.onCommit, repair: true, rv: &repairVal{}, gate: tx.gate, dry: dry}
+		if tx.repaired {
+			// heads are looked up again by submit, after a fresh installSeq
+			r.hasSeen = false
+			incr := tx.valid != nil && tx.valid.complete && !tx.hasUnique()
+			for i := range tx.writes {
+				w := &tx.writes[i]
+				if incr && w.base == 0 {
+					continue // unchanged since the snapshot, so its head is still the one looked up
+				}
+				w.seen, w.seenOk = nil, false
+				if incr {
+					r.rv.rep = append(r.rv.rep, i)
+				}
 			}
-			w.seen, w.seenOk = nil, false
 			if incr {
-				r.rv.rep = append(r.rv.rep, i)
+				r.rv.incr, r.rv.widx, r.rv.inSeq = true, tx.widx, tx.valid.seq
 			}
 		}
-		if incr {
-			r.rv.incr, r.rv.widx, r.rv.inSeq = true, tx.widx, tx.valid.seq
+		return r
+	}
+	if !tx.rlog {
+		// from now on the committer keeps the batches installed, so that
+		// later rounds can tell which writes changed without scanning all
+		tx.rlog = true
+		if tx.e.repairers.Add(1) == 1 {
+			tx.e.rlogBase.Store(tx.e.installSeq.Load())
 		}
 	}
 	t0 := time.Now()
-	err := tx.e.submit(r)
-	tx.valid = &repairVal{seq: r.rv.seq, complete: r.rv.complete}
+	var r *commitReq
+	var err error
+	if tx.repaired {
+		// Validate first, without staging or placing anything: a request
+		// with many index entries is staged (commitstage.go) at a cost of
+		// hundreds of ms per round, which a round that fails again would
+		// pay for nothing, and writers overtake a slow round.
+		r = mk(true)
+		err = tx.e.submit(r)
+		tx.valid = &repairVal{seq: r.rv.seq, complete: r.rv.complete}
+	}
+	if r == nil || err == nil {
+		r = mk(false)
+		err = tx.e.submit(r)
+		tx.valid = &repairVal{seq: r.rv.seq, complete: r.rv.complete}
+	}
 	if err == nil {
 		tx.finish()
 		return r.lsn, nil
@@ -229,10 +254,15 @@ func (e *Engine) repairPre(b *commitBatch, inflight, recent []*commitBatch, r *c
 	cur2 func(*TableState, string, *Version, bool) *Version) (skip bool, verr error) {
 	v := r.rv
 	v.seq = e.installSeq.Load()
+	if RepairDebug {
+		defer func(t0 time.Time) {
+			fmt.Fprintf(os.Stderr, "occ: repairPre incr=%v inSeq=%d base=%d rlog=%d took %v\n", v.incr, v.inSeq, e.rlogBase.Load(), len(e.rlog), time.Since(t0))
+		}(time.Now())
+	}
 	if !v.incr {
 		return false, nil
 	}
-	if len(recent) == 0 || recent[0].seq > v.inSeq+1 {
+	if v.inSeq < e.rlogBase.Load() {
 		// too long since the last validation to tell from the recent batches
 		// which writes changed: validate everything, on heads looked up now
 		// (the heads kept from earlier rounds may be stale)
@@ -256,8 +286,8 @@ func (e *Engine) repairPre(b *commitBatch, inflight, recent []*commitBatch, r *c
 	for _, x := range inflight {
 		hit(x.pending)
 	}
-	for i := len(recent) - 1; i >= 0 && recent[i].seq > v.inSeq; i-- {
-		hit(recent[i].pending)
+	for i := len(e.rlog) - 1; i >= 0 && e.rlog[i].seq > v.inSeq; i-- {
+		hit(e.rlog[i].pending)
 	}
 	for _, i := range v.rep {
 		op := &r.ops[i]
@@ -353,4 +383,26 @@ func (tx *Tx) CloseGate(maxHold time.Duration) (release func()) {
 		fmt.Fprintf(os.Stderr, "occ: gate closed on %d table(s)\n", len(g.tables))
 	}
 	return func() { g.release(e) }
+}
+
+// rlogMax bounds the batches kept for repairs (about a minute of busy commits).
+const rlogMax = 100000
+
+// rlogAdd, on the committer, keeps the installed batch b while a repairable
+// transaction is open.
+func (e *Engine) rlogAdd(b *commitBatch) {
+	if e.repairers.Load() <= 0 {
+		if len(e.rlog) > 0 {
+			clear(e.rlog)
+			e.rlog = e.rlog[:0]
+		}
+		return
+	}
+	e.rlog = append(e.rlog, b)
+	if len(e.rlog) > rlogMax {
+		drop := len(e.rlog) / 2
+		e.rlogBase.Store(e.rlog[drop-1].seq)
+		clear(e.rlog[:drop])
+		e.rlog = append(e.rlog[:0], e.rlog[drop:]...)
+	}
 }

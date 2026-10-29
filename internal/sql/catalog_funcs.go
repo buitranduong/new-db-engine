@@ -194,7 +194,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		"has_column_privilege", "has_any_column_privilege":
 		return s.hasPrivilege(name, args), nil
 	case "current_user", "session_user", "current_role":
-		return TextD(s.currentUser()), nil
+		return TextD(s.sqlUser(name)), nil
 	case "current_catalog":
 		return TextD("stask"), nil
 	case "current_schemas":

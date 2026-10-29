@@ -356,9 +356,20 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 			}
 		}
 		return d, nil
+	case *FetchStmt:
+		return s.describeFetch(st)
+	case *DeclareCursor: // the parameters of the query
+		qd, err := s.Describe(st.Query)
+		if err != nil {
+			return nil, err
+		}
+		return &Description{Params: qd.Params}, nil
 	case *Show:
 		d.HasRows = true
 		d.Cols = []Column{{Name: showColumn(st.Name), Kind: KText}}
+		if isShowAll(st.Name) {
+			d.Cols = showAllCols()
+		}
 		return d, nil
 	default:
 		return d, nil

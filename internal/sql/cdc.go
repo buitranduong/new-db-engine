@@ -100,6 +100,9 @@ func (s *Session) sessionTableFunc(name string, args []Datum) ([][]Datum, error)
 		}
 		return nil
 	}
+	if rows, ok, err := s.extraSessionFunc(name, args); ok {
+		return rows, err
+	}
 	switch name {
 	case "pg_notify":
 		if err := nargs(2, 2); err != nil {

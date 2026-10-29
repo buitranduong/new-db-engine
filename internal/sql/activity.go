@@ -152,6 +152,7 @@ func (s *Session) Track(user, app, addr string, port int64) {
 	a := &Activity{e: s.E, pid: s.PID, user: user, app: app, addr: addr, port: port, started: now}
 	a.stateStart.Store(now.UnixNano())
 	s.act = a
+	s.initUserVars()
 	stats.sessions.Add(1)
 	actMu.Lock()
 	acts[a] = struct{}{}

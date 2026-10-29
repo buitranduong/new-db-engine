@@ -78,6 +78,11 @@ type Session struct {
 	savepoints []savepointState
 	readOnly   bool       // BEGIN READ ONLY / SET TRANSACTION READ ONLY
 	localUndo  []localVar // SET LOCAL values to restore at the end of the transaction
+
+	// cursor.go, locks.go, setrole.go
+	curs *cursorSet
+	lk   *sessLocks
+	rc   roleCtx
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -108,6 +113,8 @@ func (s *Session) Close() {
 		s.tx = nil
 	}
 	s.explicit, s.failed = false, false
+	s.closeCursors()
+	s.releaseAllLocks()
 	s.discardPending()
 	s.closeListener()
 	s.untrack()
@@ -148,6 +155,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		return s.execPrepare(st, params)
 	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:
 		return s.execCompat(st)
+	case *DeclareCursor, *FetchStmt, *CloseCursor, *LockTable, *ResetRole:
+		return s.execCursor(st, params)
 	case *Begin:
 		if s.explicit {
 			return &Result{Tag: "BEGIN", Notice: "there is already a transaction in progress"}, nil
@@ -163,13 +172,20 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if !s.explicit {
 			return &Result{Tag: "COMMIT", Notice: "there is no transaction in progress"}, nil
 		}
+		defer s.releaseTxLocks()
 		tx, failed := s.tx, s.failed
 		s.tx, s.explicit, s.failed = nil, false, false
 		s.endTx()
 		if failed {
 			tx.Abort()
+			s.cursorsOnAbort()
 			s.discardPending()
 			return &Result{Tag: "ROLLBACK"}, nil
+		}
+		if err := s.cursorsOnCommit(tx); err != nil {
+			tx.Abort()
+			s.discardPending()
+			return nil, err
 		}
 		ops := s.beforeCommit(tx)
 		lsn, err := tx.Commit()
@@ -185,14 +201,19 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if !s.explicit {
 			return &Result{Tag: "ROLLBACK", Notice: "there is no transaction in progress"}, nil
 		}
+		defer s.releaseTxLocks()
 		s.tx.Abort()
 		s.tx, s.explicit, s.failed = nil, false, false
 		s.endTx()
+		s.cursorsOnAbort()
 		s.discardPending()
 		return &Result{Tag: "ROLLBACK"}, nil
 	case *SetVar:
 		return s.set(st)
 	case *Show:
+		if isShowAll(st.Name) {
+			return s.showAll(), nil
+		}
 		name := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(st.Name), " . ", "."), " ", "_")
 		if name == "transaction_isolation_level" {
 			name = "transaction_isolation"
@@ -332,7 +353,9 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		}
 		return res, nil
 	}
+	defer s.releaseTxLocks()
 	for attempt := 0; ; attempt++ {
+		s.releaseTxLocks()
 		s.notes = nil // pg_notify() calls of an attempt that was retried
 		tx := s.begin(core.SnapshotIsolation)
 		tx.SetImplicit()
@@ -373,6 +396,9 @@ func (s *Session) markFailed() {
 }
 
 func (s *Session) set(st *SetVar) (*Result, error) {
+	if r, ok, err := s.setRoleVar(st); ok {
+		return r, err
+	}
 	name := strings.ToLower(st.Name)
 	val := strings.Trim(strings.ToLower(st.Value), "'\"")
 	if st.Local && name != "transaction" {
@@ -1137,6 +1163,7 @@ type group struct {
 type outRow struct {
 	vals []Datum
 	sort []Datum
+	lkey string // row key, for FOR UPDATE after ORDER BY (rowlock.go)
 }
 
 func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, error) {
@@ -1237,9 +1264,16 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		offset = v.I
 	}
 
+	lk, err := s.fastRowLocker(tx, st, sc.t, sc.alias)
+	if err != nil {
+		return nil, err
+	}
 	var out []outRow
 	project := func() error {
 		r := outRow{vals: make([]Datum, len(items))}
+		if lk != nil && !lk.inVisit {
+			r.lkey = sc.t.KeyOf(ctx.row)
+		}
 		for i, it := range items {
 			v, err := ctx.eval(it.X)
 			if err != nil {
@@ -1274,7 +1308,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 			if plain := chooseIndex(sc.t, sc.alias, st.Where, ctx, nil); plain != nil && (ordIx == nil || plain.score > ordIx.score) {
 				ordIx = nil // WHERE has a better index; the rows are sorted afterwards
 			}
-			ordStop = ordIx != nil
+			ordStop = ordIx != nil && lk == nil
 		}
 	}
 	var groups map[string]*group
@@ -1285,6 +1319,11 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 	visit := func(r schema.Row) (bool, error) {
 		ctx.row = r
 		if !grouped {
+			if lk != nil && lk.inVisit {
+				if ok, err := lk.lockRowOf(r); err != nil || !ok {
+					return err == nil, err
+				}
+			}
 			if err := project(); err != nil {
 				return false, err
 			}
@@ -1470,6 +1509,20 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		if serr != nil {
 			return nil, serr
 		}
+	}
+	if lk != nil && !lk.inVisit { // ORDER BY: lock in output order, until OFFSET+LIMIT rows are locked
+		kept := out[:0]
+		for _, o := range out {
+			if limit >= 0 && int64(len(kept)) >= offset+limit {
+				break
+			}
+			if ok, err := lk.lockKeys([]string{o.lkey}, []bool{true}); err != nil {
+				return nil, err
+			} else if ok {
+				kept = append(kept, o)
+			}
+		}
+		out = kept
 	}
 	if offset > 0 {
 		out = out[min(int(offset), len(out)):]

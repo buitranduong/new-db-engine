@@ -40,6 +40,9 @@ var knownStatements = map[string]bool{
 
 // compatStatement parses the statements above; ok is false for any other.
 func (p *parser) compatStatement(word string) (st Stmt, ok bool, err error) {
+	if st, ok, err := p.cursorStatement(word); ok {
+		return st, ok, err
+	}
 	if st, ok, err := p.prepareStatements(word); ok {
 		return st, ok, err
 	}
@@ -135,6 +138,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 				return nil, errf("25001", "DISCARD ALL cannot run inside a transaction block")
 			}
 			s.resetVars()
+			s.discardAllExtra()
 			return &Result{Tag: "DISCARD ALL"}, nil
 		case "plans", "sequences", "temp", "temporary":
 			if st.What == "sequences" {
@@ -177,7 +181,7 @@ func sessionDefaults() map[string]string {
 		"transaction_isolation": "repeatable read", "default_transaction_isolation": "repeatable read",
 		"application_name": "", "search_path": "public", "integer_datetimes": "on", "server_encoding": "UTF8",
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
-		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
+		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0", "lock_timeout": "0",
 		"max_identifier_length": "63", "default_transaction_read_only": "off", "transaction_read_only": "off",
 		"extra_float_digits": "1", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8",
 		SearchConsistencyVar: DefaultConsistency, SearchMaxLagVar: "1000", LastPlanVar: "",
@@ -196,6 +200,7 @@ func (s *Session) resetVars() {
 		s.ctl.timeouts[i] = s.ctl.defaults[i]
 		s.vars[timeoutVars[i]] = FormatTimeout(s.ctl.defaults[i])
 	}
+	s.setRoleVars() // RESET ALL does not touch the role (PostgreSQL); the variables were reset
 }
 
 // resetVar is RESET name.

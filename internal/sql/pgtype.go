@@ -459,6 +459,10 @@ func timeOfDayText(us int64) string {
 
 const codeStringTooLong = "22001"
 
+// f4Mark in Datum.S marks a KFloat value that is a real (float4): it holds
+// the float32 and prints with float32 digits.
+const f4Mark = "\x004"
+
 // FormatFloat4 prints f the way PostgreSQL prints a real (float4).
 func FormatFloat4(f float64) string {
 	switch {
@@ -515,6 +519,7 @@ func applyPG(pg string, d Datum, explicit bool) (Datum, error) {
 				return Null, errf(codeNumericOutOfRange, "value out of range: overflow")
 			}
 			d.F = float64(float32(d.F))
+			d.S = f4Mark
 		}
 	case "varchar", "bpchar":
 		n := specLen(pg)

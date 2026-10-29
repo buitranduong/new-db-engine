@@ -144,6 +144,9 @@ func fromCol(c *schema.Column, v schema.Value) Datum {
 	if c.PG == "date" && d.K == KTimestamp {
 		d = DateD(d.I)
 	}
+	if c.PG == "float4" && d.K == KFloat {
+		d.S = f4Mark
+	}
 	return d
 }
 
@@ -453,6 +456,9 @@ func (d Datum) String() string {
 			return "-Infinity"
 		} else if math.IsNaN(d.F) {
 			return "NaN"
+		}
+		if d.S == f4Mark { // a real: print the shortest digits of the float32
+			return FormatFloat4(d.F)
 		}
 		return string(appendPGFloat(nil, d.F))
 	case KText, KNumeric, KUUID, KJSON, KJSONB:

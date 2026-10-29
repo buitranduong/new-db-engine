@@ -1153,7 +1153,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		orderOut[i] = -1
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
-				return nil, errf(codeUndefinedColumn, "ORDER BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
 			}
 			orderOut[i] = int(l.V.I) - 1
 		} else if c, ok := o.X.(*ColRef); ok && c.Table == "" {

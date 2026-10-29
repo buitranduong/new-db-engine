@@ -102,7 +102,15 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 				return KNumeric
 			}
 			return KFloat
-		case "min", "max", "abs", "coalesce", "nullif":
+		case "coalesce":
+			for _, a := range e.Args {
+				if l, ok := a.(*Lit); ok && l.V.IsNull() {
+					continue
+				}
+				return typeOf(a, sc, pk)
+			}
+			return KText
+		case "min", "max", "abs", "nullif":
 			return arg()
 		case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "to_timestamp":
 			return KTime

@@ -232,7 +232,17 @@ func (s *Session) describeWithDML(w *WithDML) (*Description, error) {
 		ctes = q
 	}
 	resolved := make([]CTE, len(ctes))
-	n := maxParam(w.Main)
+	var params []Kind // $n kinds, the first typed use wins
+	merge := func(ps []Kind) {
+		for i, k := range ps {
+			for len(params) <= i {
+				params = append(params, KText)
+			}
+			if params[i] == KText {
+				params[i] = k
+			}
+		}
+	}
 	for i, c := range ctes {
 		resolved[i] = c
 		if isDMLStmt(c.Q) {
@@ -242,15 +252,14 @@ func (s *Session) describeWithDML(w *WithDML) (*Description, error) {
 			}
 			resolved[i].Q = valuesQuery(d.Cols, nil, c.Cols)
 			resolved[i].Cols = nil
-			n = max(n, maxParam(c.Q))
+			merge(d.Params)
 		}
 	}
 	d, err := s.Describe(mainWith(w.Main, resolved))
 	if err != nil {
 		return nil, err
 	}
-	for len(d.Params) < n {
-		d.Params = append(d.Params, KText)
-	}
+	merge(d.Params)
+	d.Params = params
 	return d, nil
 }

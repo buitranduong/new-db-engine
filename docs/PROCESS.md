@@ -28,13 +28,15 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 | D6 | Cấu hình hệ thống (view SQL, trigger, role, trạng thái CDC) lưu trong **bảng hệ thống ẩn** đi qua WAL/checkpoint/replica | Một cơ chế, sống sót qua phục hồi và nhân bản | Giữ (mẫu cho tính năng sau) |
 | D7 | DROP COLUMN chỉ đánh dấu; dòng cũ đọc theo lịch sử layout gắn LSN | docs/12 P1.2: không viết lại bảng | Giữ |
 | D8 | Admission: đọc không bao giờ chờ slot; lane riêng cho heavy | docs/08; mô phỏng | Giữ; cần đo thật |
-| D9 | Raft: gói riêng + hook `core.Quorum` mặc định tắt; **tự viết**, chờ khảo sát tự viết/dùng lại | Một node không đổi hành vi | **Chờ docs/17** |
+| D9 | Raft: gói riêng + hook `core.Quorum` mặc định tắt. **Hiện tự viết, nhưng đây là lựa chọn của agent, không phải yêu cầu của người dùng.** Người dùng chấp nhận học hỏi và dùng lại mã nguồn công khai; cần khảo sát thư viện có sẵn (etcd/raft, dragonboat, ...) và kiểm giấy phép | Một node không đổi hành vi | **Mở: chờ khảo sát docs/17** |
 | D10 | Bằng chứng: không có probe/test/số đo thì không ghi xong (docs/14, docs/12 quy tắc 6) | Phát hiện báo cáo xong thiếu bằng chứng | Giữ |
 | D11 | Build vào `bin-main/`, không dùng `bin/` | `go build ./...` không ghi binary; từng đo sai | Giữ |
 | D12 | Mỗi task một nhánh + worktree; gộp bằng git qua `merge-gate.sh`; chỉ người điều phối gộp/push | Cây không có git trước đó; xung đột khi chép tay | Giữ |
 | D13 | Cổng PG ngoài loopback không mật khẩu bị từ chối (`-pg-insecure` để bỏ qua) | README từng nói sai; lỗ hổng thật | Đã làm |
 | D14 | Con đường triển khai: **chế độ bóng → thay tầng đọc (ES, Superset) → chuyển đường ghi → CRM** | docs/16 §4; giảm rủi ro, có đường lui | Chốt (người dùng giao quyền quyết) |
 | D15 | Giấy phép MIT; repo `github.com/buitranduong/new-db-engine`; tài liệu tiếng Việt, README tiếng Anh | Người dùng | Đã làm |
+
+| D16 | **Ưu tiên dùng lại, học từ mã nguồn công khai.** Không đặt "tự viết" làm mục tiêu. Thành phần có bản trưởng thành, giấy phép tương thích MIT (MIT/BSD/Apache-2.0) và phù hợp thì dùng hoặc tích hợp; được học thiết kế từ mã công khai (PostgreSQL, ClickHouse, Lucene, RocksDB, etcd...). Cấm chép mã GPL/AGPL/BSL/SSPL; ghi nguồn và giấy phép khi dùng | Người dùng làm rõ 2026-10-29: không yêu cầu tự viết; các agent chọn tự viết vì không chắc thành phần có sẵn đáp ứng | Giữ |
 
 ## 3. Bài học (đã trả giá)
 

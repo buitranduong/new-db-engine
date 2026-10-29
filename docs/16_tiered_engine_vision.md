@@ -21,7 +21,9 @@ Ghi theo lời người đặt bài toán, để mọi quyết định và mọi
 
 Nguyên tắc từ các hệ đã thành công: **mỗi tầng giữ định dạng riêng, hợp nhất ở log, planner và hợp đồng nhất quán** (không ép một đường thực thi cho mọi workload).
 
-## 3. Câu hỏi "tự viết hay dùng lại" (cần quyết bằng khảo sát, không bằng cảm tính)
+## 3. Dùng lại hay tự viết (quyết bằng khảo sát, không bằng cảm tính)
+
+Lưu ý (người dùng làm rõ 2026-10-29): **không có yêu cầu tự viết**. Việc tự viết một số thành phần (ví dụ Raft) là lựa chọn của agent khi chưa chắc thành phần có sẵn đáp ứng. Học hỏi và dùng lại mã nguồn công khai được chấp nhận (PROCESS D16), kèm kiểm giấy phép.
 
 Với từng tầng, ghi rõ: dùng lại thành phần có sẵn (thư viện/engine), tích hợp bên cạnh, hay tự viết; kèm tiêu chí (giấy phép, ngôn ngữ, mức trưởng thành, chi phí vận hành, rủi ro). Đây là việc của agent khảo sát, kết quả vào docs/17.
 

@@ -35,6 +35,14 @@ Mục tiêu: nhiều agent làm song song mà **không** thành một mớ hỗn
 6. **Báo cáo cuối** theo mẫu mục 6.
 7. Người điều phối: đọc diff, chạy `scripts/merge-gate.sh` trên nhánh, gộp bằng `git merge`, chạy lại `claimcheck`, cập nhật `docs/STATUS` và `docs/14`, rồi push.
 
+## 4b. Dùng lại trước khi tự viết (quyết định D16)
+
+- Người dùng **không** yêu cầu tự viết mọi thứ. Trước khi viết một thành phần lớn (parser, đồng thuận, lưu trữ, nén, tìm kiếm), agent khảo sát: có thư viện/engine mã nguồn mở phù hợp không, giấy phép gì, ngôn ngữ nào, mức trưởng thành, chi phí tích hợp. Ghi kết quả vào báo cáo.
+- Được phép **học thiết kế từ mã công khai** (PostgreSQL, ClickHouse, Lucene, RocksDB, etcd...). Ghi tên nguồn.
+- Giấy phép: dự án là MIT. Dùng thư viện **MIT/BSD/Apache-2.0**. **Không** chép hoặc liên kết mã GPL/AGPL/BSL/SSPL. Nghi ngờ thì hỏi người điều phối.
+- Thêm phụ thuộc vào `go.mod` phải được người điều phối duyệt.
+- Không chắc thành phần có sẵn đáp ứng được thì ghi rõ lý do và bằng chứng, **không** mặc nhiên chọn tự viết.
+
 ## 5. Định nghĩa "xong"
 
 Một task chỉ được đánh dấu xong khi có **tất cả**: mã + test đơn vị qua; `-race` qua cho gói đụng tới; có số đo/probe tái lập được ghi trong docs/14; docs liên quan (05/09/12/...) được cập nhật; `merge-gate.sh` qua. Còn thiếu thì dùng đúng nhãn: **Xong-chưa-kiểm** (có mã/test đơn vị, chưa kiểm hệ thống), **Một phần**, **Đang làm**, **Chưa làm**.

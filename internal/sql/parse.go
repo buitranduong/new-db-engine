@@ -212,6 +212,9 @@ func (p *parser) statement() (Stmt, error) {
 		if p.acceptKw("trigger") {
 			return p.dropTrigger()
 		}
+		if p.acceptKw("index") {
+			return p.dropIndex()
+		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err
 		}
@@ -392,6 +395,9 @@ func (p *parser) createStmt() (Stmt, error) {
 	if st, ok, err := p.createView(); ok {
 		return st, err
 	}
+	if st, ok, err := p.createIndex(); ok {
+		return st, err
+	}
 	if p.acceptKw("publication") {
 		return p.createPublication()
 	}
@@ -431,6 +437,18 @@ func (p *parser) createStmt() (Stmt, error) {
 				return nil, err
 			}
 			c.Checks = append(c.Checks, ck)
+		} else if p.acceptKw("unique") {
+			cd, err := p.uniqueDef(cname)
+			if err != nil {
+				return nil, err
+			}
+			c.Constraints = append(c.Constraints, cd)
+		} else if p.acceptKw("foreign") {
+			cd, err := p.foreignDef(cname)
+			if err != nil {
+				return nil, err
+			}
+			c.Constraints = append(c.Constraints, cd)
 		} else if p.acceptKw("primary", "key") {
 			if err := p.expectOp("("); err != nil {
 				return nil, err
@@ -460,6 +478,13 @@ func (p *parser) createStmt() (Stmt, error) {
 				}
 				c.Key = cd.Name
 			}
+			for _, k := range cd.Constraints {
+				if k.Kind == "unique" || k.Kind == "foreign" {
+					k.Cols = []string{cd.Name}
+					c.Constraints = append(c.Constraints, k)
+				}
+			}
+			cd.Constraints = nil
 			c.Cols = append(c.Cols, cd)
 		}
 		if p.acceptOp(")") {
@@ -571,23 +596,32 @@ func (p *parser) colDef() (ColDef, error) {
 					return cd, err
 				}
 			}
-		case p.isKw("check"), p.isKw("constraint"):
+		case p.isKw("check"), p.isKw("constraint"), p.isKw("unique"), p.isKw("references"):
 			var name string
 			if p.acceptKw("constraint") {
 				if name, err = p.ident(); err != nil {
 					return cd, err
 				}
-				if !p.isKw("check") {
-					return cd, errf(codeFeature, "only named CHECK column constraints are supported")
+				if !p.isKw("check") && !p.isKw("unique") && !p.isKw("references") {
+					return cd, errf(codeFeature, "only named CHECK, UNIQUE and REFERENCES column constraints are supported")
 				}
 			}
-			ck, err := p.checkDef(name)
-			if err != nil {
-				return cd, err
+			switch {
+			case p.acceptKw("unique"):
+				cd.Constraints = append(cd.Constraints, &ConstraintDef{Kind: "unique", Name: name})
+			case p.acceptKw("references"):
+				k, err := p.referencesDef(name, nil)
+				if err != nil {
+					return cd, err
+				}
+				cd.Constraints = append(cd.Constraints, k)
+			default:
+				ck, err := p.checkDef(name)
+				if err != nil {
+					return cd, err
+				}
+				cd.Checks = append(cd.Checks, ck)
 			}
-			cd.Checks = append(cd.Checks, ck)
-		case p.isKw("unique"), p.isKw("references"):
-			return cd, errf(codeFeature, "column constraint %s is not supported", strings.ToUpper(p.peek().s))
 		default:
 			return cd, nil
 		}
@@ -1750,8 +1784,22 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				}
 				break
 			}
-			if cname != "" || p.isKw("primary") || p.isKw("unique") || p.isKw("foreign") {
-				return nil, errf(codeFeature, "only CHECK constraints can be added")
+			if p.acceptKw("unique") {
+				act.Kind = "add_constraint"
+				if act.Constraint, err = p.uniqueDef(cname); err != nil {
+					return nil, err
+				}
+				break
+			}
+			if p.acceptKw("foreign") {
+				act.Kind = "add_constraint"
+				if act.Constraint, err = p.foreignDef(cname); err != nil {
+					return nil, err
+				}
+				break
+			}
+			if cname != "" || p.isKw("primary") {
+				return nil, errf(codeFeature, "only CHECK, UNIQUE and FOREIGN KEY constraints can be added")
 			}
 			p.acceptKw("column")
 			act.Kind, act.IfExists = "add_column", p.acceptKw("if", "not", "exists")

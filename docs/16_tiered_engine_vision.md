@@ -37,3 +37,23 @@ Không thay toàn bộ cùng lúc. Thứ tự rủi ro tăng dần, mỗi bướ
 ## 5. Điều kiện production (danh sách kiểm, chưa đạt)
 
 Kiểm thử vi phân với PG trên khối lượng thật; kiểm thử sự cố (kill, mất điện, đầy đĩa, mạng) lặp lại tự động; mô phỏng tất định kiểu FoundationDB cho nhân bản/đồng thuận; fuzz giao thức và SQL; soak nhiều ngày; sao lưu có diễn tập khôi phục; định dạng đĩa có phiên bản và đường nâng cấp; quan sát vận hành và cảnh báo; rà soát bảo mật độc lập; runbook; người có trách nhiệm ký duyệt cho từng mục. Hiện **chưa mục nào đạt hoàn toàn**; xem docs/14 cho từng phần.
+
+## 6. Khả thi và rủi ro (đánh giá của người điều phối, 2026-10-29; ý kiến, không phải số đo)
+
+**Có giải được không?** Một phần đáng kể, về lý thuyết là có, và có tiền lệ (SingleStore, TiDB + TiFlash, SAP HANA là các hệ giao dịch + phân tích; chưa kiểm lại chi tiết từng sản phẩm). Các vấn đề cụ thể của người dùng có lời giải kiến trúc: khoá chờ nhau (OCC, không VACUUM), CDC trễ/lệch (view nuôi từ cùng log, độ mới khai báo), ba lớp sao chép (gộp thành view). Nhưng **chưa được chứng minh trên dữ liệu thật**.
+
+**Cản trở thực tế, xếp theo mức nghiêm trọng:**
+
+1. Không có "tốt nhất của tất cả": mỗi tầng đánh đổi (dòng/cột, độ trễ/thông lượng, cô lập/dùng chung). STASK còn thiếu cô lập tải cứng (cùng tiến trình).
+2. Quy mô: tương thích PostgreSQL là việc nhiều năm. Số đo: 45,5% câu SQL giống hệt PG (859 câu). ~25–30% tới Cổng 1.
+3. Lỗi sai dữ liệu là rủi ro chết người; cần soak/chaos nhiều tháng. Còn lỗi nghi ngờ B1 chưa kiểm chứng.
+4. Hệ sinh thái PG (ORM, Superset, Debezium, sao lưu, giám sát) là hào chắn thật; thiếu một mảnh là ứng dụng lỗi.
+5. Khối lượng lịch sử chưa rõ; nếu hàng tỷ phiên bản thì cần cấu trúc trên đĩa (việc lớn chưa có).
+6. Sẵn sàng cao chưa có (Raft mới mô phỏng).
+7. Con người: mã phần lớn do AI viết; cần người hiểu sâu để bảo trì, xử lý sự cố, ký duyệt bảo mật.
+
+**Phương án rẻ hơn cho đúng nỗi đau hiện tại (không loại trừ STASK):** khoá của PG thường sửa được bằng nạp theo lô nhỏ qua staging, `lock_timeout`, `SKIP LOCKED`, phân vùng theo ngày, tránh giao dịch dài/`ALTER` giờ cao điểm; Superset đọc từ replica; chưa có `pg_locks` thật để kết luận nguyên nhân (docs/15 §5). Khuyến nghị: **chạy song song hai đường**, giảm đau ngay trên hệ hiện tại trong vài tuần, còn STASK là cược dài hạn vào production từng bước.
+
+**Giảm rủi ro:** thu hẹp phạm vi về bài toán SIM; đặt tiêu chí dừng bằng số; chia cổng (1) hết khác biệt SQL chặn ứng dụng, (2) `simbench` thắng ở quy mô thật, (3) chế độ bóng 4–8 tuần không lệch, (4) chuyển đường đọc, (5) chuyển đường ghi.
+
+**Đánh giá tổng:** làm được engine **chạy tốt cho đúng bài toán kho SIM** trong vài tháng tập trung là khả thi; engine **thay PostgreSQL + ClickHouse + Elasticsearch nói chung** là không thực tế với nguồn lực hiện tại.

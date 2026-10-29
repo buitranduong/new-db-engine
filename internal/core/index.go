@@ -696,3 +696,47 @@ func (t *TableState) IndexStats() IndexStats {
 	s.Bytes = int64(s.Leaves)*int64(unsafe.Sizeof(leafNode{})) + int64(s.Inner)*int64(unsafe.Sizeof(innerNode{})) + s.ArenaBytes
 	return s
 }
+
+// descend calls fn for the entries with key < upto in descending key order
+// (all of them if upto is ""), until fn returns false.
+func (t *tree) descend(upto string, fn func(*entry) bool) {
+	switch {
+	case t.inner != nil:
+		t.descInner(t.inner, upto, upto == "", fn)
+	case t.leaf != nil:
+		t.descLeaf(t.leaf, upto, upto == "", fn)
+	}
+}
+
+func (t *tree) descLeaf(l *leafNode, upto string, all bool, fn func(*entry) bool) bool {
+	i := int(l.n) - 1
+	if !all {
+		p, _ := t.search(l, upto)
+		i = p - 1
+	}
+	for ; i >= 0; i-- {
+		if !fn(&l.ents[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *tree) descInner(n *innerNode, upto string, all bool, fn func(*entry) bool) bool {
+	j := n.n - 1
+	if !all {
+		j = t.child(n, upto)
+	}
+	for k := j; k >= 0; k-- {
+		var ok bool
+		if n.leafKids {
+			ok = t.descLeaf(n.leaves[k], upto, all || k < j, fn)
+		} else {
+			ok = t.descInner(n.inners[k], upto, all || k < j, fn)
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}

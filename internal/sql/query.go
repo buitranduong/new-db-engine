@@ -1076,7 +1076,10 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	if p.distinct {
 		seen := map[string]bool{}
 		kept := out[:0]
-		for _, o := range out {
+		for i, o := range out {
+			if i&4095 == 4095 && qx.s.interrupted() {
+				return nil, core.ErrInterrupted
+			}
 			k := groupKey(normKeys(o.vals))
 			if !seen[k] {
 				seen[k] = true
@@ -1087,7 +1090,14 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	}
 	if len(p.order) > 0 {
 		var serr error
+		cmps := 0
 		sort.SliceStable(out, func(i, j int) bool {
+			if cmps++; cmps&16383 == 0 && qx.s.interrupted() {
+				serr = core.ErrInterrupted
+			}
+			if serr != nil {
+				return false
+			}
 			c, err := cmpSort(out[i].keys, out[j].keys, p.order)
 			if err != nil && serr == nil {
 				serr = err
@@ -1576,7 +1586,14 @@ func (p *setPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 			idx[i] = i
 		}
 		var serr error
+		cmps := 0
 		sort.SliceStable(idx, func(a, b int) bool {
+			if cmps++; cmps&16383 == 0 && qx.s.interrupted() {
+				serr = core.ErrInterrupted
+			}
+			if serr != nil {
+				return false
+			}
 			c, err := cmpSort(keys[idx[a]], keys[idx[b]], p.order)
 			if err != nil && serr == nil {
 				serr = err
@@ -1695,6 +1712,9 @@ func (p *recursivePlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	}
 	work := add(a.rows)
 	for iter := 0; len(work) > 0; iter++ {
+		if qx.s.interrupted() {
+			return nil, core.ErrInterrupted
+		}
 		if iter > 1_000_000 || len(all) > 50_000_000 {
 			return nil, errf(codeFeature, "recursive query does not terminate")
 		}
@@ -2276,17 +2296,40 @@ func (p *funcPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	if sessionFuncs[p.name] || virtualTables[p.name] {
 		return qx.s.sessionTableFunc(p.name, args)
 	}
-	rows, err := tableFuncRows(p.name, args)
+	// every few thousand rows: poll for cancel/timeout and charge the memory
+	// budget, so a huge series stops early instead of filling memory first
+	charged := 0
+	rows, err := tableFuncRows(p.name, args, func(out [][]Datum) error {
+		if qx.s.interrupted() {
+			return core.ErrInterrupted
+		}
+		err := qx.chargeAll(out[charged:])
+		charged = len(out)
+		return err
+	})
 	if err == nil {
-		err = qx.chargeAll(rows)
+		err = qx.chargeAll(rows[charged:])
 	}
 	return rows, err
 }
 
+// funcTick is called with the rows produced so far every funcTickEvery rows.
+type funcTick func(out [][]Datum) error
+
+const funcTickEvery = 4096
+
 // tableFuncRows is the rows of a set-returning function over its arguments.
-func tableFuncRows(name string, args []Datum) ([][]Datum, error) {
+func tableFuncRows(name string, args []Datum, tick funcTick) ([][]Datum, error) {
 	const maxRows = 100_000_000
 	var out [][]Datum
+	// emit appends a row and ticks every funcTickEvery rows
+	emit := func(r []Datum) error {
+		out = append(out, r)
+		if tick != nil && len(out)%funcTickEvery == 0 {
+			return tick(out)
+		}
+		return nil
+	}
 	switch name {
 	case "generate_series":
 		if len(args) < 2 || len(args) > 3 {
@@ -2312,7 +2355,9 @@ func tableFuncRows(name string, args []Datum) ([][]Datum, error) {
 				return nil, errf(codeInvalidParameter, "step size cannot be zero or negative")
 			}
 			for t, n := start.I, int64(0); t <= stop.I && n < maxRows; n++ {
-				out = append(out, []Datum{TimeD(t)})
+				if err := emit([]Datum{TimeD(t)}); err != nil {
+					return nil, err
+				}
 				t = addInterval(start.I, step, n+1)
 			}
 			return out, nil
@@ -2330,7 +2375,9 @@ func tableFuncRows(name string, args []Datum) ([][]Datum, error) {
 			return nil, errf(codeInvalidParameter, "step size cannot equal zero")
 		}
 		for v := vals[0]; (vals[2] > 0 && v <= vals[1] || vals[2] < 0 && v >= vals[1]) && len(out) < maxRows; v += vals[2] {
-			out = append(out, []Datum{IntD(v)})
+			if err := emit([]Datum{IntD(v)}); err != nil {
+				return nil, err
+			}
 		}
 	case "numbers", "range":
 		var lo, n int64
@@ -2358,14 +2405,18 @@ func tableFuncRows(name string, args []Datum) ([][]Datum, error) {
 			return nil, errf(codeUndefinedFunction, "%s takes 1 or 2 arguments", name)
 		}
 		for i := int64(0); i < n && i < maxRows; i++ {
-			out = append(out, []Datum{IntD(lo + i)})
+			if err := emit([]Datum{IntD(lo + i)}); err != nil {
+				return nil, err
+			}
 		}
 	case "unnest":
 		if len(args) != 1 || args[0].K != KArray {
 			return nil, errf(codeUndefinedFunction, "unnest needs an array")
 		}
 		for _, e := range parseArrayText(args[0]) {
-			out = append(out, []Datum{e})
+			if err := emit([]Datum{e}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return out, nil
@@ -2674,7 +2725,11 @@ func (p *selPlan) expandSRFs(ctx *evalCtx, rows [][]Datum) ([][]Datum, error) {
 				}
 				args[j] = v
 			}
-			l, err := tableFuncRows(f.Name, args)
+			var tick funcTick
+			if sess := ctx.session(); sess != nil {
+				tick = func([][]Datum) error { return sess.checkInterrupt() }
+			}
+			l, err := tableFuncRows(f.Name, args, tick)
 			if err != nil {
 				return nil, err
 			}

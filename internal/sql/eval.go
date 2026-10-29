@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"stask/internal/core"
 	"stask/internal/proj"
 	"stask/internal/schema"
 )
@@ -46,6 +47,8 @@ type evalCtx struct {
 	drow  []Datum  // the working row that Slot reads
 
 	sess *Session // for session functions outside the general executor
+
+	polls uint32 // evaluations in the general executor, to poll for cancel
 }
 
 func (c *evalCtx) session() *Session {
@@ -59,6 +62,13 @@ func (c *evalCtx) session() *Session {
 }
 
 func (c *evalCtx) eval(x Expr) (Datum, error) {
+	if c.qx != nil {
+		// every operator that evaluates an expression per row (filter,
+		// projection, grouping, window, sort keys) polls for cancel here
+		if c.polls++; c.polls&4095 == 0 && c.qx.s.interrupted() {
+			return Null, core.ErrInterrupted
+		}
+	}
 	switch e := x.(type) {
 	case *Lit:
 		return e.V, nil

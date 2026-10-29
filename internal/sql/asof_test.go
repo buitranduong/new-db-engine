@@ -86,7 +86,11 @@ func TestSQLAsOf(t *testing.T) {
 		t.Fatal("AS OF NULL")
 	}
 
-	// retention setting
+	// retention setting, also at CREATE TABLE
+	run(t, s, `CREATE TABLE sim2 (number text PRIMARY KEY, v bigint) WITH (history_retention = '45 days')`)
+	if d, _ := e.RetentionOf("sim2"); d != 45*24*time.Hour {
+		t.Fatalf("retention from CREATE TABLE %v", d)
+	}
 	run(t, s, `ALTER TABLE sim SET (history_retention = '60 days')`)
 	if d, _ := e.RetentionOf("sim"); d != 60*24*time.Hour {
 		t.Fatalf("retention %v", d)

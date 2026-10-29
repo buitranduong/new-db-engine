@@ -828,3 +828,75 @@ func (e *Engine) HistoryAsc(table, key string) ([]HistoryEntry, error) {
 	}
 	return h, nil
 }
+
+// chainMemo remembers, for the keys met while draining one segment, which
+// version superseded which. supersededAfter walks a key's chain from its
+// head to the horizon for every old record of the key it meets: with 200
+// versions of a key inside the retention window that is 200 reads per
+// record, and a segment holds many records of the same key when the keys
+// are few (with millions of keys it holds about one each and the memo
+// saves nothing: see docs/15 section 7). The walk is done once per key.
+type chainMemo struct {
+	m map[memoKey]*memoChain
+	n int // entries held
+}
+
+type memoKey struct {
+	t   *TableState
+	key string
+}
+
+type memoChain struct {
+	headLSN uint64
+	byPrev  map[wal.Loc]memoHit // location a newer version points to -> that version
+	unknown uint64              // a record of the chain could not be read: its LSN
+}
+
+type memoHit struct {
+	sup uint64
+	ref wal.Loc
+}
+
+const chainMemoMax = 2_000_000
+
+func (cm *chainMemo) superseded(e *Engine, t *TableState, key string, head *Version, p wal.Loc, h uint64) (uint64, wal.Loc, bool) {
+	if head == nil {
+		return 0, wal.Loc{}, false // the key is gone (its tombstone was dropped): nothing references p
+	}
+	k := memoKey{t, key}
+	mc := cm.m[k]
+	if mc == nil || mc.headLSN != head.LSN {
+		if cm.n > chainMemoMax {
+			cm.m, cm.n = map[memoKey]*memoChain{}, 0
+		}
+		mc = &memoChain{headLSN: head.LSN, byPrev: map[wal.Loc]memoHit{}}
+		func() {
+			defer e.enterRead().Add(-1)
+			for v := head; v != nil && v.LSN > h; {
+				if e.fill(v) != nil {
+					mc.unknown = v.LSN
+					return
+				}
+				if v.Prev.Ok {
+					r, _ := e.resolve(v.Prev)
+					if _, dup := mc.byPrev[r]; !dup {
+						mc.byPrev[r] = memoHit{v.LSN, v.Prev}
+						cm.n++
+					}
+				}
+				var err error
+				if v, err = e.previous(v); err != nil {
+					return // truncated: everything older was superseded at or below the floor
+				}
+			}
+		}()
+		cm.m[k] = mc
+	}
+	if hit, ok := mc.byPrev[p]; ok {
+		return hit.sup, hit.ref, true
+	}
+	if mc.unknown != 0 {
+		return mc.unknown, p, true // unknown: keep (relocate) the version
+	}
+	return 0, wal.Loc{}, false
+}

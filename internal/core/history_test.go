@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,9 +15,17 @@ import (
 const day = 24 * time.Hour
 
 // fakeClock is a settable clock for aging history without waiting.
-type fakeClock struct{ t time.Time }
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func (c *fakeClock) now() time.Time { return c.t }
+func (c *fakeClock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *fakeClock) add(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
 
 func openHist(t *testing.T, dir string, c *fakeClock, ret time.Duration) *Engine {
 	t.Helper()
@@ -59,7 +68,7 @@ func ageWrites(t *testing.T, e *Engine, c *fakeClock, m histModel, table string,
 		m[table] = map[string][]mver{}
 	}
 	for d := from; d < to; d++ {
-		c.t = c.t.Add(day)
+		c.add(day)
 		e.addMark()
 		var ops []WriteOp
 		var ks []int
@@ -130,7 +139,7 @@ func checkWindow(t *testing.T, e *Engine, c *fakeClock, m histModel, table strin
 
 func TestHistoryRetentionWindow(t *testing.T) {
 	dir := t.TempDir()
-	c := &fakeClock{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	const keys, ret = 800, 7 * day
 	e := openHist(t, dir, c, ret)
 	defer func() { e.Close() }()
@@ -194,7 +203,7 @@ func TestHistoryRetentionWindow(t *testing.T) {
 	e = openHist(t, dir, c, ret)
 	checkWindow(t, e, c, m, "kv", ret)
 	// 3 more days pass without writes: the window moves and old history goes
-	c.t = c.t.Add(3 * day)
+	c.add(3 * day)
 	e.addMark()
 	gcAll(t, e)
 	_, extra2 := checkWindow(t, e, c, m, "kv", ret)
@@ -216,7 +225,7 @@ func TestHistoryRetentionWindow(t *testing.T) {
 
 func TestHistoryPerTableRetention(t *testing.T) {
 	dir := t.TempDir()
-	c := &fakeClock{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	e := openHist(t, dir, c, 5*day)
 	defer func() { e.Close() }()
 	a, b := kvTable(), kvTable()
@@ -236,7 +245,7 @@ func TestHistoryPerTableRetention(t *testing.T) {
 	// interleave the two tables day by day so that segments mix them
 	for d := 0; d < 30; d++ {
 		ageWrites(t, e, c, m, "long", 400, d, d+1)
-		c.t = c.t.Add(-day)
+		c.add(-day)
 		ageWrites(t, e, c, m, "short", 400, d, d+1)
 	}
 	e.addMark()
@@ -296,7 +305,7 @@ func copyDir(t *testing.T, src, dst string) {
 // history as the live engine.
 func TestHistoryCrashKeepsHistory(t *testing.T) {
 	dir := t.TempDir()
-	c := &fakeClock{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	const keys, ret = 600, 6 * day
 	e := openHist(t, dir, c, ret)
 	defer func() { e.Close() }()
@@ -331,7 +340,7 @@ func TestHistoryCrashKeepsHistory(t *testing.T) {
 
 func TestTimeSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	c := &fakeClock{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	e := openHist(t, dir, c, 30*day)
 	defer func() { e.Close() }()
 	if _, err := e.CreateTable(kvTable()); err != nil {
@@ -346,7 +355,7 @@ func TestTimeSnapshot(t *testing.T) {
 	n := int64(0)
 	for d := 0; d < 12; d++ {
 		for s := 0; s < 216; s++ {
-			c.t = c.t.Add(400 * time.Second)
+			c.add(400 * time.Second)
 			e.addMark()
 			n++
 			if _, err := e.Write([]WriteOp{{Table: "kv", Row: row("7", n)}, {Table: "kv", Row: row(fmt.Sprint(1000+n%50), n)}}); err != nil {
@@ -376,8 +385,13 @@ func TestTimeSnapshot(t *testing.T) {
 				}
 			}
 		}
-		if _, err := e.TimeSnapshot(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()); err == nil {
-			t.Fatal("a time before the log must fail")
+		// before the first commit the table did not exist: an empty snapshot
+		ts, err := e.TimeSnapshot(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano())
+		if err != nil || ts.Lo != 0 {
+			t.Fatalf("a time before the log: %+v %v", ts, err)
+		}
+		if r, _, err := e.GetAtTime("kv", "7", ts); err != nil || r != nil {
+			t.Fatalf("a row before the log: %v %v", r, err)
 		}
 	}
 	check()
@@ -388,4 +402,54 @@ func TestTimeSnapshot(t *testing.T) {
 	e.Close()
 	e = openHist(t, dir, c, 30*day) // without it from the first record of each segment (coarser)
 	check()
+}
+
+// TestHistoryDeletedKeys: a deleted key keeps its history for the retention
+// window, then it is gone entirely (the tombstone leaves the index), and
+// cleaning segments with records of such keys is fine.
+func TestHistoryDeletedKeys(t *testing.T) {
+	dir := t.TempDir()
+	c := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	const keys, ret = 300, 5 * day
+	e := openHist(t, dir, c, ret)
+	defer func() { e.Close() }()
+	if _, err := e.CreateTable(kvTable()); err != nil {
+		t.Fatal(err)
+	}
+	m := histModel{}
+	ageWrites(t, e, c, m, "kv", keys, 0, 6)
+	var del []WriteOp
+	for i := 0; i < keys; i += 2 {
+		del = append(del, WriteOp{Table: "kv", Key: fmt.Sprint(i)})
+	}
+	c.add(day)
+	e.MarkNow()
+	if _, err := e.Write(del); err != nil {
+		t.Fatal(err)
+	}
+	// still inside the window: deleted keys keep their versions, with the delete on top
+	gcAll(t, e)
+	h := histOf(t, e, "kv", "0")
+	if len(h) < 2 || !h[0].Deleted {
+		t.Fatalf("deleted key inside the window: %d versions, newest deleted=%v", len(h), len(h) > 0 && h[0].Deleted)
+	}
+	// 10 days later filler writes to other keys move the log on; the deleted keys disappear
+	for d := 0; d < 10; d++ {
+		c.add(day)
+		e.MarkNow()
+		var ops []WriteOp
+		for i := 1; i < keys; i += 2 {
+			ops = append(ops, WriteOp{Table: "kv", Row: row(fmt.Sprint(i), int64(100+d))})
+		}
+		if _, err := e.Write(ops); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gcAll(t, e)
+	if h := histOf(t, e, "kv", "0"); len(h) != 0 {
+		t.Fatalf("deleted key after the window: %d versions", len(h))
+	}
+	if h := histOf(t, e, "kv", "1"); len(h) < 5 {
+		t.Fatalf("live key: %d versions", len(h))
+	}
 }

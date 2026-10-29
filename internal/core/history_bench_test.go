@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"testing"
@@ -231,8 +232,8 @@ func TestHistBenchGC(t *testing.T) {
 	n, vers := envInt("HB_SIMS", 1500), envInt("HB_VERS", 200)
 	note := os.Getenv("HB_NOTE") == "1"
 	const window, steps = 60, 150
-	const seg = 1 << 20
-	c := &fakeClock{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	const seg = 2 << 20
+	c := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	dir := t.TempDir()
 	e, err := Open(Options{Dir: dir, SegmentSize: seg, NoCheckpoint: true, Logf: func(string, ...any) {}, Now: c.now,
 		GCRetention: window * day, GCMaxLiveRatio: 0.5, GCRateBytes: -1})
@@ -248,11 +249,13 @@ func TestHistBenchGC(t *testing.T) {
 	var user, userVers int64
 	scanned := int64(0)
 	var peakRemap int
+	var gcTime time.Duration
+	var gcLoads int64
 	logBytes := func() int64 { raw, _ := e.log.SegmentFileBytes(); return raw }
 	t.Logf("%d SIMs x %d versions per %d-day window = %d versions per window, %d per day", n, vers, window, n*vers, perStep)
 	t.Logf("%5s %12s %12s %10s %10s %9s %8s", "day", "user MB", "moved MB", "log MB", "segments", "remap", "marks")
 	for step := 1; step <= steps; step++ {
-		c.t = c.t.Add(day)
+		c.add(day)
 		e.MarkNow()
 		w0 := e.log.WritePos()
 		var ops []WriteOp
@@ -279,7 +282,12 @@ func TestHistBenchGC(t *testing.T) {
 		}
 		w1 := e.log.WritePos()
 		user += int64(w1.Seg-w0.Seg)*seg + w1.Off - w0.Off
+		if step%3 != 0 {
+			continue
+		}
 		before := e.Stats.GCReclaimedSegs.Load()
+		tg := time.Now()
+		loads0 := e.Stats.DiskLoads.Load()
 		for {
 			k, err := e.GCRound()
 			if err != nil {
@@ -289,6 +297,8 @@ func TestHistBenchGC(t *testing.T) {
 				break
 			}
 		}
+		gcTime += time.Since(tg)
+		gcLoads += e.Stats.DiskLoads.Load() - loads0
 		scanned += (e.Stats.GCReclaimedSegs.Load() - before) * seg
 		if r := e.GCStats().Remapped; r > peakRemap {
 			peakRemap = r
@@ -304,6 +314,7 @@ func TestHistBenchGC(t *testing.T) {
 	t.Logf("user bytes %.1f MB (%.1f B/version), GC relocated %.1f MB = %.1f%% of user bytes, GC cleaned segments worth %.1f MB (read %.2fx user bytes)",
 		float64(user)/1e6, float64(user)/float64(userVers), float64(st.MovedBytes)/1e6, 100*float64(st.MovedBytes)/float64(user),
 		float64(scanned)/1e6, float64(scanned)/float64(user))
+	t.Logf("GC wall time %v, %d record loads from chain walks (%.1f per version written)", gcTime.Round(time.Millisecond), gcLoads, float64(gcLoads)/float64(userVers))
 	ideal := float64(user) * window / steps
 	t.Logf("log on disk at the end %.1f MB; the %d-day window holds about %.1f MB of history -> %.2fx; peak remap %d entries (%.1f%% of SIMs)",
 		float64(logBytes())/1e6, window, ideal/1e6, float64(logBytes())/ideal, peakRemap, 100*float64(peakRemap)/float64(n))
@@ -331,4 +342,23 @@ func fileSize(p string) int64 {
 		return fi.Size()
 	}
 	return 0
+}
+
+// TestHistBenchRemapMem: what one entry of the in-memory relocation table costs.
+func TestHistBenchRemapMem(t *testing.T) {
+	if os.Getenv("STASK_HISTBENCH") == "" {
+		t.Skip("set STASK_HISTBENCH=1")
+	}
+	var a, b runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&a)
+	const n = 2_000_000
+	m := make(map[wal.Loc]remapEntry)
+	for i := 0; i < n; i++ {
+		m[wal.Loc{Ok: true, Seg: uint32(i / 100000), Off: uint32(i * 977), Idx: uint16(i % 4000)}] = remapEntry{to: wal.Loc{Ok: true, Seg: 9, Off: uint32(i), Idx: 1}, sup: uint64(i)}
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&b)
+	t.Logf("relocation table: %.0f bytes per entry in memory (%d entries), %d bytes per entry in gc-remap.bin", float64(b.HeapAlloc-a.HeapAlloc)/n, len(m), remapRec)
+	runtime.KeepAlive(m)
 }

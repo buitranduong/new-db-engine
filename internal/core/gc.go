@@ -690,6 +690,7 @@ func (e *Engine) drain(seg uint32) error {
 		return nil
 	}
 	var ferr error
+	memo := &chainMemo{m: map[memoKey]*memoChain{}}
 	_, _, err := e.log.Scan(seg, 0, -1, func(rec *wal.Record) error {
 		select {
 		case <-e.stop:
@@ -719,7 +720,7 @@ func (e *Engine) drain(seg uint32) error {
 				m.head = head
 				m.drop = head.Deleted && head.LSN <= h
 			} else {
-				sup, ident, needed := e.supersededAfter(head, p, h)
+				sup, ident, needed := memo.superseded(e, t, key, head, p, h)
 				if !needed {
 					continue // garbage
 				}

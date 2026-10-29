@@ -217,6 +217,11 @@ func checks() []check {
 		{"extended_protocol_param", "base", "05", []string{"SELECT $1::bigint + 1"}, "val:2", []any{int64(1)}},
 		{"listen", "base", "10", []string{"LISTEN cc_ch"}, "ok", nil},
 		{"bool_cast_text", "base", "PG compat", []string{"SELECT true::text"}, "val:true", nil},
+		// ---- history (nhánh history, docs/15 §7)
+		{"history_retention_ddl", "H1", "05 §21", []string{T, "ALTER TABLE cc_t SET (history_retention = '60 days')"}, "ok", nil},
+		{"history_function", "H3", "05 §21", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "UPDATE cc_t SET v='b' WHERE id=1", "SELECT count(*) FROM stask_history('cc_t', 1)"}, "val:2", nil},
+		{"history_first_version", "H3", "05 §21", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "UPDATE cc_t SET v='b' WHERE id=1", "SELECT v FROM stask_history('cc_t', 1) ORDER BY _lsn LIMIT 1"}, "val:a", nil},
+		{"as_of_system_time", "H3", "05 §21", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "UPDATE cc_t SET v='b' WHERE id=1", "SELECT v FROM cc_t FOR SYSTEM_TIME AS OF now() WHERE id=1"}, "val:b", nil},
 		// ---- not claimed anywhere: discover gaps
 		{"unclaimed_cte", "-", "-", []string{"WITH x AS (SELECT 1 AS a) SELECT a FROM x"}, "val:1", nil},
 		{"unclaimed_window", "-", "-", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "SELECT row_number() OVER (ORDER BY id) FROM cc_t"}, "val:1", nil},

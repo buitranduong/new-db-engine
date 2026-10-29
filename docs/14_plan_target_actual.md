@@ -68,8 +68,25 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 | P3.1 | Index chính trên đĩa | Dữ liệu 3× RAM | Index nằm hoàn toàn trong RAM. Quan sát: 100M dòng → RSS ~19,4 GB, heap 6,8–9,1 GB (docs/08) | Chưa làm |
 | P3.2 | View cột nén trên đĩa | Khởi động 100M <20 s; ≤1,5× ClickHouse | Dựng lại view ở 100M mất 182 s (docs/08 §7 #3) | Chưa làm |
 | P3.3 | Checkpoint tăng dần, GC phân tầng | Checkpoint 100M <5 s | Chưa làm | Chưa làm |
-| P3.4 | Time-series, search, AS OF từ SQL | Có cú pháp, test, sqlcorpus | Chỉ qua HTTP | Chưa làm |
+| P3.4 | Time-series, search, AS OF từ SQL | Có cú pháp, test, sqlcorpus | **AS OF và lịch sử từ SQL: xong trên nhánh `history`** (`FOR SYSTEM_TIME AS OF`, `AS OF TIMESTAMP/LSN`, `stask_history`; mục PH bên dưới, docs/05 §21). Time-series và search: chỉ qua HTTP | Một phần (AS OF xong, nhánh `history`) |
 | P3.5 | ARRAY JOIN, FINAL, SAMPLE | Đối chiếu ClickHouse 100% | Chấp nhận nhưng bỏ qua | Chưa làm |
+
+### PH Lịch sử theo thời gian cho bài toán SIM (docs/15 §0, §7; nhánh `history`)
+
+Bằng chứng ở cột Thực tế là test chạy được hoặc phép đo `STASK_HISTBENCH=1 go test -p 1 -run 'TestHistBench' -v ./internal/core`. Mọi số đo là cỡ nhỏ trên dữ liệu tổng hợp; docs/15 §7.7 nói rõ chúng không suy ra được gì. Đã chạy `go test -p 1 ./internal/...` (tất cả qua) và `go test -race` cho các test lịch sử, GC, replica, wal. Chạy toàn bộ lần đầu bắt được hai lỗi của chính nhánh này (con trỏ nil trong `chainMemo` khi head của khoá không còn; kỳ vọng sai của một test), đã sửa và có test `TestHistoryDeletedKeys` cho lỗi đầu.
+
+| Task | Kế hoạch | Mục tiêu (xong khi) | Thực tế | Trạng thái |
+|---|---|---|---|---|
+| H1 | Giữ lịch sử theo thời gian, theo bảng hoặc toàn cục | GC giữ mọi phiên bản trong hạn, bỏ phần ngoài hạn; xoá segment chỉ khi mọi bản ghi hết hạn và không là head, hoặc đã chép sang; đúng qua restart/checkpoint | `ALTER TABLE t SET (history_retention='60 days')`, `CREATE TABLE ... WITH (...)`, `-history-retention 60d`. `TestHistoryRetentionWindow` (mô hình từng khoá: mọi phiên bản trong cửa sổ và bản hiện hành tại ngưỡng còn đủ, qua 2 lần restart và 3 ngày không ghi; 6–10% còn dư do xoá theo segment), `TestHistoryPerTableRetention` (bảng 2 ngày và 15 ngày xen kẽ trong cùng segment). **Tìm thấy và sửa 3 lỗi của thiết kế cũ** khiến `-history-retention` vô nghĩa với 60 ngày: mốc thời gian mất khi khởi động, remap mất khi khởi động, replica cắt lịch sử (docs/15 §7.2) | Xong-có-bằng-chứng (cỡ nhỏ, đồng hồ giả) |
+| H2 | Không mất lịch sử khi crash | Sau crash ở bất kỳ điểm nào của GC, lịch sử giữ nguyên | `TestHistoryCrashKeepsHistory`: sau mỗi vòng GC chụp thư mục khi engine còn mở (không Close), mở bản chụp, so lịch sử mọi khoá; bẻ gãy khi bỏ `persistHistoryState` (test đỏ). `TestPowerLossDuringGC` hiện có vẫn qua. **Chưa** có test cắt điện thật giữa `persistHistoryState` và xoá segment ngoài việc suy luận thứ tự (fsync trước `Remove`) | Xong-chưa-kiểm (thiếu cắt điện giữa chừng) |
+| H3 | Truy cập lịch sử từ SQL | `FOR SYSTEM_TIME AS OF`, `AS OF TIMESTAMP`, `AS OF LSN`, hàm trả mọi phiên bản; ghi tài liệu | Cú pháp ở docs/05 §21; `TestSQLAsOf`, `TestTimeSnapshot` (AS OF TIMESTAMP đúng từng commit, kể cả khi mất file mốc), 4 probe `claimcheck` `history_*`/`as_of_system_time` qua pgwire thật (4/4). Không có bảng ảo `t_history` (lý do ở docs/05 §21). Đọc điểm đi chuỗi một khoá; không có khoá thì quét cả bảng | Xong-có-bằng-chứng |
+| H4 | Replica | Replica đọc cùng lịch sử với leader | `TestReplicaHistory` (replica đang theo, replica khởi động lại, replica tạo sau khi leader đã chép phiên bản cũ; AS OF TIMESTAMP cả bảng khớp leader); bẻ gãy khi bỏ `noteMoved` hoặc bỏ gửi file trạng thái trong base backup. Replica phải chạy cùng `-history-retention` | Xong-có-bằng-chứng |
+| H5 | Chi phí: ghi thêm của GC, dung lượng theo số phiên bản, độ trễ đọc chuỗi 100–300 phiên bản | Có số đo | docs/15 §7.4: 60,3 B/phiên bản; nén zstd 2,3–2,8×; GC chép 2,7% byte ghi nhưng **đọc chuỗi 8,6 lần mỗi phiên bản ghi (4 phút 42 s GC cho 75 MB)**; chuỗi 100/200/300 phiên bản: nguội 22–117 ms, ấm 0,6–45 ms (bảng §7.4). `wal.ReadOpMeta` nhanh hơn `ReadRecord` 1,7–3× (`TestReadOpMeta` kiểm bằng so với bộ giải mã đầy đủ) | Xong (cỡ nhỏ) |
+| H6 | Đối chiếu bảng lịch sử riêng / partition theo ngày trong PG | Bảng ưu/nhược | docs/15 §7.6. **Là phân tích, không phải phép đo**: chưa có phép đo PG tương ứng (cần máy riêng và dữ liệu thật) | Xong (văn bản) |
+| H7 | Mô hình dung lượng 40M × 5 và × 200 | Có số kèm giới hạn suy diễn | docs/15 §7.7: ×5 ≈ 10–34 GB, ×200 ≈ 230–770 GB sau nén (b = 60–200 B, giả định cho hàng thật) | Xong (suy diễn từ phép đo cỡ nhỏ) |
+| H8 | GC theo kịp ở ×200 | GC xử lý ≥ tốc độ ghi ở 40M khoá × 200 phiên bản | **Không đạt, và thiết kế log hiện tại không phù hợp**: chi phí dọn ∝ độ sâu chuỗi (200 lần đọc mỗi khoá có mặt trong segment), ước ~3×10⁵ lần đọc ngẫu nhiên/s liên tục ở 1.543 phiên bản/s (tính từ số đo, chưa chạy ở quy mô đó). Hướng sửa: bảng `base[khoá]` theo con trỏ horizon (docs/15 §7.5) | Chưa làm |
+| H9 | Remap trên đĩa, tra theo khoá | RAM không tỉ lệ với số khoá | Hiện nạp hết vào RAM: 100 B mỗi mục, 1–3 mục mỗi khoá ở trạng thái dừng (đo) | Chưa làm |
+| H10 | Bảng ảo `t_history` / `BETWEEN ... AND` kiểu SQL:2011 / `AS OF` cho view | — | Chưa làm (cần đẩy điều kiện xuống engine) | Chưa làm |
 
 ### P4 Hệ sinh thái
 
@@ -176,3 +193,14 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 29 of 46 probes pass
 
 Ghi chú: `bool_cast_text`, `statement_timeout`, `pg_stat_activity`, `create_trigger` (cú pháp PG) ở trên là chênh lệch thật so với PostgreSQL; các dòng `unclaimed_*` là tính năng không tuyên bố mà vẫn chạy (CTE, window, `string_agg`, `generate_series`).
+
+## Phụ lục B. Probe `claimcheck` thêm bởi nhánh `history` (chạy trên staskd của nhánh, `-gc -history-retention 60d`)
+
+| id | task | doc | want | actual | verdict |
+|---|---|---|---|---|---|
+| history_retention_ddl | H1 | 05 §21 | `ok` | `ok` | **PASS** |
+| history_function | H3 | 05 §21 | `val:2` | `2` | **PASS** |
+| history_first_version | H3 | 05 §21 | `val:a` | `a` | **PASS** |
+| as_of_system_time | H3 | 05 §21 | `val:b` | `b` | **PASS** |
+
+Trên nhánh `history` (gốc là `main` @ 9486a43) tổng số là 35/50 probe qua: 31/46 probe cũ (cùng kết quả như `main`) và cả 4 probe mới. Phụ lục A chưa được cập nhật vì chưa gộp.

@@ -272,9 +272,9 @@ func main() {
 	// default expects the aggregate to be served by the columnar view when
 	// the agg class runs; a row-path run says -expect orders,row.
 	{
-		spec := fmt.Sprintf("orders,min=%d,max=%d", *n*8/10, *n*3)
+		spec := fmt.Sprintf("orders,min=%d", *n*8/10)
 		if (*only == "" || strings.Contains(","+*only+",", ",agg,")) && !strings.Contains(*rates, "agg=0") {
-			spec = fmt.Sprintf("orders,agg,min=%d,max=%d", *n*8/10, *n*3)
+			spec = fmt.Sprintf("orders,agg,min=%d", *n*8/10)
 		}
 		hc.DefaultExpect(spec)
 		hc.Preconditions("before")

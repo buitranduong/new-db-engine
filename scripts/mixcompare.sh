@@ -131,3 +131,6 @@ for run in $(seq 1 ${RUNS:-1}); do
   measure pg-$run "$PGURL" pgcpu "$AURL"
   sudo -E bench/pg/pg.sh stop > /dev/null 2>&1
 done
+# a result with valid:false means the run measured the wrong thing (docs/14)
+rc=0; for f in $OUT/*.json; do [ -e "$f" ] && { bench_valid "$f" || rc=1; }; done
+exit $rc

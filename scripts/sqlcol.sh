@@ -29,4 +29,5 @@ REPORT=$OUT
 # a result with valid:false (or a tool exit code 3) means the run measured the wrong thing
 rc=0; for f in results/sqlcol-load.json results/sqlcol-sql-*.json results/sqlcol-col-*.json; do [ -e "$f" ] && { bench_valid "$f" || rc=1; }; done
 [ $rc = 0 ] || echo "RESULT INVALID: see invalid_reasons in the json above" | tee -a ${REPORT:-/dev/stderr}
+exit $rc
 

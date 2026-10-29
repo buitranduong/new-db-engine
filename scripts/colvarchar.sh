@@ -22,3 +22,4 @@ echo ALLDONE
 # a result with valid:false (or a tool exit code 3) means the run measured the wrong thing
 rc=0; for f in $OUT/stask-vc-load-*.json $OUT/stask-col-vc-*.json $OUT/stask-vc-[0-9].json; do [ -e "$f" ] && { bench_valid "$f" || rc=1; }; done
 [ $rc = 0 ] || echo "RESULT INVALID: see invalid_reasons in the json above" | tee -a ${REPORT:-/dev/stderr}
+exit $rc

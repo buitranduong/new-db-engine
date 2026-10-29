@@ -183,6 +183,7 @@ type tcluster struct {
 
 func freeBase(t *testing.T, need int) int {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(os.Getpid())))
+	var lastErr error
 	for try := 0; try < 200; try++ {
 		base := 21000 + rng.Intn(980-need)
 		var ls []net.Listener
@@ -190,6 +191,7 @@ func freeBase(t *testing.T, need int) int {
 		for i := 0; i < need; i++ {
 			l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+i))
 			if err != nil {
+				lastErr = err
 				ok = false
 				break
 			}
@@ -202,7 +204,7 @@ func freeBase(t *testing.T, need int) int {
 			return base
 		}
 	}
-	t.Fatal("no free port block in 21000-21999")
+	t.Fatalf("no free port block in 21000-21999 (last listen error: %v)", lastErr)
 	return 0
 }
 

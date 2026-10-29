@@ -275,3 +275,21 @@ func TestSubstrLagContract(t *testing.T) {
 		t.Fatalf("strong after catch-up: %v %s", res.Rows, lastPlan(r))
 	}
 }
+
+// The allocation-free matcher for % patterns agrees with the general one.
+func TestLikeSimple(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	gen := func(alpha string, n int) string {
+		var b strings.Builder
+		for i := rng.Intn(n); i > 0; i-- {
+			b.WriteByte(alpha[rng.Intn(len(alpha))])
+		}
+		return b.String()
+	}
+	for i := 0; i < 200000; i++ {
+		s, p := gen("ab", 8), gen("ab%", 7)
+		if likeGeneral(s, p) != likeSimple(s, p) {
+			t.Fatalf("LIKE %q on %q: general %v simple %v", p, s, likeGeneral(s, p), likeSimple(s, p))
+		}
+	}
+}

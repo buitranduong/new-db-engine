@@ -519,7 +519,7 @@ func PrettyFlags(s string) uint8 {
 	if n < 3 {
 		return 0
 	}
-	t := d[6-n:6] // the last n (<=6) digits
+	t := d[6-n : 6] // the last n (<=6) digits
 	var f uint8
 	l := len(t)
 	if t[l-1] == t[l-2] && t[l-2] == t[l-3] {

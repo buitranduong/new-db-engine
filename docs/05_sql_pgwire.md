@@ -771,3 +771,45 @@ Thân là các câu `INSERT`, `UPDATE`, `DELETE`, `SELECT` (kể cả `WITH`); `
 **Chưa làm.** `UPDATE OF col`, trigger mức câu lệnh, `INSTEAD OF` (cả trên view), `REFERENCING`, `RAISE(IGNORE)`, `CREATE FUNCTION`/`EXECUTE FUNCTION` (P7.2), trigger `DEFERRABLE`, `ALTER TABLE ... DISABLE TRIGGER`.
 
 **Kiểm chứng.** `internal/sql/trigger_test.go` (AFTER và mọi dạng ghi, BEFORE `SET`/`RAISE`, rollback, đệ quy, DDL và lỗi, tham số, khôi phục qua replay và checkpoint, CDC, COPY, catalog), `internal/repl/trigger_repl_test.go` (replica), `BenchmarkWriteNoTrigger`/`BenchmarkWriteTrigger`.
+
+## 21. Tìm kiếm khớp mẫu trong SQL: chỉ mục trigram (nhánh `search`, 2026-10-29)
+
+**Mục đích.** Bài toán tra cứu số SIM (docs/15): tiền tố, đuôi, chứa, số đẹp, kèm bộ lọc và đếm theo nhóm, trước đây phải đẩy sang Elasticsearch. Nay chạy trong SQL, trên một view dẫn xuất từ cùng log.
+
+**Khai báo (tương thích PostgreSQL).**
+
+```sql
+CREATE INDEX sim_num ON sim USING gin (num gin_trgm_ops);   -- cú pháp pg_trgm; cũng nhận gist/gist_trgm_ops
+CREATE INDEX sim_num ON sim USING search (num);             -- hoặc USING trigram (num)
+CREATE TABLE sim (...) WITH (trigram = 'num');              -- hoặc thuộc tính bảng
+DROP INDEX sim_num;
+```
+
+Mọi `USING` khác (btree) được trả lại cho trình phân tích CREATE INDEX khác (nhánh `index`): `createSubstrIndex` chỉ nhận khi phương thức là gin/gist/search/trigram và **không tiêu thụ gì** nếu không phải. Khi gộp với nhánh `index`, `DROP INDEX name` của hai nhánh cần hợp nhất (ở đây `dropSubstrIndex` chỉ biết chỉ mục trigram; nếu không thấy tên thì báo 42704; nhánh `index` phải gọi nó trước và chuyển tiếp phần còn lại). Khai báo lưu trong `schema.Table.Substr` (một trường mới) và đi theo DDL qua WAL; `CREATE INDEX` trên bảng đã có dữ liệu dựng lại view từ ảnh chụp tại LSN của DDL (2M dòng: 10,5 s). Không cho DROP/RENAME cột đang có chỉ mục (RENAME cập nhật khai báo).
+
+**Câu truy vấn dùng chỉ mục** (là các điều kiện AND ở mức cao nhất của WHERE, trên cột có chỉ mục, hằng số hoặc tham số; chỉ SELECT một bảng, ngoài giao dịch tường minh):
+
+| Dạng | Cách dùng |
+|---|---|
+| `col LIKE/ILIKE 'mẫu'` | trigram của các đoạn chữ giữa `%` và `_` (có escape `\`), giao các danh sách; mẫu không có đoạn ≥3 ký tự (`'%88'`) thì view tự duyệt giá trị trong bộ nhớ |
+| `col ~ 're'`, `~*` | các chuỗi ký tự bắt buộc rút từ cây regex (`regexp/syntax`), view kiểm bằng chính regexp của Go |
+| `sim_pretty(col, 'quad'\|'triple'\|'asc'\|'repeat'\|'palin')` | cờ lớp số đẹp lưu theo từng giá trị: tứ quý (4 số cuối giống nhau), tam hoa (3), tiến (4 số cuối tăng 1: 1234), lặp (`xyxy`, x≠y, hoặc `xyzxyz`), gánh (`abba` a≠b hoặc `abccba`). Là hàm SQL thường, nên cũng chạy được khi quét |
+| `NOT LIKE`, `!~`, `OR` | không dùng chỉ mục (quét) |
+
+Ghép nhiều điều kiện trên cùng cột thì gộp (giao trigram, AND kiểm tra). Bộ lọc khác (`carrier`, `status`, khoảng giá), `GROUP BY` (facet), `ORDER BY`, `LIMIT` do bộ thực thi thường xử lý trên các dòng ứng viên; mỗi ứng viên được đọc tại snapshot của câu lệnh và **toàn bộ WHERE được tính lại**, nên không bao giờ trả dòng không khớp hay giá trị cũ. `LIMIT` không `ORDER BY` đọc ứng viên theo lô và dừng sớm.
+
+**Hợp đồng nhất quán** (`internal/planner/substr.go`, dùng lại `choose`):
+
+```sql
+SET stask.consistency = 'strong' | 'bounded' (mặc định) | 'session' | 'eventual';
+SET stask.max_lag_ms = 1000;      -- ngưỡng cho bounded
+```
+
+- `strong`: view phải tới LSN bền (chờ ≤2 s) rồi mới trả lời, không kịp thì **rơi về quét lõi**.
+- `bounded`: view trễ ≤ ngưỡng thì dùng ngay; trễ hơn thì chờ tối đa ngưỡng, không kịp thì quét lõi. Trong ngưỡng, dòng mới ghi có thể chưa thấy (đã công bố độ trễ); dòng đã sửa/xoá không bao giờ hiện giá trị cũ vì mỗi ứng viên đọc lại từ lõi.
+- `session`: view phải tới `max(snapshot, stask.min_lsn)`. `eventual`: dùng nguyên trạng.
+- Có tồn tại khoảng "mất dòng mới" duy nhất: dòng mới/được sửa thành khớp mà view chưa nhận, trong ngưỡng bounded hoặc ở eventual. Với strong thì không.
+
+**Quan sát.** `EXPLAIN SELECT ...` (một bảng) trả `Trigram Scan on t using idx`, điều kiện, chế độ và dòng chi tiết: `engine=substr|core mode= applied_lsn= view_lag_ms= waited_ms= reason=`. Sau mỗi SELECT có chỉ mục: `SHOW stask.last_plan` cho cùng nội dung (kể cả khi đã rơi về quét: `Seq Scan on t (trigram index .. not used) engine=core .. reason="view lag exceeds .."`). `/v1/views` liệt kê thêm view `substr` với applied/lag.
+
+**Giới hạn.** Bộ nhớ: giá trị và danh sách trigram nằm trong RAM (đo: khoảng 145 MB heap cho 1M số 10 chữ số, tức 2M ≈ 290 MB; ngoại suy tuyến tính 50M ≈ 7 GB, chưa đo ở cỡ đó). Mỗi UPDATE sinh mã tài liệu mới; danh sách được dựng lại khi chết > sống (≥100k) dưới khoá bảng. Mẫu <3 ký tự: duyệt toàn bộ giá trị trong view (nhanh hơn quét lõi nhưng chậm hơn pg_trgm). Không có `search()`/`@@` (BM25) trong SQL, không có chỉ mục btree cho tiền tố trên nhánh này, không `EXPLAIN ANALYZE` thật (chỉ kế hoạch), không dùng trong JOIN/UPDATE/DELETE. Chỉ mục trigram không bảo đảm duy nhất và không có thứ tự.

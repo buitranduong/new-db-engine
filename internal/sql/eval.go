@@ -632,6 +632,13 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 
 // likeMatch implements SQL LIKE with % and _ and backslash escapes.
 func likeMatch(s, p string) bool {
+	if !strings.ContainsAny(p, "_\\") {
+		return likeSimple(s, p) // % only: no recursion, no allocation
+	}
+	return likeGeneral(s, p)
+}
+
+func likeGeneral(s, p string) bool {
 	sr, pr := []rune(s), []rune(p)
 	var m func(i, j int) bool
 	memo := map[[2]int]bool{}

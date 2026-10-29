@@ -356,31 +356,43 @@ func regexGrams(pat string, icase bool) []uint64 {
 	return dedupeGrams(all)
 }
 
-// fastLike returns an exact matcher for patterns with only % wildcards.
-func fastLike(p string) func(string) bool {
-	if strings.ContainsAny(p, "_\\") {
-		return func(s string) bool { return likeMatch(s, p) }
+// likeSimple is likeMatch for a pattern with % wildcards only (no _ and no
+// backslash): prefix, suffix and ordered substrings, without allocating.
+func likeSimple(s, p string) bool {
+	i := strings.IndexByte(p, '%')
+	if i < 0 {
+		return s == p
 	}
-	parts := strings.Split(p, "%")
-	if len(parts) == 1 {
-		return func(s string) bool { return s == p }
+	if !strings.HasPrefix(s, p[:i]) {
+		return false
 	}
-	first, last := parts[0], parts[len(parts)-1]
-	mid := parts[1 : len(parts)-1]
-	return func(s string) bool {
-		if len(s) < len(first)+len(last) || !strings.HasPrefix(s, first) || !strings.HasSuffix(s, last) {
-			return false
+	s, p = s[i:], p[i:] // p starts with %
+	j := strings.LastIndexByte(p, '%')
+	last := p[j+1:]
+	if len(s) < len(last) || !strings.HasSuffix(s, last) {
+		return false
+	}
+	s, p = s[:len(s)-len(last)], p[:j+1]
+	for len(p) > 0 { // p = %m1%m2%...%
+		p = p[1:]
+		k := strings.IndexByte(p, '%')
+		if k < 0 {
+			return true
 		}
-		s = s[len(first) : len(s)-len(last)]
-		for _, m := range mid {
-			i := strings.Index(s, m)
-			if i < 0 {
+		if k > 0 {
+			x := strings.Index(s, p[:k])
+			if x < 0 {
 				return false
 			}
-			s = s[i+len(m):]
+			s = s[x+k:]
 		}
-		return true
+		p = p[k:]
 	}
+	return true
+}
+
+func fastLike(p string) func(string) bool {
+	return func(s string) bool { return likeMatch(s, p) }
 }
 
 // substrPrepare looks for a usable pattern predicate on an indexed column
@@ -691,3 +703,7 @@ func (s *Session) execSubstr(st Stmt) (*Result, error) {
 	}
 	return res, err
 }
+
+// PlanNote is the plan of the session's last statement that considered a
+// trigram index (SHOW stask.last_plan).
+func (s *Session) PlanNote() string { return s.vars[LastPlanVar] }

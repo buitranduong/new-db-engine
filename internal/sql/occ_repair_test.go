@@ -267,6 +267,10 @@ func TestRepairConstraintsAfterReapply(t *testing.T) {
 func TestRepairGivesUp(t *testing.T) {
 	lowRepairMin(t, 16)
 	s, s2 := kvSetup(t, 100)
+	// the hook writes from the statement's own goroutine, which the gate would block
+	oldRound := repairGateRound
+	repairGateRound = 1 << 30
+	t.Cleanup(func() { repairGateRound = oldRound })
 	n := 0
 	var inHook atomic.Bool
 	occTestHook = func(round int) {

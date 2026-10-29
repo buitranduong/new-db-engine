@@ -34,14 +34,20 @@ import (
 // instead of rerun (smaller ones are cheap to rerun).
 var repairMinRows = 256
 
+// The gate (core.WriteGate): from round repairGateRound, or after
+// repairGateAfter of repairing, the table's other writers wait until the
+// statement commits, at most repairGateHold.
+var (
+	repairGateRound = 3
+	repairGateAfter = 3 * time.Second
+	repairGateHold  = 20 * time.Second
+)
+
 const (
-	repairMaxRounds   = 64               // rounds of one statement
-	repairStallRounds = 8                // rounds in a row without fewer conflicts
-	repairChunk       = 4096             // keys recomputed by one fresh snapshot
-	bigStmtRetries    = 8                // whole reruns of a statement that is repaired
-	repairGateRound   = 3                // from this round on the table's other writers wait (core.WriteGate)
-	repairGateAfter   = 3 * time.Second  // ... or when the statement has been repairing this long
-	repairGateHold    = 20 * time.Second // until the statement commits, at most this long
+	repairMaxRounds   = 64   // rounds of one statement
+	repairStallRounds = 8    // rounds in a row without fewer conflicts
+	repairChunk       = 4096 // keys recomputed by one fresh snapshot
+	bigStmtRetries    = 8    // whole reruns of a statement that is repaired
 )
 
 // occTestHook, in tests, runs before every commit attempt of a repaired statement.

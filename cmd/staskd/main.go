@@ -42,6 +42,8 @@ func main() {
 	compressKeep := flag.Int("compress-keep-raw", 1, "newest sealed log segments left uncompressed")
 	compressCache := flag.Int64("compress-cache", 64, "MB of decompressed blocks cached for reads of compressed segments")
 	slotMaxLag := flag.Int64("slot-max-lag-mb", 0, "invalidate a CDC slot that holds back more log than this, as PostgreSQL's max_slot_wal_keep_size (0 = no limit)")
+	viewEvery := flag.Duration("view-save-every", 10*time.Minute, "save the columnar view to <dir>/columnar.view this often while data changes, and at shutdown, so a start loads it and replays only the log after it (0 = default, negative = only at shutdown)")
+	noViewFile := flag.Bool("no-view-file", false, "do not save or load the columnar view file: rebuild it from the data at every start")
 	colPack := flag.Bool("columnar-pack", true, "store full chunks of integer columns of columnar views in 1, 2 or 4 bytes per value (frame of reference); false keeps 8 (4 for dictionary codes)")
 	preZero := flag.Bool("prezero", true, "write zeros into log segments ahead of use: fdatasync then needs no extent conversion (about half the commit latency) at the cost of writing the log twice")
 	zeroRate := flag.Int64("zero-rate-mb", 150, "cap for background zeroing (MB/s)")
@@ -225,7 +227,7 @@ func main() {
 	proj.PackColumns = *colPack
 	t0 := time.Now()
 	var fault *server.Fault
-	opts := core.Options{Dir: *dir, SegmentSize: *seg << 20, MaxBatch: *batch,
+	opts := core.Options{ViewSaveEvery: *viewEvery, NoViewFile: *noViewFile, Dir: *dir, SegmentSize: *seg << 20, MaxBatch: *batch,
 		CheckpointMinBytes: *ckptMin << 20, NoCheckpoint: *noCkpt, PreZero: *preZero, ZeroRate: *zeroRate << 20,
 		GC: *gc, GCRetention: *gcRetention, GCInterval: *gcInterval, GCRateBytes: *gcRate << 20, GCMaxLiveRatio: *gcLive, CommitWait: *commitWait,
 		Compression: codec, CompressKeepRaw: *compressKeep, SlotMaxLagBytes: *slotMaxLag << 20, MaxSnapshotAge: *maxSnapAge,

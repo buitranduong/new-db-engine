@@ -34,6 +34,8 @@ Mọi trường JSON dùng UTF-8, theo `encoding/json` của Go. Thứ tự trư
 <dir>/wal/NNNNNNNN.walz.tmp         nén dở dang: xoá khi mở
 <dir>/ckpt/ckpt-LLLLLLLLLLLLLLLLLLLL.ckpt   checkpoint, L = StartLSN, 20 chữ số
 <dir>/ckpt/ckpt.tmp                 checkpoint đang ghi: bỏ qua
+<dir>/columnar.view                 view cột đã nén, gắn LSN (mục 7a)
+<dir>/columnar.view.tmp             view đang ghi: bỏ qua, ghi đè ở lần lưu sau
 <dir>/replica.json                  chỉ có trên replica (mục 8)
 <dir>/slots/<tên>.json              slot CDC (mục 9), chỉ có trên leader
 <dir>/cdc.json                      publication và replica identity (mục 9), chỉ có trên leader
@@ -195,6 +197,33 @@ entry      = uvarint klen | key | uvarint zigzag(lsn − lsnTrước) | uvarint 
   - vì đầu của một khoá chỉ tiến, kết quả bằng trạng thái ở cuối log.
 - Ghi checkpoint: ghi ra `ckpt.tmp`, fsync, đổi tên thành tên cuối, fsync thư mục, rồi xoá checkpoint cũ.
 - Đọc phiên bản cũ: v1 không delta và không nén; v2 giống v3 nhưng mỗi entry có thêm `varint ts` sau lsn, và `flags` bit 1 báo có thêm 3 uvarint `prev`. Bản Rust chỉ cần đọc v3, trừ khi phải mở dữ liệu cũ.
+
+## 7a. Tệp view cột (`columnar.view`)
+
+View cột là dữ liệu dẫn xuất từ log; tệp này chỉ là bản lưu để khỏi dựng lại. Bản Rust không bắt buộc đọc nó: bỏ qua tệp thì dựng lại từ dữ liệu, kết quả như nhau.
+
+```
+"STCV" u32 version(=1)
+section*   : u8 tag | u64 len | payload | u32 crc32c(tag, len, payload)
+tag 1 header : u64 lsn | u32 seg | i64 off | u32 ntables
+tag 2 table  : u32 id | u64 rows | u32 ncols | ncols x (i32 num | u8 type | u8 flags)
+               flags: bit 0 = cột được lưu, bit 1 = cột TEXT
+tag 3 column : u32 chỉ số cột | u8 hasNulls [u32 len | zstd(bitmap u64 LE)]
+               [chuỗi/TEXT: u32 nvals | u32 len | zstd(uvarint len | bytes)*]
+               u32 nblocks | (u32 len | block)*
+tag 4 keys   : (bảng có khoá không phải số nguyên) u32 nblocks | (u32 len | zstd(uvarint len | bytes)*)*
+tag 5 end    : u32 ntables
+```
+
+- Thứ tự: header, rồi với mỗi bảng (id tăng dần) một section 2, các section 3 theo thứ tự cột, section 4 nếu có; cuối cùng section 5. Thiếu section 5 hoặc sai crc nghĩa là tệp hỏng.
+- `(lsn, seg:off)` là trạng thái mà view phản ánh và vị trí log ngay sau LSN đó.
+- Chỉ ghi các dòng còn sống, đánh số lại từ 0. Mỗi block là giá trị của tối đa 65.536 dòng, nén độc lập. Block số nguyên/thời gian/bool/mã từ điển: `zstd(u8 kind | u8 bits | u32 n | i64 base | i64 aux | residual)`.
+  - kind 0 = frame-of-reference (`x − min`, base = min); 1 = delta (zigzag(x[i] − x[i−1]), base = x[0]); 2 = delta-of-delta (zigzag(d[i] − d[i−1]), base = x[0], aux = x[1] − x[0]).
+  - residual đóng gói từng bit ở độ rộng `bits` của giá trị lớn nhất (0 = hằng số, không có byte nào); trên 56 bit thì mỗi giá trị 8 byte. Chọn kind có `bits` nhỏ nhất, hoà thì kind nhỏ hơn.
+- Block số thực bắt đầu bằng một byte kind: 0 = các giá trị 8 byte thô rồi zstd; 1 = tách theo byte-plane rồi zstd; 2 = thập phân (`u32 scale`, rồi block số nguyên của `round(x·scale)`), chỉ dùng khi mọi giá trị đúng bằng `float64(k)/scale` theo từng bit (loại −0, NaN, Inf). Với kind 0/1 giữ cái nhỏ hơn.
+- Cột TEXT đã bị bỏ khỏi view vì quá 65.536 giá trị khác nhau (flags bit 0 = 0, bit 1 = 1) thì không có section 3.
+- Ghi: `columnar.view.tmp`, fsync, đổi tên, fsync thư mục. Sập giữa chừng thì còn nguyên tệp cũ hoặc tệp mới.
+- Điều kiện dùng khi mở (mọi điều kiện sai thì dựng lại từ dữ liệu, không lỗi): tệp đọc được trọn vẹn với mọi crc đúng; `lsn` không vượt LSN bền; segment `seg` còn; bản ghi đầu tiên tại `seg:off` có LSN ≤ `lsn+1`; tập bảng cột và, với mỗi bảng, số hiệu cột, kiểu cột đúng bằng schema hiện tại (ALTER/DROP sau lúc lưu làm tệp bị bỏ); không đang phục hồi từ archive hay đến một LSN/thời điểm đích. Sau khi nạp, chỉ phát lại log từ `seg:off`, bỏ bản ghi có LSN ≤ `lsn`.
 
 ## 8. Giao thức nhân bản (TCP)
 

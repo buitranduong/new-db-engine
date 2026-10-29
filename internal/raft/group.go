@@ -149,6 +149,41 @@ func (g *Group) Status() (role Role, term, leader uint64, lease bool) {
 	return role, term, leader, g.n.LeaseValid()
 }
 
+// Info is a consistent view of the node, for the caller's role logic.
+type Info struct {
+	Role                Role
+	Term, Leader        uint64
+	Commit, Applied     uint64
+	First, Last         uint64 // first index the log has, last index
+	TermStart           uint64 // leader: index of its no-op (committed => all earlier entries are)
+	Lease               bool
+	BaseIndex, BaseTerm uint64
+}
+
+func (g *Group) Info() Info {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	role, term, leader, commit := g.n.State()
+	b := g.n.Base()
+	return Info{Role: role, Term: term, Leader: leader, Commit: commit, Applied: g.n.Applied(),
+		First: g.n.FirstIndex(), Last: g.n.LastIndex(), TermStart: g.n.LeaderTermStart(), Lease: g.n.LeaseValid(),
+		BaseIndex: b.Index, BaseTerm: b.Term}
+}
+
+// Entry returns the log entry at index, if the node still has it.
+func (g *Group) Entry(i uint64) (Entry, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n.Entry(i)
+}
+
+// Compact drops the log up to and including index (which must be applied).
+func (g *Group) Compact(index uint64) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n.Compact(index)
+}
+
 func (g *Group) Stop() {
 	select {
 	case <-g.stop:

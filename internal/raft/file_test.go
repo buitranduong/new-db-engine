@@ -30,7 +30,7 @@ func TestFileStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hs, es, _ := s.Load()
+	hs, _, es, _ := s.Load()
 	if hs != (HardState{Term: 3, Vote: 2}) || len(es) != 3 || string(es[2].Data) != "c" || es[2].Term != 3 || string(es[1].Data) != "b" {
 		t.Fatalf("reloaded %v %v", hs, es)
 	}
@@ -40,7 +40,7 @@ func TestFileStorage(t *testing.T) {
 	s.Append([]Entry{{Index: 4, Term: 3, Data: []byte("d")}})
 	s.Close()
 	s, _ = OpenFileStorage(p)
-	if _, es, _ = s.Load(); len(es) != 4 {
+	if _, _, es, _ = s.Load(); len(es) != 4 {
 		t.Fatalf("append after recovery lost: %d entries", len(es))
 	}
 	s.Close()

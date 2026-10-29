@@ -135,6 +135,9 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 			} else if exists {
 				return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, nk)
 			}
+			if err := s.keyChangeAllowed(t); err != nil {
+				return nil, err
+			}
 			if err := tx.Delete(t.Name, ok); err != nil {
 				return nil, err
 			}

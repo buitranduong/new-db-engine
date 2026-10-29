@@ -146,6 +146,10 @@ Bản ghi `DDL` chứa JSON của bảng, cũng là phần tử của `tables` t
   - `dropped_columns` (của bảng): các cột đã DROP COLUMN, mỗi cột giữ `num`, `type`, `added_lsn` và có thêm `dropped_lsn`. Dòng lưu trước `dropped_lsn` vẫn chứa giá trị của cột; bộ giải mã đọc rồi bỏ qua giá trị đó.
   - **Bố cục tại LSN L**: mọi cột (cả đang sống lẫn đã drop) có `added_lsn ≤ L` và chưa drop tại L (`dropped_lsn` = 0 hoặc > L), xếp theo `num`. Bitmap NULL và giá trị đi theo đúng bố cục này. Dòng ghi mới luôn dùng các cột đang sống.
   - Schema chỉ được công bố cho người ghi khi DDL được đặt vào log (prepare). Từ lúc đó, dòng đã mã hoá theo schema cũ sẽ bị `ErrConflict` khi commit, và autocommit tự làm lại. Checkpoint ghi schema của DDL đã bền, không ghi schema đang chờ.
+- **Index phụ và khoá ngoại** (thêm 2026-10-29) là hai trường của JSON bảng, ghi bằng bản ghi `DDL` kiểu ALTER (cùng `id`, thêm hoặc bỏ phần tử). Cả hai bỏ khi rỗng, nên dữ liệu cũ đọc được nguyên vẹn:
+  - `indexes`: `[{"name":"orders_cust_idx","columns":["cust","created"],"unique":true,"constraint":"orders_uq","internal":true}]`. `constraint` có khi index là của một ràng buộc UNIQUE; `internal` khi do khoá ngoại tạo cho cột con.
+  - `foreign_keys`: `[{"name":"orders_cust_fkey","columns":["cust"],"ref_table":"customers","ref_columns":["id"],"on_delete":"cascade"}]`; `on_delete` là `no action` (mặc định, có thể vắng), `restrict`, `cascade` hoặc `set null`. `ref_table` là tên bảng cha.
+  - **Entry của index không nằm trong log hay checkpoint**: chỉ định nghĩa. Entry có dạng `Enc(cột 1) ‖ ... ‖ khoá chính` (mã hoá ở `schema/indexkey.go`, mô tả ở docs/05 §18) và được dựng lại từ các đầu của index chính khi khởi động, khi replica nhận DDL, hoặc khi `CREATE INDEX`. Bản Rust cần cùng mã hoá thứ tự nếu muốn so khớp với bản Go qua `pg_index`, nhưng định dạng đĩa không phụ thuộc vào nó.
 - Catalog **chỉ** gồm các bảng này. Tầng SQL không lưu gì thêm: kiểu PostgreSQL (`bigint`, `timestamptz`, …) được ánh xạ sang 6 kiểu ở trên khi `CREATE TABLE`, và `WITH (...)` thành các cờ ở trên.
 
 ## 6. Segment nén (`.walz`)
@@ -188,6 +192,7 @@ entry      = uvarint klen | key | uvarint zigzag(lsn − lsnTrước) | uvarint 
 
 - `lsnTrước` bắt đầu bằng 0 ở **mỗi chunk**.
 - Mỗi chunk có tối đa 65.536 entry của một bảng. Các chunk của một bảng liên tiếp nhau, và entry sắp tăng nghiêm ngặt theo thứ tự byte của khoá. Thứ tự sai thì checkpoint bị từ chối.
+- Checkpoint chỉ chứa index chính; index phụ được mô tả trong `tables[].indexes` của header và dựng lại sau khi nạp xong (docs/05 §18).
 - Mỗi entry là **đầu** (phiên bản mới nhất) của một khoá; tombstone cũng được ghi. TS và vị trí phiên bản trước không được lưu: chúng nằm trong bản ghi log tại `Loc`.
 - Checkpoint là "mờ" (fuzzy):
   - `(start_lsn, start_seg:start_off)` là điểm bền vững đọc được **trước khi** clone index;
@@ -306,5 +311,6 @@ Bản Rust chỉ được dùng thay bản Go khi qua **toàn bộ** các mục 
 | A8 | Recovery | 10 GB log (`scripts/rto10g.sh`) | RTO < 5 s |
 | A9 | Hiệu năng | các benchmark ở docs/08, docs/06 và docs/10 §4, cấu hình giống hệt | theo tiêu chí chuyển đổi (docs/11) |
 | A10 | CDC và NOTIFY | `TestSQLLogicalDecoding`, `TestSQLPublicationsAndIdentity`, `TestCDCHTTP`, `TestListenNotify` chạy với server Rust; `accept/logrepl` và `accept/pgsub.sh` (subscriber PG 16 thật) trỏ vào server Rust; slot do Go tạo được Rust đọc tiếp và ngược lại | chuỗi test_decoding/wal2json giống từng byte; `logrepl` PASS; `pgsub` mọi dòng OK; sau khi đổi bản, stream tiếp đúng sau giao dịch đã xác nhận |
+| A11 | Index phụ và ràng buộc | `go test ./internal/core -run 'SecIndex|UniqueIndex|ForeignKey'`, `./internal/sql -run 'SQLIndex|SQLUnique|SQLConcurrentConstraints'`, `./internal/repl -run SecondaryIndex` với server Rust | cùng truy vấn trước/sau `CREATE INDEX` ra cùng dòng và index được đọc; đúng một người thắng khi chèn đồng thời một giá trị UNIQUE; không có con mồ côi khi chèn con đua với xoá cha; replica khởi động lại vẫn đọc được index |
 
 Từ giờ, mọi thay đổi định dạng ở bản Go đều phải tăng số phiên bản (header checkpoint, magic `STZ1`/`STASKREPL1`) và cập nhật tài liệu này trong cùng thay đổi.

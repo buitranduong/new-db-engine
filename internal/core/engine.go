@@ -1280,13 +1280,7 @@ func (e *Engine) submit(r *commitReq) error {
 	if len(r.ops) > 0 {
 		// CREATE INDEX waits for the writers of its table (secindex.go)
 		var buf [4]*TableState
-		held := buf[:0]
-		for i := range r.ops {
-			if t := r.ops[i].t; !slices.Contains(held, t) {
-				t.enter()
-				held = append(held, t)
-			}
-		}
+		held := enterAll(r.ops, buf[:0])
 		defer func() {
 			for _, t := range held {
 				t.leave()

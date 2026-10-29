@@ -1171,7 +1171,14 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				groups, order, done = g, o, true
 			}
 		}
-		if grouped && !done {
+		// an equality or IN on an index beats the parallel scan of a whole
+		// table (a range may match most of it, which the scan reads faster)
+		selective := false
+		if grouped && !done && len(sc.t.Indexes) > 0 && canUseIndex(tx, sc.t) {
+			c := chooseIndex(sc.t, sc.alias, st.Where, ctx, nil)
+			selective = c != nil && c.score >= 2
+		}
+		if grouped && !done && !selective {
 			g, o, ok, err := groupParallel(tx, st, sc.t, ctx, aggs)
 			if err != nil {
 				return nil, err
@@ -1776,6 +1783,9 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 				return nil, err
 			} else if exists {
 				return nil, errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", t.Name, t.Key, nk)
+			}
+			if err := s.keyChangeAllowed(t); err != nil {
+				return nil, err
 			}
 			if err := tx.Delete(t.Name, ok); err != nil {
 				return nil, err

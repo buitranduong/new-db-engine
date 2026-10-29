@@ -275,7 +275,13 @@ func TestUniqueIndex(t *testing.T) {
 				defer wg.Done()
 				tx := e.Begin(SnapshotIsolation)
 				if err := tx.Put("kv", row(fmt.Sprintf("r%d-%d", round, g), v)); err != nil {
-					t.Error(err)
+					// the statement-time probe saw the winner's committed row
+					if errors.As(err, new(*UniqueViolationError)) {
+						viol.Add(1)
+					} else {
+						t.Error(err)
+					}
+					tx.Abort()
 					return
 				}
 				_, err := tx.Commit()

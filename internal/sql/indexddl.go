@@ -402,3 +402,14 @@ func (s *Session) alterConstraints(st *AlterTable) (*Result, error) {
 	}
 	return res, nil
 }
+
+// keyChangeAllowed refuses an UPDATE of the primary key of a table that
+// foreign keys reference: it is executed as a delete and an insert, which
+// would run the ON DELETE actions (PostgreSQL has ON UPDATE actions for
+// it, not done here).
+func (s *Session) keyChangeAllowed(t *schema.Table) error {
+	if len(s.E.FKRefs(t.Name)) > 0 {
+		return errf(codeFeature, "cannot change the primary key of table %q: foreign keys reference it", t.Name)
+	}
+	return nil
+}

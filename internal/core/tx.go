@@ -339,11 +339,18 @@ func (tx *Tx) InsertUniqueAs(table string, sch *schema.Table, r schema.Row) erro
 	if tx.done {
 		return ErrTxDone
 	}
-	if t, err := tx.e.Table(table); err == nil {
-		// a row may reference another row of the same statement: it needs the write index
-		for _, fk := range t.Schema().ForeignKeys {
-			if fk.RefTable == t.Schema().Name && !tx.unindexed {
-				return tx.add(WriteOp{Table: table, Row: r, IfAbsent: true, Schema: sch})
+	if fsch := sch; fsch != nil || !tx.unindexed {
+		if fsch == nil {
+			if t, err := tx.e.Table(table); err == nil {
+				fsch = t.Schema()
+			}
+		}
+		if fsch != nil && len(fsch.ForeignKeys) > 0 && !tx.unindexed {
+			// a row may reference another row of the same statement: it needs the write index
+			for _, fk := range fsch.ForeignKeys {
+				if fk.RefTable == fsch.Name {
+					return tx.add(WriteOp{Table: table, Row: r, IfAbsent: true, Schema: sch})
+				}
 			}
 		}
 	}

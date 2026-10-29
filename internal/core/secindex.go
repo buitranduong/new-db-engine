@@ -512,19 +512,42 @@ func (e *Engine) rebuildSec() error {
 
 // ---- gate: CREATE INDEX stops writers to the table while it builds ----
 
-func (t *TableState) enter() {
-	for {
-		t.writers.Add(1)
-		ch := t.blocked.Load()
-		if ch == nil {
-			return
-		}
+// tryEnter registers a writer to t; if the table is blocked it registers
+// nothing and returns the channel that is closed when the block ends.
+func (t *TableState) tryEnter() *chan struct{} {
+	t.writers.Add(1)
+	if ch := t.blocked.Load(); ch != nil {
 		t.writers.Add(-1)
-		<-*ch
+		return ch
 	}
+	return nil
 }
 
 func (t *TableState) leave() { t.writers.Add(-1) }
+
+// enterAll registers a writer to each table of ops. A writer never waits
+// for a blocked table while holding another (two blocked tables and a
+// writer to both would deadlock): it lets go of what it holds and starts
+// again when the block ends. The caller must leave every table of held.
+func enterAll(ops []pendingOp, held []*TableState) []*TableState {
+retry:
+	for i := range ops {
+		t := ops[i].t
+		if slices.Contains(held, t) {
+			continue
+		}
+		if ch := t.tryEnter(); ch != nil {
+			for _, h := range held {
+				h.leave()
+			}
+			held = held[:0]
+			<-*ch
+			goto retry
+		}
+		held = append(held, t)
+	}
+	return held
+}
 
 // ---- DDL ----
 

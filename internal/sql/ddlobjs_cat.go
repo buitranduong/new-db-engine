@@ -453,7 +453,7 @@ func (s *Session) visible(args []Datum) bool {
 		return true
 	}
 	oid, err := coerce(args[0], KInt)
-	if err != nil || !s.customPath() {
+	if err != nil {
 		return true
 	}
 	onPath := map[string]bool{"pg_catalog": true}

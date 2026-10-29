@@ -415,9 +415,6 @@ func (s *Session) resolveUserTypes(cds []ColDef) error {
 			continue
 		}
 		cd.Type, cd.PG, cd.Domain = ut.BaseType, ut.BasePG, ut.Name
-		if cd.Default == "" {
-			cd.Default = ut.Default
-		}
 		switch ut.BaseType {
 		case "int":
 			cd.IntType = "bigint"
@@ -557,4 +554,16 @@ func typeNameOfKind(k Kind) string {
 		return "unknown"
 	}
 	return k.String()
+}
+
+// columnDefaultText is the default expression of a column: its own, else
+// its domain's (looked up when the row is made, as PostgreSQL does).
+func columnDefaultText(c *schema.Column) string {
+	if c.Default != "" || c.Domain == "" {
+		return c.Default
+	}
+	if ut := lookupUserType(c.Domain); ut != nil {
+		return ut.Default
+	}
+	return ""
 }

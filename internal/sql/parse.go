@@ -839,6 +839,10 @@ func (p *parser) typeName() (string, error) {
 		if unsupportedTypes[t.s] {
 			return "", errf(codeFeature, "type %q is not supported", t.s)
 		}
+		if t.k == tIdent && t.s == "pg_catalog" && p.isOp(".") { // pg_catalog.text, as psql's \dT+ writes it
+			p.next()
+			return p.typeName()
+		}
 		if o, ok := p.userTypeName(t); ok { // an enum or domain (ddlobjs_types.go)
 			out = o
 			break

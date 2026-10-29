@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="4" author="app">
+        <addForeignKeyConstraint baseColumnNames="CUSTOMER_ID" baseTableName="SIM"
+                                 constraintName="FK_SIM_ON_CUSTOMER" referencedColumnNames="ID"
+                                 referencedTableName="CUSTOMER"/>
+    </changeSet>
+    <changeSet id="5" author="app">
+        <addForeignKeyConstraint baseColumnNames="CUSTOMER_ID" baseTableName="ORDER_"
+                                 constraintName="FK_ORDER_ON_CUSTOMER" referencedColumnNames="ID"
+                                 referencedTableName="CUSTOMER"/>
+    </changeSet>
+    <!-- ENGINE GAP (label gap-uuid-index): STASK 0A000 "columns of type uuid cannot be indexed" -->
+    <changeSet id="5b" author="app" labels="gap-uuid-index">
+        <addForeignKeyConstraint baseColumnNames="SIM_ID" baseTableName="ORDER_"
+                                 constraintName="FK_ORDER_ON_SIM" referencedColumnNames="ID"
+                                 referencedTableName="SIM"/>
+    </changeSet>
+    <changeSet id="6" author="app">
+        <addUniqueConstraint columnNames="MSISDN" constraintName="UC_SIM_MSISDN" tableName="SIM"/>
+        <addUniqueConstraint columnNames="NUMBER_" constraintName="UC_ORDER_NUMBER" tableName="ORDER_"/>
+    </changeSet>
+    <changeSet id="7" author="app">
+        <createIndex indexName="IDX_SIM_CUSTOMER" tableName="SIM">
+            <column name="CUSTOMER_ID"/>
+        </createIndex>
+        <createIndex indexName="IDX_ORDER_CUSTOMER" tableName="ORDER_">
+            <column name="CUSTOMER_ID"/>
+        </createIndex>
+        <createIndex indexName="IDX_SIM_STATUS_ACTIVE" tableName="SIM">
+            <column name="STATUS"/>
+            <column name="ACTIVE"/>
+        </createIndex>
+    </changeSet>
+    <changeSet id="7c" author="app" labels="gap-uuid-index">
+        <createIndex indexName="IDX_ORDER_SIM" tableName="ORDER_">
+            <column name="SIM_ID"/>
+        </createIndex>
+    </changeSet>
+    <changeSet id="7b" author="app">
+        <createIndex indexName="IDX_CUSTOMER_EMAIL_U" tableName="CUSTOMER" unique="true">
+            <column name="EMAIL"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

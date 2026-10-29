@@ -141,6 +141,10 @@ Chênh lệch với docs: `docs/00_START_HERE.md` và `scripts/simbench.sh` vẫ
 | P4.2 | Ứng dụng Jmix 2 + Liquibase chạy trên STASK | Liquibase tạo schema; CRUD qua UI | Chưa thử. Thiếu: UNIQUE/FK/index, kiểu đúng, trigger/hàm (Liquibase sinh) | Chưa làm |
 | P4.3 | Debezium thật | Stream 1M thay đổi đúng thứ tự | Chưa thử (docs/10 §7) | Chưa làm |
 | P4.4 | Xuất snapshot khi tạo slot | `CREATE SUBSCRIPTION` copy_data chạy | Chưa làm (COPY TO STDOUT đã có) | Chưa làm |
+| RC1 | Liquibase 4.31.1 thật (nhánh `realclients`, 2026-10-29): changelog XML/YAML/SQL kiểu Jmix, `update`, `status`, `rollback`, chạy lại | Mọi bước chạy trên STASK như trên PG 16 | `accept/clients/liquibase/run.sh stask`: 15/17 bước PASS **sau khi bỏ qua 4/25 changeSet bằng `--label-filter`**; `update` thô **trượt ở changeSet FK tới cột uuid** (0A000 `columns of type uuid cannot be indexed`; trước đó `BLOB`->`OID` trượt 42P16). `snapshot` và `generate-changelog` trượt 0A000 `_pg_expandarray over more than one element is not supported`. PG: 17/17. Dữ liệu và `DATABASECHANGELOG` giống PG (`results/cmp.diff`). Chi tiết: Phụ lục E | **Một phần** (P4.2 vẫn chưa xong: Jmix dùng uuid làm khoá và FK) |
+| RC2 | pgjdbc 42.7.14 thật: `DatabaseMetaData`, `PreparedStatement` các kiểu, batch, `RETURNING`, savepoint, `setFetchSize`, COPY | 94 thao tác giống PG | `accept/clients/jdbc/run.sh`: PG 94/0; STASK **82 ok / 12 FAIL** (+ 8 thao tác "ok" nhưng kết quả khác). Trượt: `getIndexInfo`/`getPrimaryKeys`/`getBestRowIdentifier` với khoá hoặc index nhiều cột, `getTypeInfo`, `setDate`, `setArray`, `= ANY(?)` với mảng, index trên `numeric`, ResultSet updatable. Qua: `getTables/getColumns/getImportedKeys/getExportedKeys`, batch 1000 dòng, `RETURNING`, `RETURN_GENERATED_KEYS`, savepoint, con trỏ `setFetchSize` (kể cả 2 con trỏ xen kẽ), COPY in/out, mã lỗi 23505/23503/23502/42601/42P01/42703/22012/22P02/22003 | **Một phần** |
+| RC3 | SQLAlchemy 2.0.55 + psycopg2: `inspect()`, ORM CRUD, `create_all`, truy vấn kiểu Superset | Như PG | `accept/clients/sqla/run.sh`: PG 107/0; STASK **74 ok / 33 FAIL**. **Mọi** hàm reflection (`get_table_names`, `has_table`, `get_columns`, `get_pk_constraint`, `get_indexes`, ..., `create_all` có `checkfirst`) trượt 42601 `syntax error at or near "."` ở `pg_catalog.pg_class.relname` (tên cột 3 phần `schema.bảng.cột`). ORM/Core CRUD (16 thao tác: insert cha-con, get theo uuid, update, join, `INSERT..RETURNING` nhiều dòng, savepoint, `ON CONFLICT`): PASS (1 lệch: mảng `int[]` đọc về là chuỗi). 36 truy vấn Superset (GROUP BY, `date_trunc`, `to_char`, `COUNT(DISTINCT)`, window, `percentile_cont`, `FILTER`, CTE, ROLLUP, LATERAL): 36/36 chạy, 35 trùng PG, 1 lệch số (`var_pop` 833.332 so với 833.333) | **Một phần** |
+| RC4 | Danh sách câu SQL Liquibase+pgjdbc gửi tới STASK | Có và so được với PG | `accept/clients/liquibase/stmts.sh`: 230 câu tới STASK, 262 dòng log bên PG (không so từng dòng được: `log_statement=all` ghi cả `execute` của giao thức mở rộng và PG chạy thêm 4 changeSet), trích từ log máy chủ (`-slow-query 1ns`, `log_statement=all`); `results/stmts-*.txt` | Xong-có-bằng-chứng |
 
 ### P5 và P9 Bảo mật, vận hành
 
@@ -729,3 +733,80 @@ Các nhóm a–e cùng lượt chạy: PASS a 157, b 244, c 152, d 138, e 59 (kh
 **E.5 Kết luận cho W9, thành thật.** STASK trả đúng giá trị cho đa số truy vấn biểu đồ (251/341, và các khác biệt `numeric` chỉ xuất hiện ở phép tính phức hợp), nhưng **chưa thay được bản sao Superset**: (a) reflection SQLAlchemy 2.0 hỏng ở cột ba phần (E.3 mục 1) nên không tạo được dataset vật lý; (b) `GROUP BY` lặp biểu thức làm hỏng biểu đồ có cột tính toán (mục 2); (c) `numeric` float làm lệch số tiền ở truy vấn join. Hai mục đầu là thay đổi nhỏ trong parser/planner nhưng nằm trong `internal/sql`, ngoài phạm vi nhánh này (không sửa engine để che khác biệt). **Chưa đo**: tải báo cáo đồng thời với nhập hàng/đơn hàng (`ss-concurrent-*` chạy tuần tự nên không đo gì về khoá/độ trễ), thời gian truy vấn trên 30–50 triệu SIM, Superset thật.
 
 **E.6 Phát hiện ngoài phạm vi.** (1) Cùng một truy vấn cho kết quả khác theo giao thức: `SELECT sum(t.q*t.n) ...JOIN` ra `22` ở giao thức mở rộng (OID 701) nhưng `22.00` ở giao thức đơn (`claimcheck` mặc định `simple_protocol`); probe không phải `ext_` có thể báo "qua" sai cho khác biệt kiểu. (2) `pgdiff` không thể gửi nhiều câu trong một message (tách ở `;`), nên cần một cờ `-- multi` nếu muốn so SQL Lab đầy đủ. (3) `ANALYZE` trên PG làm `pg_stat_user_tables.n_live_tup` = 6000 cho bảng 3000 dòng (thống kê PG nhiễu, không phải lỗi STASK); câu này không nên so giá trị.
+## Phụ lục E. Ứng dụng khách thật: Liquibase, pgjdbc, SQLAlchemy (nhánh `realclients`, 2026-10-29/30, gốc `main` @ bcb74f9)
+
+Môi trường, phiên bản, checksum đã kiểm, URL và giấy phép từng công cụ: `accept/clients/README.md`. PG 16.15 trong container `rc-pg` (cổng 28530), `staskd` cổng 28520/28521, JDK Temurin 21.0.13, Liquibase 4.31.1, pgjdbc 42.7.14, SQLAlchemy 2.0.55, psycopg2 2.9.13. Không sửa `internal/*`.
+
+**Tái lập.** `cd ~/wt/realclients/accept/clients; . ./lib.sh; rc_start_pg; liquibase/run.sh stask; liquibase/compare.sh; liquibase/stmts.sh; jdbc/run.sh; sqla/run.sh` (đầy đủ trong README). Kết quả lần chạy cuối: `accept/clients/results/`.
+
+**E.1 Liquibase.** 25 changeSet (XML, YAML, SQL có định dạng, 2 CSV). Lỗi của changelog (của tôi, PG cũng trượt): `preConditions` sau `comment`; `<sql>` thiếu `<rollback/>`; `--snapshot-format=text`; đã sửa. Lỗi **đầu tiên** của engine, theo thứ tự: (1) `CREATE TABLE ... PHOTO OID` (Liquibase ánh xạ `BLOB` thành `OID` trên PG): 42P16 `unknown column type "oid"` (đổi sang `BYTEA`, giữ ca lỗi ở `changelog/known-fail/blob-oid.xml`); (2) `ALTER TABLE ORDER_ ADD CONSTRAINT FK_ORDER_ON_SIM FOREIGN KEY (SIM_ID) REFERENCES SIM (ID)` với `SIM.ID` uuid: 0A000 `columns of type uuid cannot be indexed`; cùng lỗi với `CREATE INDEX IDX_ORDER_SIM ON ORDER_(SIM_ID)` và FK từ `SIM_EVENT`; (3) `create index IDX_SIM_MSISDN_LOWER on SIM (lower(MSISDN))`: 0A000 `indexes on expressions are not supported`. Ba nhóm đó gắn nhãn `gap-uuid-index`, `gap-expr-index` và bị bỏ qua trên STASK bằng `update --label-filter="!gap-uuid-index and !gap-expr-index"` (PG chạy hết). Sau đó:
+
+| Bước | PG 16 | STASK |
+|---|---|---|
+| update (25 changeSet; STASK 21) | PASS | PASS (33 dòng ảnh hưởng, dữ liệu giống PG) |
+| status --verbose, history, validate, tag | PASS | PASS |
+| update lần 2 (idempotent) | PASS, 0 chạy / 25 đã chạy | PASS, 0 chạy / 21 đã chạy |
+| rollback --tag=after-tables | PASS | PASS (còn đúng 3 bảng + 2 bảng Liquibase, 3 dòng changelog) |
+| update lại sau rollback, rollback-count 4, update lại | PASS | PASS |
+| update-sql, rollback-sql, drop-all, update sau drop-all | PASS | PASS |
+| snapshot (json) | PASS | **FAIL** 0A000 `_pg_expandarray over more than one element is not supported` |
+| generate-changelog | PASS | **FAIL** cùng lỗi |
+
+Nguyên nhân snapshot: pgjdbc `getIndexInfo`/`getPrimaryKeys` dùng `information_schema._pg_expandarray(i.indkey)` và STASK từ chối khi index hoặc PK có **hơn một cột** (tái lập bằng JDBC: `meta/getPrimaryKeys composite PK`, `meta/getIndexInfo`).
+
+Khác biệt âm thầm thấy qua `compare.sh` (catalog đọc bằng psql): tên ràng buộc `CONSTRAINT PK_SIM` bị bỏ (STASK `sim_pkey`, PG `pk_sim`); `pg_constraint.conrelid::regclass::text` ra OID số; `column_default` mất `::character varying` và in `TRUE`; cột của view trong `information_schema.columns` đều là `text`; `ALTER ... ADD CONSTRAINT UNIQUE` và FK tới bigint chạy tốt.
+
+**E.2 Câu SQL Liquibase+pgjdbc gửi** (`stmts.sh`; một `update` + một `status`): 230 câu tới STASK. Loại câu: `BEGIN/COMMIT` 106, `SHOW SEARCH_PATH` 29, `INSERT databasechangelog` 21, `SELECT` metadata `getTables` 6 (`pg_class`/`pg_namespace`), `select version()` 4, `SELECT COUNT(*) FROM databasechangeloglock` 5, `SELECT * FROM databasechangelog ORDER BY` 3, kiểm cột (`pg_attribute` EXISTS) 1, `getSchemas/getCatalogs` 4, rồi DDL/DML của changeSet (CREATE TABLE x7 gồm `GENERATED BY DEFAULT AS IDENTITY`, `ADD CONSTRAINT` FK/UNIQUE, `CREATE [UNIQUE] INDEX`, `ADD`/`ALTER COLUMN`, `RENAME COLUMN`, `CREATE SEQUENCE IF NOT EXISTS`, `INSERT` nhiều dòng từ CSV, `UPDATE`, raw SQL). Không câu nào trong 230 báo lỗi ngoài các câu đã nêu ở E.1 (câu lỗi cũng nằm trong log, không kèm kết quả; lỗi lấy từ đầu ra Liquibase). Log PG có 262 dòng; các câu của changeSet bị bỏ qua (FK/index uuid, index biểu thức) chỉ có bên PG.
+
+**E.3 JDBC (94 thao tác; `results/jdbc-*.txt`).** Mỗi dòng dưới đây là một thao tác trượt trên STASK, PG đều qua.
+
+| Thao tác | SQL / API | SQLSTATE và thông điệp STASK | PG |
+|---|---|---|---|
+| ddl composite index | `create index jt_idx on jt_t(n, ts)` (`n numeric(19,2)`) | 0A000 `columns of type numeric(19,2) cannot be indexed` | tạo |
+| getIndexInfo | `DatabaseMetaData.getIndexInfo` bảng có index hoặc PK nhiều cột | 0A000 `_pg_expandarray over more than one element is not supported` | trả hàng |
+| getPrimaryKeys khoá ghép | `getPrimaryKeys` bảng PK (a,b) | cùng lỗi | 2 hàng |
+| getBestRowIdentifier | idem | cùng lỗi | 1 hàng |
+| getTypeInfo | `DatabaseMetaData.getTypeInfo()` | 22P02 `invalid input syntax for type bigint: "pg_catalog.array_in"` | trả danh sách kiểu |
+| setDate | `ps.setDate(2, java.sql.Date)` vào cột `date` | 22008 `date/time field value out of range: "2026-03-04 +00"` (pgjdbc gửi hậu tố múi giờ) | nhận |
+| setArray int4/text | `ps.setArray(.., createArrayOf("int4", ..))` | 0A000 `binary format for type oid 1007 is not supported` (1009 cho text) | nhận |
+| `= ANY(?)` với mảng | `where id = any(?)` + `setArray` int8 | 0A000 `binary format for type oid 1016 is not supported` | nhận |
+| đọc `int[]` | cột `int[]` | không lỗi nhưng mô tả cột là `_text`/`_int8`: `getArray()` ra `String[]` (ClassCastException ở ứng dụng); `getColumns` ghi `_int8` | `_int4` |
+| ResultSet updatable | `updateString`+`updateRow` | 42703 `column "" of relation "jt_s" does not exist` (`UPDATE jt_s SET "" = $1`): RowDescription không có table OID/attnum | chạy |
+
+Khác biệt "ok nhưng khác": `getTransactionIsolation` sau `setTransactionIsolation(SERIALIZABLE)` ra 4 (REPEATABLE READ) và sau READ COMMITTED vẫn 4 (PG: 8 và 2); `ResultSetMetaData.getTableName/isNullable/isAutoIncrement` rỗng/sai (PG: `jt_s`, 0, true); DDL trong giao dịch bị rollback vẫn còn (`CREATE TABLE` không hoàn tác); `COPY (select .. order by x)` sắp theo byte (collation); `server_version` 16.0.
+
+Qua và giống PG: `getCatalogs/getSchemas/getTableTypes/getTables/getColumns` (trừ OID mảng), `getImportedKeys/getExportedKeys/getCrossReference`, uuid/numeric(19,2)/timestamp/timestamptz/bytea/boolean/double/smallint, null có kiểu, `IN (?,?,?)`, `LIMIT ? OFFSET ?`, chuẩn bị phía máy chủ (`prepareThreshold=1`, 7 lần), batch 1000 dòng, lỗi trong batch (`BatchUpdateException` 23505), `RETURNING`, `getGeneratedKeys` (cả `RETURN_GENERATED_KEYS` và tên cột), commit/rollback, savepoint (rollback/release), phục hồi sau lỗi bằng savepoint, `setReadOnly`, `setFetchSize(100)` và `(50)` đóng sớm, hai con trỏ xen kẽ, cuộn được, COPY in/out CSV, truy vấn nhiều câu, `FOR UPDATE [SKIP LOCKED]`, `ON CONFLICT DO NOTHING`, `nextval('seq')`, phân trang, `ilike`, join theo cột uuid, `UPDATE .. WHERE id = ? AND version = ?`, mã lỗi 23505/23503/23502/42601/42P01/42703/22012/22P02/22003.
+
+**E.4 SQLAlchemy (107 thao tác; `results/sqla-*.txt`).**
+
+| Thao tác | SQL gửi | SQLSTATE và thông điệp STASK | PG |
+|---|---|---|---|
+| **toàn bộ reflection** (`inspect().get_table_names/get_columns/get_pk_constraint/get_foreign_keys/get_indexes/get_unique_constraints/get_check_constraints/get_sequence_names/get_multi_*`, `has_table`, `MetaData.reflect`, `Table(autoload_with)`) và `create_all()` / `drop_all()` mặc định (`checkfirst`) | `SELECT pg_catalog.pg_class.relname FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace WHERE ...` | **42601 `syntax error at or near "."`** tại `pg_catalog.pg_class.relname` (cột 3 phần) | chạy |
+| tái hiện tối thiểu (psql) | `select public.zz.a from public.zz` và `select pg_catalog.pg_class.relname from pg_class` | 42601 giống trên; `select pg_class.relname from pg_catalog.pg_class` (2 phần) và `zz.a from public.zz` chạy | chạy |
+| index trên `Numeric`, `Uuid` | `CREATE INDEX ix_sa_types_n ON sa_types (n)` | 0A000 `columns of type numeric(19,2) cannot be indexed` / `columns of type uuid cannot be indexed` | tạo |
+| `Enum` | `CREATE TYPE sa_kind AS ENUM ('a','b')`, `DROP TYPE` | 0A000 `only CREATE TABLE is supported`; `drop type` 42601 | tạo |
+| FK ORM tới khoá uuid | `ForeignKey("parent.id")` uuid | (do 0A000 uuid ở trên; test dùng bảng dự phòng không FK) | tạo |
+| JSONB, mảng | `js ->> 'b'`, `js ? 'a'`, `ia @> ARRAY[2]` | 42601 `syntax error at or near "->"`; 42601 `unexpected character '@'` | chạy |
+| con trỏ phía máy chủ | `create_engine(..).connect().execution_options(stream_results=True)` (psycopg2 named cursor = `DECLARE ... CURSOR`) | 0A000 `statement "DECLARE" is not supported` | chạy |
+| `int[]` đọc về | `types.c.ia` | trả `['1','2','3']` (chuỗi), vì cột mô tả là `_text` | `[1,2,3]` |
+| `var_pop(price)::numeric(10,3)` | SELECT | `833.332` | `833.333` |
+| `pg_extension`, `pg_database_size(current_database())`, `current_user` | SELECT | 0 hàng; 0; `stask` (đăng nhập bằng `app`) | `plpgsql`; >0; tên đăng nhập |
+
+Qua và giống PG: ORM (insert cha-con có cascade, `get` theo khoá uuid, update/refresh, `selectinload`, `joinedload`, join theo uuid + `GROUP BY`, `add_all` 200 dòng, `INSERT .. RETURNING` nhiều dòng (insertmanyvalues), xoá cascade, `FOR UPDATE`, flush+rollback, `begin_nested` = SAVEPOINT, `ON CONFLICT DO UPDATE`), kiểu bytea/numeric/timestamp/jsonb (ghi và đọc), `Sequence`/`Identity` (khi dùng `checkfirst=False`), `isolation_level` REPEATABLE READ và AUTOCOMMIT, `pool_pre_ping`, và 36 truy vấn Superset: `GROUP BY`, `date_trunc` (tuần, tháng, quý, năm, giờ), `to_char`, `COUNT(DISTINCT)`, `row_number/rank/dense_rank/ntile/cume_dist`, tổng luỹ kế, `lag/lead`, `percentile_cont WITHIN GROUP`, `FILTER (WHERE)`, `CASE`, CTE, subquery bí danh `virtual_table`, `HAVING`, `extract`, `COALESCE/NULLIF`, `string_agg/array_agg`, `generate_series` + join, ép kiểu và phép tính interval, `~`, `ILIKE`, `IN`/`EXISTS`, `UNION ALL`, `ROLLUP`, `DISTINCT ON`, `LATERAL`, hàm làm tròn/chuỗi, `AT TIME ZONE`. Cách lách cho truy vấn reflection: `Table.create(checkfirst=False)`.
+
+**E.5 Mười phát hiện quan trọng nhất cho ứng dụng thật (Jmix/Hibernate/Liquibase, Superset)**
+
+1. **Không thể tạo FK hay index/unique trên cột `uuid`** (0A000). Jmix dùng uuid làm khoá chính và FK mặc định: changelog Jmix sinh ra sẽ trượt ở changeSet FK đầu tiên. Khoá chính uuid thì tạo được. Chặn P4.2.
+2. **Cột 3 phần `schema.bảng.cột` bị parser từ chối (42601)**: làm hỏng **toàn bộ** reflection SQLAlchemy 2.0 và `create_all()` mặc định; Superset dùng đúng đường này để liệt kê bảng/cột. Bản tối thiểu: `select public.zz.a from public.zz`.
+3. **`_pg_expandarray` trên index/PK nhiều cột** (0A000): `getPrimaryKeys`/`getIndexInfo` của pgjdbc, nên Liquibase `snapshot`/`generate-changelog`/`diff`, DBeaver, và mọi công cụ đọc metadata JDBC chết ở bảng có khoá ghép hoặc index ghép.
+4. **Không index được `numeric`** (0A000) và không có index biểu thức (`lower(col)`), ảnh hưởng tìm theo giá/tiền và tìm không phân biệt hoa thường.
+5. **Mảng không đúng OID**: `int4[]` mô tả là `_text`/`_int8`; pgjdbc `setArray` gửi nhị phân (OID 1007/1009/1016) bị từ chối ("binary format ... not supported"), nên `= ANY(?)`, `IN` kiểu mảng, `setArray` hỏng; psycopg2 trả mảng chuỗi.
+6. **pgjdbc `setDate` hỏng** (22008, hậu tố `+00`): mọi cột `date` ghi qua `PreparedStatement.setDate`/Hibernate `LocalDate` có thể trượt (`setObject(LocalDate)`, `setObject(LocalDateTime)` đã thử và qua; `setString`+`?::date` cũng qua).
+7. **`DECLARE CURSOR` không có**: psycopg2 `stream_results`/named cursor (Superset truy vấn lớn) hỏng; con trỏ qua giao thức (`setFetchSize` của pgjdbc) thì chạy tốt, kể cả hai con trỏ xen kẽ.
+8. **`CREATE TYPE ... AS ENUM`/`DROP TYPE` không có**, toán tử jsonb (`->`, `->>`, `?`) và mảng (`@>`) chưa có: ORM dùng Enum/JSONB/ARRAY riêng của PG sẽ trượt. Kiểu `blob` của Liquibase thành `OID` (42P16): phải dùng `BYTEA`.
+9. **Metadata lệch âm thầm**: tên PK do Liquibase đặt bị bỏ (`sim_pkey`); `regclass::text` ra số; mặc định cột thiếu `::cast`; kiểu cột của view là `text`; RowDescription không có table OID/attnum (pgjdbc `ResultSetMetaData.getTableName` rỗng, ResultSet updatable hỏng); `getTransactionIsolation` luôn 4; `current_user` không phải người đăng nhập.
+10. **DDL không có tính giao dịch** (CREATE TABLE trong giao dịch bị rollback vẫn còn): Liquibase chạy mỗi changeSet trong một giao dịch và dựa vào rollback khi lỗi giữa chừng; changeSet gồm nhiều câu DDL hỏng nửa chừng sẽ để lại trạng thái dở, phải dọn tay.
+
+Điểm tốt đáng ghi nhận: Liquibase `update` idempotent, `rollback --tag` và `rollback-count` đúng; `loadData` CSV (uuid, boolean, timestamp, NULL, trích dẫn có dấu phẩy) giống PG; ORM CRUD của SQLAlchemy và 36 truy vấn kiểu Superset chạy, 35/36 cùng kết quả với PG; JDBC batch/RETURNING/savepoint/con trỏ/COPY chạy.
+
+**E.6 Hạn chế, chưa chứng minh.** Chưa chạy Jmix/Hibernate thật (chỉ Liquibase, pgjdbc, SQLAlchemy); Superset thật chưa chạy (chỉ truy vấn kiểu Superset và đường reflection của SQLAlchemy). Chữ ký PGP của Liquibase chưa kiểm (chỉ SHA-1/MD5 công bố cùng bản phát hành và SHA-256 tự tính). Không rõ Liquibase dùng pgjdbc 42.7.4 đi kèm hay 42.7.14 trên `--classpath` (log TRACE của pgjdbc không ghi file khi chạy trong Liquibase); JDBC và SQLAlchemy dùng 42.7.14 và 2.0.55. Số liệu một lần chạy, VM dùng chung, không có đo thời gian. Phiên bản kiểm chứng trên `main` @ bcb74f9: các nhánh `superq`, `sqlgaps`, `pgfix` chưa gộp có thể đã sửa một phần (ví dụ `pg_catalog.pg_class.relname` được nhánh `superq` báo 42601); chạy lại bằng `accept/clients/*/run.sh` sau khi gộp.

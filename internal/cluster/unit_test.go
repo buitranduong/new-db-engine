@@ -121,15 +121,31 @@ func TestProcSecure(t *testing.T) {
 	}
 	conn.Write([]byte("STASKREPL2"))
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	// the refusal can arrive in several segments (frame header, then text): read to the end
+	var got []byte
 	buf := make([]byte, 200)
-	n, _ := conn.Read(buf)
-	if !bytes.Contains(buf[:n], []byte("requires TLS")) {
-		t.Fatalf("a plaintext client was not refused: %q", buf[:n])
+	for {
+		n, err := conn.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil || bytes.Contains(got, []byte("requires TLS")) {
+			break
+		}
+	}
+	if !bytes.Contains(got, []byte("requires TLS")) {
+		t.Fatalf("a plaintext client was not refused: %q", got)
 	}
 	conn.Close()
 	// node 3 restarts with another secret: it cannot talk to the others
 	bad := filepath.Join(t.TempDir(), "bad")
 	os.WriteFile(bad, []byte("wrong"), 0o600)
+	// what node 3 applied while it still had the right secret: the baseline it must not exceed
+	var base uint64
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if st, ok := c.status(c.nodes[2]); ok && st.Applied >= 20 {
+			base = st.Applied
+			break
+		}
+	}
 	c.kill(c.nodes[2])
 	for i, a := range c.nodes[2].args {
 		if a == sf {
@@ -143,8 +159,8 @@ func TestProcSecure(t *testing.T) {
 		}
 	}
 	time.Sleep(2 * time.Second)
-	if s, ok := c.status(c.nodes[2]); ok && s.Applied >= 20 {
-		t.Fatalf("the node with the wrong secret applied %d entries", s.Applied)
+	if s, ok := c.status(c.nodes[2]); ok && base > 0 && s.Applied > base {
+		t.Fatalf("the node with the wrong secret applied %d entries after the change (it had %d before)", s.Applied, base)
 	}
 	b, _ := os.ReadFile(c.nodes[0].log)
 	if !strings.Contains(string(b), "authentication failed") && !strings.Contains(string(b), "failed to prove") {

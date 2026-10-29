@@ -49,6 +49,9 @@ type Tx struct {
 	lastHead *Version
 	// writes made with InsertUnique are not in widx
 	unindexed bool
+	repaired  bool // occ_repair.go
+	valid     *repairVal
+	gate      *WriteGate
 	onCommit  func(lsn uint64)
 	intr      func() bool
 	// constraints (fk.go): parents shared by the children written, unique

@@ -165,6 +165,13 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 	for _, r := range fx {
 		extra = append(extra, r)
 	}
+	var rec *repairRec // occ_repair.go: the join values of SET and WHERE, to evaluate them again
+	if r := s.rep; r != nil && r.st == Stmt(st) {
+		rec = r
+		for _, ref := range r.foreignOf(t, qual, setExprs(st.Set), st.Where) {
+			extra = append(extra, ref)
+		}
+	}
 	rows, vals, err := s.targetRows(tx, t, st.Table, st.Alias, st.From, st.Where, extra, params)
 	if err != nil {
 		return nil, err
@@ -189,6 +196,9 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 		if upd, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
 			return nil, err
 		}
+		if rec != nil {
+			rec.keep(t.KeyOf(old), vals[ri][len(cols)+len(fx):])
+		}
 		if err := s.returning(sc, ctx, bindForeign(st.Returning, fx, vals[ri][len(cols):]), upd, res); err != nil {
 			return nil, err
 		}
@@ -207,6 +217,13 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 	for i, r := range fx {
 		extra[i] = r
 	}
+	var rec *repairRec // occ_repair.go
+	if r := s.rep; r != nil && r.st == Stmt(st) {
+		rec = r
+		for _, ref := range r.foreignOf(t, qual, st.Where) {
+			extra = append(extra, ref)
+		}
+	}
 	rows, vals, err := s.targetRows(tx, t, st.Table, st.Alias, st.Using, st.Where, extra, params)
 	if err != nil {
 		return nil, err
@@ -221,6 +238,9 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 	for ri, r := range rows {
 		if err := s.deleteRow(tx, t, tgs, r); err != nil {
 			return nil, err
+		}
+		if rec != nil {
+			rec.keep(t.KeyOf(r), vals[ri][len(fx):])
 		}
 		if err := s.returning(sc, ctx, bindForeign(st.Returning, fx, vals[ri]), r, res); err != nil {
 			return nil, err

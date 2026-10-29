@@ -206,7 +206,7 @@ func TestCatalogRelations(t *testing.T) {
 	expectRows(t, s, `SELECT count(*) FROM pg_attrdef WHERE adrelid = 'ident'::regclass`, "0") // identity has no default row
 	expectRows(t, s, `SELECT seqtypid, seqstart, seqincrement, seqmax, seqmin, seqcycle FROM pg_sequence WHERE seqrelid = 's1'::regclass`,
 		"20,10,5,9223372036854775807,1,false")
-	expectRows(t, s, `SELECT count(*) FROM pg_description`, "0")
+	expectRows(t, s, `SELECT count(*) FROM pg_description`, "2") // ddlobjs: public schema and plpgsql (ddlobjs_cat.go)
 	expectRows(t, s, `SELECT amname FROM pg_am ORDER BY oid`, "heap;btree")
 	expectRows(t, s, `SELECT d.refobjsubid, d.deptype FROM pg_depend d WHERE d.objid = 'items_id_seq'::regclass`, "1,a")
 	expectRows(t, s, `SELECT tablename, hasindexes FROM pg_tables ORDER BY tablename`, "ev,true;ident,true;items,true")

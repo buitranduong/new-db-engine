@@ -179,3 +179,14 @@ func TestLockingClauses(t *testing.T) {
 		}
 	}
 }
+
+func TestOnConflictOnConstraint(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE oc (id BIGINT PRIMARY KEY, v TEXT)`)
+	run(t, s, `INSERT INTO oc VALUES (1, 'a')`)
+	run(t, s, `INSERT INTO oc VALUES (1, 'b') ON CONFLICT ON CONSTRAINT oc_pkey DO NOTHING`)
+	run(t, s, `INSERT INTO oc VALUES (1, 'c') ON CONFLICT ON CONSTRAINT oc_pkey DO UPDATE SET v = excluded.v`)
+	if got := render(run(t, s, `SELECT v FROM oc`)); got != "c" {
+		t.Errorf("got %q", got)
+	}
+}

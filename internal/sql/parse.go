@@ -753,6 +753,10 @@ func (p *parser) insertStmt() (Stmt, error) {
 				}
 				p.next()
 			}
+		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
+			if _, err := p.ident(); err != nil {
+				return nil, err
+			}
 		}
 		if err := p.expectKw("do"); err != nil {
 			return nil, err

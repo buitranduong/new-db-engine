@@ -1,6 +1,6 @@
 # 14 — Kế hoạch – Mục tiêu – Thực tế (plan–target–actual)
 
-Tài liệu này là **bản đối chiếu duy nhất** giữa điều docs nói và điều mã nguồn thực sự làm. Mỗi task có ba cột: **Kế hoạch** (làm gì, theo docs/12), **Mục tiêu** (tiêu chí xong), **Thực tế** (bằng chứng chạy được: test, probe, số đo). Chênh lệch nào cũng ghi rõ. Cập nhật lần cuối: 2026-10-29, trên `main` sau khi gộp nhánh `trigger` (P7.1).
+Tài liệu này là **bản đối chiếu duy nhất** giữa điều docs nói và điều mã nguồn thực sự làm. Mỗi task có ba cột: **Kế hoạch** (làm gì, theo docs/12), **Mục tiêu** (tiêu chí xong), **Thực tế** (bằng chứng chạy được: test, probe, số đo). Chênh lệch nào cũng ghi rõ. Cập nhật lần cuối: 2026-10-29, trên `main` sau khi gộp nhánh `trigger` (P7.1); hàng P3.1/P3.3 cập nhật trên nhánh `btree` (gói độc lập `internal/pindex`, chưa nối).
 
 **Quy tắc:** một task chỉ được ghi "xong" khi cột Thực tế có bằng chứng tái lập được (tên test, lệnh, hoặc probe `claimcheck`). Docs nói "xong" mà không có bằng chứng thì tính là **chưa kiểm chứng**. Mỗi lần gộp một nhánh vào `main`: chạy lại `claimcheck`, dán kết quả vào Phụ lục A, sửa bảng bên dưới.
 
@@ -65,9 +65,9 @@ Trạng thái: **Xong-có-bằng-chứng**, **Xong-chưa-kiểm** (có mã/test 
 
 | Task | Kế hoạch | Mục tiêu | Thực tế | Trạng thái |
 |---|---|---|---|---|
-| P3.1 | Index chính trên đĩa | Dữ liệu 3× RAM | Index nằm hoàn toàn trong RAM. Quan sát: 100M dòng → RSS ~19,4 GB, heap 6,8–9,1 GB (docs/08) | Chưa làm |
+| P3.1 | Index chính trên đĩa: nghiên cứu B+tree/LSM/Bw-tree/LeanStore, chọn, cài trong gói độc lập (`internal/pindex`: Get/Put/Delete/Scan/Seek, snapshot, checkpoint, mở lại, buffer pool giới hạn, CRC, an toàn khi crash), test + benchmark, kế hoạch nối (chưa nối) | Dữ liệu 3× RAM; đọc điểm trúng cache ≤ 2× bản RAM | **Gói độc lập xong, engine chưa dùng** (index trong engine vẫn nằm hoàn toàn trong RAM: 100M dòng → RSS ~19,4 GB, docs/08). Quyết định + so sánh + số đo: docs/15. Bằng chứng: `go test -p 1 ./internal/pindex` (random vs map, mô hình crash với ghi rách/mất, concurrent, `-race -short` qua; bỏ fsync đầu của checkpoint thì `TestCrashRecovery` fail). Đo 20M khoá 12B+28B, tmpfs, loadavg 22–40, một luồng: đọc nóng **1 465 ns RAM vs 1 847 ns pindex pool 296 MB (dữ liệu ≈ 3× pool) = 1,26×**, vs 2 102 ns (1,43×) khi index vừa pool; RSS 310 MB vs 910 MB; mở lại 85–134 ms. Đọc lạnh dữ liệu 3× pool: 6 772 ns (3,6×; 82% hụt); nạp ngẫu nhiên 3,0× chậm hơn; quét 100 khoá 2,4×. Pebble (không tinh chỉnh) chậm 4–7× ở đọc điểm. **Giới hạn của bằng chứng:** tmpfs (không có số SSD), máy tải nặng (số tương đối), chưa ở 100M, chưa qua engine nên các tiêu chí RSS/khởi động/checkpoint 100M chưa nghiệm thu. Lệnh tái lập: docs/15 §6 | Một phần: gói độc lập xong và đo; **chưa nối** (docs/15 §8) |
 | P3.2 | View cột nén trên đĩa | Khởi động 100M <20 s; ≤1,5× ClickHouse | Dựng lại view ở 100M mất 182 s (docs/08 §7 #3) | Chưa làm |
-| P3.3 | Checkpoint tăng dần, GC phân tầng | Checkpoint 100M <5 s | Chưa làm | Chưa làm |
+| P3.3 | Checkpoint tăng dần, GC phân tầng | Checkpoint 100M <5 s | Chưa làm trong engine. Nền đã có trong `pindex`: `Checkpoint` chỉ ghi trang bẩn của thế hệ đóng băng, người ghi không bị chặn (`TestConcurrent`, `TestSpaceReuse`); chưa đo 100M, chưa nối. Kế hoạch: docs/15 §8 | Chưa làm (chờ nối P3.1) |
 | P3.4 | Time-series, search, AS OF từ SQL | Có cú pháp, test, sqlcorpus | Chỉ qua HTTP | Chưa làm |
 | P3.5 | ARRAY JOIN, FINAL, SAMPLE | Đối chiếu ClickHouse 100% | Chấp nhận nhưng bỏ qua | Chưa làm |
 

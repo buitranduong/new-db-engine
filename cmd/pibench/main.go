@@ -14,9 +14,20 @@ import (
 )
 
 type pt struct {
-	t    *pindex.Tree
-	path string
-	snap pindex.Snapshot
+	t     *pindex.Tree
+	path  string
+	cache int64
+}
+
+// Reopen closes the index and opens it again from its file: what a restart
+// costs (the data was checkpointed at the end of the load).
+func (p *pt) Reopen() error {
+	if err := p.t.Close(); err != nil {
+		return err
+	}
+	t, err := pindex.Open(p.path, pindex.Options{CacheBytes: p.cache})
+	p.t = t
+	return err
 }
 
 func (p *pt) Put(k, v []byte) error { return p.t.Put(k, v) }
@@ -78,7 +89,7 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		return &pt{t: t, path: path}, nil
+		return &pt{t: t, path: path, cache: *cacheMB << 20}, nil
 	}
 	if *mode == "seq" || *mode == "both" {
 		bench.RunSeq(cfg, mk)

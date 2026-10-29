@@ -157,7 +157,7 @@ Kiểm chứng:
 ## 9. Giới hạn đã biết của thiết kế hiện tại
 
 - GC chép lại dữ liệu sống (ghi thêm ≈ live/(1−live) cho mỗi byte thu hồi) và cần một checkpoint đầy đủ mỗi vòng. Chưa phân tầng nóng/lạnh và chưa có checkpoint tăng dần. Bảng remap nằm trong RAM và mất khi khởi động lại.
-- Chỉ mục chính + view nằm trong RAM.
+- Chỉ mục chính + view nằm trong RAM. Index chính trên đĩa đã được chọn và cài trong gói độc lập `internal/pindex` (B+tree copy-on-write, buffer pool giới hạn, checkpoint tăng dần bằng hai trang meta; docs/15) nhưng **chưa nối vào engine**; view cột vẫn trong RAM (P3.2).
 - Một node, không replication → chưa kiểm chứng phân vùng mạng.
 - SQL là một tập con (xem `docs/05_sql_pgwire.md`): một bảng mỗi truy vấn, không JOIN/subquery, không index phụ, không `pg_catalog`.
 - Giao dịch tương tác qua HTTP giữ trạng thái ở server (hết hạn sau 30s không dùng).

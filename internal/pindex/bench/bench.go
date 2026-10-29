@@ -164,6 +164,14 @@ func RunSeq(cfg Config, mk func() (Target, error)) {
 		return err
 	})
 	cfg.Out("  " + t.Info())
+	if r, ok := t.(interface{ Reopen() error }); ok {
+		phase(cfg, "close + reopen", 1, r.Reopen)
+		phase(cfg, "get cold after reopen", 200000, func() error {
+			c := cfg
+			c.Reads = 200000
+			return reads(c, t, 21, cfg.N)
+		})
+	}
 }
 
 // RunRand loads the keys in random order and reads them back.

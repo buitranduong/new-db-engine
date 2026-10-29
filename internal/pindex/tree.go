@@ -41,6 +41,8 @@ type Tree struct {
 	tmp     []byte
 	cell    []byte
 	cells   [][]byte
+	old     []byte // value replaced by the last write (Swap)
+	hadOld  bool
 
 	checkpoints atomic.Int64
 }
@@ -218,6 +220,7 @@ func (t *Tree) putLocked(key, val []byte) error {
 		return t.failed
 	}
 	t.written = true
+	t.hadOld = false
 	if t.root == 0 {
 		f, err := t.newPage(pageLeaf)
 		if err != nil {
@@ -262,6 +265,7 @@ func (t *Tree) insert(id uint64, key, val []byte) (res, bool, error) {
 		pos, found := searchLeaf(p, key)
 		if found {
 			_, ov := leafCell(p, pos)
+			t.old, t.hadOld = append(t.old[:0], ov...), true
 			if len(ov) == len(val) {
 				f2, err := t.own(f)
 				if err != nil {
@@ -542,7 +546,17 @@ func (t *Tree) del(id uint64, key []byte) (nid uint64, empty, found bool, err er
 // Batch is the writer handle inside Tree.Batch.
 type Batch struct{ t *Tree }
 
-func (b Batch) Put(key, val []byte) error       { return b.t.putLocked(key, val) }
+func (b Batch) Put(key, val []byte) error { return b.t.putLocked(key, val) }
+
+// Swap is Put that also returns the value it replaced (appended to dst[:0]),
+// which the engine's install step needs for GC accounting.
+func (b Batch) Swap(key, val, dst []byte) (old []byte, had bool, err error) {
+	if err = b.t.putLocked(key, val); err != nil {
+		return nil, false, err
+	}
+	return append(dst[:0], b.t.old...), b.t.hadOld, nil
+}
+
 func (b Batch) Delete(key []byte) (bool, error) { return b.t.deleteLocked(key) }
 func (b Batch) Get(key, dst []byte) ([]byte, bool, error) {
 	return get(b.t.pool, b.t.root, key, dst)

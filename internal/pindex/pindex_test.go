@@ -488,3 +488,25 @@ func TestBatchAtomic(t *testing.T) {
 	default:
 	}
 }
+
+func TestSwap(t *testing.T) {
+	tr := openMem(t, newMemFile(), 4<<20)
+	tr.Batch(func(b Batch) error {
+		old, had, err := b.Swap([]byte("k"), []byte("one"), nil)
+		if err != nil || had || len(old) != 0 {
+			t.Fatalf("first swap: %q %v %v", old, had, err)
+		}
+		old, had, _ = b.Swap([]byte("k"), []byte("two-longer"), nil)
+		if !had || string(old) != "one" {
+			t.Fatalf("second swap: %q %v", old, had)
+		}
+		old, had, _ = b.Swap([]byte("k"), []byte("two-longeR"), nil)
+		if !had || string(old) != "two-longer" {
+			t.Fatalf("third swap: %q %v", old, had)
+		}
+		return nil
+	})
+	if tr.Len() != 1 {
+		t.Fatal("len")
+	}
+}

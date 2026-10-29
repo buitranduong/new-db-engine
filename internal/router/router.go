@@ -12,6 +12,9 @@ package router
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -34,6 +37,17 @@ const (
 )
 
 type Router struct {
+	// cluster mode (NewCluster): every request goes to the node that
+	// reports itself the writable leader; the router finds it again when
+	// the leader dies or steps down.
+	nodes        []*url.URL
+	leaderIdx    atomic.Int32
+	discoverMu   sync.Mutex
+	lastDiscover time.Time
+	// FailoverWait is how long a request waits for a new leader (default 20s).
+	FailoverWait time.Duration
+	Rediscovered atomic.Int64
+
 	leader   *url.URL
 	replicas []*url.URL
 	lp       *httputil.ReverseProxy
@@ -74,6 +88,121 @@ func New(leader string, replicas ...string) (*Router, error) {
 		return nil
 	}
 	return r, nil
+}
+
+// NewCluster returns a router for the nodes of a Raft cluster (staskd
+// -raft-id, docs/06 section 5). Requests go to the current leader, found
+// through GET /v1/cluster. A request that reaches a node that is not the
+// leader (the node answers X-Stask-Not-Leader: nothing ran) or no node at
+// all (connection refused: nothing was sent) is repeated on the new
+// leader, up to FailoverWait. A request that was sent and got no answer is
+// not repeated, because the write may have been applied: the client gets a
+// 502 and decides, as it would after any lost answer.
+func NewCluster(nodes ...string) (*Router, error) {
+	if len(nodes) == 0 {
+		return nil, errors.New("router: no nodes")
+	}
+	r := &Router{FailoverWait: 20 * time.Second, WaitTimeout: 2 * time.Second, sessions: map[string]uint64{},
+		client: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	for _, n := range nodes {
+		u, err := url.Parse(n)
+		if err != nil {
+			return nil, err
+		}
+		r.nodes = append(r.nodes, u)
+	}
+	r.discover()
+	return r, nil
+}
+
+// discover asks every node who the leader is (at most one round per 20 ms).
+func (r *Router) discover() {
+	r.discoverMu.Lock()
+	defer r.discoverMu.Unlock()
+	if time.Since(r.lastDiscover) < 20*time.Millisecond {
+		return
+	}
+	defer func() { r.lastDiscover = time.Now() }()
+	type ans struct {
+		i    int
+		term uint64
+		ok   bool
+	}
+	ch := make(chan ans, len(r.nodes))
+	c := &http.Client{Timeout: 500 * time.Millisecond}
+	for i, n := range r.nodes {
+		go func(i int, n *url.URL) {
+			resp, err := c.Get(strings.TrimRight(n.String(), "/") + "/v1/cluster")
+			if err != nil {
+				ch <- ans{i: i}
+				return
+			}
+			defer resp.Body.Close()
+			var st struct {
+				Role     string
+				Term     uint64
+				Writable bool
+			}
+			if json.NewDecoder(resp.Body).Decode(&st) != nil || st.Role != "leader" || !st.Writable {
+				ch <- ans{i: i}
+				return
+			}
+			ch <- ans{i, st.Term, true}
+		}(i, n)
+	}
+	best, bt := -1, uint64(0)
+	for range r.nodes {
+		if a := <-ch; a.ok && (best < 0 || a.term > bt) {
+			best, bt = a.i, a.term
+		}
+	}
+	if best >= 0 && int32(best) != r.leaderIdx.Load() {
+		r.leaderIdx.Store(int32(best))
+		r.Rediscovered.Add(1)
+	}
+}
+
+// Leader is the base URL requests currently go to in cluster mode.
+func (r *Router) Leader() string { return r.nodes[r.leaderIdx.Load()].String() }
+
+func isDial(err error) bool {
+	var ne *net.OpError
+	return errors.As(err, &ne) && ne.Op == "dial"
+}
+
+func (r *Router) serveCluster(w http.ResponseWriter, req *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(req.Body, 64<<20+1))
+	if err != nil || len(body) > 64<<20 {
+		http.Error(w, "request body too large for routing", http.StatusRequestEntityTooLarge)
+		return
+	}
+	deadline := time.Now().Add(r.FailoverWait)
+	for {
+		to := r.nodes[r.leaderIdx.Load()]
+		min := uint64(0)
+		resp, err := r.forward(to, req, body, min)
+		switch {
+		case err == nil && !(resp.StatusCode == http.StatusServiceUnavailable && resp.Header.Get("X-Stask-Not-Leader") != ""):
+			if v, perr := strconv.ParseUint(resp.Header.Get(headerLSN), 10, 64); perr == nil {
+				r.note(sessionOf(req), v)
+			}
+			r.ToLeader.Add(1)
+			copyResp(w, resp)
+			return
+		case err == nil:
+			resp.Body.Close() // not the leader: nothing ran
+		case !isDial(err):
+			r.discover()
+			http.Error(w, fmt.Sprintf("router: the leader did not answer (%v); the request may or may not have been applied", err), http.StatusBadGateway)
+			return
+		}
+		r.discover()
+		if time.Now().After(deadline) {
+			http.Error(w, "router: no leader", http.StatusServiceUnavailable)
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
 }
 
 func sessionOf(req *http.Request) string {
@@ -117,6 +246,10 @@ func readOnly(req *http.Request) bool {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if len(r.nodes) > 0 {
+		r.serveCluster(w, req)
+		return
+	}
 	if len(r.replicas) == 0 || !readOnly(req) {
 		r.ToLeader.Add(1)
 		r.lp.ServeHTTP(w, req)

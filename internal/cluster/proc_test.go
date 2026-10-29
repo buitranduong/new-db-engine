@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"stask/internal/router"
 )
 
 func envInt(name string, def int) int {
@@ -286,4 +290,89 @@ func TestProcLatency(t *testing.T) {
 	}
 	t.Logf("machine load average at start: %s", strings.TrimSpace(string(load)))
 	_ = exec.Command
+}
+
+// TestProcRouter: clients talk only to the router (staskroute -nodes); the
+// leader is killed three times; the router finds the new leader and the
+// clients keep writing. Every acknowledged write must be on all nodes.
+func TestProcRouter(t *testing.T) {
+	c := newCluster(t, 3)
+	c.createTable()
+	c.waitLeader(20 * time.Second)
+	var urls []string
+	for _, nd := range c.nodes {
+		urls = append(urls, "http://"+nd.http)
+	}
+	rt, err := router.NewCluster(urls...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(rt)
+	defer front.Close()
+	var mu sync.Mutex
+	ackedKeys := map[string]int{}
+	var lastAck time.Time
+	var maxGap time.Duration
+	errs := 0
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			cl := &http.Client{Timeout: 25 * time.Second}
+			for n := 0; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				key := fmt.Sprintf("rt-%d-%d", g, n)
+				body := fmt.Sprintf(`{"ops":[{"op":"put","table":"t","row":{"id":%q,"v":%d}}]}`, key, n)
+				resp, err := cl.Post(front.URL+"/v1/write", "application/json", strings.NewReader(body))
+				mu.Lock()
+				if err == nil && resp.StatusCode == 200 {
+					now := time.Now()
+					if !lastAck.IsZero() && now.Sub(lastAck) > maxGap {
+						maxGap = now.Sub(lastAck)
+					}
+					lastAck = now
+					ackedKeys[key] = n
+				} else {
+					errs++
+				}
+				mu.Unlock()
+				if resp != nil {
+					resp.Body.Close()
+				}
+			}
+		}(g)
+	}
+	for cycle := 0; cycle < 3; cycle++ {
+		time.Sleep(1500 * time.Millisecond)
+		li, _ := c.waitLeader(30 * time.Second)
+		mu.Lock()
+		before := len(ackedKeys)
+		mu.Unlock()
+		c.kill(c.nodes[li])
+		for end := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			mu.Lock()
+			n := len(ackedKeys)
+			mu.Unlock()
+			if n > before+50 {
+				break
+			}
+			if time.Now().After(end) {
+				t.Fatal("clients did not resume through the router after the leader was killed")
+			}
+		}
+		c.start(c.nodes[li])
+	}
+	close(stop)
+	wg.Wait()
+	c.settle()
+	w := &writers{acked: ackedKeys, unknown: map[string]int{}}
+	c.verify(w)
+	t.Logf("3 leader kills behind the router: %d acknowledged writes, all on all nodes; %d client-visible errors (writes in flight when the leader died); longest pause between two acknowledgements %v; router found a new leader %d times",
+		len(ackedKeys), errs, maxGap.Round(10*time.Millisecond), rt.Rediscovered.Load())
 }

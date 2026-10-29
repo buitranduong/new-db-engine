@@ -30,6 +30,8 @@ type check struct {
 func main() {
 	url := flag.String("url", "postgres://app@127.0.0.1:5432/stask?sslmode=disable", "staskd pg url")
 	only := flag.String("only", "", "run only checks whose id contains this")
+	baseline := flag.String("baseline", "", "file holding \"pass N total M\"; exit 1 if the number of passing probes is below N")
+	writeBaseline := flag.Bool("write-baseline", false, "write the current result to the -baseline file instead of comparing")
 	flag.Parse()
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, *url+"&default_query_exec_mode=simple_protocol")
@@ -78,6 +80,30 @@ func main() {
 		fmt.Printf("| %s | %s | %s | `%s` | %s | **%s** |\n", c.ID, c.Task, c.Doc, c.Want, cell(actual), v)
 	}
 	fmt.Printf("\n%d of %d probes pass\n", pass, total)
+	if *baseline == "" {
+		return
+	}
+	if *writeBaseline {
+		if err := os.WriteFile(*baseline, []byte(fmt.Sprintf("pass %d total %d\n", pass, total)), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "write baseline:", err)
+			os.Exit(2)
+		}
+		return
+	}
+	var bp, bt int
+	data, err := os.ReadFile(*baseline)
+	if err == nil {
+		_, err = fmt.Sscanf(string(data), "pass %d total %d", &bp, &bt)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read baseline:", err)
+		os.Exit(2)
+	}
+	if pass < bp {
+		fmt.Printf("\nREGRESSION: %d probes pass, baseline is %d\n", pass, bp)
+		os.Exit(1)
+	}
+	fmt.Printf("\nbaseline ok: %d >= %d\n", pass, bp)
 }
 
 func cell(s string) string {

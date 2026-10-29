@@ -84,6 +84,7 @@ type qexec struct {
 	now      int64
 	subCache map[*boundSub]*relation
 	inSets   map[*boundSub]*inSet
+	hashSubs map[*boundSub]*hashSub // semijoin.go
 	cteCache map[*cteDef]*relation
 
 	memUsed, memReserved int64       // membudget.go
@@ -255,6 +256,9 @@ type boundSub struct {
 	op   string
 	all  bool
 	not  bool
+
+	corr     []Expr    // semijoin.go: bound outer key expressions of the hash form
+	fallback *boundSub // the nested-loop form of a hash-form subquery
 }
 
 func (*boundSub) expr() {}
@@ -378,7 +382,13 @@ func (b *binder) bind(x Expr) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &boundSub{kind: "exists", plan: p}, nil
+		bs := &boundSub{kind: "exists", plan: p}
+		if p.isCorrelated() {
+			if hs, ok := b.decorrelate(bs, e.Q, nil); ok {
+				return hs, nil
+			}
+		}
+		return bs, nil
 	case *InSub:
 		bx, err := b.bind(e.X)
 		if err != nil {
@@ -388,7 +398,13 @@ func (b *binder) bind(x Expr) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &boundSub{kind: "in", plan: p, x: bx, not: e.Not}, nil
+		bs := &boundSub{kind: "in", plan: p, x: bx, not: e.Not}
+		if p.isCorrelated() {
+			if hs, ok := b.decorrelate(bs, e.Q, e.X); ok {
+				return hs, nil
+			}
+		}
+		return bs, nil
 	case *AnyAll:
 		bx, err := b.bind(e.X)
 		if err != nil {
@@ -2560,6 +2576,9 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 	if qx == nil {
 		return Null, errf(codeFeature, "subqueries are not supported here")
 	}
+	if b.corr != nil {
+		return c.evalHashSub(b)
+	}
 	run := func() (*relation, error) {
 		if !b.plan.isCorrelated() {
 			if rel := qx.subCache[b]; rel != nil {
@@ -2643,6 +2662,9 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 		}
 		for _, v := range lv {
 			if v.IsNull() {
+				if len(set.keys) == 0 && !set.hasNull {
+					return BoolD(b.not), nil // an empty subquery: IN is false, NOT IN true
+				}
 				return Null, nil
 			}
 		}

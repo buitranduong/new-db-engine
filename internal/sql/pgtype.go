@@ -119,7 +119,7 @@ func (t pgTy) family() Kind {
 	case tyDate:
 		return KDate
 	}
-	return KNull
+	return supfixFamily(t.oid)
 }
 
 func (t pgTy) isInt() bool { return t.oid == tyInt2 || t.oid == tyInt4 || t.oid == tyInt8 }

@@ -207,9 +207,9 @@ var tcKeys = func() []tcKey {
 	})
 	add("J", func(t time.Time, fm bool) string { return strconv.Itoa(tcJulian(t)) })
 	add("Q", func(t time.Time, fm bool) string { return strconv.Itoa((int(t.Month())-1)/3 + 1) })
-	add("RM", func(t time.Time, fm bool) string { return tcNameWidth(tcRoman[12-int(t.Month())], 4, fm) })
+	add("RM", func(t time.Time, fm bool) string { return tcNameWidth(tcRoman[int(t.Month())-1], 4, fm) })
 	add("rm", func(t time.Time, fm bool) string {
-		return tcNameWidth(strings.ToLower(tcRoman[12-int(t.Month())]), 4, fm)
+		return tcNameWidth(strings.ToLower(tcRoman[int(t.Month())-1]), 4, fm)
 	})
 	add("TZH", func(t time.Time, fm bool) string { return "+00" })
 	add("TZM", func(t time.Time, fm bool) string { return "00" })

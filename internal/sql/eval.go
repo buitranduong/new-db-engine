@@ -795,11 +795,32 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		}
 		return FloatD(x / scale), nil
 	case "to_timestamp":
-		if err := nargs(1, 1); err != nil {
+		if err := nargs(1, 2); err != nil {
 			return Null, err
+		}
+		if len(args) == 2 {
+			if args[0].IsNull() || args[1].IsNull() {
+				return Null, nil
+			}
+			t, err := parseWithFormat(args[0].String(), args[1].String())
+			return TimeD(t.UnixMicro()), err
 		}
 		v, err := coerce(args[0], KFloat)
 		return TimeD(int64(math.Round(v.F * usPerSec))), err
+	case "to_date":
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		if args[0].IsNull() || args[1].IsNull() {
+			return Null, nil
+		}
+		t, err := parseWithFormat(args[0].String(), args[1].String())
+		return DateD(t.UnixMicro()), err
+	case "timezone": // timezone(zone, ts), what AT TIME ZONE reads as
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		return atTimeZone(args[1], args[0])
 	case "date_trunc":
 		if err := nargs(2, 2); err != nil {
 			return Null, err

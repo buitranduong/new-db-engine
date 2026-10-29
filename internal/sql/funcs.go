@@ -1112,7 +1112,24 @@ func toChar(v Datum, f string) (Datum, error) {
 		return TextD(b.String()), nil
 	case KInt, KFloat:
 		x, _ := coerce(v, KFloat)
-		return TextD(numChar(x.F, f)), nil
+		return TextD(numChar(func(n int) (bool, string) {
+			return x.F < 0, strconv.FormatFloat(math.Abs(x.F), 'f', n, 64)
+		}, f)), nil
+	case KNumeric:
+		d := numOf(v)
+		return TextD(numChar(func(n int) (bool, string) {
+			r := d.Round(n)
+			s := r.Abs().String()
+			if n > 0 {
+				if !strings.Contains(s, ".") {
+					s += "."
+				}
+				if i := strings.IndexByte(s, '.'); len(s)-i-1 < n {
+					s += strings.Repeat("0", n-(len(s)-i-1))
+				}
+			}
+			return r.Sign() < 0, s
+		}, f)), nil
 	}
 	return Null, errf(codeUndefinedFunction, "function to_char(%s, text) does not exist", v.K)
 }
@@ -1133,7 +1150,7 @@ func fmtWidth(s string, w int, fm bool) string {
 
 // numChar formats a number with a to_char numeric pattern (9, 0, ., D, ,,
 // FM, S, MI).
-func numChar(x float64, f string) string {
+func numChar(get func(nfrac int) (neg bool, s string), f string) string {
 	fm := strings.Contains(f, "FM")
 	f = strings.ReplaceAll(f, "FM", "")
 	f = strings.ReplaceAll(f, "D", ".")
@@ -1150,9 +1167,7 @@ func numChar(x float64, f string) string {
 		_ = i
 	}
 	nfrac := strings.Count(fracPat, "9") + strings.Count(fracPat, "0")
-	neg := x < 0
-	x = math.Abs(x)
-	s := strconv.FormatFloat(x, 'f', nfrac, 64)
+	neg, s := get(nfrac)
 	ip, fp, _ := strings.Cut(s, ".")
 	if len(ip) > digits {
 		h := strings.Repeat("#", digits)
@@ -1182,14 +1197,19 @@ func numChar(x float64, f string) string {
 		}
 		ip = b.String()
 	}
-	out := ip
+	frac := ""
 	if nfrac > 0 {
-		if fm {
-			fp = strings.TrimRight(fp, "0")
+		if fm { // trailing zeros of 9 positions go, those of 0 positions stay
+			keep := strings.LastIndex(fracPat, "0") + 1
+			for len(fp) > keep && strings.HasSuffix(fp, "0") {
+				fp = fp[:len(fp)-1]
+			}
 		}
-		out += "." + fp
+		if fp != "" {
+			frac = "." + fp
+		}
 	} else if strings.HasSuffix(f, ".") {
-		out += "."
+		frac = "."
 	}
 	sign := " "
 	if neg {
@@ -1197,12 +1217,12 @@ func numChar(x float64, f string) string {
 	}
 	if fm {
 		if neg {
-			return "-" + out
+			return "-" + ip + frac
 		}
-		return out
+		return ip + frac
 	}
 	width := digits + strings.Count(intPat, ",")
-	return fmt.Sprintf("%*s", width+1, sign+out)
+	return fmt.Sprintf("%*s", width+1, sign+ip) + frac
 }
 
 // pgFormat is PostgreSQL's format(): %s, %I, %L and %%.
@@ -1395,7 +1415,12 @@ func funcKind(name string, args []Kind) Kind {
 			return KTimestamp
 		}
 		return KTime
-	case "make_date", "todate", "todate32", "tostartofmonth", "tostartofyear", "tostartofquarter", "tostartofweek",
+	case "timezone":
+		if arg(1) == KTimestamp || arg(1) == KDate {
+			return KTime
+		}
+		return KTimestamp
+	case "to_date", "make_date", "todate", "todate32", "tostartofmonth", "tostartofyear", "tostartofquarter", "tostartofweek",
 		"tomonday", "today", "yesterday":
 		return KDate
 	case "age":

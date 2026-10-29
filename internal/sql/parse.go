@@ -1432,6 +1432,13 @@ func (p *parser) unary() (Expr, error) {
 				x = &Cast{x, t, p.pgSpec}
 			}
 			continue
+		case p.isKw("at") && p.peekN(1).s == "time" && p.peekN(2).s == "zone":
+			p.i += 3
+			var z Expr
+			if z, err = p.unary(); err == nil {
+				x = &Func{Name: "timezone", Args: []Expr{z, x}}
+			}
+			continue
 		case p.isOp("[") && p.i > 0 && (p.toks[p.i-1].s == ")" || p.toks[p.i-1].s == "]" && p.toks[p.i-1].k == tOp ||
 			p.toks[p.i-1].k == tIdent && !reserved[p.toks[p.i-1].s] || p.toks[p.i-1].k == tQuoted): // (array)[i], col[i]
 			p.next()

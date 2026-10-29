@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"stask/internal/core"
+	"stask/internal/pgnum"
 	"stask/internal/proj"
 	"stask/internal/schema"
 )
@@ -100,7 +101,7 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 			ty := t.Columns[ci].T
 			isTime[i] = ty.IsTime() && (f.Name == "min" || f.Name == "max")
 			tcol[i] = ty
-			if f.Name != "count" && ty != schema.TInt && ty != schema.TFloat && !isTime[i] {
+			if f.Name != "count" && ty != schema.TInt && ty != schema.TFloat && ty != schema.TNumeric && !isTime[i] {
 				return nil, nil, false, nil
 			}
 			if f.Distinct {
@@ -176,6 +177,12 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 				}
 			case float64:
 				d = FloatD(x)
+			case string: // sum, avg, min, max of a numeric column: its text
+				n, err := pgnum.Parse(x)
+				if err != nil {
+					return nil, nil, false, fmt.Errorf("view numeric value %q: %w", x, err)
+				}
+				d = NumericD(n)
 			default:
 				return nil, nil, false, fmt.Errorf("view aggregate value %T", x)
 			}
@@ -394,6 +401,10 @@ func viewValue(ty schema.ColType, d Datum) (any, bool) {
 	case k == d.K && (k == KInt || isTime(k)):
 		return d.I, true
 	case isTime(k) && isTime(d.K):
+		return d.I, true
+	case k == KNumeric && d.K == KNumeric: // a numeric(p<=18,s) column: the view scales the text
+		return d.S, true
+	case k == KNumeric && d.K == KInt:
 		return d.I, true
 	case k == KFloat && (d.K == KInt || d.K == KNumeric):
 		f, _ := coerce(d, KFloat)

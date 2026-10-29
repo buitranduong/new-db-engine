@@ -8,6 +8,7 @@ import (
 	"iter"
 	"maps"
 	"math"
+	"math/bits"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +53,10 @@ type AggQuery struct {
 	// scan when it returns true (statement cancel or timeout); the result
 	// is then partial and the caller must discard it.
 	Interrupted func() bool `json:"-"`
+
+	// gscale[i] >= 0: group column i is a scaled numeric (colnum.go); its
+	// integers are rendered as decimal text in the result
+	gscale []int
 }
 
 type Result struct {
@@ -83,13 +88,16 @@ type cfilter struct {
 	or  [][]cfilter           // opOr
 }
 
-func compileFilters(t *schema.Table, fs []Filter) ([]cfilter, error) {
+// compileFilters compiles fs. view: they run on the columnar view, where a
+// numeric(p<=18,s) column is its scaled integers (colnum.go); on rows such
+// a column is not supported.
+func compileFilters(t *schema.Table, fs []Filter, view bool) ([]cfilter, error) {
 	out := make([]cfilter, 0, len(fs))
 	for _, f := range fs {
 		if strings.EqualFold(f.Op, "or") {
 			cf := cfilter{op: opOr, col: -1}
 			for _, conj := range f.Any {
-				b, err := compileFilters(t, conj)
+				b, err := compileFilters(t, conj, view)
 				if err != nil {
 					return nil, err
 				}
@@ -108,6 +116,17 @@ func compileFilters(t *schema.Table, fs []Filter) ([]cfilter, error) {
 		o, ok := op[strings.ToLower(f.Op)]
 		if !ok {
 			return nil, fmt.Errorf("unknown operator %q", f.Op)
+		}
+		if sc, ok := numScaleOf(&t.Columns[ci]); ok && t.Columnar {
+			if !view {
+				return nil, fmt.Errorf("filter %s: numeric needs the columnar view", f.Col)
+			}
+			cf, err := numFilter(ci, sc, f, o)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, cf)
+			continue
 		}
 		cf := cfilter{col: ci, t: ct, op: o}
 		switch o {
@@ -220,6 +239,12 @@ type aggSpec struct {
 	// nullEmpty: sum over no values is NULL (SQL) rather than 0
 	nullEmpty bool
 	name      string
+	// num: a scaled numeric column (colnum.go): isInt holds, the integers
+	// are value*10^scale, and the result is decimal text. wide: sums are
+	// 128-bit (acc.ihi), set per query from the table's size.
+	num   bool
+	scale int
+	wide  bool
 }
 
 func compileAggs(t *schema.Table, as []Agg) ([]aggSpec, error) {
@@ -241,6 +266,10 @@ func compileAggs(t *schema.Table, as []Agg) ([]aggSpec, error) {
 				return nil, fmt.Errorf("unknown column %q", a.Col)
 			}
 			ct := t.Columns[ci].T.Store()
+			if sc, ok := numScaleOf(&t.Columns[ci]); ok && t.Columnar && s.fn != "count" {
+				s.num, s.scale = true, sc
+				ct = schema.TInt
+			}
 			if s.fn != "count" && ct != schema.TInt && ct != schema.TFloat && ct != schema.TTime {
 				return nil, fmt.Errorf("%s(%s): column is not numeric", a.Fn, a.Col)
 			}
@@ -265,6 +294,7 @@ type acc struct {
 	fsum       float64
 	min, max   float64 // float columns
 	imin, imax int64   // integer columns: exact beyond 2^53
+	ihi        int64   // high half of a 128-bit sum (aggSpec.wide)
 }
 
 func newAccs(n int) []acc {
@@ -294,7 +324,8 @@ func (a *acc) addFloat(v float64) {
 
 func (a *acc) merge(b *acc) {
 	a.n += b.n
-	a.isum += b.isum
+	lo, c := bits.Add64(uint64(a.isum), uint64(b.isum), 0)
+	a.isum, a.ihi = int64(lo), a.ihi+b.ihi+int64(c)
 	a.fsum += b.fsum
 	a.min = math.Min(a.min, b.min)
 	a.max = math.Max(a.max, b.max)
@@ -302,6 +333,12 @@ func (a *acc) merge(b *acc) {
 }
 
 func (s *aggSpec) value(a *acc) any {
+	if s.num && s.fn != "count" {
+		if a.n == 0 && (s.nullEmpty || s.fn != "sum") {
+			return nil
+		}
+		return s.numValue(a)
+	}
 	switch s.fn {
 	case "count":
 		return a.n
@@ -419,6 +456,8 @@ func (s *aggSpec) key(a *acc) sortKey {
 		return sortKey{kind: 1, i: a.n}
 	case a.n == 0 && (s.fn != "sum" || s.nullEmpty):
 		return sortKey{}
+	case s.num && s.fn == "sum" && s.wide:
+		return sortKey{kind: 2, f: float64(a.ihi)*(1<<64) + float64(uint64(a.isum))} // approximate: top-k is not pushed down
 	case s.fn == "avg":
 		if s.isInt {
 			return sortKey{kind: 2, f: float64(a.isum) / float64(a.n)}
@@ -526,6 +565,11 @@ func finishParts(groupCols []string, specs []aggSpec, parts []iter.Seq[*group], 
 	res.Rows = make([][]any, 0, len(cs))
 	for _, c := range cs {
 		row := append(make([]any, 0, len(c.g.vals)+len(specs)), c.g.vals...)
+		for gi, sc := range q.gscale {
+			if v, ok := row[gi].(int64); ok && sc >= 0 {
+				row[gi] = fmtScaled(v, sc)
+			}
+		}
 		for i := range specs {
 			row = append(row, specs[i].value(&c.g.accs[i]))
 		}
@@ -624,7 +668,7 @@ func NewRowAggregator(t *schema.Table, q *AggQuery) (*RowAggregator, error) {
 			return nil, err
 		}
 	}
-	fs, err := compileFilters(t, q.Filters)
+	fs, err := compileFilters(t, q.Filters, false)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +677,9 @@ func NewRowAggregator(t *schema.Table, q *AggQuery) (*RowAggregator, error) {
 		return nil, err
 	}
 	for i := range specs {
+		if specs[i].num {
+			return nil, fmt.Errorf("%s: numeric needs the columnar view", q.Aggs[i].Col)
+		}
 		specs[i].nullEmpty = q.SQLNulls
 	}
 	ra := &RowAggregator{q: q, t: t, filters: fs, specs: specs, groups: map[string]*group{}}
@@ -643,6 +690,9 @@ func NewRowAggregator(t *schema.Table, q *AggQuery) (*RowAggregator, error) {
 		}
 		if t.Columns[ci].T == schema.TFloat {
 			return nil, fmt.Errorf("cannot group by %s column %q", t.Columns[ci].Type, g)
+		}
+		if _, ok := numScaleOf(&t.Columns[ci]); ok && t.Columnar {
+			return nil, fmt.Errorf("group by %q: numeric needs the columnar view", g)
 		}
 		ra.gcols = append(ra.gcols, ci)
 	}

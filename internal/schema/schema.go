@@ -67,7 +67,9 @@ func (c ColType) IsTime() bool { return c == TTime || c == TTimestamp || c == TT
 
 // Store is the type under which the derived views (columnar, series)
 // hold a column: they have only integers, floats and strings. Numeric has
-// no such form (it is refused for columnar tables).
+// no such form: the columnar view holds numeric(p<=18,s) as scaled
+// integers itself (internal/proj/colnum.go) and leaves other numerics to
+// the rows.
 func (c ColType) Store() ColType {
 	switch c {
 	case TTimestamp, TTimestamptz:
@@ -381,13 +383,6 @@ func (t *Table) Init() error {
 	}
 	if err := t.initIndexes(); err != nil {
 		return err
-	}
-	if t.Columnar {
-		for _, c := range t.Columns {
-			if c.T == TNumeric {
-				return fmt.Errorf("column %q: numeric is not supported on columnar tables", c.Name)
-			}
-		}
 	}
 	if err := t.checkSubstr(); err != nil {
 		return err

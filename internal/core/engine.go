@@ -636,20 +636,16 @@ func (e *Engine) Failed() error {
 
 func (e *Engine) loadVersion(loc wal.Loc) (*Version, error) {
 	e.Stats.DiskLoads.Add(1)
-	rec, err := e.log.ReadRecord(loc.Seg, int64(loc.Off))
+	m, err := e.log.ReadOpMeta(loc.Seg, int64(loc.Off), int(loc.Idx))
 	if err != nil {
 		return nil, err
 	}
-	if int(loc.Idx) >= len(rec.Ops) {
-		return nil, wal.ErrTorn
+	lsn, ts := m.LSN, m.TS
+	if m.Kind == wal.KindMove {
+		lsn, ts = m.OrigLSN, m.OrigTS
 	}
-	op := rec.Ops[loc.Idx]
-	lsn, ts := rec.LSN, rec.TS
-	if rec.Kind == wal.KindMove {
-		lsn, ts = op.OrigLSN, op.OrigTS
-	}
-	return &Version{LSN: lsn, TS: ts, Loc: loc, ValOff: op.ValOff, ValLen: uint32(len(op.Val)),
-		Deleted: op.Kind == wal.OpDel, Prev: op.Prev, Full: true}, nil
+	return &Version{LSN: lsn, TS: ts, Loc: loc, ValOff: m.ValOff, ValLen: m.ValLen,
+		Deleted: m.Op == wal.OpDel, Prev: m.Prev, Full: true}, nil
 }
 
 // fill sets v's TS and Prev from its log record. The record of a version

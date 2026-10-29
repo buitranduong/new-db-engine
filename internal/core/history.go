@@ -377,6 +377,7 @@ func (e *Engine) checkSnapshotT(t *TableState, snap uint64) error {
 
 type histState struct {
 	mu      sync.Mutex
+	fileMu  sync.Mutex // one writer of the files at a time (the GC, a base backup)
 	pending []remapSet // remap entries not yet in the file
 	inFile  int        // entries in the file (some may have expired)
 	// marks in gc-marks.bin that have expired from memory
@@ -436,6 +437,8 @@ type gcStateFile struct {
 // call durable. The GC calls it before it removes a segment: a relocated
 // old version is reachable after a restart through this file only.
 func (e *Engine) persistHistoryState() error {
+	e.gc.hist.fileMu.Lock()
+	defer e.gc.hist.fileMu.Unlock()
 	st := gcStateFile{Floor: e.gc.floor.Load(), Tables: map[string]uint64{}}
 	for _, t := range e.allTables() {
 		if f := t.floor.Load(); f > 0 {
@@ -482,6 +485,8 @@ func (e *Engine) persistHistoryState() error {
 // of it has expired (entries are dropped from memory when the floor passes
 // the version that superseded the relocated one).
 func (e *Engine) pruneRemapFile() {
+	e.gc.hist.fileMu.Lock()
+	defer e.gc.hist.fileMu.Unlock()
 	e.gc.remapMu.RLock()
 	n := len(e.gc.remap)
 	e.gc.remapMu.RUnlock()
@@ -507,11 +512,51 @@ func (e *Engine) pruneRemapFile() {
 	}
 }
 
+var historyFiles = []string{"gc-state.json", "gc-remap.bin", "gc-marks.bin"}
+
+// shipHistoryState sends the files a new replica or restored backup needs
+// to read the history the GC has relocated (they travel with the
+// checkpoint; adoptShippedHistory moves them into place at open).
+func (e *Engine) shipHistoryState(send func(name string, data []byte) error) error {
+	if err := e.persistHistoryState(); err != nil {
+		return err
+	}
+	for _, f := range historyFiles {
+		b, err := os.ReadFile(filepath.Join(e.opts.Dir, f))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := send(f, b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// adoptShippedHistory moves the files of shipHistoryState from the
+// checkpoint directory, where a base backup puts them, to the data directory.
+func (e *Engine) adoptShippedHistory() {
+	for _, f := range historyFiles {
+		src := filepath.Join(e.ckptDir(), f)
+		if _, err := os.Stat(src); err == nil {
+			if _, err := os.Stat(filepath.Join(e.opts.Dir, f)); os.IsNotExist(err) {
+				os.Rename(src, filepath.Join(e.opts.Dir, f))
+			} else {
+				os.Remove(src)
+			}
+		}
+	}
+}
+
 // restoreHistoryState runs at open: it rebuilds the time marks from the
 // log, loads the floors and the remap, and returns the first LSN of each
 // segment.
 func (e *Engine) restoreHistoryState() map[uint32]uint64 {
 	g := &e.gc
+	e.adoptShippedHistory()
 	segLSN := map[uint32]uint64{}
 	d := e.durable.Load()
 	marks := []lsnMark{{0, 0}} // before everything: nothing was committed

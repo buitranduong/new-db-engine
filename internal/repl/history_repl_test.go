@@ -56,8 +56,7 @@ func TestReplicaHistory(t *testing.T) {
 	}
 	write(0, 14)
 
-	rdir := filepath.Join(base, "replica")
-	openReplica := func() (*core.Engine, func()) {
+	openReplicaAt := func(rdir string) (*core.Engine, func()) {
 		segMax, err := Prepare(srv.Addr(), rdir, nil, t.Logf)
 		if err != nil {
 			t.Fatal(err)
@@ -72,6 +71,8 @@ func TestReplicaHistory(t *testing.T) {
 		go func() { defer fw.Done(); Follow(r, srv.Addr(), nil, stop, t.Logf) }()
 		return r, func() { close(stop); fw.Wait(); r.Close() }
 	}
+	rdir := filepath.Join(base, "replica")
+	openReplica := func() (*core.Engine, func()) { return openReplicaAt(rdir) }
 	replica, closeReplica := openReplica()
 	defer func() { closeReplica() }()
 	waitLSN(t, replica, leader.DurableLSN())
@@ -169,4 +170,11 @@ func TestReplicaHistory(t *testing.T) {
 	replica, closeReplica = openReplica()
 	waitLSN(t, replica, leader.DurableLSN())
 	compare("after replica restart")
+
+	// a replica created after the leader relocated old versions gets the
+	// relocation table with its base backup
+	closeReplica()
+	replica, closeReplica = openReplicaAt(filepath.Join(base, "replica2"))
+	waitLSN(t, replica, leader.DurableLSN())
+	compare("replica created after relocation")
 }

@@ -196,6 +196,9 @@ func (e *Engine) BaseBackup(s *Shipper, sendCkpt func(name string, data []byte) 
 			return wal.Pos{}, err
 		}
 	}
+	if err := e.shipHistoryState(sendCkpt); err != nil {
+		return wal.Pos{}, err
+	}
 	if err := sendCkpt(name, data); err != nil {
 		return wal.Pos{}, err
 	}

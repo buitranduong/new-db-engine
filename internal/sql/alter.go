@@ -128,6 +128,8 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 				switch name := d.Columns[i].Name; {
 				case name == d.Key:
 					return errf(codeFeature, "cannot drop column %q: it is the primary key of %q, which every STASK table needs", name, d.Name)
+				case slices.ContainsFunc(d.Substr, func(x schema.SubstrIndex) bool { return x.Col == name }):
+					return errf(codeFeature, "cannot drop column %q: a trigram index covers it (DROP INDEX first)", name)
 				case slices.Contains(d.Search, name):
 					return errf(codeFeature, "cannot drop column %q: the table's search view indexes it", name)
 				case d.TimeColumn != "":
@@ -174,6 +176,10 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 				ren(&d.SeriesColumn)
 				for j := range d.Search {
 					ren(&d.Search[j])
+				}
+				d.Substr = slices.Clone(d.Substr)
+				for j := range d.Substr {
+					ren(&d.Substr[j].Col)
 				}
 				renamed[a.Column] = a.NewName
 			case "rename_table":

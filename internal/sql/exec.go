@@ -73,6 +73,7 @@ func NewSession(e *core.Engine) *Session {
 		"application_name": "", "search_path": "public", "integer_datetimes": "on", "server_encoding": "UTF8",
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
 		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0",
+		SearchConsistencyVar: "bounded", SearchMaxLagVar: "1000", LastPlanVar: "",
 	}}
 }
 
@@ -228,6 +229,8 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreateSubstrIndex, *DropSubstrIndex, *Explain:
+		return s.execSubstr(st)
 	case *DropTable, *Truncate:
 		// applied at once, not at commit, like CREATE TABLE (PostgreSQL
 		// runs both inside the transaction)
@@ -342,6 +345,10 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		if _, err := parseStaleness(strings.Trim(st.Value, "'\"")); err != nil {
 			return nil, err
 		}
+	case SearchConsistencyVar, SearchMaxLagVar:
+		if err := checkSearchVar(name, strings.Trim(st.Value, "'\"")); err != nil {
+			return nil, err
+		}
 	case LastLSNVar:
 		return nil, errf("55000", "parameter %q cannot be changed", LastLSNVar)
 	case ReadStalenessVar:
@@ -383,6 +390,12 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 			for _, f := range strings.Split(v, ",") {
 				if f = strings.TrimSpace(f); f != "" {
 					t.Search = append(t.Search, f)
+				}
+			}
+		case "trigram":
+			for _, f := range strings.Split(v, ",") {
+				if f = strings.TrimSpace(f); f != "" {
+					t.Substr = append(t.Substr, schema.SubstrIndex{Name: c.Name + "_" + f + "_trgm_idx", Col: f})
 				}
 			}
 		case "time_column":
@@ -1175,7 +1188,8 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				groups, order, done = g, o, true
 			}
 		}
-		if grouped && !done {
+		cand := s.substrPrepare(tx, sc.t, sc, ctx, st.Where)
+		if grouped && !done && cand == nil {
 			g, o, ok, err := groupParallel(tx, st, sc.t, ctx, aggs)
 			if err != nil {
 				return nil, err
@@ -1184,7 +1198,15 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				groups, order, done = g, o, true
 			}
 		}
-		if !done {
+		if !done && cand != nil {
+			hint := int64(0)
+			if !grouped && len(st.OrderBy) == 0 && !st.Distinct && limit > 0 {
+				hint = limit + offset
+			}
+			if err := s.scanCandidates(tx, cand, ctx, st.Where, hint, visit); err != nil {
+				return nil, err
+			}
+		} else if !done {
 			if err := s.scanRows(tx, sc.t, ctx, st.Where, visit); err != nil {
 				return nil, err
 			}

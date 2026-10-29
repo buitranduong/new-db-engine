@@ -106,6 +106,8 @@ type Table struct {
 	// attisdropped attributes: rows are not rewritten, and those stored
 	// before the drop are read past the dropped column's value.
 	Dropped []Column `json:"dropped_columns,omitempty"`
+	// Substr are the substring (trigram) search indexes (substr.go).
+	Substr []SubstrIndex `json:"substr_indexes,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN
@@ -191,6 +193,9 @@ func (t *Table) Init() error {
 		if !ok || (t.Columns[i].T != TText && t.Columns[i].T != TString) {
 			return fmt.Errorf("search column %q must be text/string", s)
 		}
+	}
+	if err := t.checkSubstr(); err != nil {
+		return err
 	}
 	if t.TimeColumn != "" {
 		i, ok := t.idx[t.TimeColumn]

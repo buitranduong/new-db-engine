@@ -334,6 +334,18 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			return IntD(0), nil
 		}
 		return IntD(int64(utf8.RuneCountInString(str(0)[:i]) + 1)), nil
+	case "sim_pretty": // sim_pretty(number, 'quad'|'triple'|'asc'|'repeat'|'palin'): see proj.PrettyFlags
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		if args[0].IsNull() {
+			return Null, nil
+		}
+		bit, ok := proj.PrettyNames[strings.ToLower(str(1))]
+		if !ok {
+			return Null, errf(codeInvalidParameter, "sim_pretty: unknown class %q (quad, triple, asc, repeat, palin)", str(1))
+		}
+		return BoolD(proj.PrettyFlags(str(0))&bit != 0), nil
 	case "regexp_like", "match":
 		if err := nargs(2, 3); err != nil {
 			return Null, err
@@ -1230,7 +1242,7 @@ func funcKind(name string, args []Kind) Kind {
 		return arg(1)
 	case "multiif":
 		return arg(1)
-	case "bool_and", "bool_or", "every", "starts_with", "startswith", "endswith", "ends_with", "regexp_like",
+	case "bool_and", "bool_or", "every", "starts_with", "startswith", "endswith", "ends_with", "regexp_like", "sim_pretty",
 		"match", "isnull", "isnotnull", "is_distinct_from", "is_not_distinct_from", "has", "empty", "notempty":
 		return KBool
 	case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "to_timestamp", "date_trunc",

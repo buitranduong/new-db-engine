@@ -184,8 +184,13 @@ func (p *parser) statement() (Stmt, error) {
 	case "grant", "revoke":
 		p.next()
 		return p.grantStmt(t.s == "revoke")
+	case "explain":
+		return p.explainStmt()
 	case "drop":
 		p.next()
+		if st, ok, err := p.dropSubstrIndex(); ok {
+			return st, err
+		}
 		if p.acceptKw("role") || p.acceptKw("user") {
 			return p.dropRole()
 		}
@@ -380,6 +385,9 @@ func (p *parser) statement() (Stmt, error) {
 
 func (p *parser) createStmt() (Stmt, error) {
 	p.next()
+	if st, ok, err := p.createSubstrIndex(); ok {
+		return st, err
+	}
 	if st, ok, err := p.createTrigger(); ok {
 		return st, err
 	}

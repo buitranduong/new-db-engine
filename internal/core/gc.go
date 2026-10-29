@@ -45,11 +45,18 @@ var (
 type segStat struct {
 	live int64 // bytes of head versions stored in the segment
 	// bytes of versions stored here by the LSN that superseded them
-	// (ascending, at most maxSups entries; when full, the two closest
-	// neighbours merge under the newer LSN, so entries spread over the
-	// whole range): those superseded after the horizon are still needed,
-	// so draining copies them instead of reclaiming them
-	sups []supBytes
+	// (ascending, at most maxSups entries per retention class; when full,
+	// the two closest neighbours merge under the newer LSN, so entries
+	// spread over the whole range): those superseded after the horizon are
+	// still needed, so draining copies them instead of reclaiming them. A
+	// class is a table's history_retention (0: the engine-wide one), as a
+	// segment mixes tables whose history is kept for different times.
+	sups []supClass
+}
+
+type supClass struct {
+	ret int64
+	l   []supBytes
 }
 
 type supBytes struct {
@@ -60,11 +67,14 @@ type supBytes struct {
 const maxSups = 64
 
 // needed is the number of bytes draining the segment would copy: heads and
-// versions superseded after horizon h.
-func (s *segStat) needed(h uint64) int64 {
+// versions superseded after the horizon of their class.
+func (s *segStat) needed(hs *horizons) int64 {
 	n := s.live
-	for i := len(s.sups) - 1; i >= 0 && s.sups[i].lsn > h; i-- {
-		n += s.sups[i].bytes
+	for _, c := range s.sups {
+		h := hs.ofClass(c.ret)
+		for i := len(c.l) - 1; i >= 0 && c.l[i].lsn > h; i-- {
+			n += c.l[i].bytes
+		}
 	}
 	return n
 }
@@ -110,6 +120,7 @@ type gcState struct {
 	// ErrSnapshotTooOld (only grows)
 	snapCut atomic.Uint64
 
+	hist    histState
 	remapMu sync.RWMutex
 	remap   map[wal.Loc]remapEntry // relocated non-head versions: referenced location -> copy
 
@@ -147,6 +158,11 @@ type GCStats struct {
 	// transaction snapshots below this LSN were expired by MaxSnapshotAge
 	SnapshotCut    uint64 `json:"snapshot_cut_lsn"`
 	MaxSnapshotAge string `json:"max_snapshot_age"`
+	// history retention (history.go): the engine-wide window, the tables
+	// that set their own, and the time marks / relocation entries held
+	Retention      string            `json:"history_retention"`
+	TableRetention map[string]string `json:"table_history_retention,omitempty"`
+	TimeMarks      int               `json:"time_marks"`
 }
 
 // versionOverhead is what a version costs besides its value (accounting).
@@ -350,47 +366,19 @@ func (e *Engine) pinnedCount() int {
 	return n
 }
 
-// horizon is the highest LSN H such that versions superseded at <= H are
-// invisible to every pinned snapshot and lie outside the retention window.
-func (e *Engine) horizon() uint64 {
-	e.gc.pinMu.Lock()
-	defer e.gc.pinMu.Unlock()
-	h := e.durable.Load()
-	if r := e.retention(); r > 0 {
-		cut := time.Now().Add(-r).UnixNano()
-		var ret uint64
-		for _, m := range e.gc.marks {
-			if m.at <= cut {
-				ret = m.lsn
-			}
-		}
-		h = min(h, ret)
-	}
-	return e.minPinned(h)
-}
+// horizon is the lowest of the horizons of all tables (the one of the
+// longest retention): see horizons in history.go.
+func (e *Engine) horizon() uint64 { return e.horizons().min }
 
-// retention is the history window. At least 2s are kept so that a reader
-// that has just looked up the durable LSN can still use it as a snapshot;
-// a negative GCRetention (tests only) keeps nothing beyond pinned snapshots.
+// retention is the engine-wide history window. At least 2s are kept so that
+// a reader that has just looked up the durable LSN can still use it as a
+// snapshot; a negative GCRetention (tests only) keeps nothing beyond pinned
+// snapshots.
 func (e *Engine) retention() time.Duration {
 	if e.opts.GCRetention < 0 {
 		return 0
 	}
 	return max(e.opts.GCRetention, 2*time.Second)
-}
-
-func (e *Engine) addMark() {
-	e.gc.pinMu.Lock()
-	defer e.gc.pinMu.Unlock()
-	now := time.Now()
-	e.gc.marks = append(e.gc.marks, lsnMark{now.UnixNano(), e.durable.Load()})
-	// keep only one mark older than the retention cut
-	cut := now.Add(-e.retention()).UnixNano()
-	i := 0
-	for i+1 < len(e.gc.marks) && e.gc.marks[i+1].at <= cut {
-		i++
-	}
-	e.gc.marks = e.gc.marks[i:]
 }
 
 // ---- accounting ----
@@ -402,31 +390,39 @@ func (e *Engine) initGC() {
 	for i := range g.pins {
 		g.pins[i].pins = map[uint64]pinRec{}
 	}
-	g.marks = []lsnMark{{time.Now().UnixNano(), e.durable.Load()}}
 	g.remap = map[wal.Loc]remapEntry{}
+	segLSN := e.restoreHistoryState()
 	for _, t := range e.Tables() { // dropped tables' versions count as superseded now
 		t.index().ascend("", func(en *entry) bool {
 			g.stat(en.seg).live += int64(en.valLen) + versionOverhead
 			return true
 		})
 	}
-	// when versions were superseded is not known after a restart: assume
-	// just now, so the history window is respected
-	for _, seg := range e.log.Segments() {
+	// When versions were superseded is not known after a restart. Assume
+	// at the end of the segment (the first LSN of the next one): the
+	// estimate only decides which segments to try, a drain checks every
+	// version against its chain, and assuming "just now" (as before) would
+	// stop reclaiming for a whole retention window after every restart.
+	segs := e.log.Segments()
+	for i, seg := range segs {
 		st := g.stat(seg)
 		if rest := e.log.SegMax() - st.live; rest > 0 {
-			st.sups = []supBytes{{e.durable.Load(), rest}}
+			end := e.durable.Load()
+			if i+1 < len(segs) && segLSN[segs[i+1]] > 0 {
+				end = segLSN[segs[i+1]]
+			}
+			st.sups = []supClass{{ret: e.longestClass(), l: []supBytes{{end, rest}}}}
 		}
 	}
 }
 
 // account updates segment statistics for one installed index change:
 // v replaced old as the head (either may be nil).
-func (g *gcState) account(old, v *Version) {
+func (g *gcState) account(ret int64, old, v *Version) {
 	if old != nil {
 		b := versionBytes(old)
 		if v != nil && v.LSN != old.LSN { // a relocated copy supersedes nothing
-			g.supersede(old.Loc.Seg, b, v.LSN)
+			g.supersede(old.Loc.Seg, b, v.LSN, ret)
 		} else {
 			g.stat(old.Loc.Seg).live -= b
 		}
@@ -437,24 +433,35 @@ func (g *gcState) account(old, v *Version) {
 }
 
 // supersede moves b live bytes of seg to those superseded at lsn.
-func (g *gcState) supersede(seg uint32, b int64, lsn uint64) {
+func (g *gcState) supersede(seg uint32, b int64, lsn uint64, ret int64) {
 	s := g.stat(seg)
 	s.live -= b
-	if n := len(s.sups); n > 0 && s.sups[n-1].lsn >= lsn {
-		s.sups[n-1].bytes += b
+	ci := -1
+	for i := range s.sups {
+		if s.sups[i].ret == ret {
+			ci = i
+		}
+	}
+	if ci < 0 {
+		s.sups = append(s.sups, supClass{ret: ret})
+		ci = len(s.sups) - 1
+	}
+	c := &s.sups[ci]
+	if n := len(c.l); n > 0 && c.l[n-1].lsn >= lsn {
+		c.l[n-1].bytes += b
 		return
 	}
-	if n := len(s.sups); n == maxSups {
+	if n := len(c.l); n == maxSups {
 		best := 0
 		for i := 1; i < n-1; i++ {
-			if s.sups[i+1].lsn-s.sups[i].lsn < s.sups[best+1].lsn-s.sups[best].lsn {
+			if c.l[i+1].lsn-c.l[i].lsn < c.l[best+1].lsn-c.l[best].lsn {
 				best = i
 			}
 		}
-		s.sups[best+1].bytes += s.sups[best].bytes
-		s.sups = append(s.sups[:best], s.sups[best+1:]...)
+		c.l[best+1].bytes += c.l[best].bytes
+		c.l = append(c.l[:best], c.l[best+1:]...)
 	}
-	s.sups = append(s.sups, supBytes{lsn, b})
+	c.l = append(c.l, supBytes{lsn, b})
 }
 
 // resolve maps a referenced version location to where the version now is.
@@ -518,6 +525,18 @@ func (e *Engine) GCStats() GCStats {
 	e.gc.remapMu.RLock()
 	st.Remapped = len(e.gc.remap)
 	e.gc.remapMu.RUnlock()
+	st.Retention = FormatRetention(e.retention())
+	for _, t := range e.Tables() {
+		if r := t.Schema().HistoryRetention; r > 0 {
+			if st.TableRetention == nil {
+				st.TableRetention = map[string]string{}
+			}
+			st.TableRetention[t.Schema().Name] = FormatRetention(time.Duration(r))
+		}
+	}
+	e.gc.pinMu.Lock()
+	st.TimeMarks = len(e.gc.marks)
+	e.gc.pinMu.Unlock()
 	return st
 }
 
@@ -612,9 +631,9 @@ func (e *Engine) GCRound() (int, error) {
 
 func (e *Engine) pickVictims() []uint32 {
 	_, dpos, _ := e.DurablePoint()
-	h := e.horizon()
-	e.releaseDropped(h)
-	e.sweepIndexes(h)
+	hs := e.horizons()
+	e.releaseDropped(hs.min)
+	e.sweepIndexes(hs.min)
 	type cand struct {
 		seg  uint32
 		live int64
@@ -626,7 +645,7 @@ func (e *Engine) pickVictims() []uint32 {
 			continue
 		}
 		s := e.gc.stat(seg)
-		if need := s.needed(h); float64(need) <= e.opts.GCMaxLiveRatio*float64(e.log.SegMax()) {
+		if need := s.needed(hs); float64(need) <= e.opts.GCMaxLiveRatio*float64(e.log.SegMax()) {
 			cs = append(cs, cand{seg, need})
 		}
 	}
@@ -646,7 +665,7 @@ func (e *Engine) pickVictims() []uint32 {
 
 // drain moves every head still stored in seg to the log tail.
 func (e *Engine) drain(seg uint32) error {
-	h := e.horizon()
+	hs := e.horizons()
 	var ops []moveOp
 	var size int64
 	t0 := time.Now()
@@ -672,6 +691,7 @@ func (e *Engine) drain(seg uint32) error {
 		return nil
 	}
 	var ferr error
+	memo := &chainMemo{m: map[memoKey]*memoChain{}}
 	_, _, err := e.log.Scan(seg, 0, -1, func(rec *wal.Record) error {
 		select {
 		case <-e.stop:
@@ -686,6 +706,7 @@ func (e *Engine) drain(seg uint32) error {
 			if t == nil {
 				continue
 			}
+			h := hs.of(t)
 			if d := t.droppedLSN.Load(); d != 0 && d <= h {
 				continue // dropped, and no snapshot reads it any more
 			}
@@ -700,7 +721,7 @@ func (e *Engine) drain(seg uint32) error {
 				m.head = head
 				m.drop = head.Deleted && head.LSN <= h
 			} else {
-				sup, ident, needed := e.supersededAfter(head, p, h)
+				sup, ident, needed := memo.superseded(e, t, key, head, p, h)
 				if !needed {
 					continue // garbage
 				}
@@ -729,7 +750,7 @@ func (e *Engine) drain(seg uint32) error {
 }
 
 func (e *Engine) deleteDrained() (int, error) {
-	h := e.horizon()
+	hs := e.horizons()
 	minReader, haveReader := e.minReaderSeg()
 	var keep []drainedSeg
 	var del []uint32
@@ -752,8 +773,10 @@ func (e *Engine) deleteDrained() (int, error) {
 	if len(del) == 0 {
 		return 0, nil
 	}
-	if h > e.gc.floor.Load() {
-		e.gc.floor.Store(h)
+	e.raiseFloors(hs)
+	// the relocation table and floors must be durable before the segments go
+	if err := e.persistHistoryState(); err != nil {
+		return 0, err
 	}
 	// Condemn before waiting: a read that starts after this resolves
 	// versions in these segments through the remap, so once the reads that
@@ -773,6 +796,7 @@ func (e *Engine) deleteDrained() (int, error) {
 		}
 	}
 	e.gc.remapMu.Unlock()
+	e.pruneRemapFile()
 	for _, seg := range del {
 		if err := e.log.Remove(seg); err != nil {
 			return 0, err

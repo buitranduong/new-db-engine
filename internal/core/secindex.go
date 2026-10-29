@@ -933,8 +933,8 @@ func (e *Engine) placeSec(b *commitBatch, op pendingOp, lsn uint64) {
 	}
 }
 
-// noteMoved keeps the index keys of a head relocated by the log cleaner.
-func (e *Engine) noteMoved(b *commitBatch, t *TableState, key string, val []byte, lsn uint64, del bool) {
+// noteIndexMoved keeps the index keys of a head relocated by the log cleaner.
+func (e *Engine) noteIndexMoved(b *commitBatch, t *TableState, key string, val []byte, lsn uint64, del bool) {
 	if len(t.secList()) == 0 {
 		return
 	}

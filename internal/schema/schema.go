@@ -215,6 +215,10 @@ type Table struct {
 	ForeignKeys []ForeignKey `json:"foreign_keys,omitempty"`
 	// Substr are the substring (trigram) search indexes (substr.go).
 	Substr []SubstrIndex `json:"substr_indexes,omitempty"`
+	// HistoryRetention (nanoseconds) is how long the superseded versions
+	// of the table's rows are kept for as-of and history reads; zero uses
+	// the engine-wide setting (ALTER TABLE ... SET (history_retention=...)).
+	HistoryRetention int64 `json:"history_retention_ns,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN

@@ -113,7 +113,7 @@ Giá trị chỉ nằm trong log, nên giải phóng dung lượng nghĩa là **
 **Horizon H** = min(snapshot cũ nhất đang được ghim, durable LSN tại thời điểm `now − retention`).
 - Snapshot được ghim gồm giao dịch đang mở và follower đang bootstrap.
 - Một phiên bản bị thay thế tại LSN ≤ H thì không reader nào ở snapshot ≥ H nhìn thấy.
-- `-history-retention` (mặc định 1h, tối thiểu 2s) là cửa sổ lịch sử cho `as_of`.
+- `-history-retention` (mặc định 1h, tối thiểu 2s; nhận `36h`, `60d`, `"60 days"`) là cửa sổ lịch sử cho `as_of`. **Từng bảng** có thể đặt riêng: `ALTER TABLE t SET (history_retention = '60 days')` (thuộc tính `history_retention_ns` trong schema). Mỗi bảng có horizon riêng `H_t = min(snapshot ghim, durable LSN lúc now − retention_t)`; GC chỉ bỏ phiên bản của bảng t khi nó bị thay thế tại LSN ≤ `H_t`, và **floor** cũng theo bảng (đọc bảng t ở snapshot < `floor_t` trả 410). Cách đổi thời gian ra LSN: xem "Mốc thời gian" dưới đây. Chi tiết, số đo và giới hạn: docs/15 §7.
 
 Với mỗi segment, engine theo dõi `live`: số byte của các phiên bản đang là head. Đại lượng này cập nhật ngay trong committer.
 
@@ -133,11 +133,17 @@ Một vòng dọn gồm bốn bước:
 
    Điều kiện cuối dùng hai epoch đọc với bộ đếm phân mảnh, kiểu RCU. Trước khi chờ các lượt đọc cũ kết thúc, segment bị đánh dấu "sắp xoá". Lượt đọc bắt đầu sau thời điểm đó coi segment như đã mất và đi qua remap, kể cả khi đang theo con trỏ `prev` trong bộ nhớ. Trước đây có một khe hở ngay giữa lúc chờ và lúc xoá file: lượt đọc mới vẫn có thể lấy được phiên bản trong segment rồi gặp `segment was reclaimed`. Đó là nguyên nhân khiến `TestGCConcurrent` thỉnh thoảng lỗi. Trước khi xoá, engine nâng **floor** lên H. Đọc ở snapshot < floor trả `ErrSnapshotTooOld` (HTTP 410, SQLSTATE 72000) thay vì âm thầm thiếu phiên bản. `History` dừng ở phần lịch sử đã thu hồi. Mục remap được bỏ khi LSN thay thế của nó ≤ floor.
 
+**Mốc thời gian (nhánh `history`).** "durable LSN lúc `now − retention`" cần ánh xạ thời gian → LSN. Trước đây bảng mốc nằm trong RAM và khởi tạo lại từ lúc khởi động: sau mỗi lần khởi động lại, GC không thu hồi gì trong cả một retention (60 ngày nghĩa là không bao giờ nếu khởi động lại thường hơn thế). Giờ mốc `(thời điểm, durable LSN)` cách nhau ≥ 10 s được ghi vào `<dir>/gc-marks.bin` (không fsync: mốc chỉ nói điều đã durable khi lấy mốc, mất vài mốc cuối chỉ giảm độ phân giải), được dựng lại khi mở từ file đó và từ bản ghi đầu của mỗi segment, và trên replica lấy từ commit time của bản ghi nhận được (đồng hồ của leader). Cùng bảng mốc dùng cho `AS OF TIMESTAMP` (docs/05 §23).
+
+**Bảng remap, floor và thống kê segment.** Remap được ghi vào `<dir>/gc-remap.bin` (bản ghi 36 B có CRC, nối thêm) và floor vào `gc-state.json` **trước khi** xoá segment (fsync), nên chuỗi phiên bản của một khoá không đứt sau khởi động lại. Replica không nhận remap của leader qua luồng log (bản ghi `KindMove` không mang vị trí cũ) nên tự suy ra khi áp dụng một `KindMove` của phiên bản không phải head, bằng cách đi theo chuỗi của khoá khi segment cũ còn trên replica (`noteMoved`); base backup gửi kèm ba file trên. Thống kê "phiên bản bị thay thế tại LSN nào" của mỗi segment được tách theo lớp retention (một segment trộn nhiều bảng có thời hạn khác nhau); sau khởi động lại không còn biết nên giả định phần không-head thuộc lớp retention dài nhất và bị thay thế vào cuối segment (chỉ ảnh hưởng việc chọn nạn nhân, việc chép luôn kiểm từng phiên bản theo chuỗi).
+
+**Chi phí đọc chuỗi và dọn khi chuỗi sâu.** Chuỗi phiên bản là con trỏ `prev` trong log: đọc n phiên bản của một khoá là n lần đọc phụ thuộc nhau. `loadVersion` giờ đọc đúng một thao tác của bản ghi (`wal.ReadOpMeta`) thay vì giải mã cả giao dịch (nhanh hơn 2,5–6× với giao dịch 1000 dòng). Với retention 60 ngày và hàng trăm phiên bản mỗi khoá, **việc dọn** mới là chỗ đắt: để biết một bản ghi cũ còn cần không, `drain` đi từ head xuống tới horizon, tức là O(số phiên bản trong cửa sổ) lần đọc cho *mỗi bản ghi*. Đã thêm `chainMemo` (đi một lần cho mỗi khoá trong một segment), đủ khi khoá ít hơn bản ghi; xem docs/15 §7.5 về trường hợp hàng chục triệu khoá, nơi nó không giúp được.
+
 Phục hồi:
 - `KindMove` được replay theo kiểu "chỉ đổi vị trí nếu head vẫn có LSN gốc", nên idempotent.
 - Các segment đã xoá luôn nằm trước điểm bắt đầu của checkpoint mới nhất, nên replay không bao giờ cần đến chúng.
 - `live` được tính lại từ chỉ mục khi khởi động.
-- Bảng remap không lưu trên đĩa. Sau khởi động lại, đọc `as_of` vào phần lịch sử từng được remap sẽ nhận 410 thay vì dữ liệu. Kết quả không bao giờ sai, nhưng cửa sổ lịch sử có thể ngắn hơn retention.
+- Bảng remap được lưu (`gc-remap.bin`, xem trên) và nạp lại khi mở; mục có LSN thay thế ≤ floor (đã lưu) bị bỏ khi nạp. Nếu file mất, đọc `as_of` vào phần lịch sử từng được remap nhận 410 thay vì dữ liệu: kết quả không bao giờ sai, nhưng cửa sổ lịch sử ngắn hơn retention.
 
 Thiết kế đầu tiên chỉ dọn segment mà mọi phiên bản đều bị thay thế trước H (`supMax ≤ H`). Khi cập nhật trải đều trên toàn bộ khoá, điều kiện này gần như không bao giờ đúng: benchmark WL-1 thu hồi được 0 segment. Thiết kế remap bỏ điều kiện đó.
 

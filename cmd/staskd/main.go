@@ -53,7 +53,7 @@ func main() {
 	preZero := flag.Bool("prezero", true, "write zeros into log segments ahead of use: fdatasync then needs no extent conversion (about half the commit latency) at the cost of writing the log twice")
 	zeroRate := flag.Int64("zero-rate-mb", 150, "cap for background zeroing (MB/s)")
 	gc := flag.Bool("gc", true, "reclaim log space (relocate current versions out of old segments, then delete them)")
-	gcRetention := flag.Duration("history-retention", time.Hour, "history kept for as-of reads when -gc is on")
+	gcRetentionS := flag.String("history-retention", "1h", "history kept for as-of reads and /v1/history when -gc is on: 36h, 60d, \"60 days\" (a table's ALTER TABLE ... SET (history_retention=...) overrides it)")
 	gcInterval := flag.Duration("gc-interval", 10*time.Second, "time between log reclamation rounds")
 	gcRate := flag.Int64("gc-rate-mb", 64, "cap for relocation writes (MB/s)")
 	gcLive := flag.Float64("gc-max-live", 0.5, "clean segments whose still-current data is at most this share")
@@ -252,12 +252,16 @@ func main() {
 		log.Fatalf("-compress: %v", err)
 	}
 	wal.ZCacheBytes = *compressCache << 20
+	gcRetention, rerr := core.ParseRetention(*gcRetentionS)
+	if rerr != nil {
+		log.Fatalf("-history-retention: %v", rerr)
+	}
 	proj.PackColumns = *colPack
 	t0 := time.Now()
 	var fault *server.Fault
 	opts := core.Options{ViewSaveEvery: *viewEvery, NoViewFile: *noViewFile, Dir: *dir, SegmentSize: *seg << 20, MaxBatch: *batch,
 		CheckpointMinBytes: *ckptMin << 20, NoCheckpoint: *noCkpt, PreZero: *preZero, ZeroRate: *zeroRate << 20,
-		GC: *gc, GCRetention: *gcRetention, GCInterval: *gcInterval, GCRateBytes: *gcRate << 20, GCMaxLiveRatio: *gcLive, CommitWait: *commitWait,
+		GC: *gc, GCRetention: gcRetention, GCInterval: *gcInterval, GCRateBytes: *gcRate << 20, GCMaxLiveRatio: *gcLive, CommitWait: *commitWait,
 		Compression: codec, CompressKeepRaw: *compressKeep, SlotMaxLagBytes: *slotMaxLag << 20, MaxSnapshotAge: *maxSnapAge,
 		ArchiveDir: *archiveDir, RestoreArchive: *restoreArchive, RecoveryTargetLSN: *targetLSN}
 	if *faults {

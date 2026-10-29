@@ -10,6 +10,7 @@ type FromNode interface{ fromNode() }
 type FromTable struct {
 	Name, Alias string
 	ColAliases  []string
+	AsOf        *AsOf // FOR SYSTEM_TIME AS OF / AS OF TIMESTAMP / AS OF LSN (asof.go)
 }
 type FromSubquery struct {
 	Q          Stmt // *Select or *SetOp

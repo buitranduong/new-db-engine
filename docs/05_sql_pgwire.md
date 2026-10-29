@@ -895,3 +895,36 @@ SET stask.max_lag_ms = 1000;      -- ngưỡng cho bounded
 **Quan sát.** `EXPLAIN SELECT ...` (một bảng) trả `Trigram Scan on t using idx`, điều kiện, chế độ và dòng chi tiết: `engine=substr|core mode= applied_lsn= view_lag_ms= waited_ms= reason=`. Sau mỗi SELECT có chỉ mục: `SHOW stask.last_plan` cho cùng nội dung (kể cả khi đã rơi về quét: `Seq Scan on t (trigram index .. not used) engine=core .. reason="view lag exceeds .."`). `/v1/views` liệt kê thêm view `substr` với applied/lag.
 
 **Giới hạn.** Bộ nhớ: giá trị và danh sách trigram nằm trong RAM (đo: khoảng 145 MB heap cho 1M số 10 chữ số, tức 2M ≈ 290 MB; ngoại suy tuyến tính 50M ≈ 7 GB, chưa đo ở cỡ đó). Mỗi UPDATE sinh mã tài liệu mới; danh sách được dựng lại khi chết > sống (≥100k) dưới khoá bảng. Mẫu <3 ký tự: duyệt toàn bộ giá trị trong view (nhanh hơn quét lõi nhưng chậm hơn pg_trgm). Không có `search()`/`@@` (BM25) trong SQL, không có chỉ mục btree cho tiền tố trên nhánh này, không `EXPLAIN ANALYZE` thật (chỉ kế hoạch), không dùng trong JOIN/UPDATE/DELETE. Chỉ mục trigram không bảo đảm duy nhất và không có thứ tự.
+
+## 23. Lịch sử phiên bản trong SQL: AS OF, stask_history, history_retention (2026-10-29, nhánh `history`)
+
+Log đã chứa mọi phiên bản của mọi dòng (docs/03 §2, §8). Mục này cho SQL đọc chúng. Chọn cú pháp rẻ nhất: **không có bảng ảo `t_history`** (một bảng ảo như vậy buộc phải đẩy điều kiện `key = ...` xuống engine để khỏi quét cả lịch sử, mà bộ thực thi chung chưa có cơ chế đẩy xuống). Thay vào đó là một mệnh đề cho bảng và một hàm trả bảng.
+
+```sql
+-- đọc cả bảng tại một thời điểm (đọc nhất quán, như một snapshot)
+SELECT * FROM sim FOR SYSTEM_TIME AS OF '2026-09-01 12:00:00';   -- SQL:2011 / MariaDB / SQL Server
+SELECT * FROM sim AS OF TIMESTAMP now() - interval '1 day';      -- cùng nghĩa
+SELECT * FROM sim AS OF LSN 123456;                              -- một vị trí trong log
+SELECT status FROM sim AS OF TIMESTAMP '2026-09-01' WHERE number = '0901234567';   -- đọc điểm
+
+-- mọi phiên bản còn giữ của một khoá, cũ nhất trước
+SELECT _ts, status, price FROM stask_history('sim', '0901234567');
+SELECT * FROM stask_history('sim', '0901234567') WHERE _ts >= now() - interval '7 days';
+
+-- chính sách giữ lịch sử, theo bảng
+ALTER TABLE sim SET (history_retention = '60 days');   -- 36h, 60d, '8 weeks' cũng được
+ALTER TABLE sim RESET (history_retention);             -- về mặc định toàn cục (-history-retention)
+CREATE TABLE sim (...) WITH (history_retention = '60 days');
+```
+
+- **Mệnh đề AS OF** đứng ngay sau tên bảng, trước bí danh (`FROM sim AS OF LSN 5 s`). Biểu thức được tính một lần cho mỗi lần chạy (`now()`, tham số `$1`, literal, phép trừ interval đều được). `NULL` là lỗi. Chỉ dùng được cho bảng (không cho view, CTE, bảng hệ thống: `0A000`).
+- **Đọc điểm.** Nếu `WHERE` có `khoá = hằng` thì chỉ đi theo chuỗi phiên bản của khoá đó (một `GetAt`/`GetAtTime`); các điều kiện khác vẫn lọc kết quả. Không có thì **quét cả bảng và dựng từng dòng ở thời điểm đó**. Trên 40M dòng đó là quét 40M chuỗi: chấp nhận được cho phân tích hiếm, không dùng cho đường nóng.
+- **AS OF TIMESTAMP chính xác.** Thời điểm được đổi thành khoảng LSN `[Lo, Hi)` nhờ các mốc (thời gian, durable LSN) cách nhau ≥10 s (`internal/core/history.go`: `TimeSnapshot`); mọi commit ≤ Lo chắc chắn trước thời điểm, mọi commit ≥ Hi chắc chắn sau. Các phiên bản nằm giữa được xếp theo commit time của chính chúng, nên kết quả đúng đến từng commit (test `TestTimeSnapshot`: lấy mẫu mọi vị trí trong khoảng 400 s giữa hai mốc). Mốc lưu ở `gc-marks.bin` và dựng lại từ bản ghi đầu mỗi segment nếu mất file.
+- **Lịch sử đã hết hạn.** Đọc ở thời điểm/LSN thấp hơn phần còn giữ cho `72000` (HTTP 410), không bao giờ trả thiếu âm thầm. `stask_history` chỉ liệt kê phần còn giữ: **không có cách phân biệt "khoá chưa từng có phiên bản cũ hơn" với "đã bị thu hồi"** nếu nhìn riêng kết quả; so `min(_ts)` với `now() - history_retention`.
+- **stask_history** trả `_lsn bigint, _ts timestamptz, _deleted bool` rồi các cột của bảng (NULL nếu là bản xoá). Tên bảng phải là hằng chuỗi (để biết cột lúc biên dịch). Cần quyền `SELECT` trên bảng. Giá: đi theo chuỗi `prev` trong log, một lần đọc cho mỗi phiên bản (đo ở docs/15 §7.4).
+- **history_retention** là thuộc tính schema (đi qua WAL, checkpoint, replica như mọi `ALTER TABLE`), nên một replica biết nó. `ALTER` yêu cầu quyền như các `ALTER TABLE` khác. Mặc định toàn cục: `staskd -history-retention 60d` (chấp nhận `36h`, `60d`, `"60 days"`, `8w`); **replica phải chạy với cùng giá trị** vì nó tự quyết định phần log nào còn giữ khi dọn.
+- `GET /v1/status` (trường `gc`, cũng là `GCStats`) hiện `history_retention`, `table_history_retention`, `time_marks`, `remapped_versions`.
+
+**Chưa làm.** `AS OF` cho view, `BETWEEN ... AND ...`/`FROM ... TO ...` của SQL:2011 (dùng `stask_history` + `WHERE _ts`), `CURRENT_TIMESTAMP` thay vì thời gian tường của `AS OF` trong giao dịch (mọi `AS OF` đọc ngoài snapshot của giao dịch, không thấy thay đổi chưa commit của chính nó), bảng ảo `t_history`.
+
+**Kiểm chứng.** `internal/sql/asof_test.go` (`TestSQLAsOf`: AS OF LSN/TIMESTAMP/FOR SYSTEM_TIME, đọc điểm, join với trạng thái hiện tại, `stask_history` kể cả khoá đã xoá, ALTER/RESET, lỗi), probe `claimcheck` `history_*`, `as_of_system_time`.

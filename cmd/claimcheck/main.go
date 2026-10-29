@@ -322,6 +322,11 @@ func baseChecks() []check {
 		{"pd_create_temp_table", "pgdiff", "c: DDL", []string{"CREATE TEMP TABLE cc_t (a INT)"}, "ok", nil},
 		{"pd_explain", "pgdiff", "c: DDL", []string{"EXPLAIN SELECT 1"}, "ok", nil},
 		{"pd_uuid_type_oid", "pgdiff", "b: casts", []string{"SELECT pg_typeof(gen_random_uuid())::text"}, "val:uuid", nil},
+		// ---- history (nhánh history, docs/15 §7)
+		{"history_retention_ddl", "H1", "05 §23", []string{T, "ALTER TABLE cc_t SET (history_retention = '60 days')"}, "ok", nil},
+		{"history_function", "H3", "05 §23", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "UPDATE cc_t SET v='b' WHERE id=1", "SELECT count(*) FROM stask_history('cc_t', 1)"}, "val:2", nil},
+		{"history_first_version", "H3", "05 §23", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "UPDATE cc_t SET v='b' WHERE id=1", "SELECT v FROM stask_history('cc_t', 1) ORDER BY _lsn LIMIT 1"}, "val:a", nil},
+		{"as_of_system_time", "H3", "05 §23", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "UPDATE cc_t SET v='b' WHERE id=1", "SELECT v FROM cc_t FOR SYSTEM_TIME AS OF now() WHERE id=1"}, "val:b", nil},
 		// ---- not claimed anywhere: discover gaps
 		{"unclaimed_cte", "-", "-", []string{"WITH x AS (SELECT 1 AS a) SELECT a FROM x"}, "val:1", nil},
 		{"unclaimed_window", "-", "-", []string{T, "INSERT INTO cc_t VALUES (1,'a')", "SELECT row_number() OVER (ORDER BY id) FROM cc_t"}, "val:1", nil},

@@ -454,6 +454,10 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 			t.TimeColumn = v
 		case "series_column":
 			t.SeriesColumn = v
+		case "history_retention":
+			if err := setTableOptions(&t, map[string]string{k: v}); err != nil {
+				return nil, err
+			}
 		default:
 			return nil, errf("22023", "unrecognized table option %q", k)
 		}

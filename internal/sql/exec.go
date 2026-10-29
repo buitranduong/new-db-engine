@@ -23,6 +23,18 @@ const VersionString = "PostgreSQL 16.0 (STASK prototype)"
 type Column struct {
 	Name string
 	Kind Kind
+	// OID and Mod refine Kind to the PostgreSQL type (int4 for KInt,
+	// varchar(n) for KText...); OID 0 means the Kind's default type.
+	OID uint32
+	Mod int32
+}
+
+// withTy returns c typed t when t describes values of c's Kind.
+func (c Column) withTy(t pgTy) Column {
+	if t = t.forKind(c.Kind); t.oid != 0 {
+		c.OID, c.Mod = t.oid, t.mod
+	}
+	return c
 }
 
 // Result of one statement.
@@ -49,6 +61,7 @@ type Session struct {
 	listener  *Listener
 	notes     []Notification   // NOTIFY of the current transaction
 	currvals  map[string]int64 // currval: the last nextval of each sequence
+	prepared  map[string]Stmt  // SQL-level PREPARE (prepare.go)
 	lastSeq   string           // lastval's sequence
 	listenOps []listenOp       // LISTEN/UNLISTEN of the current transaction
 
@@ -128,6 +141,10 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		return nil, errf("25006", "cannot execute %s in a read-only transaction", what)
 	}
 	switch st := st.(type) {
+	case *WithDML:
+		return s.withDML(st, params)
+	case *PrepareStmt, *ExecuteStmt, *DeallocateStmt, *MaintStmt:
+		return s.execPrepare(st, params)
 	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:
 		return s.execCompat(st)
 	case *Begin:
@@ -192,7 +209,11 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
 		}
-		return &Result{Cols: []Column{{name, KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
+		col := name
+		if c, ok := showNames[name]; ok {
+			col = c
+		}
+		return &Result{Cols: []Column{{Name: col, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
 	case *CreateTable:
 		res, err := s.createTable(st)
 		if err != nil {
@@ -425,15 +446,20 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
 	t := schema.Table{Name: c.Name, Key: c.Key, KeyCols: c.KeyCols}
+	seen := map[string]bool{}
 	for _, cd := range c.Cols {
 		if cd.Name == schema.RowIDCol || cd.Name == schema.KeyCol {
 			return nil, errf("42939", "column name %q is reserved", cd.Name)
 		}
+		if seen[cd.Name] {
+			return nil, errf("42701", "column %q specified more than once", cd.Name)
+		}
+		seen[cd.Name] = true
 		ty := cd.Type
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings
 		}
-		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, NotNull: cd.NotNull || cd.Primary})
+		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, NotNull: cd.NotNull || cd.Primary})
 	}
 	for k, v := range c.Options {
 		switch k {
@@ -890,7 +916,7 @@ func (a *aggState) result() Datum {
 		if a.count == 0 {
 			return Null
 		}
-		if a.isNum && !a.isFloat {
+		if !a.isFloat {
 			x, _ := pgnum.Div(pgnum.Add(a.sumN, pgnum.FromInt64(a.sumI)), pgnum.FromInt64(a.count))
 			return NumericD(x)
 		}
@@ -1138,7 +1164,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		orderOut[i] = -1
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
-				return nil, errf(codeUndefinedColumn, "ORDER BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
 			}
 			orderOut[i] = int(l.V.I) - 1
 		} else if c, ok := o.X.(*ColRef); ok && c.Table == "" {
@@ -1188,6 +1214,9 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				return nil, err
 			}
 			limit = v.I
+			if limit < 0 && !s.clickHouse() {
+				return nil, errf("2201W", "LIMIT must not be negative")
+			}
 		}
 	}
 	if st.Offset != nil {
@@ -1481,8 +1510,11 @@ func (st *Select) plan(sc *scope) (*selectPlan, error) {
 	}
 	p.cols = make([]Column, len(p.items))
 	pk := paramKinds(st, sc)
+	for _, it := range p.items {
+		markWidths(it.X, sc.leafTy)
+	}
 	for i, it := range p.items {
-		p.cols[i] = Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}
+		p.cols[i] = itemCol(it, sc, pk)
 	}
 	// aggregates anywhere in the select list, HAVING or ORDER BY
 	collect := func(x Expr) {
@@ -1531,11 +1563,28 @@ func itemName(it SelItem) string {
 	case *ColRef:
 		return e.Name
 	case *Func:
+		if e.Disp != "" {
+			return e.Disp
+		}
+		if e.Name == "stask_subscript" && len(e.Args) > 0 { // (ARRAY[1,2])[3] is named by the array
+			return itemName(SelItem{X: e.Args[0]})
+		}
 		return e.Name
 	case *Cast:
-		return itemName(SelItem{X: e.X})
+		// the operand's name when it has one, else the type's
+		if n := castOperandName(e.X); n != "?column?" {
+			return n
+		}
+		return castName(e)
 	case *Case:
 		return "case"
+	case *Subquery:
+		if s, ok := e.Q.(*Select); ok && !e.Array && len(s.Items) == 1 {
+			return itemName(s.Items[0])
+		}
+		if e.Array {
+			return "array"
+		}
 	}
 	return "?column?"
 }
@@ -1729,14 +1778,14 @@ func returningCols(sc *scope, items []SelItem, pk map[int]Kind) []Column {
 	var cols []Column
 	for _, it := range items {
 		if it.Star {
-			for _, c := range sc.t.Columns {
-				if !c.Hidden {
-					cols = append(cols, Column{c.Name, kindOf(c.T)})
+			for i := range sc.t.Columns {
+				if !sc.t.Columns[i].Hidden {
+					cols = append(cols, tableCol(&sc.t.Columns[i]))
 				}
 			}
 			continue
 		}
-		cols = append(cols, Column{itemName(it), typeOf(it.X, sc, pk)})
+		cols = append(cols, itemCol(it, sc, pk))
 	}
 	return cols
 }
@@ -1772,6 +1821,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	res := &Result{HasRows: st.Returning != nil}
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
+	}
+	if st.OnConflict != nil {
+		if err := checkConflictTarget(t, st.OnConflict.Target); err != nil {
+			return nil, err
+		}
 	}
 	n := 0
 	inserted := make(map[string]bool, len(st.Rows))

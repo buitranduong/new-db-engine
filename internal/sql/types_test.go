@@ -41,7 +41,7 @@ func TestTypeTimestampMicroseconds(t *testing.T) {
 	// the row keeps the microseconds through an update
 	run(t, s, `UPDATE ts SET a = a + interval '1 microsecond' WHERE id = 1`)
 	expectRows(t, s, `SELECT a FROM ts WHERE id = 1`, "2024-01-02 03:04:05.123457")
-	if _, err := tryRun(s, `INSERT INTO ts VALUES (9, 'not a time', NULL)`); code(err) != "22P02" {
+	if _, err := tryRun(s, `INSERT INTO ts VALUES (9, 'not a time', NULL)`); code(err) != "22007" {
 		t.Errorf("bad timestamp: %v", err)
 	}
 }

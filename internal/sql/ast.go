@@ -7,6 +7,7 @@ type Stmt interface{ stmt() }
 type ColDef struct {
 	Name    string
 	Type    string // schema type: int, float, string, text, time, bool
+	PG      string // declared PostgreSQL type when Type cannot tell (pgtype.go)
 	Primary bool
 	NotNull bool
 	Default string // SQL text of DEFAULT
@@ -65,6 +66,7 @@ type AlterAction struct {
 	NewName    string   // rename_column, rename_table
 	Expr       string   // set_default
 	Type       string   // set_type: the new type (schema type name)
+	PG         string   // set_type: its PostgreSQL spelling (pgtype.go)
 	Using      bool     // set_type: USING col::type was given
 	Check      CheckDef
 	Constraint *ConstraintDef    // add_constraint (UNIQUE, FOREIGN KEY)
@@ -95,6 +97,7 @@ type Assign struct {
 }
 
 type OnConflict struct {
+	Target    []string // ON CONFLICT (cols); nil: none given
 	DoNothing bool
 	Set       []Assign
 	Where     Expr
@@ -250,9 +253,11 @@ type Unary struct {
 type Binary struct {
 	Op   string // = <> < <= > >= + - * / % || and or
 	L, R Expr
+	W    uint8 // 2 or 4: an int2/int4 result that must fit (22003), see markWidths
 }
 type Func struct {
 	Name     string
+	Disp     string // column name when it differs from Name ("substring" for substr)
 	Args     []Expr
 	Star     bool // count(*)
 	Distinct bool
@@ -283,6 +288,7 @@ type Like struct {
 type Cast struct {
 	X    Expr
 	Type string
+	PG   string // PostgreSQL type spelling (int2, int4, varchar(5)...), see pgtype.go
 }
 type Case struct {
 	Operand Expr

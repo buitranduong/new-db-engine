@@ -99,6 +99,7 @@ var pgTypes = []pgType{
 	{3807, "_jsonb", -1, "A", 3802, 0, "jsonb[]", "ARRAY"},
 	{1042, "bpchar", -1, "S", 0, 1014, "character", "character"},
 	{1043, "varchar", -1, "S", 0, 1015, "character varying", "character varying"},
+	{1083, "time", 8, "D", 0, 1183, "time without time zone", "time without time zone"},
 	{1082, "date", 4, "D", 0, 1182, "date", "date"},
 	{1114, "timestamp", 8, "D", 0, 1115, "timestamp without time zone", "timestamp without time zone"},
 	{1184, "timestamptz", 8, "D", 0, 1185, "timestamp with time zone", "timestamp with time zone"},
@@ -183,6 +184,9 @@ func colTypeOID(c schema.Column) int64 { return int64(PgTypeOID(c)) }
 func typmodOf(c schema.Column) int64 {
 	if p, sc, ok := schema.NumericMod(c.Type); ok {
 		return int64(p<<16|sc) + 4
+	}
+	if t := colTy(&c); t.oid != 0 {
+		return int64(t.mod) // varchar(n), char(n): n + 4
 	}
 	return -1
 }

@@ -247,6 +247,14 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 					return TextD(fmt.Sprintf("numeric(%d,%d)", (m.I-4)>>16&0xffff, (m.I-4)&0xffff)), nil
 				}
 			}
+			if len(args) > 1 && !args[1].IsNull() && (oid.I == tyVarchar || oid.I == tyBpchar) {
+				if m, err := coerce(args[1], KInt); err == nil && m.I >= 4 {
+					return TextD(formatType(uint32(oid.I), int32(m.I))), nil
+				}
+			}
+			if oid.I == tyBpchar {
+				return TextD("bpchar"), nil // PostgreSQL prints char without a length as bpchar
+			}
 			return TextD(t.sqlName), nil
 		}
 		return TextD("???"), nil

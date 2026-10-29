@@ -20,6 +20,7 @@ import (
 type relCol struct {
 	qual, name string
 	kind       Kind
+	ty         pgTy // PostgreSQL type when finer than kind (pgtype.go)
 	hidden     bool // the right-hand copy of a USING column: not visible unqualified or in *
 	sys        bool // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
 }
@@ -109,7 +110,7 @@ func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error
 	}
 	res := &Result{HasRows: true, Tag: fmt.Sprintf("SELECT %d", len(rel.rows)), Rows: rel.rows}
 	for _, c := range rel.cols {
-		res.Cols = append(res.Cols, Column{Name: c.name, Kind: c.kind})
+		res.Cols = append(res.Cols, Column{Name: c.name, Kind: c.kind}.withTy(c.ty))
 	}
 	for _, r := range res.Rows {
 		conform(r, res.Cols)
@@ -210,7 +211,7 @@ func refersTo(st Stmt, name string) bool {
 func renameCols(cols []relCol, names []string, qual string) []relCol {
 	out := make([]relCol, len(cols))
 	for i, c := range cols {
-		out[i] = relCol{qual: qual, name: c.name, kind: c.kind}
+		out[i] = relCol{qual: qual, name: c.name, kind: c.kind, ty: c.ty}
 		if i < len(names) {
 			out[i].name = names[i]
 		}
@@ -302,6 +303,18 @@ func (b *binder) resolve(cr *ColRef) (Expr, error) {
 		}
 	}
 	if cr.Table != "" {
+		known := false
+		for sc := b.sc; sc != nil && !known; sc = sc.outer {
+			for _, col := range sc.cols {
+				if col.qual == cr.Table {
+					known = true
+					break
+				}
+			}
+		}
+		if !known {
+			return nil, errf("42P01", "missing FROM-clause entry for table %q", cr.Table)
+		}
 		return nil, errf(codeUndefinedColumn, "column %s.%s does not exist", cr.Table, cr.Name)
 	}
 	return nil, errf(codeUndefinedColumn, "column %q does not exist", cr.Name)
@@ -463,7 +476,7 @@ func rebuild(x Expr, f func(Expr) (Expr, error)) (Expr, error) {
 	case *Unary:
 		out = &Unary{e.Op, m(e.X)}
 	case *Binary:
-		out = &Binary{e.Op, m(e.L), m(e.R)}
+		out = &Binary{Op: e.Op, L: m(e.L), R: m(e.R), W: e.W}
 	case *Func:
 		nf := *e
 		nf.Args, nf.Params = ms(e.Args), ms(e.Params)
@@ -478,7 +491,7 @@ func rebuild(x Expr, f func(Expr) (Expr, error)) (Expr, error) {
 	case *Like:
 		out = &Like{m(e.X), m(e.Pat), e.Not, e.ICase}
 	case *Cast:
-		out = &Cast{m(e.X), e.Type}
+		out = &Cast{m(e.X), e.Type, e.PG}
 	case *Case:
 		nc := &Case{Operand: m(e.Operand), Else: m(e.Else)}
 		for _, w := range e.Whens {
@@ -569,8 +582,27 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	p.sc, p.nFrom = fs, len(fs.cols)
 	pre := &binder{c: c, sc: fs}
 	var sk []Kind // slot kinds of the working row
+	var st2 []pgTy
 	for _, col := range fs.cols {
 		sk = append(sk, col.kind)
+		st2 = append(st2, col.ty)
+	}
+	slotTy := func(x Expr) (pgTy, bool) {
+		switch e := x.(type) {
+		case *Slot:
+			if e.I < len(st2) {
+				return st2[e.I], true
+			}
+			return pgTy{}, true
+		case *boundSub:
+			if e.kind == "scalar" {
+				return e.plan.outCols()[0].ty, true
+			}
+			return pgTy{}, true
+		case *OuterRef, *groupingFn:
+			return pgTy{}, true
+		}
+		return pgTy{}, false
 	}
 
 	// select items (* expanded) and their aliases
@@ -642,7 +674,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 					if keep == nil {
 						keep = cnd
 					} else {
-						keep = &Binary{"and", keep, cnd}
+						keep = &Binary{Op: "and", L: keep, R: cnd}
 					}
 				}
 			}
@@ -653,7 +685,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	for i, g := range st.GroupBy {
 		if l, ok := g.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
-				return nil, errf(codeUndefinedColumn, "GROUP BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "GROUP BY position %d is not in select list", l.V.I)
 			}
 			g = items[l.V.I-1].X
 		}
@@ -708,6 +740,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			gi.exprKeys = append(gi.exprKeys, k)
 			p.groupExprs = append(p.groupExprs, bg)
 			sk = append(sk, staticKind(bg, sk[:p.nFrom]))
+			st2 = append(st2, inferTy(bg, slotTy).forKind(sk[len(sk)-1]))
 			p.groupKinds = append(p.groupKinds, sk[len(sk)-1])
 			if _, dup := post.groupKeys[k]; !dup {
 				post.groupKeys[k] = slot
@@ -787,10 +820,12 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				ak = []Kind{staticKind(a.order[0].x, sk[:p.nFrom])}
 			}
 			sk = append(sk, funcKind(f.Name, ak))
+			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: a.args}, slotTy).forKind(sk[len(sk)-1]))
 		}
 		gi.setSlot = slot
 		slot++
 		sk = append(sk, KInt)
+		st2 = append(st2, pgTy{})
 		if p.having, err = post.bind(having); err != nil {
 			return nil, err
 		}
@@ -836,6 +871,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				ak[i] = staticKind(x, sk)
 			}
 			sk = append(sk, funcKind(f.Name, ak))
+			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: w.args, Over: f.Over}, slotTy).forKind(sk[len(sk)-1]))
 		}
 		post = &wb
 	}
@@ -853,20 +889,43 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) {
 			if f, ok := e.(*Func); ok && (f.Name == "generate_series" || f.Name == "unnest") {
 				p.srfs = append(p.srfs, f)
-				sk = append(sk, KNull)
+				k, t := KNull, pgTy{}
+				if f.Name == "generate_series" && len(f.Args) >= 2 {
+					switch ak := staticKind(f.Args[0], sk); ak {
+					case KInt:
+						k, t = KInt, seriesTy(f.Args)
+					case KTime, KTimestamp, KDate:
+						k = KTime
+						if ak == KTimestamp {
+							k = KTimestamp
+						}
+					}
+				}
+				sk = append(sk, k)
+				st2 = append(st2, t)
 				return &Slot{I: srfBase + len(p.srfs) - 1}, true
 			}
 			return nil, false
 		})
+		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) { // pg_typeof knows static types
+			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
+				if n := staticTypeName(f.Args[0], inferTy(f.Args[0], slotTy), staticKind(f.Args[0], sk)); n != "" {
+					return &Lit{TextD(n)}, true
+				}
+			}
+			return nil, false
+		})
+		markWidths(bx, slotTy)
 		p.items = append(p.items, bx)
-		p.cols = append(p.cols, relCol{name: itemName(it), kind: staticKind(bx, sk)})
+		ik := staticKind(bx, sk)
+		p.cols = append(p.cols, relCol{name: itemName(it), kind: ik, ty: inferTy(bx, slotTy).forKind(ik)})
 	}
 	// ORDER BY: output columns by position or name, else expressions
 	for _, o := range st.OrderBy {
 		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls}
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
-				return nil, errf(codeUndefinedColumn, "ORDER BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
 			}
 			s.out = int(l.V.I) - 1
 		} else if cr, ok := o.X.(*ColRef); ok && cr.Table == "" {
@@ -1202,6 +1261,9 @@ func limitValues(ctx *evalCtx, lx, ox Expr) (limit, offset int64, err error) {
 				return 0, 0, err
 			}
 			limit = v.I
+			if limit < 0 && !ctx.dialectCH() {
+				return 0, 0, errf("2201W", "LIMIT must not be negative")
+			}
 		}
 	}
 	if ox != nil {
@@ -1318,6 +1380,11 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			return KBool
 		case "||":
 			return KText
+		case "^":
+			if l, r := staticKind(e.L, kinds), staticKind(e.R, kinds); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
+				return KNumeric
+			}
+			return KFloat
 		}
 		l, r := staticKind(e.L, kinds), staticKind(e.R, kinds)
 		switch {
@@ -1536,7 +1603,13 @@ func (c *compiler) compileSetOp(so *SetOp, outer *qscope) (qplan, error) {
 		}
 	}
 	for _, col := range p.l.outCols() {
-		p.cols = append(p.cols, relCol{name: col.name, kind: col.kind})
+		rc := relCol{name: col.name, kind: col.kind, ty: col.ty}
+		if so.R != nil && p.r != nil {
+			if rcs := p.r.outCols(); len(p.cols) < len(rcs) && rcs[len(p.cols)].ty != col.ty {
+				rc.ty = pgTy{}
+			}
+		}
+		p.cols = append(p.cols, rc)
 	}
 	p.sc = &qscope{cols: p.cols, outer: sc, row: true, lvl: lvl}
 	b := &binder{c: c, sc: p.sc}
@@ -1544,7 +1617,7 @@ func (c *compiler) compileSetOp(so *SetOp, outer *qscope) (qplan, error) {
 		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls}
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(p.cols) {
-				return nil, errf(codeUndefinedColumn, "ORDER BY position %d is not in select list", l.V.I)
+				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
 			}
 			s.out = int(l.V.I) - 1
 		} else if s.x, err = b.bind(o.X); err != nil {
@@ -1795,7 +1868,7 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			tp.asOf = &asOfPlan{lsn: f.AsOf.LSN, x: bx}
 		}
 		for i, col := range t.Columns {
-			rc := relCol{qual: qual, name: col.Name, kind: kindOf(col.T), sys: col.Hidden}
+			rc := relCol{qual: qual, name: col.Name, kind: colKind(&t.Columns[i]), ty: colTy(&t.Columns[i]), sys: col.Hidden}
 			if i < len(f.ColAliases) {
 				rc.name = f.ColAliases[i]
 			}
@@ -1838,7 +1911,18 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			if i < len(f.ColAliases) {
 				name = f.ColAliases[i]
 			}
-			vp.c = append(vp.c, relCol{qual: qual, name: name, kind: staticKind(vp.rows[0][i], nil)})
+			rc := relCol{qual: qual, name: name, kind: staticKind(vp.rows[0][i], nil)}
+			rc.ty = inferTy(vp.rows[0][i], func(Expr) (pgTy, bool) { return pgTy{}, false })
+			for _, r := range vp.rows[1:] {
+				if l, ok := r[i].(*Lit); ok && l.V.IsNull() {
+					continue
+				}
+				if inferTy(r[i], func(Expr) (pgTy, bool) { return pgTy{}, false }) != rc.ty {
+					rc.ty = pgTy{}
+				}
+			}
+			rc.ty = rc.ty.forKind(rc.kind)
+			vp.c = append(vp.c, rc)
 		}
 		return vp, nil
 	case *FromFunc:
@@ -1888,7 +1972,7 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			if li < 0 || ri < 0 {
 				return nil, errf(codeUndefinedColumn, "column %q specified in USING clause does not exist in both tables", u)
 			}
-			conds = append(conds, &Binary{"=", &Slot{I: li}, &Slot{I: jp.nl + ri}})
+			conds = append(conds, &Binary{Op: "=", L: &Slot{I: li}, R: &Slot{I: jp.nl + ri}})
 			jp.c[jp.nl+ri].hidden = true
 			if f.Kind == "right" || f.Kind == "full" {
 				jp.merge = append(jp.merge, [2]int{li, jp.nl + ri})
@@ -1930,7 +2014,7 @@ func (jp *joinPlan) addCond(cnd Expr) {
 	if jp.residual == nil {
 		jp.residual = cnd
 	} else {
-		jp.residual = &Binary{"and", jp.residual, cnd}
+		jp.residual = &Binary{Op: "and", L: jp.residual, R: cnd}
 	}
 }
 
@@ -2295,6 +2379,9 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 			name = f.ColAliases[0]
 		}
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
+		if f.F.Name == "generate_series" {
+			fp.c[0].ty = seriesTy(fp.args)
+		}
 	case "stask_history":
 		cols, err := c.historyCols(f.F.Args)
 		if err != nil {
@@ -2579,7 +2666,7 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 	for _, row := range rel.rows {
 		res := BoolD(true)
 		for i, v := range lv {
-			r, err := (&evalCtx{}).binary(&Binary{op, &Lit{v}, &Lit{row[i]}})
+			r, err := (&evalCtx{}).binary(&Binary{Op: op, L: &Lit{v}, R: &Lit{row[i]}})
 			if err != nil {
 				return Null, err
 			}
@@ -2626,7 +2713,7 @@ func (s *Session) describeQuery(st Stmt) (*Description, error) {
 		if k == KNull {
 			k = KText
 		}
-		d.Cols = append(d.Cols, Column{Name: c.name, Kind: k})
+		d.Cols = append(d.Cols, Column{Name: c.name, Kind: k}.withTy(c.ty))
 	}
 	n := maxParamDeep(st)
 	d.Params = make([]Kind, n)

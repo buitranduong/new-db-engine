@@ -87,7 +87,7 @@ func TestSQLBasics(t *testing.T) {
 		{`SELECT name FROM users WHERE id = 2`, "Bình"},
 		{`SELECT id, name FROM users WHERE id IN (3, 1, 99) ORDER BY id`, "1,An;3,Chi"},
 		{`SELECT count(*), count(age), sum(age), min(score), max(name) FROM users`, "4,3,96,6.25,Dũng"},
-		{`SELECT avg(age) FROM users WHERE active`, "35.5"},
+		{`SELECT avg(age) FROM users WHERE active`, "35.5000000000000000"},
 		{`SELECT active, count(*) AS n FROM users GROUP BY active ORDER BY n DESC`, "t,3;f,1"},
 		{`SELECT active, count(*) FROM users GROUP BY active HAVING count(*) > 1`, "t,3"},
 		{`SELECT name FROM users WHERE age IS NULL OR score IS NULL ORDER BY 1`, "Chi;Dũng"},

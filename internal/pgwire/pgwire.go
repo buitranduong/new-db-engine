@@ -48,7 +48,18 @@ const (
 	oidJSON        = 114
 	oidJSONB       = 3802
 	oidUUID        = 2950
+	oidName        = 19
+	oidBpchar      = 1042
+	oidTime        = 1083
 )
+
+// dataCols are the columns the rows of portal p are announced with.
+func dataCols(p *portal) []sql.Column {
+	if p.ps.desc != nil && len(p.ps.desc.Cols) == len(p.res.Cols) {
+		return p.ps.desc.Cols
+	}
+	return p.res.Cols
+}
 
 func oidOf(k sql.Kind) uint32 {
 	switch k {
@@ -106,7 +117,7 @@ func kindOfOID(oid uint32) (sql.Kind, bool) {
 		return sql.KJSON, true
 	case oidJSONB:
 		return sql.KJSONB, true
-	case oidText, oidVarchar:
+	case oidText, oidVarchar, oidName, oidBpchar:
 		return sql.KText, true
 	}
 	return 0, false
@@ -809,7 +820,7 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 			c.rowDescription(res.Cols, nil)
 		}
 		for _, row := range res.Rows {
-			if err := c.dataRow(row, nil); err != nil {
+			if err := c.dataRow(row, nil, res.Cols); err != nil {
 				c.sendError(sql.AsError(err))
 				return false
 			}
@@ -995,7 +1006,7 @@ func (c *conn) execute(body []byte) {
 		rows = rows[:maxRows]
 	}
 	for _, row := range rows {
-		if err := c.dataRow(row, p.formats); err != nil {
+		if err := c.dataRow(row, p.formats, dataCols(p)); err != nil {
 			c.fail(err)
 			return
 		}
@@ -1030,28 +1041,52 @@ func format(formats []int16, i int) int16 {
 	return 0
 }
 
+// colOID is the type OID RowDescription announces for a result column.
+func colOID(col sql.Column) uint32 {
+	if col.OID != 0 {
+		return col.OID
+	}
+	return oidOf(col.Kind)
+}
+
 func (c *conn) rowDescription(cols []sql.Column, formats []int16) {
 	m := newMsg('T').int16(len(cols))
 	for i, col := range cols {
 		size := -1
-		switch col.Kind {
-		case sql.KInt, sql.KFloat, sql.KTime, sql.KTimestamp:
-			size = 8
-		case sql.KBool:
-			size = 1
-		case sql.KUUID:
-			size = 16
-		case sql.KDate:
+		switch col.OID {
+		case oidInt4, oidFloat4:
 			size = 4
-		case sql.KInterval:
-			size = 16
+		case oidInt2:
+			size = 2
+		case oidTime:
+			size = 8
+		case oidName:
+			size = 64
 		}
-		m.str(col.Name).int32(0).int16(0).int32(int(oidOf(col.Kind))).int16(size).int32(-1).int16(int(format(formats, i)))
+		if size < 0 {
+			switch col.Kind {
+			case sql.KInt, sql.KFloat, sql.KTime, sql.KTimestamp:
+				size = 8
+			case sql.KBool:
+				size = 1
+			case sql.KUUID:
+				size = 16
+			case sql.KDate:
+				size = 4
+			case sql.KInterval:
+				size = 16
+			}
+		}
+		mod := int(col.Mod)
+		if col.OID == 0 {
+			mod = -1
+		}
+		m.str(col.Name).int32(0).int16(0).int32(int(colOID(col))).int16(size).int32(mod).int16(int(format(formats, i)))
 	}
 	c.send(m)
 }
 
-func (c *conn) dataRow(row []sql.Datum, formats []int16) error {
+func (c *conn) dataRow(row []sql.Datum, formats []int16, cols []sql.Column) error {
 	m := newMsg('D').int16(len(row))
 	for i, d := range row {
 		if d.IsNull() {
@@ -1060,17 +1095,27 @@ func (c *conn) dataRow(row []sql.Datum, formats []int16) error {
 		}
 		if format(formats, i) == 1 {
 			var b []byte
-			if d.K == sql.KArray {
+			switch {
+			case d.K == sql.KArray:
 				b = textArrayBinary(d.S)
-			} else if v, ok := sql.BinaryValue(d); ok {
-				b = v
-			} else {
-				b = []byte(d.S)
+			default:
+				oid := uint32(0)
+				if i < len(cols) {
+					oid = cols[i].OID
+				}
+				if v, ok := sql.BinaryValueFor(oid, d); ok {
+					b = v
+				} else {
+					b = []byte(d.S)
+				}
 			}
 			m.int32(len(b)).bytes(b)
 			continue
 		}
 		s := d.String()
+		if i < len(cols) && cols[i].OID == oidFloat4 && d.K == sql.KFloat {
+			s = sql.FormatFloat4(d.F)
+		}
 		m.int32(len(s)).bytes([]byte(s))
 	}
 	return c.send(m)
@@ -1116,7 +1161,11 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 			return sql.Null, &sql.Error{Code: "22P03", Msg: fmt.Sprintf("incorrect binary data format for type oid %d", oid)}
 		}
 		return d, nil
-	case oidText, oidVarchar, oidUnknown:
+	case oidTime:
+		if len(raw) == 8 {
+			return sql.TextD(sql.TimeOfDayText(int64(binary.BigEndian.Uint64(raw)))), nil
+		}
+	case oidText, oidVarchar, oidUnknown, oidName, oidBpchar:
 		return sql.TextD(string(raw)), nil
 	default:
 		return sql.Null, &sql.Error{Code: "0A000", Msg: fmt.Sprintf("binary format for type oid %d is not supported", oid)}

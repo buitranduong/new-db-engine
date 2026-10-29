@@ -259,3 +259,30 @@ func ArrayBinary(a Datum, ek Kind, eoid uint32) ([]byte, bool) {
 	}
 	return b, true
 }
+
+// BinaryValueFor is the binary form of d in a column of type oid: integers
+// and reals of the narrow types (int2, int4, float4) and time of day have
+// their own widths; everything else is BinaryValue.
+func BinaryValueFor(oid uint32, d Datum) ([]byte, bool) {
+	switch oid {
+	case tyInt4:
+		if d.K == KInt {
+			return binary.BigEndian.AppendUint32(nil, uint32(int32(d.I))), true
+		}
+	case tyInt2:
+		if d.K == KInt {
+			return binary.BigEndian.AppendUint16(nil, uint16(int16(d.I))), true
+		}
+	case tyFloat4:
+		if d.K == KFloat {
+			return binary.BigEndian.AppendUint32(nil, math.Float32bits(float32(d.F))), true
+		}
+	case tyTime:
+		if d.K == KText {
+			if us, ok := TimeOfDayMicros(d.S); ok {
+				return binary.BigEndian.AppendUint64(nil, uint64(us)), true
+			}
+		}
+	}
+	return BinaryValue(d)
+}

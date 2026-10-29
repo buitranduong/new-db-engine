@@ -108,7 +108,7 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 				if len(cd.Constraints) > 0 {
 					return errf(codeFeature, "ADD COLUMN with UNIQUE or REFERENCES is not supported: add the constraint with a separate ALTER TABLE")
 				}
-				c := schema.Column{Name: cd.Name, Type: cd.Type, NotNull: cd.NotNull}
+				c := schema.Column{Name: cd.Name, Type: cd.Type, PG: cd.PG, NotNull: cd.NotNull}
 				if cd.Default != "" {
 					v, err := s.missingValue(cd.Default, cd.Type, now)
 					if err != nil {

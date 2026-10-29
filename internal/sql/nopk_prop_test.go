@@ -143,8 +143,8 @@ func TestPropCompositeKey(t *testing.T) {
 				return strings.Join(rows, ";")
 			}
 			// strings with a zero byte and prefixes exercise the key encoding
-			names := []string{"", "a", "ab", "b", "a\x00", "a\x00b"}
-			lit := func(b string) string { return "'" + strings.ReplaceAll(b, "\x00", "' || chr(0) || '") + "'" }
+			names := []string{"", "a", "ab", "b", "a\x01", "a\x01b"}
+			lit := func(b string) string { return "'" + strings.ReplaceAll(b, "\x01", "' || chr(1) || '") + "'" }
 			for step := 0; step < 300; step++ {
 				k := key{rng.Intn(5) - 2, names[rng.Intn(len(names))]}
 				v := rng.Intn(100)

@@ -62,6 +62,12 @@ func (c *evalCtx) session() *Session {
 	return nil
 }
 
+// dialectCH reports a ClickHouse-dialect session (looser numeric errors).
+func (c *evalCtx) dialectCH() bool {
+	s := c.session()
+	return s != nil && s.clickHouse()
+}
+
 func (c *evalCtx) eval(x Expr) (Datum, error) {
 	if c.qx != nil {
 		// every operator that evaluates an expression per row (filter,
@@ -133,10 +139,16 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return Null, err
 		}
 		if e.Op == "not" {
-			if v, err = coerce(v, KBool); err != nil {
+			if v, err = c.asBool(v, "NOT"); err != nil {
 				return Null, err
 			}
 			return BoolD(v.I == 0), nil
+		}
+		if e.Op == "~" {
+			if v.K != KInt {
+				return Null, errf(codeUndefinedFunction, "operator does not exist: ~ %s", v.K)
+			}
+			return IntD(^v.I), nil
 		}
 		switch v.K {
 		case KInt:
@@ -154,7 +166,13 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		}
 		return Null, errf(codeUndefinedFunction, "operator does not exist: - %s", v.K)
 	case *Binary:
-		return c.binary(e)
+		d, err := c.binary(e)
+		if e.W != 0 && err == nil && d.K == KInt {
+			if lo, hi, tn := widthRange(e.W); d.I < lo || d.I > hi {
+				return Null, errf(codeNumericOutOfRange, "%s out of range", tn)
+			}
+		}
+		return d, err
 	case *IsNull:
 		v, err := c.eval(e.X)
 		if err != nil {
@@ -243,6 +261,14 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if d.K == KFloat && d.S != "" {
+			d.S = "" // a real cast to double precision prints with double digits
+		}
+		if e.PG != "" {
+			if d, err = applyPG(e.PG, d, true); err != nil {
+				return Null, err
+			}
+		}
 		switch k {
 		case KNumeric:
 			return applyTypmod(e.Type, d)
@@ -277,7 +303,7 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 					match = cmp == 0
 				}
 			} else if !cv.IsNull() {
-				b, err := coerce(cv, KBool)
+				b, err := c.asBool(cv, "CASE/WHEN")
 				if err != nil {
 					return Null, err
 				}
@@ -413,6 +439,15 @@ func (c *evalCtx) evalBool(x Expr) (Datum, error) {
 	if err != nil || v.IsNull() {
 		return Null, err
 	}
+	return c.asBool(v, "WHERE")
+}
+
+// asBool is a condition's value as a boolean: numbers are not accepted
+// (42804) outside the ClickHouse dialect.
+func (c *evalCtx) asBool(v Datum, what string) (Datum, error) {
+	if (v.K == KInt || v.K == KFloat || v.K == KNumeric) && !c.dialectCH() {
+		return Null, errf("42804", "argument of %s must be type boolean, not type %s", what, pgKindName(v.K))
+	}
 	return coerce(v, KBool)
 }
 
@@ -516,6 +551,23 @@ func arith(op string, l, r Datum) (Datum, error) {
 			return IntD(c), nil
 		case "&":
 			return IntD(a & b), nil
+		case "|":
+			return IntD(a | b), nil
+		case "#":
+			return IntD(a ^ b), nil
+		case "<<":
+			if b < 0 || b > 63 {
+				return IntD(0), nil
+			}
+			return IntD(a << uint(b)), nil
+		case ">>":
+			if b < 0 || b > 63 {
+				if a < 0 {
+					return IntD(-1), nil
+				}
+				return IntD(0), nil
+			}
+			return IntD(a >> uint(b)), nil
 		case "/", "%":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
@@ -534,23 +586,31 @@ func arith(op string, l, r Datum) (Datum, error) {
 		if r.K == KInt {
 			b = float64(r.I)
 		}
+		chk := func(r float64) (Datum, error) {
+			if math.IsInf(r, 0) && !math.IsInf(a, 0) && !math.IsInf(b, 0) {
+				return Null, errf(codeNumericOutOfRange, "value out of range: overflow")
+			}
+			return FloatD(r), nil
+		}
 		switch op {
 		case "+":
-			return FloatD(a + b), nil
+			return chk(a + b)
 		case "-":
-			return FloatD(a - b), nil
+			return chk(a - b)
 		case "*":
-			return FloatD(a * b), nil
+			return chk(a * b)
 		case "/":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
 			}
-			return FloatD(a / b), nil
+			return chk(a / b)
 		case "%":
 			if b == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
 			}
 			return FloatD(math.Mod(a, b)), nil
+		case "^":
+			return chk(math.Pow(a, b))
 		}
 	}
 	return Null, errf(codeUndefinedFunction, "operator does not exist: %s %s %s", l.K, op, r.K)
@@ -570,6 +630,14 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			return errf(codeUndefinedFunction, "function %s with %d arguments does not exist", f.Name, len(args))
 		}
 		return nil
+	}
+	if f.Name == "quote_nullable" && len(args) == 1 && args[0].IsNull() {
+		return TextD("NULL"), nil
+	}
+	if f.Name == "pg_typeof" && len(args) == 1 && args[0].IsNull() { // NULL has the type unknown, not no value
+		if l, ok := f.Args[0].(*Lit); ok && l.V.IsNull() {
+			return TextD("unknown"), nil
+		}
 	}
 	if v, ok, err := c.callPre(f, args); ok {
 		return v, err
@@ -657,6 +725,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			if err != nil {
 				return Null, err
 			}
+			if n.I < 0 && !c.dialectCH() {
+				return Null, errf("22011", "negative substring length not allowed")
+			}
 			to = from + int(n.I)
 		}
 		from, to = max(from, 0), min(to, len(rs))
@@ -732,11 +803,32 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		}
 		return FloatD(x / scale), nil
 	case "to_timestamp":
-		if err := nargs(1, 1); err != nil {
+		if err := nargs(1, 2); err != nil {
 			return Null, err
+		}
+		if len(args) == 2 {
+			if args[0].IsNull() || args[1].IsNull() {
+				return Null, nil
+			}
+			t, err := parseWithFormat(args[0].String(), args[1].String())
+			return TimeD(t.UnixMicro()), err
 		}
 		v, err := coerce(args[0], KFloat)
 		return TimeD(int64(math.Round(v.F * usPerSec))), err
+	case "to_date":
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		if args[0].IsNull() || args[1].IsNull() {
+			return Null, nil
+		}
+		t, err := parseWithFormat(args[0].String(), args[1].String())
+		return DateD(t.UnixMicro()), err
+	case "timezone": // timezone(zone, ts), what AT TIME ZONE reads as
+		if err := nargs(2, 2); err != nil {
+			return Null, err
+		}
+		return atTimeZone(args[1], args[0])
 	case "date_trunc":
 		if err := nargs(2, 2); err != nil {
 			return Null, err

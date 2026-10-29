@@ -57,11 +57,34 @@ func (p *parser) aliasClause() (string, []string, error) {
 // queryStmt: [WITH ...] set-expression [ORDER BY] [LIMIT ...] [OFFSET]
 // [FETCH] [LIMIT n BY ...] [SETTINGS ...] [FORMAT ...] [FOR UPDATE].
 func (p *parser) queryStmt() (Stmt, error) {
+	q, err := p.queryStmt1()
+	if err == nil && hasDMLCTE(withOf(q)) {
+		return &WithDML{Main: q}, nil
+	}
+	return q, err
+}
+
+func (p *parser) queryStmt1() (Stmt, error) {
 	var with []CTE
 	if p.acceptKw("with") {
 		var err error
 		if with, err = p.withList(); err != nil {
 			return nil, err
+		}
+		if p.isKw("insert") || p.isKw("update") || p.isKw("delete") { // WITH ... INSERT/UPDATE/DELETE
+			var m Stmt
+			switch {
+			case p.isKw("insert"):
+				m, err = p.insertStmt()
+			case p.isKw("update"):
+				m, err = p.updateStmt()
+			default:
+				m, err = p.deleteStmt()
+			}
+			if err != nil {
+				return nil, err
+			}
+			return &WithDML{With: with, Main: m}, nil
 		}
 	}
 	q, err := p.setExpr()
@@ -238,7 +261,18 @@ func (p *parser) withList() ([]CTE, error) {
 			if err := p.expectOp("("); err != nil {
 				return nil, err
 			}
-			q, err := p.queryStmt()
+			var q Stmt
+			var err error
+			switch {
+			case p.isKw("insert"):
+				q, err = p.insertStmt()
+			case p.isKw("update"):
+				q, err = p.updateStmt()
+			case p.isKw("delete"):
+				q, err = p.deleteStmt()
+			default:
+				q, err = p.queryStmt()
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -393,7 +427,7 @@ func (p *parser) selectCore() (*Select, error) {
 			return nil, err
 		}
 		if s.Where != nil {
-			w = &Binary{"and", s.Where, w}
+			w = &Binary{Op: "and", L: s.Where, R: w}
 		}
 		s.Where = w
 	}

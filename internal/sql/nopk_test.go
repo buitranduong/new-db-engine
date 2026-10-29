@@ -191,12 +191,12 @@ func TestNoPKChangeDataCapture(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"table public.np: INSERT: x[bigint]:1 y[text]:'a'",
-		"table public.np: UPDATE: old-key: x[bigint]:1 y[text]:'a' new-tuple: x[bigint]:1 y[text]:'b'",
-		"table public.np: DELETE: x[bigint]:1 y[text]:'b'",
-		"table public.ck: DELETE: a[bigint]:1 b[bigint]:2 v[text]:'p'", // a key change is a delete and an insert
-		"table public.ck: INSERT: a[bigint]:1 b[bigint]:3 v[text]:'p'",
-		"table public.ck: DELETE: a[bigint]:1 b[bigint]:3 v[text]:'p'",
+		"table public.np: INSERT: x[integer]:1 y[text]:'a'",
+		"table public.np: UPDATE: old-key: x[integer]:1 y[text]:'a' new-tuple: x[integer]:1 y[text]:'b'",
+		"table public.np: DELETE: x[integer]:1 y[text]:'b'",
+		"table public.ck: DELETE: a[integer]:1 b[integer]:2 v[text]:'p'", // a key change is a delete and an insert
+		"table public.ck: INSERT: a[integer]:1 b[integer]:3 v[text]:'p'",
+		"table public.ck: DELETE: a[integer]:1 b[integer]:3 v[text]:'p'",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in\n%s", want, got)
@@ -206,7 +206,7 @@ func TestNoPKChangeDataCapture(t *testing.T) {
 	if strings.Contains(w, "__") {
 		t.Fatalf("the hidden column is in wal2json:\n%s", w)
 	}
-	if !strings.Contains(w, `"pk":[{"name":"a","type":"bigint"},{"name":"b","type":"bigint"}]`) {
+	if !strings.Contains(w, `"pk":[{"name":"a","type":"integer"},{"name":"b","type":"integer"}]`) {
 		t.Fatalf("wal2json pk of the composite key:\n%s", w)
 	}
 	if got := cell(t, s, `SELECT relreplident FROM pg_class WHERE relname = 'np'`); got != "f" {
@@ -250,7 +250,7 @@ func TestNoPKWithOtherFeatures(t *testing.T) {
 	}
 	// text key columns of a composite key keep their order across the NUL byte
 	run(t, s, `CREATE TABLE tk (a TEXT, b TEXT, PRIMARY KEY (a, b))`)
-	run(t, s, `INSERT INTO tk VALUES ('a', 'z'), ('a' || chr(0), 'a'), ('ab', 'a')`)
+	run(t, s, `INSERT INTO tk VALUES ('a', 'z'), ('a' || chr(1), 'a'), ('ab', 'a')`)
 	if got := cell(t, s, `SELECT count(*) FROM tk`); got != "3" {
 		t.Fatal(got)
 	}

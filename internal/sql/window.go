@@ -329,7 +329,7 @@ func frameBounds(ctx *evalCtx, w *winCall, idx []int, okeys [][]Datum, peer, fir
 		if sign < 0 {
 			op = "-"
 		}
-		target, err := (&evalCtx{}).binary(&Binary{op, &Lit{cur}, &Lit{d}})
+		target, err := (&evalCtx{}).binary(&Binary{Op: op, L: &Lit{cur}, R: &Lit{d}})
 		if err != nil {
 			return 0, err
 		}

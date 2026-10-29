@@ -19,7 +19,7 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 		return KText
 	case *ColRef:
 		if i, err := sc.resolve(e); err == nil {
-			return kindOf(sc.t.Columns[i].T)
+			return colKind(&sc.t.Columns[i])
 		}
 		return KText
 	case *Unary:
@@ -33,6 +33,11 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			return KBool
 		case "||":
 			return KText
+		case "^":
+			if l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
+				return KNumeric
+			}
+			return KFloat
 		}
 		l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)
 		tl, tr := isTime(l) || l == KDate, isTime(r) || r == KDate
@@ -85,7 +90,7 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if e.Name == "round" && len(e.Args) == 1 && arg() == KInt {
 				return KInt
 			}
-			if arg() == KNumeric && e.Name != "extract_epoch" && e.Name != "epoch" {
+			if arg() == KNumeric && e.Name != "extract_epoch" && e.Name != "epoch" || e.Name == "avg" && arg() == KInt {
 				return KNumeric
 			}
 			return KFloat
@@ -97,7 +102,15 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 				return KNumeric
 			}
 			return KFloat
-		case "min", "max", "abs", "coalesce", "nullif":
+		case "coalesce":
+			for _, a := range e.Args {
+				if l, ok := a.(*Lit); ok && l.V.IsNull() {
+					continue
+				}
+				return typeOf(a, sc, pk)
+			}
+			return KText
+		case "min", "max", "abs", "nullif":
 			return arg()
 		case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "to_timestamp":
 			return KTime
@@ -186,7 +199,7 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 		for _, a := range set2 {
 			if sc.t != nil {
 				if i, ok := sc.t.Col(a.Col); ok {
-					set(a.X, kindOf(sc.t.Columns[i].T))
+					set(a.X, colKind(&sc.t.Columns[i]))
 				}
 			}
 			visit(a.X)
@@ -221,7 +234,7 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 						ci, _ = sc.t.Col(st.Cols[j])
 					}
 					if ci < len(sc.t.Columns) {
-						set(x, kindOf(sc.t.Columns[ci].T))
+						set(x, colKind(&sc.t.Columns[ci]))
 					}
 					visit(x)
 				}
@@ -314,6 +327,8 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	var table string
 	var ret []SelItem
 	switch st := st.(type) {
+	case *WithDML:
+		return s.describeWithDML(st)
 	case *SetOp:
 		return s.describeQuery(st)
 	case *Select:
@@ -326,12 +341,16 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	case *Insert:
 		table, ret = st.Table, st.Returning
 	case *Update:
-		table, ret = st.Table, st.Returning
+		table, ret, sc.alias = st.Table, st.Returning, st.Alias
 	case *Delete:
-		table, ret = st.Table, st.Returning
+		table, ret, sc.alias = st.Table, st.Returning, st.Alias
+	case *Explain:
+		d.HasRows = true
+		d.Cols = []Column{{Name: "QUERY PLAN", Kind: KText}}
+		return d, nil
 	case *Show:
 		d.HasRows = true
-		d.Cols = []Column{{st.Name, KText}}
+		d.Cols = []Column{{Name: showColumn(st.Name), Kind: KText}}
 		return d, nil
 	default:
 		return d, nil
@@ -361,12 +380,12 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 				}
 				for _, c := range sc.t.Columns {
 					if !c.Hidden {
-						d.Cols = append(d.Cols, Column{c.Name, kindOf(c.T)})
+						d.Cols = append(d.Cols, tableCol(&c))
 					}
 				}
 				continue
 			}
-			d.Cols = append(d.Cols, Column{itemName(it), typeOf(it.X, sc, pk)})
+			d.Cols = append(d.Cols, itemCol(it, sc, pk))
 		}
 		return d, nil
 	}

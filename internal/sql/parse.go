@@ -54,6 +54,10 @@ type parser struct {
 	toks []token
 	i    int
 	src  string
+	// pgSpec is the PostgreSQL spelling of the type typeName parsed last
+	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
+	// when the schema type says it all.
+	pgSpec string
 }
 
 func (p *parser) peek() token { return p.toks[p.i] }
@@ -576,6 +580,7 @@ func (p *parser) colDef() (ColDef, error) {
 	if cd.Type, err = p.typeName(); err != nil {
 		return cd, err
 	}
+	cd.PG = p.pgSpec
 	switch raw {
 	case "smallserial", "serial", "bigserial":
 		cd.Serial, cd.NotNull = true, true
@@ -590,8 +595,8 @@ func (p *parser) colDef() (ColDef, error) {
 		}
 	}
 	switch cd.Type {
-	case "date": // stored as a timestamp at midnight
-		cd.Type = "time"
+	case "date": // stored as a timestamp at midnight, read back as a date (PG "date")
+		cd.Type = "timestamp"
 	case "interval", "array":
 		return cd, errf(codeFeature, "columns of type %s are not supported", cd.Type)
 	}
@@ -670,14 +675,19 @@ func (p *parser) colDef() (ColDef, error) {
 
 // typeName maps PostgreSQL type names to schema types.
 func (p *parser) typeName() (string, error) {
+	p.pgSpec = ""
 	t := p.next()
 	if t.k != tIdent {
 		return "", p.errHere("syntax error: expected a type name")
 	}
+	// modN is the first number of "(n[, m])", or -1
+	modN := -1
 	skipMods := func() {
 		if p.acceptOp("(") {
 			for !p.acceptOp(")") && p.peek().k != tEOF {
-				p.next()
+				if x := p.next(); x.k == tNumber && modN < 0 {
+					modN, _ = strconv.Atoi(x.s)
+				}
 			}
 		}
 	}
@@ -695,6 +705,12 @@ func (p *parser) typeName() (string, error) {
 	case "int", "integer", "int2", "int4", "int8", "bigint", "smallint", "serial", "bigserial", "smallserial",
 		"int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "tinyint", "signed", "unsigned":
 		out = "int"
+		switch t.s {
+		case "int2", "smallint", "smallserial":
+			p.pgSpec = "int2"
+		case "int", "integer", "int4", "serial":
+			p.pgSpec = "int4"
+		}
 	case "float32", "float64", "double_precision":
 		skipMods()
 		out = "float"
@@ -704,6 +720,12 @@ func (p *parser) typeName() (string, error) {
 	case "fixedstring", "enum8", "enum16", "ipv4", "ipv6", "bpchar":
 		skipMods()
 		out = "string"
+		if t.s == "bpchar" {
+			p.pgSpec = "bpchar"
+			if modN >= 1 {
+				p.pgSpec = "bpchar(" + strconv.Itoa(modN) + ")"
+			}
+		}
 	case "json", "jsonb", "bytea", "uuid":
 		out = t.s
 	case "datetime", "datetime64":
@@ -722,6 +744,9 @@ func (p *parser) typeName() (string, error) {
 	case "float", "float4", "float8", "real":
 		skipMods()
 		out = "float"
+		if t.s == "float4" || t.s == "real" || t.s == "float" && modN >= 1 && modN <= 24 {
+			p.pgSpec = "float4"
+		}
 	case "numeric", "decimal":
 		out = "numeric"
 		if p.acceptOp("(") { // numeric(precision[, scale])
@@ -749,9 +774,24 @@ func (p *parser) typeName() (string, error) {
 	case "int2vector", "oidvector":
 		out = "array"
 	case "varchar", "char", "character", "string", "name":
-		p.acceptKw("varying")
+		varying := p.acceptKw("varying")
 		skipMods()
 		out = "string"
+		switch {
+		case t.s == "string":
+		case t.s == "name":
+			p.pgSpec = "name"
+		case t.s == "varchar" || varying:
+			p.pgSpec = "varchar"
+			if modN >= 1 {
+				p.pgSpec = "varchar(" + strconv.Itoa(modN) + ")"
+			}
+		default:
+			p.pgSpec = "bpchar(1)"
+			if modN >= 1 {
+				p.pgSpec = "bpchar(" + strconv.Itoa(modN) + ")"
+			}
+		}
 	case "timestamp", "timestamptz":
 		skipMods()
 		out = t.s
@@ -766,15 +806,31 @@ func (p *parser) typeName() (string, error) {
 		}
 	case "date":
 		out = "date"
+		p.pgSpec = "date"
+	case "time":
+		skipMods()
+		out = "string" // time of day: held as "HH:MM:SS[.ffffff]" text (pgtype.go)
+		p.pgSpec = "time"
+		if p.acceptKw("with") {
+			p.acceptKw("time")
+			p.acceptKw("zone")
+		} else if p.acceptKw("without") {
+			p.acceptKw("time")
+			p.acceptKw("zone")
+		}
 	case "bool", "boolean":
 		out = "bool"
 	default:
-		return "", errf(codeFeature, "type %q is not supported", t.s)
+		if unsupportedTypes[t.s] {
+			return "", errf(codeFeature, "type %q is not supported", t.s)
+		}
+		return "", errf(codeUndefinedObject, "type %q does not exist", t.s)
 	}
 	if p.acceptOp("[") {
 		if err := p.expectOp("]"); err != nil {
 			return "", err
 		}
+		p.pgSpec = ""
 		if et, err := schema.ParseType(out); err == nil && et != schema.TArray && et != schema.TBytea && et != schema.TJSON && et != schema.TJSONB {
 			return out + "[]", nil
 		}
@@ -858,7 +914,11 @@ func (p *parser) insertStmt() (Stmt, error) {
 				if p.peek().k == tEOF {
 					return nil, p.errHere("unterminated conflict target")
 				}
-				p.next()
+				if tk := p.next(); tk.k == tIdent || tk.k == tQuoted {
+					oc.Target = append(oc.Target, tk.s)
+				} else if tk.s != "," {
+					oc.Target = append(oc.Target, "") // an expression target: never matches
+				}
 			}
 		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
 			if _, err := p.ident(); err != nil {
@@ -897,6 +957,45 @@ func (p *parser) insertStmt() (Stmt, error) {
 func (p *parser) assignments() ([]Assign, error) {
 	var out []Assign
 	for {
+		if p.isOp("(") { // SET (a, b) = (x, y) or ROW(x, y)
+			p.next()
+			var cols []string
+			for {
+				c, err := p.ident()
+				if err != nil {
+					return nil, err
+				}
+				cols = append(cols, c)
+				if p.acceptOp(")") {
+					break
+				}
+				if err := p.expectOp(","); err != nil {
+					return nil, err
+				}
+			}
+			if err := p.expectOp("="); err != nil {
+				return nil, err
+			}
+			p.acceptKw("row")
+			if !p.isOp("(") || p.peekN(1).s == "select" || p.peekN(1).s == "with" {
+				return nil, errf(codeFeature, "UPDATE SET (columns) = (subquery) is not supported")
+			}
+			p.next()
+			vals, err := p.exprList(")")
+			if err != nil {
+				return nil, err
+			}
+			if len(vals) != len(cols) {
+				return nil, errf(codeSyntax, "number of columns (%d) does not match number of values (%d)", len(cols), len(vals))
+			}
+			for i, c := range cols {
+				out = append(out, Assign{c, vals[i]})
+			}
+			if !p.acceptOp(",") {
+				return out, nil
+			}
+			continue
+		}
 		c, err := p.ident()
 		if err != nil {
 			return nil, err
@@ -1065,7 +1164,7 @@ func (p *parser) orExpr() (Expr, error) {
 	for err == nil && p.acceptKw("or") {
 		var r Expr
 		if r, err = p.andExpr(); err == nil {
-			l = &Binary{"or", l, r}
+			l = &Binary{Op: "or", L: l, R: r}
 		}
 	}
 	return l, err
@@ -1076,7 +1175,7 @@ func (p *parser) andExpr() (Expr, error) {
 	for err == nil && p.acceptKw("and") {
 		var r Expr
 		if r, err = p.notExpr(); err == nil {
-			l = &Binary{"and", l, r}
+			l = &Binary{Op: "and", L: l, R: r}
 		}
 	}
 	return l, err
@@ -1091,7 +1190,7 @@ func (p *parser) notExpr() (Expr, error) {
 }
 
 func (p *parser) predicate() (Expr, error) {
-	l, err := p.addExpr()
+	l, err := p.bitExpr()
 	if err != nil {
 		return nil, err
 	}
@@ -1132,18 +1231,18 @@ func (p *parser) predicate() (Expr, error) {
 				l = &AnyAll{X: l, Op: op, All: all, Q: q}
 				continue
 			}
-			r, err := p.addExpr()
+			r, err := p.bitExpr()
 			if err != nil {
 				return nil, err
 			}
-			l = &Binary{op, l, r}
+			l = &Binary{Op: op, L: l, R: r}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
-			r, err := p.addExpr()
+			r, err := p.bitExpr()
 			if err != nil {
 				return nil, err
 			}
-			var x Expr = &Func{Name: "regexp_like", Args: []Expr{l, r, &Lit{TextD(map[bool]string{true: "i", false: ""}[strings.HasSuffix(t.s, "*")])}}}
+			var x Expr = &Func{Name: "regexp_like", Disp: "?column?", Args: []Expr{l, r, &Lit{TextD(map[bool]string{true: "i", false: ""}[strings.HasSuffix(t.s, "*")])}}}
 			if strings.HasPrefix(t.s, "!") {
 				x = &Unary{"not", x}
 			}
@@ -1154,7 +1253,7 @@ func (p *parser) predicate() (Expr, error) {
 			case p.acceptKw("null"):
 				l = &IsNull{l, not}
 			case p.acceptKw("distinct", "from"):
-				r, err := p.addExpr()
+				r, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
@@ -1162,11 +1261,13 @@ func (p *parser) predicate() (Expr, error) {
 				if not {
 					name = "is_not_distinct_from"
 				}
-				l = &Func{Name: name, Args: []Expr{l, r}}
+				l = &Func{Name: name, Disp: "?column?", Args: []Expr{l, r}}
+			case p.acceptKw("unknown"):
+				l = &IsNull{l, not}
 			case p.acceptKw("true"), p.acceptKw("false"):
 				want := p.toks[p.i-1].s == "true"
 				// IS [NOT] TRUE/FALSE never yields NULL
-				x := Expr(&Binary{"=", &Func{Name: "coalesce", Args: []Expr{l, &Lit{BoolD(!want)}}}, &Lit{BoolD(want)}})
+				x := Expr(&Binary{Op: "=", L: &Func{Name: "coalesce", Args: []Expr{l, &Lit{BoolD(!want)}}}, R: &Lit{BoolD(want)}})
 				if not {
 					x = &Unary{"not", x}
 				}
@@ -1179,7 +1280,7 @@ func (p *parser) predicate() (Expr, error) {
 			if p.isKw("global") && (p.peekN(1).s == "in" || p.peekN(1).s == "not") {
 				p.next() // ClickHouse GLOBAL IN: one server here
 			}
-			if p.isKw("not") && (p.peekN(1).s == "in" || p.peekN(1).s == "between" || p.peekN(1).s == "like" || p.peekN(1).s == "ilike") {
+			if p.isKw("not") && (p.peekN(1).s == "in" || p.peekN(1).s == "between" || p.peekN(1).s == "like" || p.peekN(1).s == "ilike" || p.peekN(1).s == "similar") {
 				p.next()
 				not = true
 			}
@@ -1206,30 +1307,51 @@ func (p *parser) predicate() (Expr, error) {
 				l = &InList{l, list, not}
 			case p.acceptKw("between"):
 				sym := p.acceptKw("symmetric")
-				lo, err := p.addExpr()
+				lo, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
 				if err := p.expectKw("and"); err != nil {
 					return nil, err
 				}
-				hi, err := p.addExpr()
+				hi, err := p.bitExpr()
 				if err != nil {
 					return nil, err
 				}
 				if sym { // either order of the bounds
-					l = &Binary{"or", &Between{l, lo, hi, false}, &Between{l, hi, lo, false}}
+					l = &Binary{Op: "or", L: &Between{l, lo, hi, false}, R: &Between{l, hi, lo, false}}
 					if not {
 						l = &Unary{"not", l}
 					}
 				} else {
 					l = &Between{l, lo, hi, not}
 				}
-			case p.acceptKw("like"), p.acceptKw("ilike"):
-				ic := p.toks[p.i-1].s == "ilike"
-				pat, err := p.addExpr()
+			case p.acceptKw("similar", "to"):
+				pat, err := p.bitExpr()
 				if err != nil {
 					return nil, err
+				}
+				l = &Func{Name: "similar_to", Disp: "?column?", Args: []Expr{l, pat}}
+				if not {
+					l = &Unary{"not", l}
+				}
+			case p.acceptKw("like"), p.acceptKw("ilike"):
+				ic := p.toks[p.i-1].s == "ilike"
+				pat, err := p.bitExpr()
+				if err != nil {
+					return nil, err
+				}
+				if p.acceptKw("escape") { // the pattern's escape character becomes the backslash
+					esc, err := p.bitExpr()
+					if err != nil {
+						return nil, err
+					}
+					pl, ok1 := pat.(*Lit)
+					el, ok2 := esc.(*Lit)
+					if !ok1 || !ok2 || pl.V.K != KText || el.V.K != KText {
+						return nil, errf(codeFeature, "LIKE ... ESCAPE needs literal pattern and escape strings")
+					}
+					pat = &Lit{TextD(likeEscape(pl.V.S, el.V.S))}
 				}
 				l = &Like{l, pat, not, ic}
 			default:
@@ -1242,25 +1364,55 @@ func (p *parser) predicate() (Expr, error) {
 	}
 }
 
+// bitExpr: the "other operators" of PostgreSQL, looser than + and -.
+func (p *parser) bitExpr() (Expr, error) {
+	l, err := p.addExpr()
+	for err == nil && (p.isOp("|") || p.isOp("&") || p.isOp("#") || p.isOp("<<") || p.isOp(">>") || p.isOp("^@")) {
+		op := p.next().s
+		var r Expr
+		if r, err = p.addExpr(); err == nil {
+			if op == "^@" {
+				l = &Func{Name: "starts_with", Disp: "?column?", Args: []Expr{l, r}}
+			} else {
+				l = &Binary{Op: op, L: l, R: r}
+			}
+		}
+	}
+	return l, err
+}
+
 func (p *parser) addExpr() (Expr, error) {
 	l, err := p.mulExpr()
 	for err == nil && (p.isOp("+") || p.isOp("-") || p.isOp("||")) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.mulExpr(); err == nil {
-			l = &Binary{op, l, r}
+			l = &Binary{Op: op, L: l, R: r}
 		}
 	}
 	return l, err
 }
 
 func (p *parser) mulExpr() (Expr, error) {
-	l, err := p.unary()
-	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%") || p.isOp("&")) {
+	l, err := p.powExpr()
+	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%")) {
 		op := p.next().s
 		var r Expr
+		if r, err = p.powExpr(); err == nil {
+			l = &Binary{Op: op, L: l, R: r}
+		}
+	}
+	return l, err
+}
+
+// powExpr is the exponent operator ^ (left associative, tighter than * /).
+func (p *parser) powExpr() (Expr, error) {
+	l, err := p.unary()
+	for err == nil && p.isOp("^") {
+		p.next()
+		var r Expr
 		if r, err = p.unary(); err == nil {
-			l = &Binary{op, l, r}
+			l = &Binary{Op: "^", L: l, R: r}
 		}
 	}
 	return l, err
@@ -1284,13 +1436,24 @@ func (p *parser) unary() (Expr, error) {
 	if p.acceptOp("+") {
 		return p.unary()
 	}
+	if p.acceptOp("~") { // bitwise NOT
+		x, err := p.unary()
+		return &Unary{"~", x}, err
+	}
 	x, err := p.primary()
 	for err == nil {
 		switch {
 		case p.acceptOp("::"):
 			var t string
 			if t, err = p.typeName(); err == nil {
-				x = &Cast{x, t}
+				x = &Cast{x, t, p.pgSpec}
+			}
+			continue
+		case p.isKw("at") && p.peekN(1).s == "time" && p.peekN(2).s == "zone":
+			p.i += 3
+			var z Expr
+			if z, err = p.unary(); err == nil {
+				x = &Func{Name: "timezone", Args: []Expr{z, x}}
 			}
 			continue
 		case p.isOp("[") && p.i > 0 && (p.toks[p.i-1].s == ")" || p.toks[p.i-1].s == "]" && p.toks[p.i-1].k == tOp ||
@@ -1406,7 +1569,7 @@ func (p *parser) primary() (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &Cast{x, ty}, p.expectOp(")")
+			return &Cast{x, ty, p.pgSpec}, p.expectOp(")")
 		case "exists":
 			if p.peekN(1).s == "(" {
 				p.next()
@@ -1441,20 +1604,21 @@ func (p *parser) primary() (Expr, error) {
 				if u := p.peek(); u.k == tIdent && intervalUnits[u.s] != [2]int64{} || u.k == tIdent && (u.s == "microsecond" || u.s == "microseconds") {
 					v += " " + p.next().s
 				}
-				return &Cast{&Lit{TextD(v)}, "interval"}, nil
+				return &Cast{&Lit{TextD(v)}, "interval", ""}, nil
 			}
 		case "current_date":
 			p.next()
-			return &Cast{&Func{Name: "now"}, "date"}, nil
-		case "timestamp", "timestamptz", "date", "boolean", "int", "integer", "bigint", "text":
+			return &Cast{&Func{Name: "now"}, "date", "date"}, nil
+		case "timestamp", "timestamptz", "date", "boolean", "int", "integer", "bigint", "text", "time", "smallint", "real", "varchar":
 			// typed literal: TIMESTAMP '2024-01-01'
 			if p.peekN(1).k == tString {
 				ty, err := p.typeName()
 				if err != nil {
 					return nil, err
 				}
+				pg := p.pgSpec
 				s := p.next()
-				return &Cast{&Lit{TextD(s.s)}, ty}, nil
+				return &Cast{&Lit{TextD(s.s)}, ty, pg}, nil
 			}
 		case "current_timestamp", "localtimestamp":
 			p.next()
@@ -1509,7 +1673,7 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &Func{Name: "strpos", Args: []Expr{b, a}}, p.expectOp(")")
+			return &Func{Name: "strpos", Disp: "position", Args: []Expr{b, a}}, p.expectOp(")")
 		}
 		if err := p.expectOp(","); err != nil { // ClickHouse position(haystack, needle)
 			return nil, err
@@ -1517,6 +1681,7 @@ func (p *parser) funcCall(name string) (Expr, error) {
 		rest, err := p.exprList(")")
 		return &Func{Name: "strpos", Args: append([]Expr{a}, rest...)}, err
 	case "substring", "substr":
+		disp := name
 		x, err := p.expr()
 		if err != nil {
 			return nil, err
@@ -1535,16 +1700,16 @@ func (p *parser) funcCall(name string) (Expr, error) {
 				}
 				args = append(args, n)
 			}
-			return &Func{Name: "substr", Args: args}, p.expectOp(")")
+			return &Func{Name: "substr", Disp: disp, Args: args}, p.expectOp(")")
 		}
 		if p.acceptOp(")") {
-			return &Func{Name: "substr", Args: []Expr{x}}, nil
+			return &Func{Name: "substr", Disp: disp, Args: []Expr{x}}, nil
 		}
 		if err := p.expectOp(","); err != nil {
 			return nil, err
 		}
 		rest, err := p.exprList(")")
-		return &Func{Name: "substr", Args: append([]Expr{x}, rest...)}, err
+		return &Func{Name: "substr", Disp: disp, Args: append([]Expr{x}, rest...)}, err
 	case "trim":
 		fn := "btrim"
 		switch {
@@ -1954,6 +2119,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				if act.Type, err = p.typeName(); err != nil {
 					return nil, err
 				}
+				act.PG = p.pgSpec
 				if p.acceptKw("using") {
 					// only the cast of the column itself: USING col::type or CAST(col AS type)
 					x, err := p.expr()

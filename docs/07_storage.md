@@ -186,6 +186,8 @@ Mọi dòng dùng checkpoint v2 (256 MB), trừ dòng cuối (lần thử đầu
 - từ điển chuỗi và khoá chuỗi: zstd.
 - Đo trên một block 65.536 giá trị (zstd mặc định): `amount` kiểu tiền (hai chữ số thập phân): thô 4,18 B/giá trị, byte-plane 6,77, **thập phân 2,5**. Số thực ngẫu nhiên đều: thô 8,00, byte-plane 6,85. Vậy byte-plane không phải lúc nào cũng tốt, nên mỗi block thử cả hai. Không dùng Gorilla/XOR: docs/07 mục 3 đã cho thấy nó làm cột `amount` to gấp 1,75 lần ZSTD.
 
+**Cột `numeric` (nhánh `colnumeric`, D27).** `numeric(p,s)` p ≤ 18 nằm trong view dưới dạng số nguyên 64 bit đã nhân 10^s: quét, lọc, nhóm, nén (FOR/delta) và tệp `columnar.view` dùng đường của cột `int`; tổng cộng bằng 64 bit khi `số dòng × |giá trị lớn nhất|` < 2^63, ngược lại 128 bit; kết quả in đúng scale như PG (`sum` cùng scale cột, `avg` theo `select_div_scale` qua `pgnum.Div`, `min/max` cùng scale). `numeric` không giới hạn hoặc p > 18 chưa nằm trong view (chạy trên dòng); NaN làm cột rời view. Đo 1M dòng `numeric(12,2)`: tệp view 5,12 MB cho cả bảng (số + 3 cột: ~5 B/dòng), 2M: 10,26 MB; mở lại bằng tệp view 0,44 s (1M) và 0,86 s (2M). Số đo truy vấn: docs/14 mục CN.
+
 **Dung lượng, bảng `orders` sinh như mục 1 (cột `note` có mặt trong bảng nhưng view bỏ nó vì hơn 65.536 giá trị khác nhau), 5 triệu dòng** (`STASK_VIEWBENCH=5000000 go test -run TestViewBench -v ./internal/proj`):
 
 | Cột | ClickHouse ZSTD(3) (20M ở mục 3, chia 4) | Tệp view STASK |

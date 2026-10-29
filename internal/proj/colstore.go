@@ -50,7 +50,11 @@ import (
 const (
 	viewFile    = "columnar.view"
 	viewMagic   = "STCV"
-	viewVersion = 1
+	viewVersion = 1 // files without a numeric column
+	// viewVersionNum: a file with a numeric column (table flags bits 2-7,
+	// docs/09 7a); written only then, so other files stay readable by
+	// older binaries
+	viewVersionNum = 2
 
 	secHeader = 1
 	secTable  = 2
@@ -149,7 +153,7 @@ func openView(dir string) (*os.File, *bufio.Reader, error) {
 	}
 	br := bufio.NewReaderSize(f, 4<<20)
 	var m [8]byte
-	if _, err := io.ReadFull(br, m[:]); err != nil || string(m[:4]) != viewMagic || binary.LittleEndian.Uint32(m[4:]) != viewVersion {
+	if _, err := io.ReadFull(br, m[:]); err != nil || string(m[:4]) != viewMagic || (binary.LittleEndian.Uint32(m[4:]) != viewVersion && binary.LittleEndian.Uint32(m[4:]) != viewVersionNum) {
 		f.Close()
 		return nil, nil, errors.New("not a columnar view file")
 	}
@@ -614,6 +618,12 @@ func (ct *colTable) metaSection(nlive int) []byte {
 		if cv.text {
 			fl |= 2
 		}
+		if c.T == schema.TNumeric { // bit 2; the scale in bits 3-7 (scaled int64) or 0
+			fl |= 4
+			if sc, ok := numScaleOf(&c); ok {
+				fl |= byte(sc) << 3
+			}
+		}
 		out = put32(out, uint32(int32(c.Num)))
 		out = append(out, byte(c.T), fl)
 	}
@@ -639,15 +649,22 @@ func (c *Columnar) Save(e *core.Engine, lsn uint64, pos wal.Pos) (err error) {
 	bw := bufio.NewWriterSize(f, 4<<20)
 	var m [8]byte
 	copy(m[:], viewMagic)
-	binary.LittleEndian.PutUint32(m[4:], viewVersion)
-	bw.Write(m[:])
-
 	c.mu.RLock()
 	ids := make([]uint32, 0, len(c.tables))
-	for id := range c.tables {
+	ver := uint32(viewVersion)
+	for id, ct := range c.tables {
 		ids = append(ids, id)
+		ct.mu.RLock()
+		for _, col := range ct.schema.Columns {
+			if col.T == schema.TNumeric {
+				ver = viewVersionNum
+			}
+		}
+		ct.mu.RUnlock()
 	}
 	c.mu.RUnlock()
+	binary.LittleEndian.PutUint32(m[4:], ver)
+	bw.Write(m[:])
 	slices.Sort(ids)
 	h := binary.LittleEndian.AppendUint64(nil, lsn)
 	h = put32(h, pos.Seg)
@@ -891,6 +908,26 @@ func newLoadState(e *core.Engine, p []byte, sem chan struct{}) (*loadState, erro
 			return nil, fmt.Errorf("table %s: column %s changed", sch.Name, c.Name)
 		}
 		stored, text := q[5]&1 != 0, q[5]&2 != 0
+		if c.T == schema.TNumeric {
+			sc, isNum := numScaleOf(&c)
+			want := byte(4)
+			if isNum {
+				want |= byte(sc) << 3
+			}
+			if q[5]&^3 != want || stored && !isNum || text {
+				return nil, fmt.Errorf("table %s: column %s changed", sch.Name, c.Name)
+			}
+			if !stored { // dropped from the view (NaN) or not held: as the rows say
+				ct.cols[i] = colVec{t: schema.TNumeric}
+				if isNum {
+					ct.cols[i] = colVec{t: schema.TInt, num: true, scale: uint8(sc)}
+				}
+			}
+			continue
+		}
+		if q[5]&^3 != 0 {
+			return nil, fmt.Errorf("table %s: column %s has unknown flags", sch.Name, c.Name)
+		}
 		switch {
 		case stored:
 		case text && c.T == schema.TText:

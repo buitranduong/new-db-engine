@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"stask/internal/buildinfo"
 	"stask/internal/core"
 	"stask/internal/planner"
 	"stask/internal/proj"
@@ -556,7 +557,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	runtime.ReadMemStats(&ms)
 	tables := map[string]any{}
 	for _, t := range e.UserTables() {
-		info := map[string]any{"live_rows": t.LiveRows(), "index": t.IndexStats()}
+		info := map[string]any{"live_rows": t.LiveRows(), "index": t.IndexStats(), "columnar": t.Schema().Columnar}
 		if t.Schema().Columnar && !s.P.ColF.Ready() {
 			info["columnar_bootstrapping"] = true
 		}
@@ -613,6 +614,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"tables":    tables,
 		"heap_mb":   ms.HeapAlloc >> 20,
 		"open_tx":   openTx,
+		"build":     buildinfo.Read(),
 	})
 }
 

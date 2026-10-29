@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"stask/internal/benchcheck"
 )
 
 type query struct {
@@ -68,7 +70,21 @@ func main() {
 	n := flag.Int64("n", 2_000_000, "rows in the table (point lookups pick ids below)")
 	label := flag.String("label", "", "label")
 	show := flag.Bool("show", false, "print each query's canonical answer to stderr")
+	bo := benchcheck.Register(flag.CommandLine)
 	flag.Parse()
+	hc := benchcheck.New("aggbench", bo, flag.CommandLine)
+	switch {
+	case *exec != "":
+		hc.Skip("setup statement")
+	case *system == "stask-col":
+		hc.SetStatusURLDefault(*target)
+	case *system != "stask":
+		hc.Skip("system " + *system + " is not staskd")
+	}
+	hc.DefaultExpect(fmt.Sprintf("orders,agg,min=%d", *n/2))
+	hc.CheckBuild()
+	hc.Preconditions("before")
+	hc.Abort(map[string]any{"system": *system, "label": *label})
 	ctx := context.Background()
 
 	var conn *pgx.Conn
@@ -221,7 +237,13 @@ func main() {
 		report = append(report, r)
 		log.Printf("%-10s %-18s p50 %8.2f p99 %8.2f min %8.2f ms  answer %s", *system, q.name, pct(0.5), pct(0.99), lat[0], sum)
 	}
-	json.NewEncoder(os.Stdout).Encode(map[string]any{"system": *system, "label": *label, "queries": report})
+	hc.Preconditions("after")
+	res := map[string]any{"system": *system, "label": *label, "queries": report}
+	code := hc.Finish(res)
+	json.NewEncoder(os.Stdout).Encode(res)
+	if code != 0 {
+		os.Exit(code)
+	}
 }
 
 var errSkip = fmt.Errorf("skip")

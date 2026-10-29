@@ -547,7 +547,10 @@ func tdValue(c schema.Column, v schema.Value) string {
 	d := fromCol(&c, v)
 	switch d.K {
 	case KInt, KFloat, KNumeric:
-		return d.String()
+		// numbers are bare unless they are not made of digits (NaN)
+		if s := d.String(); strings.Trim(s, "0123456789+-eE.") == "" {
+			return s
+		}
 	case KBool:
 		if d.I != 0 {
 			return "true"

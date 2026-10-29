@@ -1,9 +1,14 @@
 package sql
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"strings"
 	"testing"
 
 	"stask/internal/core"
+	"stask/internal/pgnum"
 	"stask/internal/schema"
 )
 
@@ -189,4 +194,85 @@ func TestTypeMigrationFromLegacyTime(t *testing.T) {
 	check(s)
 	run(t, s, `UPDATE legacy SET at = at + interval '1 microsecond' WHERE id = 1`)
 	expectRows(t, s, `SELECT at FROM legacy WHERE id = 1`, "2024-01-02 03:04:05.678001+00")
+}
+
+// CDC prints the new types as PostgreSQL's plugins do, and pgoutput
+// describes columns with the right type OIDs.
+func TestTypeCDC(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE ty (id bigint PRIMARY KEY, ts timestamp, tz timestamptz, n numeric(10,2), u uuid, b bytea, j jsonb, a bigint[], nan numeric)`)
+	run(t, s, `SELECT pg_create_logical_replication_slot('td', 'test_decoding')`)
+	run(t, s, `SELECT pg_create_logical_replication_slot('w2', 'wal2json')`)
+	run(t, s, `INSERT INTO ty VALUES (1, '2024-01-02 03:04:05.123456', '2024-01-02 03:04:05.5+00', 1.5, '550e8400-e29b-41d4-a716-446655440000', '\x00ff', '{"b":1,"a":null}', '{1,2}', 'NaN')`)
+
+	got := data(run(t, s, `SELECT * FROM pg_logical_slot_peek_changes('td', NULL, NULL, 'include-xids', '0')`))
+	want := []string{"BEGIN",
+		`table public.ty: INSERT: id[bigint]:1 ts[timestamp without time zone]:'2024-01-02 03:04:05.123456' tz[timestamp with time zone]:'2024-01-02 03:04:05.5+00' n[numeric(10,2)]:1.50 u[uuid]:'550e8400-e29b-41d4-a716-446655440000' b[bytea]:'\x00ff' j[jsonb]:'{"a": null, "b": 1}' a[bigint[]]:'{1,2}' nan[numeric]:'NaN'`,
+		"COMMIT"}
+	if g, w := strings.Join(got, "\n"), strings.Join(want, "\n"); g != w {
+		t.Errorf("test_decoding:\n%s\nwant\n%s", g, w)
+	}
+	got = data(run(t, s, `SELECT * FROM pg_logical_slot_get_changes('w2', NULL, NULL, 'format-version', '2', 'include-transaction', '0')`))
+	w2 := `{"action":"I","schema":"public","table":"ty","columns":[{"name":"id","type":"bigint","value":1},` +
+		`{"name":"ts","type":"timestamp without time zone","value":"2024-01-02 03:04:05.123456"},` +
+		`{"name":"tz","type":"timestamp with time zone","value":"2024-01-02 03:04:05.5+00"},` +
+		`{"name":"n","type":"numeric(10,2)","value":1.50},` +
+		`{"name":"u","type":"uuid","value":"550e8400-e29b-41d4-a716-446655440000"},` +
+		`{"name":"b","type":"bytea","value":"\\x00ff"},` +
+		`{"name":"j","type":"jsonb","value":{"a": null, "b": 1}},` +
+		`{"name":"a","type":"bigint[]","value":"{1,2}"},` +
+		`{"name":"nan","type":"numeric","value":"NaN"}]}`
+	if len(got) != 1 || got[0] != w2 {
+		t.Errorf("wal2json:\n%s\nwant\n%s", strings.Join(got, "\n"), w2)
+	}
+
+	tb, err := e.UserTable("ty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oids []uint32
+	for _, c := range tb.Schema().Columns {
+		oids = append(oids, PgTypeOID(c))
+	}
+	if fmt.Sprint(oids) != "[20 1114 1184 1700 2950 17 3802 1016 1700]" {
+		t.Errorf("pgoutput OIDs: %v", oids)
+	}
+	// binary pgoutput columns
+	row := schema.Row{{I: 1}, {I: 1704164645123456}, {I: 1704164645500000}, {S: "1.50"}, {S: "550e8400-e29b-41d4-a716-446655440000"},
+		{S: "\x00\xff"}, {S: `{"a": null}`}, {S: "{1,2}"}, {S: "NaN"}}
+	o := &PgOutput{binary: true}
+	b := o.tuple(nil, tb.Schema(), row)
+	for _, frag := range [][]byte{
+		binaryTS(1704164645123456), {0, 2, 0, 0, 0, 0, 0, 2, 0, 1, 0x13, 0x88}, // 1.50: ndigits 2, weight 0, positive, dscale 2, digits 1 5000
+		{0x55, 0x0e, 0x84, 0x00}, {1, '{', '"', 'a', '"'}, // uuid bytes; jsonb version byte then text
+	} {
+		if !bytes.Contains(b, frag) {
+			t.Errorf("binary tuple lacks %x:\n%x", frag, b)
+		}
+	}
+}
+
+func binaryTS(us int64) []byte {
+	return binary.BigEndian.AppendUint64(nil, uint64(us-PgEpochUs))
+}
+
+func TestNumericBinary(t *testing.T) {
+	for _, s := range []string{"0", "0.00", "1", "-1", "1.50", "10000", "12345678901234567890.123456789", "0.0001", "0.00000001", "-0.05",
+		"100000000.000001", "NaN", "Infinity", "-Infinity", "9999.9999", "10000.0001"} {
+		d, err := pgnum.Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := NumericFromBinary(NumericBinary(d))
+		if err != nil || got.String() != d.String() {
+			t.Errorf("%s -> %v (%v)", s, got, err)
+		}
+	}
+	// 12345.678 as PostgreSQL sends it: digits 1 2345 6780, weight 1, dscale 3
+	d, _ := pgnum.Parse("12345.678")
+	want := []byte{0, 3, 0, 1, 0, 0, 0, 3, 0, 1, 0x09, 0x29, 0x1a, 0x7c}
+	if b := NumericBinary(d); !bytes.Equal(b, want) {
+		t.Errorf("12345.678: %x, want %x", b, want)
+	}
 }

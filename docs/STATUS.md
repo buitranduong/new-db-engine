@@ -1,4 +1,4 @@
-# STATUS — đã đạt, chưa đạt (cập nhật 2026-10-29, sau khi gộp đợt 2 và `history`)
+# STATUS — đã đạt, chưa đạt (cập nhật 2026-10-29, sau khi gộp đợt 2, `history` và `nopk`)
 
 Mọi dòng có bằng chứng tái lập được. Chi tiết từng task: `14_plan_target_actual.md`. Các tỉ lệ phần trăm "hoàn thành" là **ước lượng của người điều phối**, không phải số đo; số đo thật là `claimcheck`, `pgdiff` và test.
 
@@ -15,10 +15,11 @@ STASK có lõi vững (log, MVCC, phục hồi, nhân bản, view cột/tìm ki�
 | Log có thẩm quyền, MVCC SI, group commit, checkpoint, phục hồi sau kill/mất điện/ENOSPC/EIO | test + `staskchaos`; **`kill -9` 8 chu kỳ: 0 giao dịch đã ACK bị mất** (`accept/kill9.sh`) |
 | **Lỗi lõi B1 đã sửa**: phát lại log (và replica) làm rơi thao tác thứ hai trở đi trên cùng khoá trong một batch | nhánh `fixbatch`: test tái hiện đỏ trước khi sửa, property test 25 seed |
 | Nhanh hơn PG16 ở đọc/ghi điểm cùng client (2,1× ở 128 client); hơn Redis fsync-always ~30%-3,2× | docs/04. **Chỉ workload điểm tự đặt**; chưa có YCSB/TPC-C/ClickBench |
-| SQL: SELECT/INSERT/UPDATE/DELETE, JOIN, CTE, window, `ON CONFLICT`, sequence/SERIAL, DEFAULT/CHECK/NOT NULL, ALTER (kể cả đổi kiểu cột, `USING`), SAVEPOINT, TRUNCATE/DROP, COPY, VIEW, trigger thân SQL, role + GRANT | `claimcheck` **212/252 (84,1%)** |
+| SQL: SELECT/INSERT/UPDATE/DELETE, JOIN, CTE, window, `ON CONFLICT`, sequence/SERIAL, DEFAULT/CHECK/NOT NULL, ALTER (kể cả đổi kiểu cột, `USING`), SAVEPOINT, TRUNCATE/DROP, COPY, VIEW, trigger thân SQL, role + GRANT | `claimcheck` **227/262 (86,6%)** |
 | Kiểu đúng PG: timestamp µs, `numeric` chính xác, `uuid`, `bytea`, `json`/`jsonb`, mảng 1 chiều | nhánh `types`: 58 câu `type-*` khớp PG16 từng chuỗi; header checkpoint v4 |
 | **Index phụ**, `UNIQUE`, **khoá ngoại** (`ON DELETE`), planner dùng index (`=`, `IN`, khoảng, `ORDER BY..LIMIT`) | nhánh `index`: test đồng thời, race; chi phí ghi 3-5 index **gấp 2,5-3 lần** (chưa đạt "không làm xấu") |
 | **Tìm kiếm mẫu số từ SQL** (tiền tố, đuôi, chứa, regex, số đẹp, facet) bằng view trigram, kèm hợp đồng độ mới và `EXPLAIN` | nhánh `search`, 2M số: nhanh hơn quét 14-1500×; **thắng PG16+pg_trgm** ở chuỗi dài/regex/số đẹp, **thua 1,5-10×** ở truy vấn trả hàng chục nghìn dòng và mẫu ngắn <3 ký tự |
+| **Bảng không có khoá chính** (cột ẩn `__rowid`) và **khoá chính ghép**, `ON CONFLICT (a,b)`, FK vào PK ghép, `ALTER ADD PRIMARY KEY` (chỉ bảng rỗng) | nhánh `nopk`: pgdiff nhóm `a/liquibase-bootstrap` hết lỗi dây chuyền (9 → 0); nhóm mới `e` (74 câu giả lập khởi động Liquibase theo vết JDBC): PASS 14 → 47, lỗi 43 → 0; property test so với map qua checkpoint/restart/replica; không đổi định dạng dòng/log. **Chưa chạy Liquibase thật (VM không có Java)** |
 | Giữ lịch sử **theo thời gian** (`history_retention='60 days'`), `AS OF`, `stask_history('t', key)`; sửa 3 lỗi gốc của GC lịch sử (mốc thời gian và remap chỉ ở RAM, replica mất lịch sử) | nhánh `history`: test crash/restart/replica, `-race` sạch; 60 byte/phiên bản trong log, nén 2,3-2,8×. **Không phù hợp quy mô 40M SIM × 200 phiên bản (xem §4 mục 2)** |
 | Tràn đĩa cho join/group/distinct/sort khi vượt ngân sách bộ nhớ | `spill`: join 10M×10M ngân sách 1 GB chạy đúng (3 phút 52 giây, 404 MB file tạm); chỉ phủ một số dạng truy vấn |
 | Bảo mật: TLS, SCRAM, mTLS + secret, token/TLS HTTP, **cả 4 cổng từ chối bind ngoài loopback không xác thực** | `accept/security.sh`: 72 kiểm tra OK, 0 lỗi |
@@ -49,7 +50,7 @@ Phân loại phần khác biệt: sai kiểu 102 câu (chủ yếu OID: `integer
 
 Xếp theo mức chặn triển khai:
 
-1. **Liquibase không khởi động được**: `CREATE TABLE databasechangelog` (không có khoá chính) bị từ chối, kéo theo 10 câu lỗi trong bộ so sánh. Cần khoá ẩn `__rowid` cho bảng không có PK, và PK ghép. (D21 mục 3; nhánh `compat` ghi là C1.)
+1. **Liquibase: đã qua bước khởi động ở mức mô phỏng (nhóm `e` của pgdiff), chưa chạy Liquibase thật** vì VM không có Java/Gradle. Còn khác biệt: OID kiểu (`integer`, `varchar`) trong 19 câu, tên constraint khai báo bị đổi thành `<bảng>_pkey` (2 câu), `ALTER ADD PRIMARY KEY` trên bảng có dòng báo `0A000`, tra PK ghép bằng `WHERE a=.. AND b=..` còn quét bảng. Cần cài Java để thử thật (việc của người dùng hoặc được cấp quyền cài).
 2. **Lịch sử 60 ngày: tính năng có, quy mô lớn chưa.** Giữ theo thời gian đã làm được. Nhưng GC phải đi dọc chuỗi phiên bản của từng khoá nên tốn O(độ sâu chuỗi): đo ở 3.000 SIM × 200 phiên bản mất 4 phút 42 giây GC cho 75 MB ghi (10,6 triệu lần đọc); ở 40M SIM × 200 tính ra ~3×10⁵ lần đọc ngẫu nhiên/giây liên tục, GC sẽ tụt lại sau tải ghi (**tính từ số đo, chưa chạy ở quy mô đó**). 40M × 5 phiên bản thì ổn (~10-34 GB sau nén). **Cần số thật của người dùng** (docs/15 §7.8) trước khi chọn hướng sửa (bảng cơ sở theo khoá, remap trên đĩa, xếp phiên bản khi GC: cỡ L-XL).
 3. **Độ mới ở quy mô nhập hàng triệu dòng chưa đo.** `simbench` viết xong (`9de47e9`) **chưa chạy lần nào**, nên chưa có số nào cho "website/đơn hàng chậm bao nhiêu khi nhập". Số đo duy nhất: view trigram bắt kịp ~350k dòng/s riêng lẻ, lõi nhận ~65k dòng/s.
 4. **Ghi chậm khi có nhiều index** (3-5 index: gấp 2,5-3 lần) và **entry index chưa nằm trong checkpoint** (dựng lại khi khởi động, chưa đo ở 100M dòng).
@@ -76,6 +77,7 @@ Xếp theo mức chặn triển khai:
 | B9 | Test nhạy thời gian (`TestCancelRequest` 100 ms, `TestStatementTimeout`) chập chờn khi máy quá tải | **Mở**, có thể làm CI đỏ trên runner chậm |
 | B10 | Chuỗi gộp đã làm lộ 2 lỗi tương tác (literal `numeric` với index `float`; hai `DROP INDEX`). Đã sửa; có thể còn tương tác khác test chưa phủ | **Theo dõi**: chạy lại `pgdiff` + `claimcheck` sau mỗi lần gộp |
 | B11 | `-race` trên bản gộp cuối | **Đã chạy: sạch** cho `core`, `sql`, `pgwire`, `repl`, `wal` (`merge-gate` với `RACE=1`) |
+| B13 | `internal/cluster` `TestProcSecure` trượt khi chạy `go test -p 2 ./...` (cả trên `main` lẫn nhánh) nhưng qua khi chạy riêng; phụ thuộc thời gian/tải, chưa điều tra | **Mở** (cùng họ B9) |
 | B12 | Gộp `history` + `types`: `AS OF` theo thời điểm coi datum thời gian là mili giây trong khi sau P1.1 là micro giây, nên trả trạng thái hiện tại | **Đã sửa**; bắt được nhờ `TestSQLAsOf`. Cùng loại với B10: lỗi chỉ lộ khi chạy test chung |
 
 ## 6. Nhánh git

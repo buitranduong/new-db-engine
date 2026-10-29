@@ -64,13 +64,21 @@ Ngoài ra, docs/11 §2.2 ghi "trigger **và stored procedure**: Có", mâu thu�
 
 | # | Việc | Cỡ | Phụ thuộc | Tiêu chí xong |
 |---|---|---|---|---|
-| P3.1 | **Index chính trên đĩa** (B+tree có buffer pool, hoặc LSM). Chọn sau khi tìm hiểu và đo thử cả hai | XL | P2.1 (dùng chung cấu trúc) | Dữ liệu gấp 3 lần RAM; đọc điểm khi trúng cache vẫn gần mức hiện tại; tiêu chí cân bằng giữ được |
+| P3.1 | **Index chính trên đĩa** (B+tree có buffer pool, hoặc LSM). Chọn sau khi tìm hiểu và đo thử cả hai. **Đã chọn B+tree copy-on-write + buffer pool riêng và đã cài trong gói độc lập `internal/pindex` (chưa nối vào engine): docs/15** | XL | P2.1 (dùng chung cấu trúc) | Dữ liệu gấp 3 lần RAM; đọc điểm khi trúng cache vẫn gần mức hiện tại; tiêu chí cân bằng giữ được |
 | P3.2 | **View cột lưu trên đĩa, nén theo cột** (Delta/DoubleDelta cho id và thời gian, ZSTD cho số thực và văn bản). Giải quyết cùng lúc: dựng lại mất 182 s (docs/08 §7 #3), khoảng cách nén 2,6 lần so với ClickHouse (docs/07 §5 #2), và cột số thực chưa nén | XL | P1.1 | Khởi động 100M có view sẵn sàng dưới 20 s; trên đĩa không quá 1,5 lần ClickHouse ZSTD; aggregate không chậm đi |
 | P3.3 | Checkpoint tăng dần, chỉ ghi phần đổi; GC phân tầng nóng/lạnh; bảng remap bền qua khởi động lại (docs/03 §9) | L | P3.1 | Checkpoint ở 100M dưới 5 s khi tải; GC không cần checkpoint đầy đủ mỗi vòng |
 | P3.4 | Truy vấn time-series, search và `AS OF` từ SQL (hiện chỉ có qua HTTP) | M | — | Có cú pháp, có test, có trong sqlcorpus |
 | P3.5 | `ARRAY JOIN`, `FINAL`, `SAMPLE` của ClickHouse (hiện được chấp nhận nhưng bỏ qua) | M | P1.1 (cột mảng) | Đối chiếu ClickHouse đúng 100% |
 
 > **P3.2 (nhánh `pcol`):** đã có tệp `columnar.view` nén theo cột, nạp lại và phát lại log sau LSN (docs/07 mục 7, docs/09 mục 7a). Mỗi tiêu chí chưa đo trọn: 100M chưa đo (20M nạp 2,2 s, ngoại suy ~11 s); dung lượng 0,45× ClickHouse ZSTD chỉ cho các cột view lưu (không có `note`); aggregate không đổi theo thiết kế, đo ngắn 5M thấy trong nhiễu. Chi tiết docs/14.
+
+**P3.1/P3.3 — trạng thái và kế hoạch nối (chi tiết ở docs/18 §8).** Quyết định (docs/18 §3): B+tree copy-on-write theo thế hệ, buffer pool giới hạn bộ nhớ, hai trang meta luân phiên, không WAL riêng vì log là nguồn sự thật. Pebble (LSM) đã đo cùng tải và không cho lợi thế (docs/18 §6.2). Bước còn lại, theo thứ tự:
+1. Pool dùng chung nhiều file + cờ ngân sách `-index-cache-mb` (hiện mỗi `Tree` một pool).
+2. Giao diện `primaryIndex` trong `internal/core` với hai cài đặt (cây RAM, `pindex`), cờ `-index=ram|disk`; điểm nối: `TableState.idx`/`index()`, bước install (`Batch.Swap` thay `clone/put/Store`), `keyArena` bỏ đi, khoá ≤ 512 byte phải được chặn ở DDL/INSERT.
+3. P3.3: `Engine.Checkpoint` gọi `pidx.Checkpoint(blob StartLSN/StartPos)` mỗi bảng (chi phí ∝ trang đổi) thay vì ghi cả index; file header chỉ còn schema và được đổi tên sau cùng; phục hồi = mở file (ms) + replay từ `min(StartPos)`; file hỏng → dựng lại từ log hoặc từ chối khởi động; bảng remap bền = một `Tree` thứ hai.
+4. Nghiệm thu 100M khoá: RSS ≤ pool + heap cố định, đọc nóng ≤ 2× RAM, khởi động < 20 s, checkpoint khi tải < 5 s, kill -9 lặp lại.
+Đã đo trong gói độc lập (20M khoá, tmpfs, máy tải nặng): đọc điểm nóng 1,26× bản RAM khi dữ liệu ≈ 3× pool; mở lại 85–134 ms. Chưa đo trên SSD thật, chưa ở 100M, chưa qua engine.
+
 
 ## P4. Catalog, công cụ và ORM
 

@@ -1237,7 +1237,7 @@ func numChar(get func(nfrac int) (neg bool, s string), f string) string {
 	return fmt.Sprintf("%*s", width+1, sign+ip) + frac
 }
 
-// pgFormat is PostgreSQL's format(): %s, %I, %L and %%.
+// pgFormat is PostgreSQL's format(): %[n$][-][width]s|I|L and %%.
 func pgFormat(f string, args []Datum) (Datum, error) {
 	var b strings.Builder
 	n := 0
@@ -1254,27 +1254,42 @@ func pgFormat(f string, args []Datum) (Datum, error) {
 			b.WriteByte('%')
 			continue
 		}
-		if n >= len(args) {
+		pos, left, width, typ, next, ok := formatSpec(f, i)
+		if !ok {
+			return Null, errf(codeInvalidParameter, "unterminated format() type specifier")
+		}
+		i = next
+		idx := n
+		if pos > 0 {
+			idx = pos - 1
+		} else {
+			n++
+		}
+		if idx >= len(args) {
 			return Null, errf(codeInvalidParameter, "too few arguments for format()")
 		}
-		a := args[n]
-		n++
-		switch f[i] {
+		a := args[idx]
+		var out string
+		switch typ {
 		case 's':
 			if !a.IsNull() {
-				b.WriteString(a.Text())
+				out = a.Text()
 			}
 		case 'I':
-			b.WriteString(`"` + strings.ReplaceAll(a.String(), `"`, `""`) + `"`)
+			if a.IsNull() {
+				return Null, errf("22004", "null values cannot be formatted as an SQL identifier")
+			}
+			out = quoteIdent(a.String())
 		case 'L':
 			if a.IsNull() {
-				b.WriteString("NULL")
+				out = "NULL"
 			} else {
-				b.WriteString("'" + strings.ReplaceAll(a.String(), "'", "''") + "'")
+				out = "'" + strings.ReplaceAll(a.String(), "'", "''") + "'"
 			}
 		default:
-			return Null, errf(codeInvalidParameter, "unrecognized format() type specifier %q", f[i])
+			return Null, errf(codeInvalidParameter, "unrecognized format() type specifier %q", typ)
 		}
+		b.WriteString(padFormat(out, width, left))
 	}
 	return TextD(b.String()), nil
 }

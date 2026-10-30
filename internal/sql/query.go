@@ -403,6 +403,9 @@ func (b *binder) bind(x Expr) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
+		if _, isRow := e.X.(*RowExpr); !isRow && len(p.outCols()) > 1 {
+			return nil, errf(codeSyntax, "subquery has too many columns")
+		}
 		bs := &boundSub{kind: "in", plan: p, x: bx, not: e.Not}
 		if p.isCorrelated() {
 			if hs, ok := b.decorrelate(bs, e.Q, e.X); ok {
@@ -418,6 +421,9 @@ func (b *binder) bind(x Expr) (Expr, error) {
 		p, err := b.c.compile(e.Q, b.sc)
 		if err != nil {
 			return nil, err
+		}
+		if _, isRow := e.X.(*RowExpr); !isRow && len(p.outCols()) > 1 {
+			return nil, errf(codeSyntax, "subquery has too many columns")
 		}
 		return &boundSub{kind: "any", plan: p, x: bx, op: e.Op, all: e.All}, nil
 	case *Func:
@@ -643,6 +649,15 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		if it.X != nil {
 			if cr, ok := it.X.(*ColRef); ok {
 				qual = cr.Name
+			}
+		}
+		if qual != "" {
+			found := false
+			for _, col := range fs.cols {
+				found = found || col.qual == qual
+			}
+			if !found {
+				return nil, errf(codeUndefinedTable, "missing FROM-clause entry for table %q", qual)
 			}
 		}
 		for _, col := range fs.cols {
@@ -2835,6 +2850,7 @@ func (s *Session) describeQuery(st Stmt) (*Description, error) {
 			d.Params[i] = k
 		}
 	}
+	d.ParamElem = paramElems(pk, n)
 	return d, nil
 }
 

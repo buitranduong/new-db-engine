@@ -125,8 +125,16 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			}
 		}
 		return IntD(bits), nil
-	case *RowExpr:
-		return Null, errf(codeFeature, "row constructors are only supported with IN")
+	case *RowExpr: // a row value on its own is its text form, (1,a)
+		vals := make([]Datum, len(e.Items))
+		for i, it := range e.Items {
+			v, err := c.eval(it)
+			if err != nil {
+				return Null, err
+			}
+			vals[i] = v
+		}
+		return TextD(recordText(vals)), nil
 	case *Param:
 		if e.N > len(c.params) {
 			return Null, errf(codeUndefinedParam, "there is no parameter $%d", e.N)

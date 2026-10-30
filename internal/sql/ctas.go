@@ -531,6 +531,15 @@ func maxParamExt(st Stmt) int {
 
 // describeExt is Describe for the statements of this file.
 func (s *Session) describeExt(st Stmt) (*Description, error) {
+	if ex, ok := st.(*ExecuteStmt); ok { // EXECUTE name: the result columns of the prepared statement
+		if inner, ok := s.prepared[ex.Name]; ok {
+			id, err := s.Describe(inner)
+			if err != nil {
+				return nil, err
+			}
+			return &Description{Cols: id.Cols, HasRows: id.HasRows}, nil
+		}
+	}
 	d := &Description{}
 	n := maxParamExt(st)
 	if n == 0 {

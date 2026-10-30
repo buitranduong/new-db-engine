@@ -394,7 +394,9 @@ func (p *parser) selectCore() (*Select, error) {
 	} else {
 		p.acceptKw("all")
 	}
-	if s.Items, err = p.selectItems(); err != nil {
+	if t := p.peek(); t.k == tEOF || t.k == tOp && (t.s == ";" || t.s == ")") {
+		s.Items = []SelItem{} // SELECT with an empty list: one row, no columns
+	} else if s.Items, err = p.selectItems(); err != nil {
 		return nil, err
 	}
 	if p.acceptKw("into") {

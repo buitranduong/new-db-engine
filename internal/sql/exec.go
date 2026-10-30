@@ -647,6 +647,11 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 }
 
 func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
+	if rw, err := s.viewDML(st); err != nil {
+		return nil, err
+	} else {
+		st = rw
+	}
 	switch st := st.(type) {
 	case *Select:
 		if needsGeneral(st) {

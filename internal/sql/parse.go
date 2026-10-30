@@ -1148,6 +1148,7 @@ func (p *parser) selectItems() ([]SelItem, error) {
 			t2.k == tOp && t2.s == "." && t3.k == tOp && t3.s == "*" {
 			p.i += 3
 			it.Star = true
+			it.X = &ColRef{Name: t.s} // qualifier: the compiler keeps only that relation's columns
 		} else {
 			x, err := p.expr()
 			if err != nil {
@@ -1284,6 +1285,10 @@ func (p *parser) predicate() (Expr, error) {
 			r, err := p.bitExpr()
 			if err != nil {
 				return nil, err
+			}
+			if rc, ok := rowCompare(op, l, r); ok {
+				l = rc
+				continue
 			}
 			l = &Binary{Op: op, L: l, R: r}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
@@ -1703,6 +1708,9 @@ func (p *parser) columnRest(first string) (Expr, error) {
 func (p *parser) funcCall(name string) (Expr, error) {
 	p.next()      // (
 	switch name { // SQL-standard special forms
+	case "row": // ROW(a, b)
+		list, err := p.exprList(")")
+		return &RowExpr{Items: list}, err
 	case "extract":
 		field := p.next().s
 		if err := p.expectKw("from"); err != nil {
@@ -1730,6 +1738,32 @@ func (p *parser) funcCall(name string) (Expr, error) {
 		}
 		rest, err := p.exprList(")")
 		return &Func{Name: "strpos", Args: append([]Expr{a}, rest...)}, err
+	case "overlay": // overlay(x placing y from n [for m]); the plain call form falls through
+		save := p.i
+		x, err := p.expr()
+		if err == nil && p.acceptKw("placing") {
+			y, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectKw("from"); err != nil {
+				return nil, err
+			}
+			from, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			args := []Expr{x, y, from}
+			if p.acceptKw("for") {
+				n, err := p.expr()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, n)
+			}
+			return &Func{Name: "overlay", Args: args}, p.expectOp(")")
+		}
+		p.i = save
 	case "substring", "substr":
 		disp := name
 		x, err := p.expr()
@@ -1827,6 +1861,10 @@ func (p *parser) funcCall(name string) (Expr, error) {
 		if err := args(); err != nil {
 			return nil, err
 		}
+	}
+	if len(f.Args) == 0 && (name == "coalesce" || name == "greatest" || name == "least") ||
+		name == "nullif" && len(f.Args) != 2 {
+		return nil, p.errHere("syntax error at or near %q", ")")
 	}
 	if name == "count" && len(f.Args) == 0 && !f.Star { // ClickHouse count()
 		f.Star = true

@@ -83,8 +83,11 @@ func TestSQLView(t *testing.T) {
 	// materialized views are supported since the ctas branch (ctas2_test.go)
 	run(t, s, `CREATE MATERIALIZED VIEW bad AS SELECT 1`)
 	run(t, s, `DROP MATERIALIZED VIEW bad`)
-	// a view is read-only and is not a table
-	for _, q := range []string{`INSERT INTO rich VALUES (9,'x',1)`, `UPDATE rich SET sal = 1`, `DELETE FROM rich`} {
+	// a view that is not a plain projection of one table is read-only and is not a table
+	// (plain projections are automatically updatable: TestPgresUpdatableView)
+	run(t, s, `CREATE VIEW ro AS SELECT dept, count(*) AS n FROM emp GROUP BY dept`)
+	defer run(t, s, `DROP VIEW ro`)
+	for _, q := range []string{`INSERT INTO ro VALUES ('x',1)`, `UPDATE ro SET n = 1`, `DELETE FROM ro`} {
 		if _, err := tryRun(s, q); code(err) != codeObjectNotInState {
 			t.Fatalf("%s: %v", q, err)
 		}

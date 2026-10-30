@@ -148,6 +148,15 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 			}
 		}
 	}
+	// an array parameter records its element kind under the key -n
+	setElem := func(x Expr, ek Kind) {
+		if p, ok := x.(*Param); ok && ek != KNull && defaultTyOfKind(ek).oid != 0 {
+			if _, done := pk[-p.N]; !done {
+				pk[-p.N] = ek
+				pk[p.N] = KArray
+			}
+		}
+	}
 	var visit func(x Expr)
 	visit = func(x Expr) {
 		walk(x, func(e Expr) {
@@ -182,12 +191,21 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 				set(e.Pat, KText)
 			case *Cast:
 				set(e.X, kindOfType(e.Type))
+				if ek, ok := elemKindOfType(e.Type); ok {
+					setElem(e.X, ek)
+				}
 			case *Unary:
 				if e.Op == "not" {
 					set(e.X, KBool)
 				}
 			case *Func:
 				switch e.Name {
+				case "stask_anyarr": // x op ANY|ALL ($n): $n is an array of x's type
+					if len(e.Args) == 4 {
+						if k := typeOf(e.Args[0], sc, pk); k != KNull {
+							setElem(e.Args[1], k)
+						}
+					}
 				case "substr", "substring", "round", "trunc":
 					for i, a := range e.Args {
 						if i > 0 {
@@ -319,15 +337,23 @@ func maxParam(st Stmt) int {
 
 // Description of a prepared statement.
 type Description struct {
-	Params  []Kind   // kind of $1..$n
-	Cols    []Column // result columns
-	HasRows bool
+	Params []Kind // kind of $1..$n
+	// ParamElem[i] is the element kind of array parameter $i+1 (0 = not
+	// known to be an array of a typed element).
+	ParamElem []Kind
+	Cols      []Column // result columns
+	HasRows   bool
 }
 
 // Describe types a statement without running it.
 func (s *Session) Describe(st Stmt) (*Description, error) {
 	if err := s.authorize(st); err != nil {
 		return nil, err
+	}
+	if rw, err := s.viewDML(st); err != nil {
+		return nil, err
+	} else {
+		st = rw
 	}
 	d := &Description{}
 	sc := &scope{}
@@ -406,6 +432,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 			d.Params[i] = KText
 		}
 	}
+	d.ParamElem = paramElems(pk, n)
 	if sel, ok := st.(*Select); ok {
 		for _, it := range sel.Items {
 			if it.Star {
@@ -429,3 +456,20 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	}
 	return d, nil
 }
+
+// paramElems reads the array element kinds paramKinds left under -n.
+func paramElems(pk map[int]Kind, n int) []Kind {
+	var out []Kind
+	for i := 0; i < n; i++ {
+		if ek, ok := pk[-(i + 1)]; ok {
+			if out == nil {
+				out = make([]Kind, n)
+			}
+			out[i] = ek
+		}
+	}
+	return out
+}
+
+// ArrayOIDOfKind is the array type OID whose elements are of kind k (0 = none).
+func ArrayOIDOfKind(k Kind) uint32 { return arrayOfOID[defaultTyOfKind(k).oid] }

@@ -323,6 +323,12 @@ func init() {
 	}
 	roleRows := func(c *catSnap) [][]Datum {
 		rows := [][]Datum{roleRow(roleName, true, true, true, ownerOID)}
+		// a session that logged in with the shared password is a superuser
+		// named after its startup packet: current_user must find itself here
+		// (pg_roles WHERE rolname = current_user, SQLAlchemy/Superset do)
+		if n := c.s.loginDisplay(); c.s.role == "" && n != roleName {
+			rows = append(rows, roleRow(n, true, true, true, 16399))
+		}
 		for i, r := range c.s.E.Roles() {
 			rows = append(rows, roleRow(r.Name, r.Super, r.Login, r.Replication, int64(16400+i)))
 		}

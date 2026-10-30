@@ -206,6 +206,12 @@ func (s *Session) kindsStmt(st Stmt, outer []scopeTable, pk map[int]Kind) {
 			}
 		case *FromSubquery:
 			s.kindsStmt(f.Q, ts, pk)
+		case *FromFunc: // unnest($1::int[]) and friends: typed casts inside the arguments
+			var items []SelItem
+			for _, a := range f.F.Args {
+				items = append(items, SelItem{X: a})
+			}
+			merge(paramKinds(&Select{Items: items}, mergedScope(ts)))
 		}
 	}
 	switch q := st.(type) {

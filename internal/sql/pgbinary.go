@@ -187,6 +187,14 @@ func ValueFromBinary(k Kind, raw []byte) (Datum, error) {
 			return Null, bad
 		}
 		return tsD(k, int64(binary.BigEndian.Uint64(raw))+PgEpochUs), nil
+	case KInterval: // microseconds, days, months
+		if len(raw) != 16 {
+			return Null, bad
+		}
+		us := int64(binary.BigEndian.Uint64(raw))
+		days := int64(int32(binary.BigEndian.Uint32(raw[8:])))
+		months := int64(int32(binary.BigEndian.Uint32(raw[12:])))
+		return IntervalD(months, us+days*usPerDay), nil
 	case KDate:
 		if len(raw) != 4 {
 			return Null, bad
@@ -282,6 +290,10 @@ func BinaryValueFor(oid uint32, d Datum) ([]byte, bool) {
 			if us, ok := TimeOfDayMicros(d.S); ok {
 				return binary.BigEndian.AppendUint64(nil, uint64(us)), true
 			}
+		}
+	case tyInet, tyCidr:
+		if b, ok := inetBinary(d, oid == tyCidr); ok {
+			return b, true
 		}
 	}
 	if b, ok := supfixBinary(oid, d); ok {

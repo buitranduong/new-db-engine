@@ -297,6 +297,18 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *AlterColRestart:
+		seq := st.Table + "_" + st.Col + "_seq"
+		if !s.isSequence(seq) {
+			s.markFailed()
+			return nil, errf("55000", "column %q of relation %q is not an identity column", st.Col, st.Table)
+		}
+		res, err := s.exec(&AlterSequence{Name: seq, Opts: st.Opts}, params)
+		if err != nil {
+			return nil, err
+		}
+		res.Tag = "ALTER TABLE"
+		return res, nil
 	case *CreatePartition:
 		res, err := s.createPartition(st)
 		if err != nil {

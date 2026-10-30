@@ -117,6 +117,10 @@ func kindOfOID(oid uint32) (sql.Kind, bool) {
 		return sql.KJSON, true
 	case oidJSONB:
 		return sql.KJSONB, true
+	case oidInterval:
+		return sql.KInterval, true
+	case oidTime:
+		return sql.KText, true // time of day is held as text
 	case oidText, oidVarchar, oidName, oidBpchar:
 		return sql.KText, true
 	}
@@ -1165,7 +1169,7 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 		if len(raw) == 1 {
 			return sql.BoolD(raw[0] != 0), nil
 		}
-	case oidTimestamp, oidTimestamptz, oidDate, oidNumeric, oidUUID, oidBytea, oidJSON, oidJSONB:
+	case oidTimestamp, oidTimestamptz, oidDate, oidNumeric, oidUUID, oidBytea, oidJSON, oidJSONB, oidInterval:
 		d, err := sql.ValueFromBinary(k, raw)
 		if err != nil {
 			return sql.Null, &sql.Error{Code: "22P03", Msg: fmt.Sprintf("incorrect binary data format for type oid %d", oid)}
@@ -1259,7 +1263,7 @@ func decodeArrayParam(oid uint32, raw []byte) (sql.Datum, error) {
 	ndim := int(int32(binary.BigEndian.Uint32(raw)))
 	eoid := binary.BigEndian.Uint32(raw[8:])
 	ek, ok := kindOfOID(eoid)
-	if !ok || eoid == oidInterval || eoid == oidTime {
+	if !ok {
 		return sql.Null, &sql.Error{Code: "0A000", Msg: fmt.Sprintf("binary format for array of oid %d is not supported", eoid)}
 	}
 	if ndim == 0 {
@@ -1300,6 +1304,9 @@ func decodeArrayParam(oid uint32, raw []byte) (sql.Datum, error) {
 		if err != nil {
 			return sql.Null, err
 		}
+		if eoid == oidTime { // 10:30:00.000000 -> 10:30:00, as the scalar goes through the time input
+			d.S = trimTimeFrac(d.S)
+		}
 		el = append(el, d)
 		pos += l
 	}
@@ -1307,4 +1314,13 @@ func decodeArrayParam(oid uint32, raw []byte) (sql.Datum, error) {
 		return sql.Null, bad
 	}
 	return sql.ArrayDatum(el, dims, ek), nil
+}
+
+// trimTimeFrac drops trailing zeros of the fraction of a time of day: 10:30:00.500000 is
+// 10:30:00.5, 10:30:00.000000 is 10:30:00.
+func trimTimeFrac(s string) string {
+	if !strings.Contains(s, ".") {
+		return s
+	}
+	return strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
 }

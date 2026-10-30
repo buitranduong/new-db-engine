@@ -13,8 +13,9 @@ import (
 // unique index. Every row still has an entry, so the planner may use a partial index like
 // a full one: only uniqueness is partial.
 
-// IndexPred is one term of an index predicate. Op is "null", "notnull", "eq" or "ne"; Lit is
-// the literal for eq and ne (bool columns: "true"/"false").
+// IndexPred is one term of an index predicate. Op is "null", "notnull", "eq", "ne", "lt",
+// "le", "gt" or "ge"; Lit is the literal of a comparison (bool columns: "true"/"false", only eq
+// and ne).
 type IndexPred struct {
 	Col string `json:"c"`
 	Op  string `json:"o"`
@@ -43,11 +44,8 @@ func (p IndexPred) text() string {
 		return "(" + c + " IS NULL)"
 	case "notnull":
 		return "(" + c + " IS NOT NULL)"
-	case "eq", "ne":
-		op := " = "
-		if p.Op == "ne" {
-			op = " <> "
-		}
+	case "eq", "ne", "lt", "le", "gt", "ge":
+		op := map[string]string{"eq": " = ", "ne": " <> ", "lt": " < ", "le": " <= ", "gt": " > ", "ge": " >= "}[p.Op]
 		if p.Lit == "true" || p.Lit == "false" {
 			if p.Op == "eq" {
 				if p.Lit == "true" {
@@ -95,7 +93,10 @@ func (t *Table) compilePred(def IndexDef) ([]predTerm, error) {
 		pt := predTerm{col: i, op: p.Op, typ: t.Columns[i].T}
 		switch p.Op {
 		case "null", "notnull":
-		case "eq", "ne":
+		case "eq", "ne", "lt", "le", "gt", "ge":
+			if pt.typ == TBool && p.Op != "eq" && p.Op != "ne" {
+				return nil, fmt.Errorf("index %q: predicate on boolean column %q supports = and <> only", def.Name, p.Col)
+			}
 			switch pt.typ {
 			case TBool:
 				switch p.Lit {
@@ -136,18 +137,24 @@ func matchPred(terms []predTerm, r Row) bool {
 			if v.Null {
 				return false
 			}
-		case "eq", "ne":
+		case "eq", "ne", "lt", "le", "gt", "ge":
 			if v.Null {
 				return false // NULL is not true
 			}
-			var eq bool
+			var c int
 			switch p.typ {
 			case TString, TText:
-				eq = v.S == p.s
+				c = strings.Compare(v.S, p.s)
 			default:
-				eq = v.I == p.i
+				switch {
+				case v.I < p.i:
+					c = -1
+				case v.I > p.i:
+					c = 1
+				}
 			}
-			if eq != (p.op == "eq") {
+			ok := map[string]bool{"eq": c == 0, "ne": c != 0, "lt": c < 0, "le": c <= 0, "gt": c > 0, "ge": c >= 0}[p.op]
+			if !ok {
 				return false
 			}
 		}

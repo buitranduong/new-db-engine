@@ -147,6 +147,12 @@ func (c *evalCtx) extCall(f *Func, args []Datum) (Datum, bool, error) {
 		return Null, true, errf(codeUndefinedFunction, "function %s with %d arguments does not exist", f.Name, n)
 	}
 	switch f.Name {
+	case "host", "family", "masklen", "netmask", "network":
+		d, ok, err := inetFunc(f.Name, args)
+		if !ok && err == nil {
+			return bad(len(args))
+		}
+		return d, true, err
 	case "crypt", "gen_salt":
 		return Null, true, errf(codeFeature, "%s is not implemented", f.Name)
 	case "digest":

@@ -442,6 +442,11 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	if l.IsNull() || r.IsNull() {
 		return Null, nil
 	}
+	if (e.Op == "<<" || e.Op == ">>") && l.K == KText {
+		if d, ok := inetOp(e.Op, l, r); ok {
+			return d, nil
+		}
+	}
 	switch e.Op {
 	case "=", "<>", "<", "<=", ">", ">=":
 		cmp, err := compare(l, r)

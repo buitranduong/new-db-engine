@@ -1051,6 +1051,9 @@ func anyArr(args []Datum) (Datum, bool, error) {
 
 // elemKindOfSpec is the element kind of a column type like "int[]".
 func elemKindOfType(t string) (Kind, bool) {
+	if t == "interval[]" {
+		return KInterval, true
+	}
 	e, ok := schema.ElemType(t)
 	if !ok {
 		return KNull, false

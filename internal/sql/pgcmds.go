@@ -85,3 +85,12 @@ func (s *Session) pgcmdsDatabaseSize() Datum {
 	}
 	return IntD(total)
 }
+
+// AlterColRestart is ALTER TABLE t ALTER COLUMN c RESTART [WITH n]: the sequence behind an
+// identity or serial column restarts.
+type AlterColRestart struct {
+	Table, Col string
+	Opts       SeqOpts
+}
+
+func (*AlterColRestart) stmt() {}

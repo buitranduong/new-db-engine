@@ -58,7 +58,7 @@ func TestPgcmdsPartialIndex(t *testing.T) {
 		t.Fatalf("duplicate among live rows accepted: %v", err)
 	}
 	run(t, s, `UPDATE sim SET delete_ts = '2026-01-01 00:00:00' WHERE id = 1`) // soft delete
-	run(t, s, `INSERT INTO sim VALUES (2, '0901', NULL, 'a', 1, true)`)        // reuse of the number
+	run(t, s, `INSERT INTO sim VALUES (2, '0901', NULL, 'a', 1, true)`)         // reuse of the number
 	run(t, s, `INSERT INTO sim VALUES (3, '0901', '2026-02-02 00:00:00', 'a', 1, true)`)
 	run(t, s, `INSERT INTO sim VALUES (4, '0901', '2026-02-03 00:00:00', 'a', 1, true)`) // deleted rows may repeat
 	if got := ids(t, s, `SELECT id FROM sim WHERE msisdn = '0901' ORDER BY id`); got != "1,2,3,4" {
@@ -166,4 +166,34 @@ func TestPgcmdsPartialIndexRecovery(t *testing.T) {
 	c2 := t.TempDir()
 	copyTree(t, dir, c2)
 	check(NewSession(openAt(t, c2)), "checkpoint")
+}
+
+func TestPgcmdsPartialCompareAndRestart(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE q (id BIGINT PRIMARY KEY, n BIGINT, tag TEXT)`)
+	run(t, s, `CREATE UNIQUE INDEX q_n ON q (tag) WHERE n > 0 AND n <= 10`)
+	run(t, s, `INSERT INTO q VALUES (1, 5, 'a'), (2, 50, 'a'), (3, -1, 'a'), (4, 0, 'a')`)
+	if _, err := tryRun(s, `INSERT INTO q VALUES (5, 10, 'a')`); err == nil {
+		t.Error("n = 10 is inside the predicate: duplicate expected")
+	}
+	run(t, s, `INSERT INTO q VALUES (6, 11, 'a')`)
+	if def := run(t, s, `SELECT indexdef FROM pg_indexes WHERE indexname = 'q_n'`).Rows[0][0].String(); !strings.HasSuffix(def, "WHERE ((n > 0) AND (n <= 10))") {
+		t.Errorf("indexdef %q", def)
+	}
+	// identity restart
+	run(t, s, `CREATE TABLE ident (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v TEXT)`)
+	run(t, s, `INSERT INTO ident (v) VALUES ('a'), ('b')`)
+	run(t, s, `ALTER TABLE ident ALTER COLUMN id RESTART WITH 100`)
+	run(t, s, `INSERT INTO ident (v) VALUES ('c')`)
+	if got := ids(t, s, `SELECT id FROM ident ORDER BY id`); got != "1,2,100" {
+		t.Errorf("after RESTART WITH: %q", got)
+	}
+	run(t, s, `ALTER TABLE ident ALTER COLUMN id RESTART`)
+	run(t, s, `DELETE FROM ident`)
+	if got := run(t, s, `INSERT INTO ident (v) VALUES ('d') RETURNING id`).Rows[0][0].String(); got != "1" {
+		t.Errorf("RESTART without a value: id %s", got)
+	}
+	if _, err := tryRun(s, `ALTER TABLE q ALTER COLUMN n RESTART WITH 5`); err == nil || AsError(err).Code != "55000" {
+		t.Errorf("RESTART on a plain column: %v", err)
+	}
 }

@@ -991,6 +991,9 @@ func (p *parser) arrayTypeName(out string) string {
 	case "date":
 		p.pgSpec = "date[]"
 		return "timestamp[]"
+	case "interval":
+		p.pgSpec = "interval[]" // the element kind for parameter inference (types.go)
+		return "array"
 	case "bool", "uuid", "timestamptz", "timestamp":
 		spec = out
 	default:

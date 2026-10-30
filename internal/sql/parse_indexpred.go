@@ -68,7 +68,7 @@ func (p *parser) indexPredicate() ([]schema.IndexPred, error) {
 }
 
 func predUnsupported() error {
-	return errf(codeFeature, "partial index predicates are limited to AND of: col IS [NOT] NULL, col = literal, col <> literal, col, NOT col")
+	return errf(codeFeature, "partial index predicates are limited to AND of: col IS [NOT] NULL, col <op> literal (=, <>, <, <=, >, >=), col, NOT col")
 }
 
 func (p *parser) indexPredTerm() ([]schema.IndexPred, error) {
@@ -111,14 +111,11 @@ func (p *parser) indexPredTerm() ([]schema.IndexPred, error) {
 			return one("eq", "false")
 		}
 		return nil, predUnsupported()
-	case p.isOp("=") || p.isOp("<>") || p.isOp("!="):
+	case p.isOp("=") || p.isOp("<>") || p.isOp("!=") || p.isOp("<") || p.isOp("<=") || p.isOp(">") || p.isOp(">="):
 		if neg {
 			return nil, predUnsupported()
 		}
-		op := "eq"
-		if p.next().s != "=" {
-			op = "ne"
-		}
+		op := map[string]string{"=": "eq", "<>": "ne", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge"}[p.next().s]
 		t := p.next()
 		lit := t.s
 		switch {

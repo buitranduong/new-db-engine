@@ -774,6 +774,9 @@ func (p *parser) typeName() (string, error) {
 	case "decimal32", "decimal64", "decimal128":
 		skipMods()
 		out = "numeric"
+	case "inet", "cidr", "macaddr":
+		out = "string"
+		p.pgSpec = t.s
 	case "fixedstring", "enum8", "enum16", "ipv4", "ipv6", "bpchar":
 		skipMods()
 		out = "string"
@@ -1690,6 +1693,15 @@ func (p *parser) primary() (Expr, error) {
 			}
 		case "current_timestamp", "localtimestamp":
 			p.next()
+			if p.acceptOp("(") { // current_timestamp(3): the precision is accepted; values keep microseconds
+				if p.peek().k != tNumber {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+				p.next()
+				if err := p.expectOp(")"); err != nil {
+					return nil, err
+				}
+			}
 			return &Func{Name: "now"}, nil
 		}
 		if reserved[t.s] && !((t.s == "left" || t.s == "right") && p.peekN(1).s == "(") {
@@ -2215,6 +2227,15 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 					return nil, err
 				}
 				act.Expr = strings.TrimSpace(p.src[start:p.peek().pos])
+			case p.isKw("restart"): // ALTER COLUMN c RESTART [WITH n] on an identity or serial column
+				o, err := p.seqOpts(true)
+				if err != nil {
+					return nil, err
+				}
+				if len(a.Actions) > 0 || p.isOp(",") {
+					return nil, errf(codeFeature, "RESTART cannot be combined with other ALTER TABLE actions")
+				}
+				return &AlterColRestart{Table: name, Col: act.Column, Opts: o}, nil
 			case p.acceptKw("drop", "default"):
 				act.Kind = "drop_default"
 			case p.acceptKw("set", "not", "null"):

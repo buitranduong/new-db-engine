@@ -1478,6 +1478,10 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			if k, ok := jsonarrBinKind("-", staticKind(e.L, kinds), staticKind(e.R, kinds)); ok {
 				return k
 			}
+		case "<<", ">>":
+			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText { // inet containment (inet.go)
+				return KBool
+			}
 		case "^":
 			if l, r := staticKind(e.L, kinds), staticKind(e.R, kinds); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
 				return KNumeric

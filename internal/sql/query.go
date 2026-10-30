@@ -2835,6 +2835,7 @@ func (s *Session) describeQuery(st Stmt) (*Description, error) {
 			d.Params[i] = k
 		}
 	}
+	d.ParamElem = paramElems(pk, n)
 	return d, nil
 }
 

@@ -861,7 +861,9 @@ func (c *conn) parse(body []byte) {
 		}
 		for i := range ps.params {
 			if ps.params[i] == 0 || ps.params[i] == oidUnknown {
-				if i < len(desc.Params) {
+				if i < len(desc.ParamElem) && desc.ParamElem[i] != 0 && sql.ArrayOIDOfKind(desc.ParamElem[i]) != 0 {
+					ps.params[i] = sql.ArrayOIDOfKind(desc.ParamElem[i])
+				} else if i < len(desc.Params) {
 					ps.params[i] = oidOf(desc.Params[i])
 				} else {
 					ps.params[i] = oidText
@@ -1168,6 +1170,9 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 	case oidText, oidVarchar, oidUnknown, oidName, oidBpchar:
 		return sql.TextD(string(raw)), nil
 	default:
+		if sql.IsArrayOID(oid) {
+			return decodeArrayParam(oid, raw)
+		}
 		return sql.Null, &sql.Error{Code: "0A000", Msg: fmt.Sprintf("binary format for type oid %d is not supported", oid)}
 	}
 	return sql.Null, &sql.Error{Code: "22P03", Msg: fmt.Sprintf("incorrect binary data format for type oid %d", oid)}
@@ -1233,4 +1238,65 @@ func textArrayBinary(s string) []byte {
 		b = append(b, *e...)
 	}
 	return b
+}
+
+// decodeArrayParam reads a binary-format array parameter (pgjdbc setArray,
+// pgx slices): ndim, hasnull, element oid, then per dimension its length
+// and lower bound, then each element length-prefixed (-1 = NULL).
+func decodeArrayParam(oid uint32, raw []byte) (sql.Datum, error) {
+	bad := &sql.Error{Code: "22P03", Msg: fmt.Sprintf("incorrect binary data format for type oid %d", oid)}
+	if len(raw) < 12 {
+		return sql.Null, bad
+	}
+	ndim := int(int32(binary.BigEndian.Uint32(raw)))
+	eoid := binary.BigEndian.Uint32(raw[8:])
+	ek, ok := kindOfOID(eoid)
+	if !ok || eoid == oidInterval || eoid == oidTime {
+		return sql.Null, &sql.Error{Code: "0A000", Msg: fmt.Sprintf("binary format for array of oid %d is not supported", eoid)}
+	}
+	if ndim == 0 {
+		return sql.ArrayDatum(nil, nil, ek), nil
+	}
+	if ndim < 0 || ndim > 6 || len(raw) < 12+8*ndim {
+		return sql.Null, bad
+	}
+	dims := make([]int, ndim)
+	total := 1
+	for i := range dims {
+		n := int(int32(binary.BigEndian.Uint32(raw[12+8*i:])))
+		if n < 0 || n > len(raw) {
+			return sql.Null, bad
+		}
+		dims[i] = n
+		total *= n
+		if total > len(raw) {
+			return sql.Null, bad
+		}
+	}
+	pos := 12 + 8*ndim
+	el := make([]sql.Datum, 0, total)
+	for i := 0; i < total; i++ {
+		if pos+4 > len(raw) {
+			return sql.Null, bad
+		}
+		l := int(int32(binary.BigEndian.Uint32(raw[pos:])))
+		pos += 4
+		if l == -1 {
+			el = append(el, sql.Null)
+			continue
+		}
+		if l < 0 || pos+l > len(raw) {
+			return sql.Null, bad
+		}
+		d, err := decodeParam(eoid, 1, raw[pos:pos+l])
+		if err != nil {
+			return sql.Null, err
+		}
+		el = append(el, d)
+		pos += l
+	}
+	if pos != len(raw) {
+		return sql.Null, bad
+	}
+	return sql.ArrayDatum(el, dims, ek), nil
 }

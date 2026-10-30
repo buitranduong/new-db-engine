@@ -102,3 +102,6 @@ Bản gộp cuối (`98a3a80`): gofmt, build, vet sạch; **toàn bộ 18 gói t
 ## 8. Điều cần từ người dùng (chưa có)
 
 docs/15 §5: ORM/ngôn ngữ ba hệ, cấu hình PG hiện tại, `pg_locks` lúc bị khoá, quy trình nhập Excel, tải đỉnh, **số thật của bảng lịch sử**, SLO độ mới (trễ CDC hiện tại), loại truy vấn Superset, yêu cầu sẵn sàng cao, và **một máy riêng cho benchmark** (≥200 GB đĩa, ≥32 GB RAM, không chạy agent khác).
+## Cập nhật: gộp integ5 vào main
+- integ3+integ4+integ5 (cursors, ctas, jsonarr, jmixfix, ddlobjs, supfix) đã gộp vào main; cổng RACE đầy đủ xanh, claimcheck 454/461.
+- Còn lại: chạy lại client suites, pgdiff, simbench trên bản gộp; memmap; binary array params, expression index.

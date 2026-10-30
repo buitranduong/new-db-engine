@@ -920,15 +920,28 @@ func (e *Engine) IndexStorage(table, index string) (string, error) {
 	}
 	si := t.secNamed(index)
 	if si == nil {
+		if i := substrIndexOf(t.Schema(), index); i >= 0 { // trigram: what the catalog asks for
+			return cmp(t.Schema().Substr[i].Storage, "memory"), nil
+		}
 		return "", fmt.Errorf("index %q does not exist", index)
 	}
 	return si.storageOf(), nil
 }
 
+func substrIndexOf(sch *schema.Table, name string) int {
+	return slices.IndexFunc(sch.Substr, func(x schema.SubstrIndex) bool { return x.Name == name })
+}
+
+// DiskIndexConfig tells the derived views whether disk-resident structures
+// are allowed, where they live and how big their buffer pools are.
+func (e *Engine) DiskIndexConfig() (on bool, dir string, cacheBytes int64, logf func(string, ...any)) {
+	return e.opts.DiskIndexes, filepath.Join(e.opts.Dir, "tri"), e.sidxCache(), e.logf
+}
+
 // FindIndex returns the table that owns the secondary index called name.
 func (e *Engine) FindIndex(name string) (table string, ok bool) {
 	for _, t := range e.UserTables() {
-		if t.Schema().Index(name) != nil {
+		if t.Schema().Index(name) != nil || substrIndexOf(t.Schema(), name) >= 0 {
 			return t.Schema().Name, true
 		}
 	}
@@ -957,6 +970,24 @@ func (e *Engine) SetIndexStorage(table, index, storage string) error {
 	}
 	si := t.secNamed(index)
 	if si == nil {
+		if substrIndexOf(t.Schema(), index) >= 0 {
+			// a trigram index: the catalog says where the posting lists
+			// go, the view converts them in the background (proj/substrdisk.go)
+			want := ""
+			if to == "disk" {
+				want = "disk"
+			}
+			return e.AlterTable(t.Schema().Name, func(d *schema.Table) error {
+				d.CloneConstraints()
+				d.Substr = slices.Clone(d.Substr)
+				i := substrIndexOf(d, index)
+				if i < 0 {
+					return fmt.Errorf("index %q does not exist", index)
+				}
+				d.Substr[i].Storage = want
+				return nil
+			})
+		}
 		return fmt.Errorf("index %q does not exist", index)
 	}
 	from := si.storageOf()
@@ -997,6 +1028,11 @@ func (e *Engine) SetTableIndexStorage(table, storage string) error {
 	for _, def := range t.Schema().Indexes {
 		if err := e.SetIndexStorage(t.Schema().Name, def.Name, storage); err != nil {
 			return fmt.Errorf("index %s: %w", def.Name, err)
+		}
+	}
+	for _, x := range t.Schema().Substr {
+		if err := e.SetIndexStorage(t.Schema().Name, x.Name, storage); err != nil {
+			return fmt.Errorf("index %s: %w", x.Name, err)
 		}
 	}
 	return nil

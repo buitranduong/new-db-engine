@@ -33,6 +33,11 @@ func Start(e *core.Engine) *Platform {
 	p.SF = e.Follow(p.Srch)
 	p.TSF = e.Follow(p.TS)
 	p.Sub = proj.NewSubstr()
+	if on, dir, cache, logf := e.DiskIndexConfig(); on {
+		if err := p.Sub.ConfigureDisk(true, dir, cache, logf); err != nil {
+			logf("trigram disk store: %v", err)
+		}
+	}
 	p.SubF = e.Follow(p.Sub)
 	return p
 }

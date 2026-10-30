@@ -5,9 +5,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"stask/internal/core"
+	"stask/internal/pindex"
 	"stask/internal/schema"
 	"stask/internal/wal"
 )
@@ -26,6 +28,7 @@ import (
 type Substr struct {
 	mu      sync.RWMutex
 	tables  map[uint32]*subTable
+	cfg     *diskCfg
 	pending []subChange
 	gate    sync.Mutex // held by Hold: the view stops applying (tests, maintenance)
 }
@@ -37,6 +40,17 @@ type subCol struct {
 	flagP [pretty_n][]uint32  // pretty class -> ascending doc ids
 	vals  []string            // per doc; "" when null
 	flags []uint8             // per doc: pretty classes, nullBit
+
+	// disk storage of the posting lists (substrdisk.go): when disk is set,
+	// post and flagP are empty
+	st        *subTable
+	disk      *triDisk
+	dpend     []triPair
+	deferPost bool // postings are bulk-built after the documents are added
+	gone      bool // the column was dropped or the documents renumbered (table lock)
+	want      atomic.Pointer[string]
+	busy      atomic.Bool
+	conv      sync.Mutex
 }
 
 const nullBit = 0x80
@@ -52,6 +66,11 @@ type subTable struct {
 	keyDoc map[string]uint32
 	nlive  int
 	epoch  uint32 // bumped when compaction renumbers the documents
+
+	cfg      *diskCfg
+	building bool // being built: storage changes are applied by the build
+	failed   atomic.Pointer[error]
+	dropped  atomic.Bool
 }
 
 type subChange struct {
@@ -64,7 +83,7 @@ type subChange struct {
 	grams [][]uint64
 }
 
-func NewSubstr() *Substr { return &Substr{tables: map[uint32]*subTable{}} }
+func NewSubstr() *Substr { return &Substr{tables: map[uint32]*subTable{}, cfg: &diskCfg{}} }
 
 func (s *Substr) Name() string { return "substr" }
 
@@ -86,7 +105,7 @@ func (s *Substr) table(id uint32) *subTable {
 // Has reports whether the view holds an index on column col of the table.
 func (s *Substr) Has(id uint32, col string) bool {
 	st := s.table(id)
-	if st == nil {
+	if st == nil || st.failed.Load() != nil {
 		return false
 	}
 	st.mu.RLock()
@@ -110,8 +129,8 @@ func (s *Substr) Stats(id uint32) (live, total int) {
 	return st.nlive, len(st.docKey)
 }
 
-func newSubTable(t *schema.Table) *subTable {
-	st := &subTable{keyDoc: map[string]uint32{}}
+func newSubTable(t *schema.Table, cfg *diskCfg) *subTable {
+	st := &subTable{keyDoc: map[string]uint32{}, cfg: cfg, building: true}
 	st.follow(t)
 	for _, c := range st.cols {
 		c.post = map[uint64][]uint32{}
@@ -136,10 +155,20 @@ func (st *subTable) follow(t *schema.Table) {
 			}
 		}
 		if c == nil {
-			c = &subCol{name: x.Col, post: map[uint64][]uint32{}}
+			c = &subCol{name: x.Col, post: map[uint64][]uint32{}, st: st}
 		}
 		c.ci = i
 		st.cols = append(st.cols, c)
+		st.reconcile(c, x.Storage)
+	}
+	for _, o := range old {
+		if !slices.Contains(st.cols, o) { // the index on this column was dropped
+			o.gone = true
+			if o.disk != nil {
+				o.disk.close()
+				o.disk = nil
+			}
+		}
 	}
 }
 
@@ -207,11 +236,11 @@ func (st *subTable) add(key string, lsn uint64, vals []string, null []bool, gram
 		c.flags = append(c.flags, f)
 		for b := 0; b < pretty_n; b++ {
 			if f&(1<<b) != 0 {
-				c.flagP[b] = append(c.flagP[b], d)
+				c.addGram(classBit|uint64(b), d)
 			}
 		}
 		for _, g := range grams[i] {
-			c.post[g] = append(c.post[g], d)
+			c.addGram(g, d)
 		}
 	}
 }
@@ -222,7 +251,7 @@ func (s *Substr) Bootstrap(e *core.Engine, snap uint64) error {
 		if len(ts.Schema().Substr) == 0 {
 			continue
 		}
-		st, err := buildSub(e, ts.Schema(), snap)
+		st, err := buildSub(e, ts.Schema(), snap, s.cfg)
 		if err != nil {
 			return err
 		}
@@ -233,13 +262,28 @@ func (s *Substr) Bootstrap(e *core.Engine, snap uint64) error {
 	return nil
 }
 
-func buildSub(e *core.Engine, sch *schema.Table, snap uint64) (*subTable, error) {
-	st := newSubTable(sch)
+func buildSub(e *core.Engine, sch *schema.Table, snap uint64, cfg *diskCfg) (*subTable, error) {
+	st := newSubTable(sch, cfg)
 	err := e.ScanSnapshot(sch.Name, snap, func(key string, r schema.Row, v *core.Version) bool {
 		vals, null, grams := st.analyze(r, sch)
 		st.add(key, v.LSN, vals, null, grams)
 		return true
 	})
+	// columns whose lists live on disk: bulk-built from the documents
+	for _, c := range st.cols {
+		if !c.deferPost {
+			continue
+		}
+		c.deferPost = false
+		d, berr := st.bulkBuild(c, len(st.docKey), false, 0)
+		if berr != nil {
+			cfg.log("trigram index on %s(%s): cannot build the disk store (%v): kept in memory", sch.Name, c.name, berr)
+			buildMem(c.vals, c.flags, 0, c.post, &c.flagP)
+			continue
+		}
+		c.disk = d
+	}
+	st.building = false
 	return st, err
 }
 
@@ -262,19 +306,28 @@ func (s *Substr) Apply(e *core.Engine, rec *wal.Record) {
 			}
 			// a new index (CREATE INDEX on existing rows): build it from
 			// the rows as of this DDL, later commits are applied on top
-			if nst, err := buildSub(e, sch, rec.LSN); err == nil {
+			if nst, err := buildSub(e, sch, rec.LSN, s.cfg); err == nil {
 				s.mu.Lock()
+				prev := s.tables[sch.ID]
 				s.tables[sch.ID] = nst
 				s.mu.Unlock()
+				if prev != nil {
+					prev.release()
+				}
 			}
 		}
 		s.mu.Lock()
-		for id := range s.tables {
+		var gone []*subTable
+		for id, st := range s.tables {
 			if !live[id] {
+				gone = append(gone, st)
 				delete(s.tables, id)
 			}
 		}
 		s.mu.Unlock()
+		for _, st := range gone {
+			st.release()
+		}
 		return
 	}
 	for _, op := range rec.Ops {
@@ -312,6 +365,7 @@ func (s *Substr) Flush(uint64) {
 	var curID uint32
 	unlock := func() {
 		if cur != nil {
+			cur.flushDisks()
 			cur.compact()
 			cur.mu.Unlock()
 		}
@@ -343,7 +397,7 @@ func (s *Substr) Flush(uint64) {
 // lock, so readers wait for it: it is a rare, linear pass.
 func (st *subTable) compact() {
 	dead := len(st.docKey) - st.nlive
-	if dead < 100000 || dead < st.nlive {
+	if dead < CompactMinDead || dead < st.nlive {
 		return
 	}
 	old := struct {
@@ -356,7 +410,9 @@ func (st *subTable) compact() {
 	st.keyDoc, st.nlive = make(map[string]uint32, st.nlive), 0
 	st.epoch++
 	for _, oc := range old.cols {
-		st.cols = append(st.cols, &subCol{name: oc.name, ci: oc.ci, post: map[uint64][]uint32{}})
+		nc := &subCol{name: oc.name, ci: oc.ci, post: map[uint64][]uint32{}, st: st, deferPost: oc.disk != nil}
+		oc.gone = true // a conversion of it starts over on the new column
+		st.cols = append(st.cols, nc)
 	}
 	for d := range old.docKey {
 		if old.live[d/64]&(1<<(d%64)) == 0 {
@@ -374,7 +430,24 @@ func (st *subTable) compact() {
 		}
 		st.add(old.docKey[d], old.docLSN[d], vals, null, grams)
 	}
+	for i, nc := range st.cols {
+		if oc := old.cols[i]; oc.disk != nil {
+			nc.deferPost = false
+			if d, err := st.bulkBuild(nc, len(st.docKey), false, 0); err == nil {
+				nc.disk = d
+			} else {
+				st.cfg.log("trigram index on %s(%s): compaction cannot rebuild the disk store (%v): kept in memory", st.sch.Name, nc.name, err)
+				buildMem(nc.vals, nc.flags, 0, nc.post, &nc.flagP)
+			}
+			oc.disk.close()
+			oc.disk = nil
+		}
+	}
 }
+
+// CompactMinDead is how many dead documents a table needs before compaction
+// renumbers it (a variable so that tests can reach it).
+var CompactMinDead = 100000
 
 // ---- query ----
 
@@ -414,9 +487,33 @@ func (s *Substr) Scan(tableID uint32, q *SubstrReq, cursor uint64, max int) (key
 	if c == nil {
 		return nil, 0, true, false
 	}
-	var lists [][]uint32
+	if st.failed.Load() != nil {
+		return nil, 0, true, false
+	}
+	var snap pindex.Snapshot
+	if c.disk != nil {
+		var err error
+		if snap, err = c.disk.tr.Snapshot(); err != nil {
+			st.fail(err)
+			return nil, 0, true, false
+		}
+		defer snap.Close()
+	}
+	var lists []docList
+	var rerr error
+	defer func() {
+		for _, l := range lists {
+			if err := l.close(); err != nil && rerr == nil {
+				rerr = err
+			}
+		}
+		if rerr != nil {
+			st.fail(rerr)
+			keys, ok = nil, false
+		}
+	}()
 	for _, g := range q.Grams {
-		l, found := c.post[g]
+		l, found := c.listOf(g, snap)
 		if !found {
 			return nil, 0, true, true
 		}
@@ -424,10 +521,11 @@ func (s *Substr) Scan(tableID uint32, q *SubstrReq, cursor uint64, max int) (key
 	}
 	for b := 0; b < pretty_n; b++ {
 		if q.Flags&(1<<b) != 0 {
-			if len(c.flagP[b]) == 0 {
+			l, found := c.listOf(classBit|uint64(b), snap)
+			if !found {
 				return nil, 0, true, true
 			}
-			lists = append(lists, c.flagP[b])
+			lists = append(lists, l)
 		}
 	}
 	check := func(d uint32) bool {
@@ -448,29 +546,17 @@ func (s *Substr) Scan(tableID uint32, q *SubstrReq, cursor uint64, max int) (key
 		}
 		return keys, ep | uint64(d), int(d) >= len(st.docKey), true
 	}
-	sort.Slice(lists, func(i, j int) bool { return len(lists[i]) < len(lists[j]) })
-	lead := lists[0]
-	i := sort.Search(len(lead), func(i int) bool { return lead[i] >= after })
-	rest := lists[1:]
-	pos := make([]int, len(rest)) // per list: lower bound moves forward only
-	for ; i < len(lead) && len(keys) < max; i++ {
-		d := lead[i]
+	sort.SliceStable(lists, func(i, j int) bool { return lists[i].size() < lists[j].size() })
+	lead, rest := lists[0], lists[1:]
+	d, ok := lead.seek(after)
+	for ok && len(keys) < max {
 		in := true
-		for k, l := range rest {
-			j := pos[k]
-			// gallop then binary search from the last position
-			step := 1
-			for j+step < len(l) && l[j+step] < d {
-				j += step
-				step <<= 1
-			}
-			hi := min(j+step+1, len(l))
-			j += sort.Search(hi-j, func(x int) bool { return l[j+x] >= d })
-			pos[k] = j
-			if j >= len(l) {
+		for _, l := range rest {
+			x, found := l.seek(d)
+			if !found {
 				return keys, ep | uint64(d), true, true
 			}
-			if l[j] != d {
+			if x != d {
 				in = false
 				break
 			}
@@ -478,11 +564,12 @@ func (s *Substr) Scan(tableID uint32, q *SubstrReq, cursor uint64, max int) (key
 		if in && check(d) {
 			keys = append(keys, st.docKey[d])
 		}
+		d, ok = lead.seek(d + 1)
 	}
-	if i >= len(lead) {
+	if !ok {
 		return keys, ep | uint64(len(st.docKey)), true, true
 	}
-	return keys, ep | uint64(lead[i]), false, true
+	return keys, ep | uint64(d), false, true
 }
 
 // ---- pretty numbers ----

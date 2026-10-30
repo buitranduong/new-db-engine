@@ -10,6 +10,10 @@ import "fmt"
 type SubstrIndex struct {
 	Name string `json:"name"`
 	Col  string `json:"col"`
+	// Storage is where the posting lists are kept: "" (RAM) or "disk"
+	// (a pindex file, proj/substrdisk.go). Additive: absent in older
+	// catalogs, omitted for RAM columns.
+	Storage string `json:"storage,omitempty"`
 }
 
 func (t *Table) checkSubstr() error {

@@ -224,7 +224,7 @@ func (s *Session) seqFunc(name string, args []Datum) (rows [][]Datum, ok bool, e
 	}
 	var seq string
 	if len(args) > 0 {
-		seq = seqName(args[0].String())
+		seq = s.resolveRel(seqName(args[0].String()))
 		if args[0].K == KInt { // nextval('s'::regclass): the sequence's OID
 			seq = s.seqNameByOID(args[0].I)
 		}

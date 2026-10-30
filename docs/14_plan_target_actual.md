@@ -162,6 +162,7 @@ Chênh lệch với docs: `docs/00_START_HERE.md` và `scripts/simbench.sh` vẫ
 | P6.3 | Slot/publication qua log | Subscriber tiếp tục sau failover | Publication, replica identity, slot ghi vào bảng ẩn `__stask_cdc` qua đường commit, tới replica nguyên byte (vị trí slot tối đa 1 lần/giây). `TestCDCStateSurvivesFailover`: subscriber xác nhận 5 txn, ghi thêm 3, leader chết; replica được nâng lên stream đúng 3 txn, không mất/trùng. **Chưa thử** với subscriber PostgreSQL thật qua failover; promote vẫn thủ công, chưa gắn vào bầu cử Raft | Xong-chưa-kiểm |
 | P6.4 | Đo trên máy riêng | Số đo cluster | Cần thêm VM (phụ thuộc người dùng) | Chưa làm |
 | P7.1 | Trigger thân SQL | Ghi không chậm khi không có trigger | Cú pháp `CREATE TRIGGER ... BEFORE/AFTER INSERT/UPDATE/DELETE ... [WHEN] BEGIN ... END`, `SET NEW.col`, `RAISE(ABORT/FAIL/ROLLBACK, msg)` (P0001), đệ quy giới hạn 16 tầng (54001); chạy trong giao dịch ghi; replica không chạy lại trigger. 2 probe mới qua (`trigger_sql_body_fires`, `trigger_raise_abort`). Vi benchmark (ghim 1 core, insert+update+delete): không trigger 10,9–11,9 µs/op trước và 11,0–11,8 sau (không chậm đi trong nhiễu); mỗi thân trigger ~5,5 µs. **Chưa đo theo quy trình docs/11 §5** (3 lượt, CPU client). **Cú pháp chuẩn PG `EXECUTE FUNCTION` không được hỗ trợ** (`0A000`, không có `CREATE FUNCTION`): trigger do Liquibase/Jmix sinh ra sẽ không chạy. Chưa có: `UPDATE OF cols`, trigger mức câu lệnh, `INSTEAD OF`, `pg_get_triggerdef`. `RENAME TO` bị từ chối khi bảng có trigger | Xong-có-bằng-chứng (cú pháp SQLite); P7.2 chưa làm |
+| DDL-OBJ | Enum, domain, schema + search_path, extension, COMMENT lưu thật (nhánh `ddlobjs`) | Chạy, bền qua restart/checkpoint/replica, so PG16, psql `\dT \dn \dD \dx \d+` | docs/05 §25, Phụ lục H: pgdiff nhóm `h` 255/255, claimcheck 47 probe mới qua, test `-race` sạch | Xong-chưa-kiểm (cổng gộp) |
 | K1 | `SELECT true::text` phải là `true` | Probe `bool_cast_text` qua | `::text`, `||`, `concat_ws`, `format('%s')`, `string_agg` dùng `Datum.Text()` (true/false); đầu ra qua dây vẫn `t`/`f` như PG. Test `TestBoolToTextIsWords` | Xong-có-bằng-chứng |
 | K2 | `statement_timeout`/CancelRequest huỷ được function scan và các toán tử chưa kiểm tra | 57014 trong ≤ 150 ms + 400 ms cho `generate_series(1, 1e11)`, sort, GROUP BY, DISTINCT, window, UNION, join chéo, CTE đệ quy, `numbers()` | `tableFuncRows` gọi `tick` mỗi 4096 dòng (huỷ + tính vào ngân sách bộ nhớ), `evalCtx.eval` thăm dò mỗi 4096 lần đánh giá (lọc, chiếu, nhóm, window, khoá sắp xếp), bộ so sánh sort thăm dò, vòng lặp CTE đệ quy và DISTINCT thăm dò. Test `TestStatementTimeoutOperators`, `TestCancelFunctionScan` (pgwire). Trước đó probe treo tới 94 s ở `SELECT generate_series(...)` trong danh sách chọn | Xong-có-bằng-chứng |
 | K3 | View hiện trong `pg_class` (relkind `v`), `pg_views`, `information_schema.views` | 3 probe `fn_view_in_*` qua | Thêm cả `pg_attribute`, `information_schema.tables` (VIEW) và `.columns`, `regclass`, `pg_get_viewdef`. **Kiểu cột của view luôn là `text`** (kiểu đầu ra không được lưu). Test `TestViewsInCatalogs` | Xong-có-bằng-chứng (kiểu cột: chưa) |
@@ -728,3 +729,37 @@ Các nhóm a–e cùng lượt chạy: PASS a 157, b 244, c 152, d 138, e 59 (kh
 **E.5 Kết luận cho W9, thành thật.** STASK trả đúng giá trị cho đa số truy vấn biểu đồ (251/341, và các khác biệt `numeric` chỉ xuất hiện ở phép tính phức hợp), nhưng **chưa thay được bản sao Superset**: (a) reflection SQLAlchemy 2.0 hỏng ở cột ba phần (E.3 mục 1) nên không tạo được dataset vật lý; (b) `GROUP BY` lặp biểu thức làm hỏng biểu đồ có cột tính toán (mục 2); (c) `numeric` float làm lệch số tiền ở truy vấn join. Hai mục đầu là thay đổi nhỏ trong parser/planner nhưng nằm trong `internal/sql`, ngoài phạm vi nhánh này (không sửa engine để che khác biệt). **Chưa đo**: tải báo cáo đồng thời với nhập hàng/đơn hàng (`ss-concurrent-*` chạy tuần tự nên không đo gì về khoá/độ trễ), thời gian truy vấn trên 30–50 triệu SIM, Superset thật.
 
 **E.6 Phát hiện ngoài phạm vi.** (1) Cùng một truy vấn cho kết quả khác theo giao thức: `SELECT sum(t.q*t.n) ...JOIN` ra `22` ở giao thức mở rộng (OID 701) nhưng `22.00` ở giao thức đơn (`claimcheck` mặc định `simple_protocol`); probe không phải `ext_` có thể báo "qua" sai cho khác biệt kiểu. (2) `pgdiff` không thể gửi nhiều câu trong một message (tách ở `;`), nên cần một cờ `-- multi` nếu muốn so SQL Lab đầy đủ. (3) `ANALYZE` trên PG làm `pg_stat_user_tables.n_live_tup` = 6000 cho bảng 3000 dòng (thống kê PG nhiễu, không phải lỗi STASK); câu này không nên so giá trị.
+
+## Phụ lục H. Nhánh `ddlobjs`: kiểu enum, domain, schema/search_path, extension, COMMENT lưu thật (2026-10-30, gốc `main` @ 87dc3e1 + merge 12e7f0e)
+
+Thiết kế và giới hạn: docs/05 §25. Nhóm `h` của `pgdiff` (`scripts/pgdiff/h_ddlobjs.sql`): 8 phiên, **255 câu**, nhiều phiên, mọi truy vấn có `ORDER BY`; OID của kiểu người dùng khác nhau giữa hai máy chủ nên giá trị enum chọn ra bằng `::text` và cột catalog kiểu `name` ép `::text`.
+
+**Tái lập.**
+```sh
+cd ~/wt/ddlobjs
+D=/tmp/ddlobjs-pgdiff PGP=28610 HP=28601 SP=28602 NAME=ddlobjs-pg bash scripts/pgdiff-run.sh   # báo cáo: /tmp/ddlobjs-pgdiff/report.md
+go build -o /tmp/ddlobjs-bin/ ./cmd/... ; /tmp/ddlobjs-bin/claimcheck -url "postgres://app@127.0.0.1:<cổng>/stask?sslmode=disable" -only do_
+go test -p 2 ./internal/sql ./internal/pgwire ./internal/repl ./internal/schema
+go test -race -run 'TestDDLObjs' ./internal/sql; go test -race -run TestReplicaDDLObjects ./internal/repl; go test -race -run TestPgxDDLObjects ./internal/pgwire
+```
+
+**Kết quả thật** (`scripts/pgdiff-run.sh`, toàn bộ `scripts/pgdiff`, 1596 câu): PASS 1330, PASS-MSG 76, DIFF 112, chỉ một bên báo lỗi 78.
+
+| Nhóm | Số câu | PASS | PASS-MSG | DIFF | Chỉ một bên báo lỗi |
+|---|---|---|---|---|---|
+| h. đối tượng DDL (`ddlobjs`) | **255** | **255** | 0 | 0 | 0 |
+| a | 166 | 157 | 7 | 2 | 0 |
+| b | 287 | 246 | 8 | 13 | 20 |
+| c | 266 | 164 | 51 | 16 | 35 |
+| d | 140 | 138 | 2 | 0 | 0 |
+| e | 74 | 59 | 6 | 9 | 0 |
+| f | 67 | 59 | 0 | 8 | 0 |
+| g | 341 | 252 | 2 | 64 | 23 |
+
+So với số trước nhánh (STATUS §3 / E.2): b 244→246, c 152→164 (các câu `CREATE SCHEMA/EXTENSION/TYPE` và `COMMENT` của nhóm c nay khớp PG), g 251→252, a/d/e không đổi. Lần chạy đầu của nhóm `h` (trước khi sửa) 224/256: các lỗi tìm thấy nhờ pgdiff là `ORDER BY m` khi `m::text` còn mang dấu enum, `'x'::regtype` cho kiểu người dùng, domain trên `text` (khoá `text` không index được trong bảng tạm), kiểu cột của phép ép sang domain, thông điệp `type "s.t" already exists`.
+
+`claimcheck`: **299/319** (47 probe `do_*` mới, cả 47 qua). 20 probe trượt là đúng tập 20 probe trượt của `main` (so với `~/stask/bin-main/claimcheck` + `staskd`, danh sách trùng từng id): không hồi quy. psql 16: xem docs/05 §25.
+
+| Task | Kế hoạch | Mục tiêu (xong khi) | Thực tế | Trạng thái |
+|---|---|---|---|---|
+| DDL-OBJ (`ddlobjs`) | Enum, domain, schema + search_path, extension, COMMENT lưu thật | Chạy, bền qua restart/checkpoint/replica, so với PG16 bằng ≥40 câu nhiều phiên, psql `\dT \dn \dD \dx \d+` | Cả năm nhóm chạy (docs/05 §25); test `ddlobjs_test.go`, `repl/ddlobjs_repl_test.go`, `pgwire/ddlobjs_wire_test.go`; pgdiff `h` 255/255; claimcheck 47/47 probe mới; `-race` sạch cho test mới; psql giống PG trừ Owner/ACL/Storage cũ | Xong-chưa-kiểm trên cổng gộp (`-race` toàn gói do người điều phối); giới hạn ở docs/05 §25 |

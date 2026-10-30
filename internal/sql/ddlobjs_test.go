@@ -184,6 +184,7 @@ func TestDDLObjsSchema(t *testing.T) {
 	wantRows(t, s, `SELECT v FROM t ORDER BY id`, "a;b") // s1.t shadows public.t
 	wantRows(t, s, `SELECT id::text FROM pub UNION ALL SELECT 'x'`, "x")
 	wantRows(t, s, `SELECT current_schema()`, "s1")
+	wantRows(t, s, `SELECT nextval('sq')`, "2") // s1.sq through the search path
 	wantRows(t, s, `SELECT current_schemas(false)`, "{s1,public}")
 	mustq(t, s, `CREATE TABLE made (id INT)`)
 	wantRows(t, s, `SELECT table_schema FROM information_schema.tables WHERE table_name = 'made'`, "s1")

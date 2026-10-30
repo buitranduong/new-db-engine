@@ -350,6 +350,11 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	if err := s.authorize(st); err != nil {
 		return nil, err
 	}
+	if rw, err := s.viewDML(st); err != nil {
+		return nil, err
+	} else {
+		st = rw
+	}
 	d := &Description{}
 	sc := &scope{}
 	var table string

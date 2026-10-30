@@ -114,3 +114,24 @@ func TestPgresUpdatableView(t *testing.T) {
 		}
 	}
 }
+
+// the extended protocol describes the statement before running it
+func TestPgresUpdatableViewDescribe(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE pd_pm2 (id bigint PRIMARY KEY, c text)`)
+	run(t, s, `CREATE VIEW pd_vw2 AS SELECT id, c FROM pd_pm2`)
+	st, err := ParseOne(`INSERT INTO pd_vw2 (id, c) VALUES ($1, $2) RETURNING id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Describe(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Params) != 2 || d.Params[0] != KInt || len(d.Cols) != 1 {
+		t.Errorf("describe: %+v", d)
+	}
+	if res, err := s.Exec(st, []Datum{IntD(1), TextD("x")}); err != nil || len(res.Rows) != 1 {
+		t.Errorf("exec: %v %v", res, err)
+	}
+}

@@ -96,6 +96,11 @@ func (c *evalCtx) callMore(f *Func, args []Datum) (Datum, bool, error) {
 			}
 			return TextD(q), true, nil
 		}
+	case "overlay":
+		if len(args) == 3 || len(args) == 4 {
+			v, err := pgOverlay(args)
+			return v, true, err
+		}
 	case "translate":
 		if len(args) == 3 {
 			if nullIn {

@@ -21,10 +21,10 @@ func TestSQLAlterTable(t *testing.T) {
 	}
 	run(t, s, `INSERT INTO a (id, v) VALUES (4, 'y')`)
 	run(t, s, `UPDATE a SET qty = 6 WHERE id = 1`)
-	if r := run(t, s, `SELECT sum(qty) FROM a`); r.Rows[0][0].I != 21 {
+	if r := run(t, s, `SELECT sum(qty) FROM a`); r.Rows[0][0].String() != "21" { // sum(bigint) is numeric, as in PostgreSQL
 		t.Fatalf("sum over an added column: %s", render(r))
 	}
-	if r := run(t, s, `SELECT v, sum(qty) FROM a GROUP BY v ORDER BY v`); len(r.Rows) != 2 || r.Rows[0][1].I != 11 || r.Rows[1][1].I != 10 {
+	if r := run(t, s, `SELECT v, sum(qty) FROM a GROUP BY v ORDER BY v`); len(r.Rows) != 2 || r.Rows[0][1].String() != "11" || r.Rows[1][1].String() != "10" {
 		t.Fatalf("group by after ALTER: %s", render(r))
 	}
 	if r := run(t, s, `SELECT v, count(*) FROM a GROUP BY v ORDER BY v`); len(r.Rows) != 2 || r.Rows[1][1].I != 2 {
@@ -72,12 +72,12 @@ func TestSQLAlterTable(t *testing.T) {
 	if r := run(t, s, `SELECT * FROM a WHERE id = 1`); len(r.Cols) != 4 || r.Rows[0][2].I != 6 {
 		t.Fatalf("after DROP COLUMN: %s", render(r))
 	}
-	if r := run(t, s, `SELECT name, sum(qty) FROM a GROUP BY name ORDER BY name`); len(r.Rows) != 3 || r.Rows[0][1].I != 11 {
+	if r := run(t, s, `SELECT name, sum(qty) FROM a GROUP BY name ORDER BY name`); len(r.Rows) != 3 || r.Rows[0][1].String() != "11" {
 		t.Fatalf("columnar view after DROP COLUMN: %s", render(r))
 	}
 	run(t, s, `ALTER TABLE a ADD COLUMN note bigint`)
 	run(t, s, `UPDATE a SET note = 1 WHERE id = 2`)
-	if r := run(t, s, `SELECT count(note), sum(note) FROM a`); r.Rows[0][0].I != 1 || r.Rows[0][1].I != 1 {
+	if r := run(t, s, `SELECT count(note), sum(note) FROM a`); r.Rows[0][0].I != 1 || r.Rows[0][1].String() != "1" {
 		t.Fatalf("re-added column: %s", render(r))
 	}
 

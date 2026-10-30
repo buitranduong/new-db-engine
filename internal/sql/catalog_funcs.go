@@ -203,6 +203,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		}
 		return arrayD([]Datum{TextD("public")}), nil
 	case "pg_backend_pid":
+		if s.PID > 0 {
+			return IntD(int64(s.PID)), nil // the pid pg_stat_activity shows for this session
+		}
 		return IntD(1), nil
 	case "pg_sleep":
 		return s.supfixSleep(args)

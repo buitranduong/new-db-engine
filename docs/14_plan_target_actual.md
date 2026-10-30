@@ -123,6 +123,7 @@ Bằng chứng: `scripts/simrun.sh` (một lần chạy `cmd/simbench` trên STA
 | SG5 | `CREATE INDEX .. gin_trgm_ops` chờ view dựng xong (D28/SR) | Trả khi dùng được; CONCURRENTLY không chờ; EXPLAIN báo đang dựng | `indexwait.go`, `planner/substr.go` (`SubstrBuilt`, lý do "still being built"). Test `TestCreateTrigramIndexWaits` (20k dòng: CREATE INDEX 65 ms, ngay sau đó EXPLAIN là Trigram Scan; CONCURRENTLY với view bị giữ: Seq Scan + lý do). **Chưa đo ở 1M** (~3,5 s theo docs/15) | Xong-có-bằng-chứng ở 20k; 1M chưa đo |
 | SG6 | Tổng kiểm | pgdiff, claimcheck, -race | pgdiff toàn bộ trên nhánh: 1000 câu, PASS 809, PASS-MSG 76, DIFF 50, ERR-ONLY-ONE-SIDE 65 (nhóm f: 59 PASS, 8 DIFF = văn bản EXPLAIN); `claimcheck` 252/262 (nền `main` 251/262). `go test -p 2` sql/pgwire/planner qua; `-race` chạy bản lọc theo test mới (xem báo cáo) | Xong-có-bằng-chứng |
 | SQ1 | Superset/SQLAlchemy (W9): nhóm `scripts/pgdiff/g_superset.sql`, nhánh `superq` | ≥ 120 câu, nhiều phiên, đúng loại câu SQLAlchemy/Superset; phân loại từng khác biệt; 10 probe `claimcheck` | **341 câu, 14 phiên: PASS 251, PASS-MSG 2, DIFF 65, ERR-ONLY-ONE-SIDE 23** (tái lập: `D=/tmp/superq-pgdiff PGP=28540 HP=28541 SP=28542 NAME=superq-pg bash scripts/pgdiff-run.sh`). Khác biệt xếp theo mức ảnh hưởng ở Phụ lục E.3: reflection SQLAlchemy 2.0 hỏng (cột `schema.bảng.cột` `42601`), `GROUP BY` biểu thức `42803`, `numeric` float ở join/`extract`, `to_char` `IW`, `regclass::text` ra OID. 11 probe `sq_*` (`cmd/claimcheck/probes_superset.go`): PG 11/11, STASK 1/11. **Chưa chạy Superset thật.** |
+| SF1 | Sửa các khác biệt Superset/SQLAlchemy theo mức tác động (Phụ lục E.3 mục 2, 7, 8, 9, 11, 12, 13) và `EXISTS` tương quan chậm của chế độ bóng, nhánh `supfix` | pgdiff nhóm `g` trên PG16 từ 251/341 lên ≥ 310; 10 probe `sq_*` từ 1/11 lên ≥ 8/11; truy vấn bóng dưới 1 s | **`g`: 251 → 303/341 PASS (+2 PASS-MSG); 8 trong 38 câu còn lại là cột ba phần (nhánh `jmixfix`), nên ≥ 310 chỉ đạt khi gộp nhánh đó (303 + 8 = 311 là cận trên, chưa chạy thử)**. `sq_*`: 1/11 → **10/11** (còn `sq_catalog_threepart_colref`, thuộc `jmixfix`). Nhóm mới `h` (80 câu, `scripts/pgdiff/h_supfix.sql`): **79/80**. Toàn bộ `scripts/pgdiff`: PASS 1060/1341 → **1200/1421** (a 157 = 157, b 244 → 246, c 152 = 152, d 138 = 138, e 59 → 66, f 59 = 59). `claimcheck`: 25 probe `sf_*` mới (`cmd/claimcheck/probes_supfix.go`): PG16 25/25, STASK 25/25; toàn bộ 298 probe: 287 (nền `main` 253/273, không probe nào tụt). Truy vấn bóng (260k SIM, 150k dòng `order_items`): `main` 1,5 s, nhánh ~0,5 s (VM tải 3 đến 10); các dạng `EXISTS` có `HAVING`/`GROUP BY`/vị từ phụ nhắc dòng ngoài: `main` > 100 s (hết hạn đo), nhánh 0,7 đến 1,5 s. Chi tiết, tái lập và hạn chế ở Phụ lục F. | Xong-có-bằng-chứng (g chưa đủ 310 nếu không có `jmixfix`) |
 
 Chênh lệch với docs: `docs/00_START_HERE.md` và `scripts/simbench.sh` vẫn ghi `simbench` "chưa chạy lần nào" / dùng cổng 28433 đến 28435 (người điều phối cập nhật); bản chạy chuẩn là `scripts/simrun.sh`.
 
@@ -728,3 +729,65 @@ Các nhóm a–e cùng lượt chạy: PASS a 157, b 244, c 152, d 138, e 59 (kh
 **E.5 Kết luận cho W9, thành thật.** STASK trả đúng giá trị cho đa số truy vấn biểu đồ (251/341, và các khác biệt `numeric` chỉ xuất hiện ở phép tính phức hợp), nhưng **chưa thay được bản sao Superset**: (a) reflection SQLAlchemy 2.0 hỏng ở cột ba phần (E.3 mục 1) nên không tạo được dataset vật lý; (b) `GROUP BY` lặp biểu thức làm hỏng biểu đồ có cột tính toán (mục 2); (c) `numeric` float làm lệch số tiền ở truy vấn join. Hai mục đầu là thay đổi nhỏ trong parser/planner nhưng nằm trong `internal/sql`, ngoài phạm vi nhánh này (không sửa engine để che khác biệt). **Chưa đo**: tải báo cáo đồng thời với nhập hàng/đơn hàng (`ss-concurrent-*` chạy tuần tự nên không đo gì về khoá/độ trễ), thời gian truy vấn trên 30–50 triệu SIM, Superset thật.
 
 **E.6 Phát hiện ngoài phạm vi.** (1) Cùng một truy vấn cho kết quả khác theo giao thức: `SELECT sum(t.q*t.n) ...JOIN` ra `22` ở giao thức mở rộng (OID 701) nhưng `22.00` ở giao thức đơn (`claimcheck` mặc định `simple_protocol`); probe không phải `ext_` có thể báo "qua" sai cho khác biệt kiểu. (2) `pgdiff` không thể gửi nhiều câu trong một message (tách ở `;`), nên cần một cờ `-- multi` nếu muốn so SQL Lab đầy đủ. (3) `ANALYZE` trên PG làm `pg_stat_user_tables.n_live_tup` = 6000 cho bảng 3000 dòng (thống kê PG nhiễu, không phải lỗi STASK); câu này không nên so giá trị.
+
+## Phụ lục F. Nhánh `supfix`: sửa khác biệt Superset/SQLAlchemy và EXISTS tương quan (2026-10-30, gốc `main` @ 87dc3e1, đã gộp `main` @ 12e7f0e)
+
+**Tái lập.**
+```sh
+cd ~/wt/supfix && go build -o /tmp/supfix-bin/ ./cmd/...
+D=/tmp/supfix-pgdiff PGP=28710 HP=28711 SP=28712 NAME=supfix-pg bash scripts/pgdiff-run.sh    # báo cáo: /tmp/supfix-pgdiff/report.md
+/tmp/supfix-bin/claimcheck -url "postgres://app@127.0.0.1:<cổng>/stask?sslmode=disable" -only sf_     # PG16: -url postgres://postgres@127.0.0.1:<cổng>/postgres
+go test -p 2 ./internal/sql ./internal/pgnum ./internal/pgwire ./internal/schema ./internal/core ./internal/repl
+go test -race -p 2 -run TestSupfix ./internal/sql ; go test -race ./internal/pgnum
+```
+
+**F.1 Số nền và số sau (cùng một lệnh `pgdiff-run.sh`, PG 16.15 trong docker).**
+
+| Nhóm | Câu | PASS nền (`main` @ 87dc3e1) | PASS sau | DIFF/ERR còn lại sau |
+|---|---|---|---|---|
+| a | 166 | 157 | 157 | 2 + 0 |
+| b | 287 | 244 | 246 | 12 + 21 |
+| c | 266 | 152 | 152 | 17 + 44 |
+| d | 140 | 138 | 138 | 0 + 0 |
+| e | 74 | 59 | 66 | 2 + 0 |
+| f | 67 | 59 | 59 | 8 + 0 |
+| **g** | 341 | **251** | **303** (+2 PASS-MSG) | 20 + 16 |
+| **h** (mới) | 80 | n/a | **79** | 1 + 0 |
+| Tổng | 1421 (nền 1341) | 1060 | **1200** | |
+
+Còn lại của `g` (38 câu không PASS, gồm 2 PASS-MSG): 8 là cột ba phần `schema.bảng.cột` (`jmixfix`); 16 là khác biệt môi trường không sửa được và không nên sửa (`version()`, `server_version(_num)`, `current_database()`, `current_user`/`rolname`/`usename`/`pg_get_userbyid()` = `stask` so với `postgres`, OID bảng và pid khác, `pg_database`/`information_schema.schemata` ít dòng, `relpages`, `show transaction isolation level` = `repeatable read` đã biết); 5 là `CREATE [TEMP] TABLE .. AS` và câu dây chuyền (probe `pd_ctas`, `pd_create_temp_table`, không thuộc nhánh này); 4 là văn bản `EXPLAIN` (số dòng khác PG; ước lượng `cost=` nay có nhưng văn bản không thể bằng PG) trong đó `EXPLAIN (FORMAT JSON)` còn trả `text`; 2 `pg_stats`/`pg_stat_user_tables` chưa có; 1 `json_agg`. `h`: câu còn lại là kiểu của `percentile_disc(..) WITHIN GROUP (ORDER BY int4)` (OID 20, PG 23).
+
+**F.2 Xử lý theo mục E.3.**
+
+| E.3 | Việc | Bằng chứng |
+|---|---|---|
+| 2 GROUP BY biểu thức | khoá cấu trúc cho `CASE/IN/BETWEEN/LIKE/IS NULL/ROW` (`supfix_keys.go`) | `sq_group_by_case_expr`, 3 probe `sf_group_by_*`, `TestSupfixGroupByExpression`, 9 câu `h/hs-groupby` |
+| 7 numeric float | kiểu tĩnh `numeric` ở `staticKind`, `stddev/variance` số thập phân chính xác và Youngs-Cramer cho float, `sum(bigint)` = numeric (`supfix_types.go`, `supfix_aggs.go`, `pgnum/stats.go`) | `ext_sq_numeric_sum_join_product`, `ext_sq_extract_epoch_group_by`, 4 probe `ext_sf_*`, `TestSupfixNumericAggregates`, 11 câu `h/hs-numeric`: kết quả giống nhau ở giao thức đơn và mở rộng (cùng kiểu tĩnh) |
+| 8 to_char | bảng mẫu đầy đủ (`supfix_tochar.go`) | `sq_to_char_iso_week_literal`, 2 probe `sf_to_char_*`, `TestSupfixToChar`, 6 câu `h/hs-tochar` (so với PG) |
+| 9 regclass | `::regclass::text`, `to_regclass()::text` | `sq_regclass_text_name`, `sf_regclass_to_regclass_text`, `g/ss-reflect-tables:85,86`, `ss-reflect-keys:114` |
+| 10 0 cột khi 0 dòng | **chẩn đoán lại**: máy chủ gửi `RowDescription` đủ (đo bằng gói tin thô: `12TCZ`); `pgx`/`pgconn.ExecParams.Read()` không đưa `FieldDescriptions` khi 0 dòng, nên "0 cột" thật ra là PG trả 5 dòng (domain của `information_schema`) còn STASK 0 dòng. Đã thêm 5 domain vào `pg_type` | `g/ss-reflect-columns:97` PASS |
+| 11 EXPLAIN | `cost=a..b rows=n width=w` mọi nút, ghi chú "rough estimates" | `sf_explain_has_cost`, `TestSupfixExplainCost` |
+| 12 | `pg_get_viewdef` pretty (view đơn giản), `reltuples`/`relpages`/`pg_*_relation_size` từ số dòng sống, `confmatchtype`, `set_config` ra `5s`, `SHOW search_path` `a, b`, `SHOW max_connections`, `pg_sleep` | `h/hs-regclass`, `g/ss-sqllab:338,370,375`, `ss-reflect-keys:113,122,124,125` |
+| 13 OID | cột `pg_catalog`/`information_schema`: `name`, `"char"`, `oid`, `int2`, `int4`, `real`, `varchar(n)`, `pg_node_tree`... (`zz_supfix_cattypes.go`, sinh bằng so `\gdesc` với PG) + `oid`/`xid`/`"char"` nhị phân | phần lớn 31 câu `DIFF/type` của `g` chuyển sang PASS; `ext_sf_catalog_name_oid_types` |
+| 4/5 cú pháp | `WITH x AS [NOT] MATERIALIZED`, `""` trong nhãn, `CREATE INDEX` trên `timestamp(tz)`, `corr/covar_*/regr_*` | `sq_cte_materialized`, `sq_quoted_ident_doubled_quote`, `sq_index_on_timestamptz`, `sq_corr_aggregate_group_by`, `sf_statistical_aggregates` |
+
+**F.3 `EXISTS`/`NOT EXISTS` tương quan (truy vấn `reserved_sold_have_items` của chế độ bóng).** Đo bằng `EXPLAIN`: trên `main` truy vấn này **đã** rơi vào đường băm (`SubPlan: Hash Semi Join on 1 key(s)`), vì tương quan chỉ là `i.number = s.number` kèm lọc phụ `i.active` ở truy vấn con: điều kiện của `semijoin.go` thoả. Con số 52 đến 104 s (docs/14 SH6) thuộc binary chưa có `sqlgaps`: binary tại `61f6755^1` chạy đúng truy vấn này quá 170 s (hết hạn đo) trên dữ liệu 260k x 150k (F.4). Vì sao nó vẫn 1,5 s chứ không "50 ms của PG": đường băm đọc cả hai bảng vào bộ nhớ (260k + 150k dòng, giải mã toàn bộ cột kể cả `uuid`/`jsonb`/`numeric`) trên một lõi. Nhánh này: nạp bảng bằng quét song song (cùng bộ trợ thủ co giãn của `lanes.go`), `Dec.String` nhanh cho hệ số ≤ 64 bit, tra khoá băm không cấp phát (profile: 36% thời gian ở `DecodeInto`, 9% ở `big.Int.Text`, 16% ở `makeslice`). Còn không đạt 50 ms vì chưa có đẩy cột/lọc xuống tầng quét (executor tổng quát vẫn đọc toàn bảng): ghi ở mục hạn chế.
+
+Dạng **không** rơi vào đường băm trên `main` (đo: > 100 s ở 260k x 150k, hết hạn đo; nhánh: 0,7 đến 1,5 s): (a) vị từ phụ nhắc dòng ngoài (`AND i.price > s.price`); (b) `GROUP BY`/`HAVING` trong truy vấn con; (c) `DISTINCT`/`LIMIT n` trong `EXISTS`. Cả ba nay chạy băm và bằng bản lồng trên dữ liệu ngẫu nhiên có NULL (`TestSupfixSemiJoinForms`: 30 truy vấn, kết quả trùng với `NoDecorrelate`, ≥ 24 đi đường băm). **Nghi ngờ của `sqlgaps` rằng `HAVING` trong `EXISTS` tương quan bị bỏ qua là sai**: 7 câu có `HAVING` (có/không `GROUP BY`, `count(*) = 0`, `sum`, `max`) cho kết quả đúng PG ở cả đường lồng lẫn đường băm mới (`h/hs-exists`, 13 câu PASS).
+
+**F.4 Truy vấn bóng, số đo** (260.000 `sims` đủ 9 cột kể cả uuid/jsonb/bytea, 60.000 `orders`, 150.000 `order_items`; VM dùng chung tải 3 đến 10, mỗi số gồm ~0,17 s khởi động `psql` trong docker):
+
+| Truy vấn | `main` | `supfix` |
+|---|---|---|
+| `reserved_sold_have_items` (băm sẵn có) | 1,52 s | 0,56 đến 0,77 s |
+| `EXISTS .. AND i.price > s.price` (vị từ phụ) | > 100 s (hết hạn) | 0,81 s |
+| `EXISTS .. GROUP BY i.number HAVING count(*) > 1` | > 100 s (hết hạn) | 0,73 s |
+| `NOT EXISTS .. i.price * 1000 > s.price` | n/a | 1,28 s |
+| `EXISTS .. HAVING count(*) = 1` (HAVING không GROUP BY) | n/a | 1,47 s |
+| `reserved_sold_have_items` trên binary trước khi `sqlgaps` gộp (`61f6755^1`, lồng) | > 170 s (hết hạn đo) | n/a |
+
+**F.5 Chỗ nối vào mã có sẵn (để người điều phối rà xung đột).** `exec.go` (`stripPtrs` gọi `stripPtrsMore`), `query.go` (`boundSub.ext`, `qexec.extSubs`, hai chỗ gọi `supfixAggKind`, kiểu `numeric` ở `staticKind`, `tablePlan.run` thử quét song song, `evalSub` gọi `evalExtSub`), `semijoin.go` (`decorrelate` gọi `supfixDecorrelate` trước; `hashSub` thêm hai trường bộ đệm; `evalHashSub` tra khoá không cấp phát), `aggs.go` (`varAgg` số thập phân + Youngs-Cramer; `newAgg` gọi `supfixNewAgg`), `lex.go` (nháy kép đôi), `parse.go`/`parse2.go` (`SET` giữ dấu phẩy, `MATERIALIZED`), `eval.go` (regclass text), `funcs.go` (`toChar`, `funcKind`), `pgtype.go` (`family`, `inferTy`, `itemCol`, `pgTyName`), `pgbinary.go`, `explain.go`, `catalog_funcs.go`/`catalog_rels.go`/`catalog_idx.go` (vài dòng), `schema/indexkey.go` (ba dòng thêm `TTimestamp`, `TTimestamptz`: **có thể xung đột với `jmixfix`** nếu nhánh đó thêm `uuid`/`numeric` vào cùng ba dòng), `pgnum/dec.go` (`String` thử `fastString`). `cmd/claimcheck/main.go`: thêm `"EXPLAIN"` vào `fullStatement` để probe EXPLAIN chạy được.
+
+**F.6 Thay đổi hành vi client cần biết.** (1) Cột `oid` của catalog nay là kiểu `oid`: Go/pgx phải quét vào `uint32` (như với PG; `catalog_wire_test.go` đã sửa); `relkind`... là `"char"` (pgx trả `byte`/`rune`). (2) `sum(bigint)` và cửa sổ `sum(count(*))` công bố `numeric` (OID 1700): `pgx` quét vào `int64` được khi giá trị nguyên? **chưa kiểm cho mọi driver**; psycopg2 trả `Decimal` như PG. (3) `pg_backend_pid()` trả pid thật của phiên (trước: luôn 1), nên probe `pg_stat_activity` không còn phụ thuộc thứ tự kết nối.
+
+**F.7 Hạn chế, nói thẳng.** `x::regclass` đứng một mình vẫn in OID; `pg_get_viewdef` chỉ cho view đơn giản và thiếu `::numeric` ở hằng số so với cột numeric; `percentile_disc` trên `int4` công bố `bigint`; `SUM(bigint)` tràn `int64` vẫn tràn; `to_char` luôn múi giờ UTC; `reltuples`/kích thước là ước lượng, `EXPLAIN` `cost=` là số thô; quét song song tăng đỉnh bộ nhớ (hàng chục MB mỗi bảng 260k dòng, vẫn tính vào `-query-mem-mb`) và mới đo trên một VM tải; đường băm vẫn đọc toàn bảng (chưa đẩy cột/lọc xuống), nên không đạt 50 ms của PG; chưa chạy Superset/SQLAlchemy thật (tiếp tục **[chưa kiểm với Superset thật]**). Phát hiện ngoài phạm vi: `WITH c(y) AS (..), d AS (..) SELECT d.*` in thừa cột của `c`; `CREATE TABLE AS`/`TEMP TABLE` còn thiếu (5 câu `g`); `EXPLAIN (FORMAT JSON)` trả `text`; `SHOW transaction isolation level` = `repeatable read`.

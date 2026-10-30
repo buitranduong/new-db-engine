@@ -74,52 +74,39 @@ func checkSnap(t *testing.T, s Snapshot, m refMap, rng *rand.Rand, what string) 
 			t.Fatalf("%s: get %q = %v %v %v", what, k, v, ok, err)
 		}
 	}
-	// descending scans are the reverse of the ascending ones
-	dit := s.ScanDesc(nil, nil)
-	for i := len(ks) - 1; dit.Next(); i-- {
-		if i < 0 || string(dit.Key()) != ks[i] || !bytes.Equal(dit.Value(), m[ks[i]]) {
-			t.Fatalf("%s: desc scan mismatch at %d (key %q)", what, i, dit.Key())
+	// descending scans are the reverse of the ascending ones: windows of at
+	// most 400 keys, including the two open-ended ones (a full descending
+	// scan is only done for small maps; the stress test covers big ones)
+	if len(ks) > 0 {
+		type win struct{ from, to int }
+		w := []win{{0, min(len(ks), 1+rng.Intn(400))}, {max(0, len(ks)-1-rng.Intn(400)), len(ks)}}
+		if len(ks) < 3000 {
+			w = append(w, win{0, len(ks)})
 		}
-		if i == 0 {
-			if dit.Next() {
-				t.Fatalf("%s: desc scan too long", what)
+		for n := 0; n < 3; n++ {
+			a := rng.Intn(len(ks))
+			w = append(w, win{a, min(len(ks), a+1+rng.Intn(400))})
+		}
+		for _, x := range w {
+			var lo, hi []byte
+			if x.from > 0 {
+				lo = []byte(ks[x.from])
 			}
-			break
-		}
-	}
-	if dit.Err() != nil {
-		t.Fatal(dit.Err())
-	}
-	for n := 0; n < 20 && len(ks) > 0; n++ {
-		a, b := rng.Intn(len(ks)), rng.Intn(len(ks))
-		if a > b {
-			a, b = b, a
-		}
-		lo, hi := []byte(ks[a]), []byte(ks[b])
-		if rng.Intn(3) == 0 {
-			lo = nil
-		}
-		if rng.Intn(3) == 0 {
-			hi = nil
-		}
-		var want []string
-		for _, k := range ks {
-			if (lo == nil || k >= string(lo)) && (hi == nil || k < string(hi)) {
-				want = append(want, k)
+			if x.to < len(ks) {
+				hi = []byte(ks[x.to])
 			}
-		}
-		di := s.ScanDesc(lo, hi)
-		var got []string
-		for di.Next() {
-			got = append(got, string(di.Key()))
-		}
-		if di.Err() != nil || len(got) != len(want) {
-			t.Fatalf("%s: desc range [%q,%q): %d keys want %d, err %v", what, lo, hi, len(got), len(want), di.Err())
-		}
-		for i := range got {
-			if got[i] != want[len(want)-1-i] {
-				t.Fatalf("%s: desc range item %d mismatch", what, i)
+			want := ks[x.from:x.to] // ks is sorted: the keys in [lo, hi)
+			di := s.ScanDesc(lo, hi)
+			i := len(want) - 1
+			for ; di.Next(); i-- {
+				if i < 0 || string(di.Key()) != want[i] || !bytes.Equal(di.Value(), m[want[i]]) {
+					t.Fatalf("%s: desc range [%q,%q) mismatch at %d (key %q)", what, lo, hi, i, di.Key())
+				}
 			}
+			if di.Err() != nil || i != -1 {
+				t.Fatalf("%s: desc range [%q,%q): stopped at %d, err %v", what, lo, hi, i, di.Err())
+			}
+			di.Close()
 		}
 	}
 	for n := 0; n < 20; n++ {

@@ -115,7 +115,6 @@ func TestSQLIndexStorage(t *testing.T) {
 			t.Errorf("%s = %q (want %q), index read: %v", c, got, want, after > before)
 		}
 	}
-	delete(baseline, "")
 	run(t, s, `DELETE FROM t WHERE id > 9000`)
 	// restart: the catalog says disk, the engine rebuilds them as disk indexes
 	e.Close()

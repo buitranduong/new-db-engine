@@ -74,6 +74,10 @@ type secIndex struct {
 	failed  atomic.Pointer[error]
 	retired atomic.Bool
 
+	// mutations replayed into a new store by conversions: while it was being
+	// built, and under the lock at the swap
+	ConvCatchUp, ConvFinal atomic.Int64
+
 	Adds, Dead, Swept, Scans atomic.Int64
 }
 
@@ -879,6 +883,8 @@ type SecStats struct {
 	Pending     int
 	Scans       int64
 	Storage     string // "memory" or "disk"
+	ConvCatchUp int64  // mutations replayed into a new store while it was built (conversions)
+	ConvFinal   int64  // mutations replayed under the index lock at the swap
 	Failed      string // why a disk index is unusable, if it is
 }
 
@@ -896,7 +902,8 @@ func (e *Engine) SecIndexStats() []SecStats {
 				rd.close()
 			}
 			st := SecStats{Table: t.Schema().Name, Name: si.name, Entries: n, Storage: si.storageOf(),
-				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load()}
+				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load(),
+				ConvCatchUp: si.ConvCatchUp.Load(), ConvFinal: si.ConvFinal.Load()}
 			if err := si.unusable(); err != nil {
 				st.Failed = err.Error()
 			}

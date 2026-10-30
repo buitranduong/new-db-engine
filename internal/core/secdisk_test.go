@@ -393,3 +393,53 @@ func TestDiskIndexCrashPoints(t *testing.T) {
 		t.Fatal("no image after the swap back to memory")
 	}
 }
+
+// Writes made after the snapshot the new store is built from, and before the
+// swap, are carried over: the hook runs between the two, in both directions.
+func TestDiskIndexWritesDuringBuild(t *testing.T) {
+	var e *Engine
+	wrote := 0
+	hook := func(step string) {
+		if step != "bulk-loaded" && step != "memory-built" {
+			return
+		}
+		for i := 0; i < 600; i++ { // inserts, moves and deletes, more than the backlog that is applied under the lock
+			id := fmt.Sprintf("k%05d", (wrote*7+i*13)%2500)
+			var op WriteOp
+			switch i % 5 {
+			case 0:
+				op = WriteOp{Table: "kv", Key: id}
+			default:
+				op = WriteOp{Table: "kv", Row: row(id, int64((i*3+wrote)%50))}
+			}
+			if _, err := e.Write([]WriteOp{op}); err != nil {
+				t.Errorf("write in hook: %v", err)
+				return
+			}
+		}
+		wrote += 600
+	}
+	e = openDisk(t, t.TempDir(), true, hook)
+	defer e.Close()
+	e.CreateTable(kvTable())
+	fillKV(t, e, 0, 2500)
+	if err := e.CreateIndex("kv", schema.IndexDef{Name: "kv_n", Columns: []string{"n"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SetIndexStorage("kv", "kv_n", "disk"); err != nil {
+		t.Fatal(err)
+	}
+	st := e.SecIndexStats()[0]
+	if st.ConvCatchUp+st.ConvFinal < 600 || st.ConvCatchUp == 0 {
+		t.Fatalf("writes during the build were not carried over: %+v", st)
+	}
+	checkAll(t, e, "disk after writes during build")
+	if err := e.SetIndexStorage("kv", "kv_n", "memory"); err != nil {
+		t.Fatal(err)
+	}
+	st2 := e.SecIndexStats()[0]
+	if st2.ConvCatchUp+st2.ConvFinal < st.ConvCatchUp+st.ConvFinal+600 {
+		t.Fatalf("writes during the build back to memory were not carried over: %+v", st2)
+	}
+	checkAll(t, e, "memory after writes during build")
+}

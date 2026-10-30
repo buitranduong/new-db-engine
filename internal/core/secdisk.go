@@ -512,6 +512,7 @@ func (e *Engine) toDisk(t *TableState, si *secIndex) error {
 		si.mu.Lock()
 		ops := si.mig.take()
 		if len(ops) <= convertBacklog || round >= 64 {
+			si.ConvFinal.Add(int64(len(ops)))
 			err := applyOps(ops)
 			if err == nil {
 				si.swaps.Add(1)
@@ -531,6 +532,7 @@ func (e *Engine) toDisk(t *TableState, si *secIndex) error {
 			return nil
 		}
 		si.mu.Unlock()
+		si.ConvCatchUp.Add(int64(len(ops)))
 		if err := applyOps(ops); err != nil {
 			abort()
 			d.retire(true)
@@ -572,6 +574,7 @@ func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 		return err
 	}
 	nt := b.finish()
+	e.sidxStep("memory-built")
 	apply := func(ops []migOp) {
 		if len(ops) == 0 {
 			return
@@ -591,6 +594,7 @@ func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 		ops := si.mig.take()
 		apply(ops)
 		if len(ops) <= convertBacklog || round >= 64 {
+			si.ConvFinal.Add(int64(len(ops)))
 			si.swaps.Add(1)
 			si.tr.Store(nt)
 			si.ar = ar
@@ -603,6 +607,7 @@ func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 			return nil
 		}
 		si.mu.Unlock()
+		si.ConvCatchUp.Add(int64(len(ops)))
 	}
 }
 

@@ -387,7 +387,8 @@ func stress(t *testing.T, opt bool) {
 // the grace period in Tree.reclaim the checkpoint would complete at once and
 // the freed pages could be overwritten under the reader.)
 func TestOptimisticGracePeriod(t *testing.T) {
-	tr, err := Open(filepath.Join(t.TempDir(), "g.pidx"), Options{CacheBytes: 8 << 20, Optimistic: true})
+	// the pool must hold everything: evicting a page waits for the reader this test holds inside the epoch
+	tr, err := Open(filepath.Join(t.TempDir(), "g.pidx"), Options{CacheBytes: 64 << 20, Optimistic: true})
 	if err != nil {
 		t.Fatal(err)
 	}

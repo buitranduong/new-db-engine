@@ -472,3 +472,129 @@ func TestLimitedRoleCursor(t *testing.T) {
 	run(t, r, "SELECT * FROM nums WHERE id = 1") // read ok
 	run(t, r, "ROLLBACK")
 }
+
+// The pattern of the SIM warehouse: take n free numbers for an order in one statement.
+func TestSkipLockedUpdateSubselect(t *testing.T) {
+	e := newEngine(t)
+	s0 := NewSession(e)
+	total := 300
+	seedN(t, s0, total)
+	var mu sync.Mutex
+	taken := map[string]int{}
+	var wg sync.WaitGroup
+	for w := 0; w < 6; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			s := NewSession(e)
+			defer s.Close()
+			for {
+				r, err := tryRun(s, "UPDATE nums SET status = 'taken', v = 'w"+fmt.Sprint(w)+"' WHERE id IN (SELECT id FROM nums WHERE status = 'free' ORDER BY id LIMIT 4 FOR UPDATE SKIP LOCKED) RETURNING id")
+				if err != nil {
+					t.Errorf("update: %v", err)
+					return
+				}
+				if len(r.Rows) == 0 {
+					return
+				}
+				mu.Lock()
+				for _, row := range r.Rows {
+					taken[row[0].String()]++
+				}
+				mu.Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+	for id, n := range taken {
+		if n != 1 {
+			t.Fatalf("row %s updated %d times", id, n)
+		}
+	}
+	if len(taken) != total {
+		t.Fatalf("took %d of %d", len(taken), total)
+	}
+	got := run(t, s0, "SELECT count(*) FROM nums WHERE status = 'free'")
+	if render(got) != "0" {
+		t.Fatalf("free left: %s", render(got))
+	}
+}
+
+// Many transactions racing for the same rows with plain FOR UPDATE (waiting): none is lost.
+func TestForUpdateWaitingCounter(t *testing.T) {
+	e := newEngine(t)
+	s0 := NewSession(e)
+	run(t, s0, "CREATE TABLE ctr (id int PRIMARY KEY, n int)")
+	run(t, s0, "INSERT INTO ctr VALUES (1, 0)")
+	var wg sync.WaitGroup
+	const workers, per = 6, 20
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s := NewSession(e)
+			defer s.Close()
+			for i := 0; i < per; i++ {
+				for {
+					run(t, s, "BEGIN")
+					r, err := tryRun(s, "SELECT n FROM ctr WHERE id = 1 FOR UPDATE")
+					if err == nil {
+						n := r.Rows[0][0].I
+						_, err = tryRun(s, fmt.Sprintf("UPDATE ctr SET n = %d WHERE id = 1", n+1))
+					}
+					if err == nil {
+						_, err = tryRun(s, "COMMIT")
+					} else {
+						tryRun(s, "ROLLBACK")
+					}
+					if err == nil {
+						break
+					}
+					if c := code(err); c != "40001" {
+						t.Errorf("unexpected %v", err)
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if got := render(run(t, s0, "SELECT n FROM ctr")); got != fmt.Sprint(workers*per) {
+		t.Fatalf("counter %s, want %d (lost updates)", got, workers*per)
+	}
+	if n := locksOf(e).held; n != 0 {
+		t.Fatalf("%d locks leaked", n)
+	}
+}
+
+func TestSkipLockedInSubquery(t *testing.T) {
+	e := newEngine(t)
+	a, b := NewSession(e), NewSession(e)
+	seedN(t, a, 6)
+	run(t, a, "BEGIN")
+	run(t, a, "SELECT id FROM nums WHERE id IN (1, 2) FOR UPDATE")
+	r := run(t, b, "UPDATE nums SET status = 'taken' WHERE id IN (SELECT id FROM nums ORDER BY id LIMIT 3 FOR UPDATE SKIP LOCKED) RETURNING id")
+	got := map[string]bool{}
+	for _, row := range r.Rows {
+		got[row[0].String()] = true
+	}
+	if len(got) != 3 || got["1"] || got["2"] {
+		t.Fatalf("locked rows not skipped: %v", got)
+	}
+	run(t, a, "ROLLBACK")
+	// join: lock only the table named in OF
+	run(t, a, "CREATE TABLE owners (id int PRIMARY KEY, name text)")
+	run(t, a, "INSERT INTO owners VALUES (1, 'x'), (2, 'y')")
+	run(t, a, "BEGIN")
+	run(t, a, "SELECT id FROM owners WHERE id = 1 FOR UPDATE")
+	run(t, b, "BEGIN")
+	got2 := render(run(t, b, "SELECT n.id, o.name FROM nums n JOIN owners o ON o.id = n.id ORDER BY n.id FOR UPDATE OF n NOWAIT"))
+	if got2 != "1,x;2,y" {
+		t.Fatal(got2)
+	}
+	if _, err := tryRun(b, "SELECT n.id FROM nums n JOIN owners o ON o.id = n.id ORDER BY n.id FOR UPDATE OF o NOWAIT"); code(err) != "55P03" {
+		t.Fatalf("join lock: %v", err)
+	}
+	run(t, b, "ROLLBACK")
+	run(t, a, "ROLLBACK")
+}

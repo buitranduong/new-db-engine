@@ -42,10 +42,13 @@ func extraSRF(name string, args []Datum) (rows [][]Datum, ok bool) {
 		if len(args) < 2 || args[0].IsNull() {
 			return nil, true
 		}
-		el, _ := vecElems(args[0])
+		el, zero := vecElems(args[0])
 		out := make([][]Datum, len(el))
 		for i := range el {
 			out[i] = []Datum{IntD(int64(i + 1))}
+			if zero { // int2vector and oidvector count from 0
+				out[i][0] = IntD(int64(i))
+			}
 		}
 		return out, true
 	case "unnest":

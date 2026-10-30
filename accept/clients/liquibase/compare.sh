@@ -4,7 +4,8 @@
 . "$(dirname "$0")/../lib.sh"; D="$(cd "$(dirname "$0")" && pwd)"
 rc_reset_pg; rc_start_stask
 $D/lb.sh pg update >/dev/null 2>&1; echo "pg update rc=$?"
-$D/lb.sh stask update --label-filter="!gap-uuid-index and !gap-expr-index" >/dev/null 2>&1; echo "stask update rc=$?"
+if [ -z "${LB_FILTER+x}" ]; then LF="--label-filter=!gap-uuid-index and !gap-expr-index"; elif [ -n "$LB_FILTER" ]; then LF="--label-filter=$LB_FILTER"; else LF=; fi
+$D/lb.sh stask update ${LF:+"$LF"} >/dev/null 2>&1; echo "stask update rc=$?"
 Q="
 select 'tables' k, table_name, table_type from information_schema.tables where table_schema='public' order by 2;
 select 'columns' k, table_name, column_name, ordinal_position, data_type, is_nullable, column_default from information_schema.columns where table_schema='public' order by 2,4;

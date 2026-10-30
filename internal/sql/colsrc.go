@@ -12,6 +12,14 @@ func srcOf(t *schema.Table, i int) (uint32, int16) {
 	if n == 0 {
 		n = i + 1
 	}
+	num := n
+	for _, cs := range [][]schema.Column{t.Columns, t.Dropped} { // clients see the numbering without hidden columns (ClientView)
+		for _, col := range cs {
+			if col.Hidden && col.Num < num {
+				n--
+			}
+		}
+	}
 	return uint32(tableOID(t)), int16(n)
 }
 

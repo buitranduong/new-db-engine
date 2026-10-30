@@ -1479,7 +1479,7 @@ func (p *parser) unary() (Expr, error) {
 			p.next()
 			var f string
 			if f, err = p.ident(); err == nil {
-				x = &Func{Name: "stask_field", Args: []Expr{x, &Lit{TextD(f)}}}
+				x = &Func{Name: "stask_field", Disp: f, Args: []Expr{x, &Lit{TextD(f)}}}
 			}
 			continue
 		}

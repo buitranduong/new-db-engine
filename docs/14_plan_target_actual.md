@@ -1217,3 +1217,39 @@ Chi tiết, công thức và danh sách số cần từ người dùng: `docs/19
 **Số liệu cần từ người dùng** (docs/19 §8): cỡ và số dòng/ngày của bảng lịch sử thật, phân bố phiên bản mỗi SIM, cột nào đổi mỗi cập nhật và độ rộng hàng, nhập Excel so với cập nhật lẻ, truy vấn lịch sử thật, 60 ngày là bắt buộc hay chu kỳ dọn, có cần replica.
 
 **Vào danh sách đo cuối (D32):** `scripts/memmap.sh`; `TestHistStoreScale` (docs/19 §7); so GC log có/không bật kho.
+
+
+## Phụ lục T. Nhánh `gatefix`: cổng gộp không va cổng và nhanh hơn (2026-10-30, gốc `main` @ 1e81227)
+
+**Kế hoạch.** Ba lần liền `scripts/merge-gate.sh` fail ở gói `internal/cluster` (`TestProcChaos` "no leader within 40s", `TestProcSecure` "no free port block in 21000-21999 ... address already in use") nhưng chạy lại riêng thì qua: các lần chạy `go test` đồng thời (agent khác, gói song song) chọn ngẫu nhiên cùng dải cổng cố định. Việc: (1) mọi harness test dùng dải cổng cố định phải lấy cổng không va chạm; (2) cổng gộp nhanh hơn mà không giảm độ phủ; (3) công cụ chỉ-đọc liệt kê tiến trình rác. Không đo hiệu năng engine.
+**Mục tiêu.** Hai/ba `go test ./internal/cluster` chạy đồng thời đều qua; `merge-gate` (RACE=1) nhanh hơn rõ rệt, cùng bộ kiểm tra, `claimcheck` >= nền (`docs/claimcheck_baseline.txt`).
+
+**Thực tế.**
+
+| # | Thay đổi | Chỗ |
+|---|---|---|
+| 1 | `freeBase` (harness cluster) nay khoá **flock** từng cổng trong `/tmp/stask-test-ports/<cổng>.lock` (đường dẫn cố định, không theo `TMPDIR`; khoá giữ đến `t.Cleanup`, kernel tự nhả khi tiến trình chết) rồi mới thử `Listen` thật; đụng khoá hay cổng bận thì chọn khối khác (500 lần thử). Trước đó chỉ `Listen`-rồi-đóng nên hai tiến trình test cùng chọn một khối và tiến trình con `staskd` bind sau | `internal/cluster/harness_test.go` (`lockPort`, `freeBase`), dùng bởi `newCluster` và `startSingle` (`proc_test.go`) |
+| 2 | `merge-gate.sh`: `P` mặc định 4 khi máy >= 8 CPU (2 nếu ít hơn); `go vet` chạy song song với `go test`; với `RACE=1`, `claimcheck` chạy song song với giai đoạn `-race`; `-race` giữ `RACE_P=2` (xem hạn chế); in giây đã trôi theo từng bước và tổng; cổng `claimcheck` chọn cổng chưa ai nghe (`ss`); giữ nguyên so sánh với `claimcheck_baseline.txt` | `scripts/merge-gate.sh` |
+| 3 | `scripts/vm-quiet.sh`: chỉ in (không giết): `staskd` cũ, vòng lặp theo dõi `pgrep -f` tự khớp chính nó, `go test`/`*.test` mồ côi, công cụ đo nặng chạy lâu, file khoá cổng đang giữ, tải và đĩa. Exit 0 = yên, 3 = có nghi vấn | `scripts/vm-quiet.sh` |
+
+**Harness đã chuyển / đã kiểm tra** (quét `net.Listen`, `-addr`, `127.0.0.1:<số>` trong test của `internal/cluster`, `server`, `pgwire`, `repl`, `router`, `raft`, `cmd/*`):
+- Chuyển sang flock: `internal/cluster` (`newCluster`: 3 node + proxy, `startSingle`; mọi `TestProc*`, `TestChaos*` đi qua hai hàm này). Đây là harness duy nhất dùng dải cổng cố định + va chạm giữa các tiến trình.
+- Đã dùng `127.0.0.1:0` (không cần đổi): `internal/pgwire` (`pgwire_test`, `cancel_test`, `auth_test`, `roles_test`, `wbench_test`).
+- Không mở cổng (bảng địa chỉ chỉ để kiểm tra phân tích chuỗi): `internal/server/auth_test.go` (`CheckBind`), `internal/repl/security_test.go` (`CheckListen`); `internal/router`, `internal/raft` (mô phỏng trong tiến trình), `cmd/*` không có cổng cố định trong test.
+- **Chưa chuyển (ngoài danh sách, mặc định bỏ qua)**: `internal/shadow/integration_test.go` cổng 28506-28508 và tên container `shadow-it-pg` cố định; chỉ chạy khi `STASK_SHADOW_IT=1` (cần docker). Các script `scripts/*.sh` đo tay vẫn dùng cổng cố định riêng của từng nhiệm vụ (quy ước AGENT_PROTOCOL §7).
+
+**Bằng chứng.**
+- Va chạm: 3 tiến trình `go test -count=1 ./internal/cluster` chạy **đồng thời** trên VM (không quiet: máy còn tải của agent khác): cả ba `ok` (178,5 s, 180,9 s, 195,6 s), không lần nào "no free port block" hay "no leader". Lệnh: `for i in 1 2 3; do go test -count=1 ./internal/cluster > /tmp/gf-cl$i.log & done; wait`.
+- Cổng gộp `RACE=1 scripts/merge-gate.sh` cùng cây mã (`gatefix` rebased trên `main` 1e81227), cùng VM, đo lúc VM **không hoàn toàn yên** (một tiến trình java của agent khác chạy; số đo công cụ, không phải hiệu năng engine):
+  - Trước (script cũ, P=2, tuần tự): **1400 s** (23 phút 20), `claimcheck` 491/…, EXIT 0.
+  - Sau lần 1 (P=4 cho cả `-race` + `claimcheck` song song): 670 s nhưng **FAIL** `TestStatementTimeoutDefault` (pgwire, `-race`) vì tải; không dùng P=4 cho `-race`.
+  - Sau (cuối cùng, P=4, `RACE_P=2`, vet và claimcheck chồng lên): **718 s** (11 phút 58), `claimcheck` 491, EXIT 0; giảm 682 s (-49%) với cùng các bước kiểm tra. Giai đoạn `-race` (~430 s, `core` và `sql`) là đuôi dài còn lại.
+
+**Hạn chế (thành thật).**
+- `TestStatementTimeoutDefault` (pgwire) nhạy thời gian dưới `-race` khi máy đầy tải: bằng chứng ở lần chạy P=4; không sửa test (ngoài phạm vi), chỉ giữ `RACE_P=2`.
+- Khoá flock chỉ bảo vệ giữa các tiến trình test của STASK; một tiến trình không thuộc STASK nghe trên 21000-21999 vẫn bị phát hiện bằng `Listen` thử nhưng có khe hở rất ngắn giữa lúc đóng và lúc `staskd` bind.
+- Tải bên ngoài (agent khác, java, build) vẫn làm chậm; `vm-quiet.sh` chỉ liệt kê. Lúc chạy lần đầu nó thấy 2 `staskd` cũ (pid 658090 từ `./bin/staskd` chạy ~25 giờ, pid 1777457 `/tmp/rc-bin`) và 15 vòng lặp `pgrep -f` mồ côi (tuổi tới 3 ngày) cần người điều phối nhờ người dùng dọn.
+
+Tái lập: `scripts/vm-quiet.sh`; `RACE=1 scripts/merge-gate.sh`; `go test -count=1 ./internal/cluster` (nhiều tiến trình cùng lúc).
+
+**Cổng.** `RACE=1 scripts/merge-gate.sh` OK trên nhánh `gatefix`: gofmt, build, vet, `go test -p 4 -count=1 ./...`, `-race`, `claimcheck` **491** (nền không tụt).

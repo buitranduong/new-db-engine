@@ -98,7 +98,7 @@ func keyString(sch *schema.Table, v schema.Value) string {
 }
 
 func describe(sch *schema.Table, cols []string, r schema.Row) string {
-	return "(" + strings.Join(cols, ", ") + ")=(" + strings.Join(formatValues(sch, cols, r), ", ") + ")"
+	return "(" + strings.Join(cols, ", ") + ")=(" + strings.Join(formatValues(sch, schema.IndexDef{Columns: cols}, r), ", ") + ")"
 }
 
 func (tx *Tx) ownWrites(t *TableState) []*pendingOp {
@@ -231,7 +231,7 @@ func (tx *Tx) probeUnique(p *pendingOp) error {
 			if err != nil {
 				return true
 			}
-			cur, _ := p.sch.IndexKey(nil, p.sch.IndexColsAt(i), row)
+			cur, _ := p.sch.IndexKeyAt(nil, i, row)
 			if string(cur) == k.enc {
 				bad = true
 				return false
@@ -319,7 +319,7 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 	// a unique index on the referenced columns
 	var ixName string
 	for _, ix := range psch.Indexes {
-		if ix.Unique && slices.Equal(ix.Columns, refCols) {
+		if ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, refCols) {
 			ixName = ix.Name
 		}
 	}
@@ -405,7 +405,7 @@ func (tx *Tx) children(ref FKRef, psch *schema.Table, parent schema.Row) ([]stri
 	set := map[string]bool{}
 	var ixName string
 	for _, ix := range csch.Indexes {
-		if len(ix.Columns) >= len(ref.FK.Columns) && slices.Equal(ix.Columns[:len(ref.FK.Columns)], ref.FK.Columns) {
+		if !ix.HasExpr() && len(ix.Columns) >= len(ref.FK.Columns) && slices.Equal(ix.Columns[:len(ref.FK.Columns)], ref.FK.Columns) {
 			ixName = ix.Name
 			break
 		}

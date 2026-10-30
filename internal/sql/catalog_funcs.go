@@ -411,7 +411,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		if t, ix := s.catSnap().secIndexByOID(oid); ix != nil {
 			if len(args) > 1 && argInt(1) > 0 {
 				if n := int(argInt(1)); n <= len(ix.Columns) {
-					return TextD(quoteIdent(ix.Columns[n-1])), nil
+					return TextD(elemDef(t, *ix, n-1)), nil
 				}
 				return TextD(""), nil
 			}

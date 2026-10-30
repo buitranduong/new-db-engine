@@ -26,7 +26,11 @@ import (
 type IndexDef struct {
 	Name    string   `json:"name"`
 	Columns []string `json:"columns"`
-	Unique  bool     `json:"unique,omitempty"`
+	// Exprs, parallel to Columns, is the function applied to each column
+	// (lower, upper, btrim, ltrim, rtrim, length, abs); "" or absent for a
+	// plain column (indexexpr.go). Additive: old checkpoints lack it.
+	Exprs  []string `json:"exprs,omitempty"`
+	Unique bool     `json:"unique,omitempty"`
 	// Constraint: the index backs a UNIQUE constraint of this name
 	// (usually the same as Name); empty for CREATE UNIQUE INDEX.
 	Constraint string `json:"constraint,omitempty"`
@@ -57,6 +61,7 @@ func IndexableType(ct ColType) bool {
 func (t *Table) initIndexes() error {
 	seen := map[string]bool{}
 	t.ixCols = make([][]int, len(t.Indexes))
+	t.ixr = make([]*Indexer, len(t.Indexes))
 	for n, ix := range t.Indexes {
 		if ix.Name == "" || len(ix.Columns) == 0 {
 			return fmt.Errorf("index needs a name and columns")
@@ -75,6 +80,14 @@ func (t *Table) initIndexes() error {
 			}
 			t.ixCols[n] = append(t.ixCols[n], i)
 		}
+		if len(ix.Exprs) != 0 && len(ix.Exprs) != len(ix.Columns) {
+			return fmt.Errorf("index %q: expression list differs from columns", ix.Name)
+		}
+		x, err := t.NewIndexer(ix)
+		if err != nil {
+			return err
+		}
+		t.ixr[n] = x
 	}
 	for _, fk := range t.ForeignKeys {
 		if len(fk.Columns) == 0 || len(fk.Columns) != len(fk.RefCols) {

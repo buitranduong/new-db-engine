@@ -234,11 +234,11 @@ func (x *explainer) leaf(depth int, t *schema.Table, alias string, where Expr, s
 func indexCond(c *indexChoice) string {
 	var p []string
 	for i, v := range c.eq {
-		p = append(p, fmt.Sprintf("%s = %s", c.ix.Columns[i], valStr(v)))
+		p = append(p, fmt.Sprintf("%s = %s", c.ix.ElemKey(i), valStr(v)))
 	}
 	k := len(c.eq)
 	if k < len(c.ix.Columns) {
-		col := c.ix.Columns[k]
+		col := c.ix.ElemKey(k)
 		switch {
 		case c.in != nil:
 			var vs []string

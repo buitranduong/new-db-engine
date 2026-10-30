@@ -993,3 +993,23 @@ Dạng **không** rơi vào đường băm trên `main` (đo: > 100 s ở 260k x
 | TXDDL-2 | Bảng tạm không vào log bền/replica | Nếu đổi nhỏ được | **Không làm**: giá trị chỉ nằm trong log (`Version.Loc`), xem docs/05. Cần quyết định thiết kế (kho giá trị thứ hai) | Chưa làm (có lý do) |
 
 Phát hiện #10 ở Phụ lục F (DDL không giao dịch) được xử lý một phần bởi TXDDL-1; phần còn lại là các DDL liệt kê ở giới hạn 4.
+
+## Index trên biểu thức (nhánh `exprindex`, từ `main` 5f6de3c)
+
+**Kế hoạch.** `CREATE [UNIQUE] INDEX ON t (lower(col))` và các hàm bất biến một cột khác; `WHERE lower(col) = ...` dùng index (EXPLAIN thấy); duy trì theo INSERT/UPDATE/DELETE; dựng lại khi phục hồi/checkpoint (trường JSON mới `omitempty`, cộng thêm); `pg_indexes`/`pg_get_indexdef` hiện biểu thức. Dùng lại đường index thứ cấp có sẵn (D16: không thêm phụ thuộc, không viết bộ đánh giá biểu thức mới trong lõi).
+
+**Mục tiêu.** Mở lỗ hổng L4 của `accept/clients` (`create index IDX_SIM_MSISDN_LOWER on SIM (lower(MSISDN))` do Liquibase sinh, trước đây `0A000`); test đơn vị + phục hồi sau crash; `go vet` sạch; `claimcheck` >= 454.
+
+**Thiết kế.** `IndexDef.Exprs []string` (`json:"exprs,omitempty"`), song song `Columns`; mỗi phần tử là tên hàm chuẩn hoá (`lower upper btrim ltrim rtrim length abs`) hoặc rỗng. **Chỉ lưu tên hàm, không lưu văn bản biểu thức**, nên không lệch với bộ đánh giá và đổi tên cột vẫn đúng. Hàm là tập đóng ở `internal/schema/indexexpr.go`, ngữ nghĩa khớp `eval.go` (`strings.ToLower/ToUpper/TrimSpace`, đếm rune cho `length`). Khoá index = mã hoá thứ tự của giá trị đã áp hàm (kiểu kết quả: `lower` -> text, `length` -> int, `abs` -> kiểu cột) rồi khoá chính, y như index thường. Mọi chỗ tính khoá (`secKeysOf`, `buildSec`, đọc/kiểm lại entry cũ trong `IndexScan`, kiểm unique, FK) đi qua `Table.IndexKeyAt`/`Indexer`, nên INSERT/UPDATE/DELETE, xây index, quét và kiểm trùng dùng cùng một hàm. Không đổi định dạng log/WAL; checkpoint chỉ giữ định nghĩa nên phục hồi dựng khoá từ dữ liệu (`rebuildSec`) và tự có hàm. Checkpoint cũ (không có `exprs`) nạp như index thường; checkpoint mới không có index biểu thức serialize y hệt trước đây (test `TestIndexDefExprsOmitEmpty`). Planner: `boundsOf` nhận `f(col)` làm khoá `f(col)` bên cạnh `col` (`=`, `IN`, khoảng, có alias); `chooseIndex` so khoá phần tử (`ElemKeys`). Index biểu thức **không** làm đích FK và không tính là index phủ cột FK. Catalog: `pg_get_indexdef` (`lower(email)`, `lower((tag)::text)` cho varchar, `TRIM(BOTH FROM ...)`), `pg_index.indkey` = 0 cho biểu thức, `pg_attribute` tên thuộc tính = tên hàm; `LIKE ... INCLUDING INDEXES` sao chép; thông báo trùng `Key (lower(email))=(a) already exists.`.
+
+**Thực tế (bằng chứng).** VM `ubuntu@192.168.0.220`, worktree `~/wt/exprindex`:
+
+| Lệnh | Kết quả |
+|---|---|
+| `go vet ./...`, `gofmt -l cmd internal` | sạch |
+| `go test -p 2 -count=1 ./internal/schema ./internal/core ./internal/sql ./internal/pgwire ./internal/proj ./internal/planner ./internal/repl` | tất cả `ok` |
+| `go test ./internal/sql -run ExpressionIndex` | 3 test: `Basics` (dùng index + EXPLAIN, INSERT/UPDATE/DELETE, IN/khoảng/alias, `trim/length/abs`, hỗn hợp cột+hàm, từ chối hàm lạ/sai kiểu/trùng phần tử, `pg_indexes`, `pg_get_indexdef`, DROP INDEX), `Unique` (xây trùng, INSERT/UPDATE trùng, NULL, giải phóng giá trị, không làm đích FK), `Alter` (RENAME COLUMN, DROP COLUMN, LIKE INCLUDING INDEXES) |
+| `TestExpressionIndexRecovery` | crash = sao chép thư mục dữ liệu của engine đang chạy rồi mở lại (phát lại log): index dùng được, kết quả đúng, unique còn hiệu lực, ghi tiếp sau phục hồi đúng; rồi `Checkpoint()` + ghi thêm + crash lần hai (checkpoint + đuôi log); rồi khởi động lại sạch |
+| `claimcheck` (staskd build từ nhánh, `-url ...`) | **461 of 468 probes pass** (baseline 454/461; thêm 7 probe `exprindex_*`, cả 7 PASS; 7 trượt là các probe trượt sẵn có trên `main`) |
+
+**Chưa làm / hạn chế (nói thẳng).** (1) Chỉ `f(cột)` với tập hàm ở trên; không có `a || b`, `lower(a || b)`, `date_trunc`, hàm 2 tham số, ép kiểu `::`, biểu thức nhiều cột: vẫn `0A000`. (2) `ORDER BY lower(col) LIMIT n` chưa đọc theo thứ tự index (chỉ `WHERE`). (3) `DROP`/`ALTER COLUMN TYPE` đổi kiểu cột đang có index biểu thức: chỉ kiểm bằng lỗi kiểm tra schema, không có test riêng. (4) Index biểu thức nhiều cột trộn đã test (`abs(n), upper(tag)`), nhưng ràng buộc `UNIQUE (lower(x))` trong `CREATE TABLE`/`ADD CONSTRAINT` chưa hỗ trợ (chỉ `CREATE UNIQUE INDEX`), như PG. (5) Chưa đo hiệu năng (không có số đo trước/sau); chưa chạy `-race` và `pgdiff` (không có PG 16 trong lượt này). (6) `accept/clients/README.md` L4 vẫn ghi `0A000`: orchestrator cập nhật. (7) Hàm text so sánh theo byte (UTF-8), không theo collation, giống phần còn lại của index text.

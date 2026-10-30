@@ -51,19 +51,49 @@ func ctype(t *schema.Table, i int) schema.ColType {
 	return ct
 }
 
-func indexableCols(t *schema.Table, cols []string) error {
+func indexableCols(t *schema.Table, cols []string, exprs ...[]string) error {
 	seen := map[string]bool{}
-	for _, c := range cols {
+	for k, c := range cols {
 		i := colIndex(t, c)
 		if i < 0 {
 			return errf(codeUndefinedColumn, "column %q named in key does not exist", c)
 		}
-		if seen[c] {
+		key := c
+		if len(exprs) > 0 && k < len(exprs[0]) && exprs[0][k] != "" {
+			key = exprs[0][k] + "(" + c + ")"
+		}
+		if seen[key] {
 			return errf(codeFeature, "column %q appears twice in an index", c)
 		}
-		seen[c] = true
+		seen[key] = true
 		if !schema.IndexableType(ctype(t, i)) {
 			return errf(codeFeature, "columns of type %s cannot be indexed", t.Columns[i].Type)
+		}
+	}
+	return nil
+}
+
+// indexElems checks the elements of an index on t: the columns exist, the
+// function (if any) accepts the column's type, and no element repeats. exprs
+// may be nil (all plain).
+func indexElems(t *schema.Table, cols, exprs []string) error {
+	if err := indexableCols(t, cols, exprs); err != nil {
+		return err
+	}
+	for k, c := range cols {
+		fn := ""
+		if k < len(exprs) {
+			fn = exprs[k]
+		}
+		if fn == "" {
+			continue
+		}
+		i := colIndex(t, c)
+		if isEnumCol(t, c) {
+			return errf(codeUndefinedFunction, "function %s(%s) does not exist", fn, t.Columns[i].Type)
+		}
+		if _, ok := schema.ExprResultType(fn, ctype(t, i)); !ok {
+			return errf(codeUndefinedFunction, "function %s(%s) does not exist", fn, t.Columns[i].Type)
 		}
 	}
 	return nil
@@ -79,11 +109,11 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := indexableCols(t, c.Cols); err != nil {
+	if err := indexElems(t, c.Cols, c.Exprs); err != nil {
 		return nil, err
 	}
 	if c.Name == "" {
-		c.Name = s.genName(append([]string{t.Name}, c.Cols...), "idx")
+		c.Name = s.genName(append([]string{t.Name}, indexNameParts(c)...), "idx")
 	} else if tbl, taken := s.E.IndexNameTaken(c.Name); taken || s.relationExists(c.Name) {
 		if c.IfNotExists {
 			res.Notice = fmt.Sprintf("relation %q already exists, skipping", c.Name)
@@ -92,7 +122,7 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 		_ = tbl
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
-	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Unique: c.Unique}); err != nil {
+	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Unique: c.Unique}); err != nil {
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", c.Name)
@@ -102,6 +132,19 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 		return nil, AsError(err)
 	}
 	return res, nil
+}
+
+// indexNameParts are the words of a generated index name: PostgreSQL uses
+// the function name for an expression (t_lower_idx).
+func indexNameParts(c *CreateIndex) []string {
+	out := make([]string, len(c.Cols))
+	for i, col := range c.Cols {
+		out[i] = col
+		if i < len(c.Exprs) && c.Exprs[i] != "" {
+			out[i] = c.Exprs[i]
+		}
+	}
+	return out
 }
 
 func (s *Session) dropIndex(d *DropIndex) (*Result, error) {
@@ -179,7 +222,7 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	// the referenced columns must be the primary key or a unique constraint
 	ok := parent.IsPK(refCols)
 	for _, ix := range parent.Indexes {
-		ok = ok || ix.Unique && slices.Equal(ix.Columns, refCols)
+		ok = ok || ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, refCols)
 	}
 	if parent == child {
 		for _, u := range selfUnique {
@@ -200,7 +243,7 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	var idx *schema.IndexDef
 	covered := false
 	for _, ix := range child.Indexes {
-		covered = covered || len(ix.Columns) >= len(c.Cols) && slices.Equal(ix.Columns[:len(c.Cols)], c.Cols)
+		covered = covered || !ix.HasExpr() && len(ix.Columns) >= len(c.Cols) && slices.Equal(ix.Columns[:len(c.Cols)], c.Cols)
 	}
 	if !covered {
 		idx = &schema.IndexDef{Name: s.genName(append([]string{child.Name}, c.Cols...), "fkidx"), Columns: c.Cols, Internal: true}

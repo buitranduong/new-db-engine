@@ -75,7 +75,7 @@ func (t *Table) CreateDDL() string {
 func (t *Table) Check() error {
 	for _, c := range t.Cols {
 		if c.Kind == KUnsupported {
-			return fmt.Errorf("table %s: column %s has type %s (oid %d), which stashadow does not support (supported: bool, int2/4/8, text, varchar, char, numeric, float4/8, uuid, bytea, timestamp, timestamptz, date, json, jsonb)", t.Name, c.Name, c.Type, c.OID)
+			return fmt.Errorf("table %s: column %s has type %s (oid %d), which stashadow does not support (supported: bool, int2/4/8, text, varchar, char, numeric, float4/8, uuid, bytea, timestamp, timestamptz, date, time, json, jsonb)", t.Name, c.Name, c.Type, c.OID)
 		}
 	}
 	if len(t.PK) == 0 && t.ReplIdent != 'f' {

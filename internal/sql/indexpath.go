@@ -465,11 +465,23 @@ func orderColumns(st *Select, items []SelItem, orderOut []int, t *schema.Table, 
 		if orderOut[i] >= 0 {
 			x = items[orderOut[i]].X
 		}
+		fn := ""
+		if f, isFn := x.(*Func); isFn && len(f.Args) == 1 && f.Over == nil && f.Filter == nil { // ORDER BY lower(col): an expression index
+			canon, ok := schema.CanonExprFunc(f.Name)
+			if !ok {
+				return nil, false
+			}
+			fn, x = canon, f.Args[0]
+		}
 		c, ok := x.(*ColRef)
 		if !ok || c.Table != "" && c.Table != t.Name && c.Table != alias {
 			return nil, false
 		}
-		if _, ok := t.Col(c.Name); !ok || slices.Contains(cols, c.Name) || isEnumCol(t, c.Name) {
+		key := c.Name
+		if fn != "" {
+			key = fn + "(" + c.Name + ")"
+		}
+		if _, ok := t.Col(c.Name); !ok || slices.Contains(cols, key) || isEnumCol(t, c.Name) {
 			return nil, false
 		}
 		if i == 0 {
@@ -478,7 +490,7 @@ func orderColumns(st *Select, items []SelItem, orderOut []int, t *schema.Table, 
 		if o.Desc != desc || o.Nulls == 1 && !o.Desc || o.Nulls == 2 && o.Desc {
 			return nil, false
 		}
-		cols = append(cols, c.Name)
+		cols = append(cols, key)
 	}
 	return cols, desc
 }

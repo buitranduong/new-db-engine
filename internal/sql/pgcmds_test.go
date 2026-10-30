@@ -197,3 +197,26 @@ func TestPgcmdsPartialCompareAndRestart(t *testing.T) {
 		t.Errorf("RESTART on a plain column: %v", err)
 	}
 }
+
+func TestPgcmdsOrderByExpressionIndex(t *testing.T) {
+	s := NewSession(newEngine(t))
+	for _, tb := range []string{"ix", "noix"} {
+		run(t, s, `CREATE TABLE `+tb+` (id BIGINT PRIMARY KEY, email TEXT)`)
+		run(t, s, `INSERT INTO `+tb+` VALUES (1,'b@x'),(2,'A@x'),(3,'a@x'),(4,NULL),(5,'C@x'),(6,'B@X'),(7,NULL),(8,'c@x')`)
+	}
+	run(t, s, `CREATE INDEX ix_l ON ix (lower(email))`)
+	q := `SELECT id FROM ix ORDER BY lower(email) LIMIT 3`
+	if !idxUsed(t, s, q, "ix_l") || !strings.Contains(explainText(t, s, "EXPLAIN "+q), "no sort") {
+		t.Fatalf("index order not used:\n%s", explainText(t, s, "EXPLAIN "+q))
+	}
+	for _, o := range []string{"lower(email)", "lower(email) DESC", "lower(email) ASC NULLS LAST", "lower(email) DESC NULLS LAST"} {
+		for _, n := range []string{"1", "3", "5", "20"} {
+			// ties (a@x / A@x) may come in either order: compare the lower() values
+			a := ids(t, s, `SELECT lower(email) FROM ix ORDER BY `+o+` LIMIT `+n)
+			b := ids(t, s, `SELECT lower(email) FROM noix ORDER BY `+o+` LIMIT `+n)
+			if a != b {
+				t.Errorf("ORDER BY %s LIMIT %s: indexed %q, plain %q", o, n, a, b)
+			}
+		}
+	}
+}

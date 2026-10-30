@@ -74,3 +74,10 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 7. **Chế độ bóng**: nhận dữ liệu PG→STASK (logical replication subscriber) + bộ so sánh kết quả truy vấn.
 8. Máy đo riêng + benchmark chuẩn (YCSB, ClickBench); chuyển 38 script đo còn lại sang harness; lặp P0.5/P0.6/P0.8.
 9. Chờ người dùng: số lịch sử thật, SLO độ mới, loại truy vấn Superset, ORM thực tế (docs/15 §5).
+
+## D30 — Quyết định đã chấp nhận khi gộp integ3–5 (2026-10-30)
+- Cursor: ngữ nghĩa khoá mềm (soft-lock) chấp nhận; đủ cho Liquibase/JDBC/SQLAlchemy.
+- `selfAuthorized` cho DISCARD / RESET / SAVEPOINT: mọi role được chạy, không cần policy.
+- Trường JSON `pk_name` của schema là thêm mới (omitempty), không phải đổi định dạng checkpoint.
+- B16: dòng bảng tạm vẫn đi vào log. Lý do (txddl, bằng chứng): `core.Version` giữ `Loc/ValOff/ValLen` trỏ vào log, index không giữ giá trị; bỏ log cần kho giá trị thứ hai (đọc, GC, checkpoint, replica, drop). Không làm trong giai đoạn này; giảm nhẹ: bảng tạm ẩn khỏi CDC/publication/catalog phiên khác, bị xoá khi đóng phiên và quét khi khởi động.
+- DDL trong giao dịch (nhánh txddl): CREATE TABLE / CREATE INDEX btree / ADD COLUMN áp ngay kèm undo; DROP TABLE / DROP INDEX / DROP COLUMN hoãn tới COMMIT; nhật ký 2 dòng trong `__stask_objs` (kind ddltx). Giới hạn ghi ở docs/05.

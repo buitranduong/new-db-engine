@@ -93,6 +93,7 @@ type CreateTable struct {
 	IfNotExists bool
 	Options     map[string]string // WITH (columnar = true, search = 'a,b', ...)
 	Ext         *tableExt         // TEMP, UNLOGGED, ON COMMIT, LIKE (ctas.go)
+	Part        *PartSpec         // PARTITION BY (partition.go)
 }
 
 type Assign struct {
@@ -176,6 +177,7 @@ type Select struct {
 type Begin struct {
 	Iso      string
 	ReadOnly bool
+	Start    bool // START TRANSACTION (the command tag says so)
 }
 type Commit struct{}
 type Rollback struct{}

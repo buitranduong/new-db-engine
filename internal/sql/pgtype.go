@@ -82,6 +82,12 @@ func specTy(spec string) pgTy {
 		return pgTy{oid: tyDate, mod: -1}
 	case "time":
 		return pgTy{oid: tyTime, mod: -1}
+	case "inet":
+		return pgTy{oid: tyInet, mod: -1}
+	case "cidr":
+		return pgTy{oid: tyCidr, mod: -1}
+	case "macaddr":
+		return pgTy{oid: tyMacaddr, mod: -1}
 	case "varchar":
 		if n >= 1 {
 			return pgTy{oid: tyVarchar, mod: int32(n) + 4}
@@ -128,7 +134,7 @@ func (t pgTy) family() Kind {
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
-	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid:
+	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr:
 		return KText
 	case tyDate:
 		return KDate
@@ -368,6 +374,12 @@ func pgTyName(t pgTy) string {
 		return "date"
 	case tyTime:
 		return "time without time zone"
+	case tyInet:
+		return "inet"
+	case tyCidr:
+		return "cidr"
+	case tyMacaddr:
+		return "macaddr"
 	case tyTimestamp:
 		return "timestamp without time zone"
 	case tyTimestamptz:
@@ -423,7 +435,8 @@ func castName(c *Cast) string {
 		case tyTime:
 			return "time"
 		}
-		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyFloat4: "float4", tyName: "name", tyDate: "date", 26: "oid"}[t.oid]
+		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyFloat4: "float4", tyName: "name", tyDate: "date", 26: "oid",
+			tyInet: "inet", tyCidr: "cidr", tyMacaddr: "macaddr"}[t.oid]
 	}
 	if _, _, ok := schema.NumericMod(c.Type); ok {
 		return "numeric"
@@ -612,6 +625,8 @@ func applyPG(pg string, d Datum, explicit bool) (Datum, error) {
 		if d.K == KText && len(d.S) > 63 {
 			d.S = d.S[:63]
 		}
+	case "inet", "cidr", "macaddr":
+		return applyInetPG(name, d)
 	case "time":
 		if d.K == KText {
 			us, ok := TimeOfDayMicros(d.S)
@@ -702,7 +717,7 @@ func mathDomain(name string, x float64) error {
 // unsupportedTypes are real PostgreSQL types STASK does not have (0A000);
 // any other unknown type name is 42704.
 var unsupportedTypes = map[string]bool{
-	"money": true, "inet": true, "cidr": true, "macaddr": true, "macaddr8": true, "bit": true, "varbit": true,
+	"money": true, "macaddr8": true, "bit": true, "varbit": true,
 	"tsvector": true, "tsquery": true, "xml": true, "point": true, "line": true, "lseg": true, "box": true,
 	"path": true, "polygon": true, "circle": true, "int4range": true, "int8range": true, "numrange": true,
 	"tsrange": true, "tstzrange": true, "daterange": true, "geometry": true, "geography": true, "hstore": true,
@@ -808,7 +823,7 @@ func checkConflictTarget(t *schema.Table, target []string) error {
 		return nil
 	}
 	for _, ix := range t.Indexes {
-		if ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, target) {
+		if ix.Unique && !ix.HasExpr() && len(ix.Where) == 0 && slices.Equal(ix.Columns, target) {
 			return errf(codeFeature, "ON CONFLICT on the unique index %q is not supported: name the primary key", ix.Name)
 		}
 	}

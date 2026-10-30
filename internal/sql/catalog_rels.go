@@ -180,7 +180,7 @@ func init() {
 				rows = append(rows, []Datum{IntD(secIndexOID(ix.Name)), IntD(tableOID(t)), IntD(int64(len(ix.Columns))),
 					IntD(int64(len(ix.Columns))), BoolD(ix.Unique), BoolD(false), BoolD(false), BoolD(false), BoolD(true),
 					BoolD(false), BoolD(true), BoolD(false), BoolD(true), BoolD(true), BoolD(false),
-					vecText(attnumsIx(t, ix)...), vecText(zeros...), vecText(zeros...), vecText(zeros...), Null, Null})
+					vecText(attnumsIx(t, ix)...), vecText(zeros...), vecText(zeros...), vecText(zeros...), Null, predDatum(ix)})
 			})
 			return rows
 		})
@@ -435,4 +435,12 @@ func checkKeys(t *schema.Table, expr string) Datum {
 	}
 	sort.Ints(nums)
 	return i2vec(nums...)
+}
+
+// predDatum is pg_index.indpred of a partial index: its predicate text, NULL for a full one.
+func predDatum(ix schema.IndexDef) Datum {
+	if w := ix.PredText(); w != "" {
+		return TextD(w)
+	}
+	return Null
 }

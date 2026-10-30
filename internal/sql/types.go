@@ -40,6 +40,10 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if k, ok := jsonarrBinKind("-", typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)); ok {
 				return k
 			}
+		case "<<", ">>":
+			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText { // inet containment (inet.go)
+				return KBool
+			}
 		case "^":
 			if l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
 				return KNumeric
@@ -196,6 +200,8 @@ func paramKinds(st Stmt, sc *scope) map[int]Kind {
 				set(e.X, kindOfType(e.Type))
 				if ek, ok := elemKindOfType(e.Type); ok {
 					setElem(e.X, ek)
+				} else if e.PG == "interval[]" {
+					setElem(e.X, KInterval)
 				}
 			case *Unary:
 				if e.Op == "not" {

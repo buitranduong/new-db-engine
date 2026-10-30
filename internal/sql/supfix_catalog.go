@@ -62,6 +62,9 @@ func (s *Session) supfixRelSize(arg Datum, total bool) Datum {
 		}
 	}
 	if name == "" {
+		if arg.K == KInt && arg.I > 0 || arg.K == KText && catalogRels[arg.S] > 0 {
+			return IntD(65536) // a system catalog: a few pages (its real size is not tracked)
+		}
 		return IntD(0)
 	}
 	ts, err := s.E.UserTable(name)

@@ -55,6 +55,9 @@ type Session struct {
 	E        *core.Engine
 	prng     pgPRNG // random() / setseed()
 	tx       *core.Tx
+	txid     pgTxid     // txid_current() of the current transaction (pgcmds.go)
+	plDepth  int        // nesting of user functions being run (plsql.go)
+	plNotice string     // the last RAISE NOTICE message of the running DO / CALL
 	explicit bool       // inside BEGIN ... COMMIT
 	spilled  bool       // the last query ran in spill mode (EXPLAIN ANALYZE)
 	rep      *repairRec // occ_repair.go: the autocommit statement being run
@@ -106,6 +109,7 @@ func (s *Session) clickHouse() bool { return s.vars["sql_dialect"] == "clickhous
 func NewSession(e *core.Engine) *Session {
 	s := &Session{E: e, vars: sessionDefaults()}
 	s.recoverDDL()
+	loadUserFuncs(e)
 	return s
 }
 
@@ -188,6 +192,9 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		}
 		s.tx, s.explicit, s.failed = s.begin(iso), true, false
 		s.readOnly = st.ReadOnly || s.vars["default_transaction_read_only"] == "on"
+		if st.Start {
+			return &Result{Tag: "START TRANSACTION"}, nil
+		}
 		return &Result{Tag: "BEGIN"}, nil
 	case *Commit:
 		if !s.explicit {
@@ -270,6 +277,22 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			col = c
 		}
 		return &Result{Cols: []Column{{Name: col, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
+	case *CreateFunc:
+		res, err := s.createFunc(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *DropFunc:
+		res, err := s.dropFunc(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *DoStmt:
+		return s.execDo(st)
+	case *CallStmt:
+		return s.execCall(st)
 	case *ObjDDL, *CommentOn:
 		// applied at once, like CREATE TABLE (ddlobjs_exec.go)
 		res, err := s.objDDL(st)
@@ -277,8 +300,35 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *AlterColRestart:
+		seq := st.Table + "_" + st.Col + "_seq"
+		if !s.isSequence(seq) {
+			s.markFailed()
+			return nil, errf("55000", "column %q of relation %q is not an identity column", st.Col, st.Table)
+		}
+		res, err := s.exec(&AlterSequence{Name: seq, Opts: st.Opts}, params)
+		if err != nil {
+			return nil, err
+		}
+		res.Tag = "ALTER TABLE"
+		return res, nil
+	case *CreatePartition:
+		res, err := s.createPartition(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *PartAlter:
+		res, err := s.partAlter(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *CreateTable:
 		res, err := s.createTable(st)
+		if err == nil {
+			err = s.partAfterCreate(st)
+		}
 		if err != nil {
 			s.markFailed()
 		}
@@ -2236,6 +2286,12 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 		names, restart = st.Names, st.Restart
 	}
 	names = s.mapTemps(names)
+	if _, drop := st.(*DropTable); drop {
+		var err error
+		if names, err = s.partDrop(names); err != nil {
+			return nil, err
+		}
+	}
 	res := &Result{Tag: tag}
 	if tr, ok := st.(*Truncate); ok && tr.Cascade {
 		var added []string

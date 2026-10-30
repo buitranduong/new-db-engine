@@ -31,6 +31,8 @@ type IndexDef struct {
 	// plain column (indexexpr.go). Additive: old checkpoints lack it.
 	Exprs  []string `json:"exprs,omitempty"`
 	Unique bool     `json:"unique,omitempty"`
+	// Where is the predicate of a partial index (indexpred.go); additive.
+	Where []IndexPred `json:"where,omitempty"`
 	// Constraint: the index backs a UNIQUE constraint of this name
 	// (usually the same as Name); empty for CREATE UNIQUE INDEX.
 	Constraint string `json:"constraint,omitempty"`

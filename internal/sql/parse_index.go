@@ -8,8 +8,9 @@ import (
 
 // CREATE INDEX, DROP INDEX, and the UNIQUE and REFERENCES constraints
 // (docs/05 §18). The syntax follows PostgreSQL's; what STASK does not do is
-// refused with 0A000 rather than ignored: partial indexes, expressions other than f(column),
-// access methods other than btree, INCLUDE, deferrable constraints, MATCH
+// refused with 0A000 rather than ignored: partial index predicates beyond the closed form
+// of schema/indexpred.go, expressions other than f(column),
+// access methods other than btree (hash and brin run as btree), deferrable constraints, MATCH
 // FULL, and ON UPDATE / ON DELETE SET DEFAULT. An index element may be an
 // immutable function of one column (schema/indexexpr.go).
 
@@ -32,6 +33,7 @@ type CreateIndex struct {
 	Exprs       []string // the function applied to it (canonical name), "" for none; nil if no element has one
 	Unique      bool
 	IfNotExists bool
+	Where       []schema.IndexPred // partial index predicate
 }
 
 // DropIndex is DROP INDEX.
@@ -72,6 +74,9 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 		if err != nil {
 			return nil, true, err
 		}
+		if m == "hash" || m == "brin" { // equality and range lookups work through the one B-tree
+			m = "btree"
+		}
 		if m != "btree" {
 			return nil, true, errf(codeFeature, "index access method %q is not supported (only btree)", m)
 		}
@@ -109,13 +114,8 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 		c.Cols = append(c.Cols, col)
 		c.Exprs = append(c.Exprs, fn)
 		// the order is accepted: an index is read forwards or backwards
-		if !p.acceptKw("asc") {
-			p.acceptKw("desc")
-		}
-		if p.acceptKw("nulls") {
-			if !p.acceptKw("first") {
-				p.acceptKw("last")
-			}
+		if err = p.indexElemTail(); err != nil {
+			return nil, true, err
 		}
 		if !p.acceptOp(",") {
 			break
@@ -127,15 +127,28 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 	if !slices.ContainsFunc(c.Exprs, func(e string) bool { return e != "" }) {
 		c.Exprs = nil
 	}
-	switch {
-	case p.isKw("where"):
-		return nil, true, errf(codeFeature, "partial indexes are not supported")
-	case p.isKw("include"):
-		return nil, true, errf(codeFeature, "INCLUDE columns are not supported")
-	case p.isKw("with"):
-		return nil, true, errf(codeFeature, "index storage parameters are not supported")
+	for { // INCLUDE and storage parameters do not change results: accepted, not stored
+		switch {
+		case p.acceptKw("include"):
+			if err = p.skipParens(); err != nil {
+				return nil, true, err
+			}
+		case p.acceptKw("with"):
+			if err = p.skipParens(); err != nil {
+				return nil, true, err
+			}
+		case p.acceptKw("tablespace"):
+			if _, err = p.ident(); err != nil {
+				return nil, true, err
+			}
+		case p.acceptKw("where"):
+			if c.Where, err = p.indexPredicate(); err != nil {
+				return nil, true, err
+			}
+		default:
+			return c, true, nil
+		}
 	}
-	return c, true, nil
 }
 
 func (p *parser) dropIndex() (Stmt, error) {

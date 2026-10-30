@@ -442,6 +442,11 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	if l.IsNull() || r.IsNull() {
 		return Null, nil
 	}
+	if (e.Op == "<<" || e.Op == ">>") && l.K == KText {
+		if d, ok := inetOp(e.Op, l, r); ok {
+			return d, nil
+		}
+	}
 	switch e.Op {
 	case "=", "<>", "<", "<=", ">", ">=":
 		cmp, err := compare(l, r)
@@ -674,6 +679,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		if l, ok := f.Args[0].(*Lit); ok && l.V.IsNull() {
 			return TextD("unknown"), nil
 		}
+	}
+	if v, ok, err := c.callUser(f, args); ok {
+		return v, err
 	}
 	if v, ok, err := c.callPre(f, args); ok {
 		return v, err

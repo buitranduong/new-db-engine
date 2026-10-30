@@ -78,6 +78,12 @@ func colDefFor(c Column, src *schema.Column) (ColDef, error) {
 			cd.Type, cd.PG = "string", "name"
 		case tyTime:
 			cd.Type, cd.PG = "string", "time"
+		case tyInet:
+			cd.Type, cd.PG = "string", "inet"
+		case tyCidr:
+			cd.Type, cd.PG = "string", "cidr"
+		case tyMacaddr:
+			cd.Type, cd.PG = "string", "macaddr"
 		}
 	case KBool:
 		cd.Type = "bool"
@@ -433,7 +439,7 @@ func (s *Session) likeIndexes(c *CreateTable, likes []likeDef) []*CreateIndex {
 			if ix.Internal || ix.Constraint != "" {
 				continue
 			}
-			out = append(out, &CreateIndex{Cols: slices.Clone(ix.Columns), Exprs: slices.Clone(ix.Exprs), Unique: ix.Unique})
+			out = append(out, &CreateIndex{Cols: slices.Clone(ix.Columns), Exprs: slices.Clone(ix.Exprs), Unique: ix.Unique, Where: slices.Clone(ix.Where)})
 		}
 	}
 	return out

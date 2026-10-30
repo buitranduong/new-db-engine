@@ -230,7 +230,7 @@ func (tx *Tx) probeUnique(p *pendingOp) error {
 			if w, ok := tx.widx[pk{p.t, o}]; ok {
 				w := tx.writes[w]
 				if ok2 := !w.del; ok2 {
-					if wk, found := secKeyFor(w.sch, w.sk, ix.Name); found && wk.enc == k.enc {
+					if wk, found := secKeyFor(w.sch, w.sk, ix.Name); found && !wk.null && wk.enc == k.enc {
 						return e.uniqueViolation(p, ix)
 					}
 				}
@@ -256,8 +256,8 @@ func (tx *Tx) probeUnique(p *pendingOp) error {
 			if err != nil {
 				return true
 			}
-			cur, _ := p.sch.IndexKeyAt(nil, i, row)
-			if string(cur) == k.enc {
+			cur, null := p.sch.IndexKeyAt(nil, i, row)
+			if !null && string(cur) == k.enc {
 				bad = true
 				return false
 			}
@@ -344,7 +344,7 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 	// a unique index on the referenced columns
 	var ixName string
 	for _, ix := range psch.Indexes {
-		if ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, refCols) {
+		if ix.Unique && !ix.HasExpr() && len(ix.Where) == 0 && slices.Equal(ix.Columns, refCols) {
 			ixName = ix.Name
 		}
 	}

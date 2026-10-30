@@ -234,6 +234,9 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
+	// disk secondary index persistence counters (secpersist.go)
+	SidxCkpts, SidxAdopted, SidxRebuilt atomic.Int64
+
 	trig trigCache // row triggers (trigger.go)
 	// histTail supplies versions older than the log still holds (histtail.go); nil = none
 	histTail atomic.Pointer[HistoryTailFunc]
@@ -375,11 +378,9 @@ func Open(opts Options) (*Engine, error) {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	// disk secondary indexes are rebuilt at every start; whatever a crash
-	// left here (a temp file, an orphan) is junk (secdisk.go)
-	if err := os.RemoveAll(filepath.Join(opts.Dir, "sidx")); err != nil {
-		return nil, err
-	}
+	// the disk secondary index files are reused only when proved good, and
+	// whatever else a crash left in sidx is removed after the checkpoint is
+	// loaded (secpersist.go)
 	if opts.RestoreArchive != "" {
 		if err := restoreFromArchive(filepath.Join(opts.Dir, "wal"), opts.RestoreArchive, opts.SegmentSize, opts.Logf); err != nil {
 			return nil, fmt.Errorf("restore from archive: %w", err)

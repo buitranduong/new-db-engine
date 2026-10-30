@@ -74,6 +74,11 @@ type secIndex struct {
 	failed  atomic.Pointer[error]
 	retired atomic.Bool
 
+	// hi is the highest LSN any entry was added at (secpersist.go);
+	// adopted: the disk file was reused from the previous run
+	hi      atomic.Uint64
+	adopted atomic.Bool
+
 	// mutations replayed into a new store by conversions: while it was being
 	// built, and under the lock at the swap
 	ConvCatchUp, ConvFinal atomic.Int64
@@ -424,6 +429,11 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 			last = i
 		}
 	}
+	for _, k := range ks {
+		if k.lsn > si.hi.Load() {
+			si.hi.Store(k.lsn)
+		}
+	}
 	if def.Storage == "disk" {
 		if d := e.buildDisk(t, def, ks); d != nil {
 			si.dk.Store(d)
@@ -586,7 +596,7 @@ func (e *Engine) reconcileSec(t *TableState, sch *schema.Table, src *tree) error
 
 // rebuildSec rebuilds every index of every table from its primary index
 // (after a checkpoint is loaded): the checkpoint holds definitions only.
-func (e *Engine) rebuildSec() error {
+func (e *Engine) rebuildSec(hdr *ckptHeader) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var first error
@@ -602,7 +612,14 @@ func (e *Engine) rebuildSec() error {
 			go func(t *TableState, def schema.IndexDef) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				si, err := e.buildSec(t, def, t.index())
+				si := e.adoptSec(t, def, hdr)
+				var err error
+				if si == nil {
+					si, err = e.buildSec(t, def, t.index())
+					if err == nil && def.Storage == "disk" && e.opts.DiskIndexes {
+						e.SidxRebuilt.Add(1)
+					}
+				}
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {

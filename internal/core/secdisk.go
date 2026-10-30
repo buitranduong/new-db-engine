@@ -158,6 +158,9 @@ func (w *secW) fail(err error) {
 
 // put sets key to (added, dead) and reports whether the key existed.
 func (w *secW) put(key string, added, dead uint64) bool {
+	if added > w.si.hi.Load() {
+		w.si.hi.Store(added)
+	}
 	if m := w.si.mig; m != nil {
 		m.add(migOp{key: key, added: added, dead: dead})
 	}

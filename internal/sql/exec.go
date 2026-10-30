@@ -643,7 +643,13 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 	// the slot covers execution only: an autocommit's fsync wait happens
 	// after run returns
 	defer admit(classOf(st))()
-	return s.runHere(tx, st, params)
+	if heavyQ == nil {
+		return s.runHere(tx, st, params)
+	}
+	t0 := time.Now()
+	res, err := s.runHere(tx, st, params)
+	noteSelectTime(st, time.Since(t0))
+	return res, err
 }
 
 func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {

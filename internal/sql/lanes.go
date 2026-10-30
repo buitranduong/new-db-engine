@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"runtime/metrics"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -73,10 +74,50 @@ func onHeavyLane(f func()) {
 	}
 }
 
+// slowSelect is the moving-average run time above which a bounded SELECT
+// shape moves to the heavy lane for later runs: a LIMIT does not bound the
+// work of a scan whose matches are rare (measured: simbench es_pretty, an OR
+// of two LIKEs, scans the whole table for LIMIT 50, 1.7 s). The average (not
+// one run) and a high bar keep a trigram or index search that is slow once,
+// under load, on the normal lane (measured: one 30 ms run demoted es_suffix,
+// 4 ms normally, to 850 ms).
+const slowSelect = 150 * time.Millisecond
+
+// shapeStat is the moving average (ns) of the run time of one SELECT shape.
+type shapeStat struct{ ewma atomic.Int64 }
+
+// slowShapes maps a bounded SELECT shape (table + WHERE) to its shapeStat.
+var slowShapes sync.Map
+
+// boundedSelect reports whether a SELECT is a single-table read with a LIMIT
+// and no aggregate, grouping, window or set operation: the shape of a web
+// search or lookup page, which must not queue behind scans.
+func boundedSelect(q *Select) bool {
+	if q.Limit == nil || q.Rel != nil || len(q.With) > 0 || len(q.GroupBy) > 0 || q.Having != nil ||
+		q.Distinct || len(q.DistinctOn) > 0 || len(q.Windows) > 0 || len(q.Sets) > 0 || q.ForUpd || len(q.Lock) > 0 {
+		return false
+	}
+	for _, it := range q.Items {
+		if it.X != nil && hasAggOrWin(it.X) {
+			return false
+		}
+	}
+	return true
+}
+
+func selectShape(q *Select) string {
+	w := ""
+	if q.Where != nil {
+		w = exprKey2(q.Where)
+	}
+	return q.From + "|" + w
+}
+
 // heavy classifies a statement before it runs.
 func (s *Session) heavy(st Stmt, params []Datum) bool {
 	var table string
 	var where Expr
+	var sel *Select
 	switch st := st.(type) {
 	case *Insert:
 		return len(st.Rows) > heavyRows
@@ -88,7 +129,7 @@ func (s *Session) heavy(st Stmt, params []Datum) bool {
 		if st.From == "" {
 			return false
 		}
-		table, where = st.From, st.Where
+		table, where, sel = st.From, st.Where, st
 	default:
 		return false
 	}
@@ -98,10 +139,40 @@ func (s *Session) heavy(st Stmt, params []Datum) bool {
 	}
 	keys, point, err := keyLookups(t, where, &evalCtx{sc: &scope{t: t}, params: params})
 	limit := heavyRows
-	if _, ok := st.(*Select); ok {
+	if sel != nil {
 		limit = heavyReadKeys // reads come first: short ranges stay on the fast lane
 	}
-	return err == nil && (!point || len(keys) > limit)
+	if err != nil || (point && len(keys) <= limit) {
+		return false
+	}
+	if sel != nil && boundedSelect(sel) {
+		if v, ok := slowShapes.Load(selectShape(sel)); ok {
+			return time.Duration(v.(*shapeStat).ewma.Load()) > slowSelect
+		}
+		return false
+	}
+	return true
+}
+
+// noteSelectTime folds the run time of a bounded SELECT into its shape's
+// moving average (weight 1/4: a few slow runs move a shape, one does not).
+func noteSelectTime(st Stmt, d time.Duration) {
+	q, ok := st.(*Select)
+	if !ok || q.From == "" || !boundedSelect(q) {
+		return
+	}
+	k := selectShape(q)
+	v, ok := slowShapes.Load(k)
+	if !ok {
+		v, _ = slowShapes.LoadOrStore(k, &shapeStat{})
+	}
+	ss := v.(*shapeStat)
+	old := ss.ewma.Load()
+	if old == 0 {
+		ss.ewma.Store(int64(d))
+	} else {
+		ss.ewma.Store((3*old + int64(d)) / 4)
+	}
 }
 
 // spawnHelper runs f as a helper of a statement already on the heavy lane:

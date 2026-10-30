@@ -104,6 +104,8 @@ func main() {
 	heavyWeight := flag.Int("heavy-weight", 50, "cpu.weight of the heavy-lane group")
 	pgMaxConns := flag.Int64("pg-max-conns", 100000, "maximum PostgreSQL sessions; more are refused with SQLSTATE 53300 (0 = unlimited)")
 	pgPassword := flag.String("pg-password", "", "password of PostgreSQL connections (empty = trust); sent per -pg-auth")
+	pgPasswordFile := flag.String("pg-password-file", "", "file holding the -pg-password (trailing white space ignored; keeps it out of the process list); not together with -pg-password")
+	pgHBA := flag.String("pg-hba", "", "allow list in the style of pg_hba.conf (docs/21 section 7): lines \"TYPE DATABASE USER ADDRESS METHOD\", first match wins, no match = refused; hostssl lines admit TLS connections only")
 	pgAuth := flag.String("pg-auth", "", "PostgreSQL authentication: trust, password (cleartext) or scram (SCRAM-SHA-256, verifier derived from -pg-password); empty = password when -pg-password is set, else trust")
 	pgTLSCert := flag.String("pg-tls-cert", "", "PEM certificate for PostgreSQL TLS (with -pg-tls-key; empty = SSLRequest answered 'N')")
 	pgTLSKey := flag.String("pg-tls-key", "", "PEM private key for PostgreSQL TLS")
@@ -168,6 +170,18 @@ func main() {
 	}
 	if err := sql.SetDefaultCollation(*collation); err != nil {
 		log.Fatalf("-collation: %v", err)
+	}
+	if *pgPasswordFile != "" {
+		if *pgPassword != "" {
+			log.Fatal("give -pg-password or -pg-password-file, not both")
+		}
+		b, err := os.ReadFile(*pgPasswordFile)
+		if err != nil {
+			log.Fatalf("-pg-password-file: %v", err)
+		}
+		if *pgPassword = strings.TrimRight(string(b), " \t\r\n"); *pgPassword == "" {
+			log.Fatalf("-pg-password-file: %s is empty", *pgPasswordFile)
+		}
 	}
 	hs.BasicPass = *pgPassword
 	httpAuth, httpTLS := httpSecurity(hs, *addr, *pprofAddr, *pprofInsecure, *faults)
@@ -430,9 +444,36 @@ func main() {
 		if err != nil {
 			log.Fatalf("pg listen: %v", err)
 		}
+		if *pgInsecure && !server.IsLoopback(*pgAddr) && *pgPassword == "" {
+			log.Printf("warn: -pg-insecure: %s is open to the network and anyone who reaches it is the superuser", *pgAddr)
+		}
+		if *pgPassword != "" && (*pgAuth == "" || *pgAuth == "password") && *pgTLSCert == "" && !server.IsLoopback(*pgAddr) {
+			log.Printf("warn: -pg-addr %s uses cleartext password authentication without TLS: use -pg-auth scram and -pg-tls-cert/-pg-tls-key", *pgAddr)
+		}
 		pg = &pgwire.Server{E: e, Password: *pgPassword, Auth: *pgAuth, TLSRequire: *pgTLSRequire, MaxConns: *pgMaxConns, Views: p, RolesOnly: *pgRolesOnly,
 			StatementTimeout: stmtTimeout, IdleInTxTimeout: idleInTxTimeout, IdleSessionTimeout: idleTimeout,
 			KeepAliveIdle: *pgKeepIdle, KeepAliveInterval: *pgKeepInterval, KeepAliveCount: *pgKeepCount, TCPUserTimeout: *pgUserTimeout}
+		if *pgHBA != "" {
+			b, err := os.ReadFile(*pgHBA)
+			if err != nil {
+				log.Fatalf("-pg-hba: %v", err)
+			}
+			if pg.HBA, err = pgwire.ParseHBA(string(b)); err != nil {
+				log.Fatalf("-pg-hba %s: %v", *pgHBA, err)
+			}
+			// the server's authentication is decided later (prepareAuth): check now with the same rule
+			eff := *pgAuth
+			if eff == "" {
+				eff = pgwire.AuthTrust
+				if *pgPassword != "" {
+					eff = pgwire.AuthPassword
+				}
+			}
+			if err := pg.HBA.Check(eff); err != nil {
+				log.Fatalf("-pg-hba %s: %v", *pgHBA, err)
+			}
+			log.Printf("pg allow list: %s", *pgHBA)
+		}
 		if (*pgTLSCert == "") != (*pgTLSKey == "") {
 			log.Fatalf("pg tls: -pg-tls-cert and -pg-tls-key go together")
 		}

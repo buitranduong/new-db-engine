@@ -61,6 +61,7 @@ type Tx struct {
 	shares   map[pk]struct{}
 	uniq     map[string]string
 	implicit bool
+	scans    []*TableState // serializable: tables scanned, validated at commit (serscan.go)
 	rc       bool // READ COMMITTED: Refresh moves the snapshot, writes remember theirs (readcommitted.go)
 }
 
@@ -87,13 +88,11 @@ func (tx *Tx) IndexScan(table, idx, lo, hi string, desc bool, fn func(pk string,
 	if err := tx.check(); err != nil {
 		return false, err
 	}
-	if tx.iso == Serializable {
-		return false, ErrScanSerializable
-	}
 	t, err := tx.e.Table(table)
 	if err != nil {
 		return false, err
 	}
+	tx.noteScan(t)
 	n := 0
 	return tx.e.IndexScan(t, idx, tx.snap, lo, hi, desc, func(pk string, r schema.Row) bool {
 		if tx.intr != nil {
@@ -177,7 +176,11 @@ func (tx *Tx) Scan(table, start, end string, limit int) ([]schema.Row, error) {
 		return nil, err
 	}
 	if tx.iso == Serializable {
-		return nil, ErrScanSerializable
+		t, err := tx.e.Table(table)
+		if err != nil {
+			return nil, err
+		}
+		tx.noteScan(t)
 	}
 	// note: does not merge the transaction's own uncommitted writes
 	return tx.e.ScanRange(table, start, end, limit, tx.snap)
@@ -196,13 +199,11 @@ func (tx *Tx) ScanAll(table string, fn func(key string, r schema.Row) bool) erro
 	if err := tx.check(); err != nil {
 		return err
 	}
-	if tx.iso == Serializable {
-		return ErrScanSerializable
-	}
 	t, err := tx.e.Table(table)
 	if err != nil {
 		return err
 	}
+	tx.noteScan(t)
 	own := map[string]*pendingOp{}
 	for i := range tx.writes {
 		if w := &tx.writes[i]; w.t == t {
@@ -267,13 +268,11 @@ func (tx *Tx) ScanAllParallel(table string, need []bool, helpers int, spawn func
 	if err := tx.check(); err != nil {
 		return false, err
 	}
-	if tx.iso == Serializable {
-		return false, ErrScanSerializable
-	}
 	t, err := tx.e.Table(table)
 	if err != nil {
 		return false, err
 	}
+	tx.noteScan(t)
 	for i := range tx.writes {
 		if tx.writes[i].t == t {
 			return false, nil
@@ -435,7 +434,7 @@ func (tx *Tx) Commit() (uint64, error) {
 		if rerr != nil {
 			return 0, rerr
 		}
-		r := &commitReq{ops: tx.writes, reads: tx.reads, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
+		r := &commitReq{ops: tx.writes, reads: tx.reads, scans: tx.scans, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
 			onCommit: tx.onCommit}
 		for k := range tx.shares {
 			r.shares = append(r.shares, k)

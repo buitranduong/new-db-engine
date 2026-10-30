@@ -268,6 +268,7 @@ type Engine struct {
 	installNotify chan struct{}                  // closed when installed advances (posMu)
 
 	reqCh        chan *commitReq
+	tabLast      map[*TableState]uint64 // committer only: LSN of the last commit that wrote each table (serializable scans, serscan.go)
 	commitExited chan struct{} // closed when the committer stops taking requests
 	syncEWMA     atomic.Int64  // smoothed fdatasync duration (ns)
 	installSeq   atomic.Uint64 // number of commit batches installed in the index
@@ -1242,6 +1243,7 @@ type commitReq struct {
 	acked       time.Time // LatDebug only
 	ops         []pendingOp
 	reads       []readKey
+	scans       []*TableState // tables a serializable transaction scanned (serscan.go)
 	seenSeq     uint64 // installSeq read before the seen heads were looked up
 	hasSeen     bool
 	snap        uint64
@@ -1951,6 +1953,9 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					}
 				}
 			}
+			if verr == nil && len(r.scans) > 0 {
+				verr = e.checkScans(r)
+			}
 			if verr == nil && r.checkWrites {
 				verr = e.checkFK(r)
 			}
@@ -2007,6 +2012,12 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 		pos := wal.Pos{Seg: e.log.WritePos().Seg, Off: e.log.WritePos().Off + int64(len(b.buf))}
 
 		r.lsn = lsn
+		if r.moves == nil && r.ddl == nil {
+			e.noteTableWrites(r.ops, lsn)
+		}
+		if r.drop != nil && e.tabLast != nil {
+			delete(e.tabLast, r.drop) // do not keep a dropped table alive
+		}
 		if r.moves != nil {
 			walOps = walOps[:0]
 			var mv []*moveOp

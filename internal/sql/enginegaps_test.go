@@ -194,3 +194,43 @@ func TestGapsReturningSubquery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGapsSerializableScan(t *testing.T) {
+	e := newEngine(t)
+	a, b := NewSession(e), NewSession(e)
+	run(t, a, `CREATE TABLE sc (id INT PRIMARY KEY, v INT)`)
+	run(t, a, `CREATE TABLE other (id INT PRIMARY KEY)`)
+	run(t, a, `INSERT INTO sc VALUES (1, 10), (2, 20)`)
+	// a scan works; nobody wrote the table: commits
+	run(t, a, `BEGIN ISOLATION LEVEL SERIALIZABLE`)
+	if got := one(t, a, `SELECT sum(v) FROM sc`); got != "30" {
+		t.Fatal(got)
+	}
+	run(t, a, `INSERT INTO other VALUES (1)`)
+	run(t, a, `COMMIT`)
+	// write skew through a scan: both read the sum, each writes a row
+	run(t, a, `BEGIN ISOLATION LEVEL SERIALIZABLE`)
+	run(t, b, `BEGIN ISOLATION LEVEL SERIALIZABLE`)
+	one(t, a, `SELECT sum(v) FROM sc`)
+	one(t, b, `SELECT sum(v) FROM sc`)
+	run(t, a, `INSERT INTO sc VALUES (3, 1)`)
+	run(t, b, `INSERT INTO sc VALUES (4, 1)`)
+	run(t, a, `COMMIT`)
+	_, err := tryRun(b, `COMMIT`)
+	if err == nil || AsError(err).Code != "40001" {
+		t.Fatalf("write skew committed: %v", err)
+	}
+	// phantom: a scan, another session inserts a row, the scanner writes elsewhere
+	run(t, a, `BEGIN ISOLATION LEVEL SERIALIZABLE`)
+	one(t, a, `SELECT count(*) FROM sc WHERE v > 0`)
+	run(t, b, `INSERT INTO sc VALUES (9, 9)`)
+	run(t, a, `INSERT INTO other VALUES (2)`)
+	if _, err := tryRun(a, `COMMIT`); err == nil || AsError(err).Code != "40001" {
+		t.Fatalf("phantom committed: %v", err)
+	}
+	// a read-only serializable transaction is not failed by later writes
+	run(t, a, `BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY`)
+	one(t, a, `SELECT count(*) FROM sc`)
+	run(t, b, `INSERT INTO sc VALUES (10, 9)`)
+	run(t, a, `COMMIT`)
+}

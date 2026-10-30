@@ -5,6 +5,8 @@ import (
 	"math"
 	"runtime"
 	"runtime/metrics"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -28,6 +30,13 @@ const heavyReadKeys = 256
 
 var heavyQ chan func()
 
+// heavyWQ carries heavy writes (batch inserts, multi-row UPDATE/DELETE). A
+// worker serves it alone, so a bulk import never waits behind a scan that
+// holds every other heavy thread for a second or more (measured: with one
+// shared queue the batch-upsert import of simbench timed out after 10 min,
+// against 81 s without lanes, while its statements queued behind 1-2 s scans).
+var heavyWQ chan func()
+
 // ScanWorkers is the most goroutines one full-scan aggregate uses (1 =
 // sequential). Helpers beyond the first only run on idle heavy-lane threads.
 var ScanWorkers = runtime.NumCPU()
@@ -41,14 +50,30 @@ func StartHeavyLane(workers, nice int) {
 		return
 	}
 	heavyQ = make(chan func())
+	heavyWQ = make(chan func())
 	for i := 0; i < workers; i++ {
+		writer := i == 0 // worker 0 only runs heavy writes (with one worker: writes first, then reads)
 		go func() {
 			runtime.LockOSThread() // never unlocked: the thread keeps its priority
 			if !joinHeavyGroup() && nice > 0 {
 				setThreadNice(nice)
 			}
-			for f := range heavyQ {
-				f()
+			for {
+				if writer && workers > 1 {
+					(<-heavyWQ)()
+					continue
+				}
+				select {
+				case f := <-heavyWQ:
+					f()
+				default:
+					select {
+					case f := <-heavyWQ:
+						f()
+					case f := <-heavyQ:
+						f()
+					}
+				}
 			}
 		}()
 	}
@@ -62,9 +87,14 @@ func setThreadNice(nice int) {
 }
 
 // onHeavyLane runs f on a heavy-lane thread and waits for it.
-func onHeavyLane(f func()) {
+func onHeavyLane(f func()) { runHeavy(heavyQ, f) }
+
+// onHeavyWriteLane is onHeavyLane for heavy writes.
+func onHeavyWriteLane(f func()) { runHeavy(heavyWQ, f) }
+
+func runHeavy(q chan func(), f func()) {
 	done := make(chan any, 1)
-	heavyQ <- func() {
+	q <- func() {
 		defer func() { done <- recover() }()
 		f()
 	}
@@ -73,10 +103,74 @@ func onHeavyLane(f func()) {
 	}
 }
 
+// slowSelect is the moving-average run time above which a bounded SELECT
+// shape moves to the heavy lane for later runs: a LIMIT does not bound the
+// work of a scan whose matches are rare (measured: simbench es_pretty, an OR
+// of two LIKEs, scans the whole table for LIMIT 50, 1.7 s). The average (not
+// one run) and a high bar keep a trigram or index search that is slow once,
+// under load, on the normal lane (measured: one 30 ms run demoted es_suffix,
+// 4 ms normally, to 850 ms).
+const slowSelect = 150 * time.Millisecond
+
+// shapeStat is the moving average (ns) of the run time of one SELECT shape.
+type shapeStat struct {
+	ewma  atomic.Int64
+	heavy atomic.Bool // hysteresis: set above slowSelect, cleared below slowSelect/4
+}
+
+// slowShapes maps a bounded SELECT shape (table + WHERE) to its shapeStat.
+var slowShapes sync.Map
+
+// boundedSelect reports whether a SELECT is a single-table read with a LIMIT
+// and no aggregate, grouping, window or set operation: the shape of a web
+// search or lookup page, which must not queue behind scans.
+func boundedSelect(q *Select) bool {
+	if q.Limit == nil || q.Rel != nil || len(q.With) > 0 || len(q.GroupBy) > 0 || q.Having != nil ||
+		q.Distinct || len(q.DistinctOn) > 0 || len(q.Windows) > 0 || len(q.Sets) > 0 || q.ForUpd || len(q.Lock) > 0 {
+		return false
+	}
+	for _, it := range q.Items {
+		if it.X != nil && hasAggOrWin(it.X) {
+			return false
+		}
+	}
+	return true
+}
+
+// selectShape keys a bounded SELECT by table, WHERE and the pattern kind of
+// its text parameters (leading and trailing wildcard): the same LIKE $1 is a
+// 2 ms prefix lookup, a 3 ms trigram search or a 2 s scan depending on the
+// pattern (measured: one shared shape flipped between lanes 9 times in a run
+// and web_prefix reached p99 7.7 s).
+func selectShape(q *Select, params []Datum) string {
+	w := ""
+	if q.Where != nil {
+		w = exprKey2(q.Where)
+	}
+	var b strings.Builder
+	b.WriteString(q.From + "|" + w)
+	for _, p := range params {
+		if p.K != KText {
+			continue
+		}
+		b.WriteByte('|')
+		if n := len(p.S); n > 0 {
+			if c := p.S[0]; c == '%' || c == '_' {
+				b.WriteByte('W')
+			}
+			if c := p.S[n-1]; c == '%' || c == '_' {
+				b.WriteByte('T')
+			}
+		}
+	}
+	return b.String()
+}
+
 // heavy classifies a statement before it runs.
 func (s *Session) heavy(st Stmt, params []Datum) bool {
 	var table string
 	var where Expr
+	var sel *Select
 	switch st := st.(type) {
 	case *Insert:
 		return len(st.Rows) > heavyRows
@@ -88,7 +182,7 @@ func (s *Session) heavy(st Stmt, params []Datum) bool {
 		if st.From == "" {
 			return false
 		}
-		table, where = st.From, st.Where
+		table, where, sel = st.From, st.Where, st
 	default:
 		return false
 	}
@@ -98,10 +192,49 @@ func (s *Session) heavy(st Stmt, params []Datum) bool {
 	}
 	keys, point, err := keyLookups(t, where, &evalCtx{sc: &scope{t: t}, params: params})
 	limit := heavyRows
-	if _, ok := st.(*Select); ok {
+	if sel != nil {
 		limit = heavyReadKeys // reads come first: short ranges stay on the fast lane
 	}
-	return err == nil && (!point || len(keys) > limit)
+	if err != nil || (point && len(keys) <= limit) {
+		return false
+	}
+	if sel != nil && boundedSelect(sel) {
+		if v, ok := slowShapes.Load(selectShape(sel, params)); ok {
+			return v.(*shapeStat).heavy.Load()
+		}
+		return false
+	}
+	return true
+}
+
+// noteSelectTime folds the run time of a bounded SELECT into its shape's
+// moving average (weight 1/4: a few slow runs move a shape, one does not).
+func noteSelectTime(st Stmt, params []Datum, d time.Duration) {
+	q, ok := st.(*Select)
+	if !ok || q.From == "" || !boundedSelect(q) {
+		return
+	}
+	k := selectShape(q, params)
+	v, ok := slowShapes.Load(k)
+	if !ok {
+		v, _ = slowShapes.LoadOrStore(k, &shapeStat{})
+	}
+	ss := v.(*shapeStat)
+	old := ss.ewma.Load()
+	nw := int64(d)
+	if old != 0 {
+		nw = (3*old + int64(d)) / 4
+	}
+	ss.ewma.Store(nw)
+	was := ss.heavy.Load()
+	switch {
+	case !was && time.Duration(nw) > slowSelect:
+		ss.heavy.Store(true)
+		fmt.Printf("lane: select shape %q now heavy (avg run %v)\n", k, time.Duration(nw))
+	case was && time.Duration(nw) < slowSelect/4:
+		ss.heavy.Store(false)
+		fmt.Printf("lane: select shape %q now normal (avg run %v)\n", k, time.Duration(nw))
+	}
 }
 
 // spawnHelper runs f as a helper of a statement already on the heavy lane:

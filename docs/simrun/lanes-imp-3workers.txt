@@ -1,0 +1,177 @@
+setup: loaded 1000000 sims in 5.569s
+setup: stask btree (carrier,status,price) in 3.423s
+setup: stask trigram view in 2.911s
+== access-path evidence (EXPLAIN + 5x timing) ==
+prefix_hit   ms=[2.488 1.922 1.387 1.418 1.399]
+    plan: Limit  (cost=0.28..2.56 rows=100 width=32) |   ->  Trigram Scan on sims using sims_trgm  (cost=0.28..2277.60 rows=100000 width=32) |         Index Cond: number LIKE "090%" |         Consistency: session (max_lag_ms=1000) |         Detail: Trigram Scan on sims using sims_trgm (number LIKE "090%") engine=substr mode=session applied_lsn=11 view_lag_ms=0.0 waited_ms=0.0 reason="view reached session lsn 8" |         Filter (rechecked on every candidate row): (number LIKE '090%') |   Note: cost= and rows= are rough estimates from live row counts, not planner statistics |   Memory: query budget 2005 MB; sort/join/aggregate spill to temp files when exceeded (spill on)
+prefix_miss  ms=[91.118 90.926 91.019 90.768 91.219]
+    plan: Limit  (cost=0.28..2.56 rows=100 width=32) |   ->  Trigram Scan on sims using sims_trgm  (cost=0.28..2277.60 rows=100000 width=32) |         Index Cond: number LIKE "x%" |         Consistency: session (max_lag_ms=1000) |         Detail: Trigram Scan on sims using sims_trgm (number LIKE "x%") engine=substr mode=session applied_lsn=11 view_lag_ms=0.0 waited_ms=0.0 reason="view reached session lsn 11" |         Filter (rechecked on every candidate row): (number LIKE 'x%') |   Note: cost= and rows= are rough estimates from live row counts, not planner statistics |   Memory: query budget 2005 MB; sort/join/aggregate spill to temp files when exceeded (spill on)
+filter_hit   ms=[0.474 0.365 0.372 0.355 0.331]
+    plan: Limit  (cost=0.28..1.36 rows=100 width=32) |   ->  Index Scan using sims_cf on sims  (cost=0.28..108.30 rows=10000 width=32) |         Index Cond: carrier = 'viettel' AND status = 'available' AND price >= 200000 AND price <= 700000 |         Filter (rechecked): (((carrier = 'viettel') AND (status = 'available')) AND (price BETWEEN '200000' AND '700000')) |   Note: cost= and rows= are rough estimates from live row counts, not planner statistics |   Memory: query budget 2005 MB; sort/join/aggregate spill to temp files when exceeded (spill on)
+filter_miss  ms=[0.161 0.155 0.154 0.147 0.156]
+    plan: Limit  (cost=0.28..1.36 rows=100 width=32) |   ->  Index Scan using sims_cf on sims  (cost=0.28..108.30 rows=10000 width=32) |         Index Cond: carrier = 'viettel' AND status = 'available' AND price >= -2 AND price <= -1 |         Filter (rechecked): (((carrier = 'viettel') AND (status = 'available')) AND (price BETWEEN '-2' AND '-1')) |   Note: cost= and rows= are rough estimates from live row counts, not planner statistics |   Memory: query budget 2005 MB; sort/join/aggregate spill to temp files when exceeded (spill on)
+lookup       ms=[0.142 0.13 0.131 0.127 0.134]
+    plan: Index Scan using sims_pkey on sims  (cost=0.28..8.31 rows=1 width=32) |   Index Cond: primary key (number), 1 key(s) / range |   Filter (rechecked): (number = '0097772400') |   Note: cost= and rows= are rough estimates from live row counts, not planner statistics |   Memory: query budget 2005 MB; sort/join/aggregate spill to temp files when exceeded (spill on)
+[11:15:38] phase baseline begins
+[11:15:58] phase import_copy_merge begins
+[11:16:53] import copy_merge finished in 55.899s err=<nil>
+[11:16:53] phase import_batch_upsert begins
+[11:17:59] import batch_upsert finished in 1m5.233s err=<nil>
+[11:17:59] phase import_update_from begins
+[11:19:06] import update_from finished in 1m6.998s err=<nil>
+[11:19:06] phase after begins
+
+== history (quiesced) ==
+sim_history rows: 3399877
+history_of_one_sim_last200              0.49 ms err=<nil>
+history_of_one_sim_last200              0.26 ms err=<nil>
+history_of_one_sim_last200              0.22 ms err=<nil>
+history_of_one_sim_last200              0.21 ms err=<nil>
+history_of_one_sim_last200              0.19 ms err=<nil>
+history_last_60_days_count           1266.99 ms err=<nil>
+history_delete_older_than_60d        1206.22 ms err=<nil>
+
+== phase baseline (20.0s)
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           3       0.1   1412.42   3246.53   3246.53      0       0     0
+crm_revenue_by_day                    4       0.2    608.34   3280.21   3280.21      0       0     0
+es_combined                          44       2.2      7.06     11.18     11.18      0       0     0
+es_contains                          36       1.8      0.97      3.10      3.10      0       0     0
+es_facet_carrier                     37       1.8   1258.64   2855.97   2855.97      0       0     0
+es_prefix_count                      31       1.5     66.24   2944.29   2944.29      0       0     0
+es_pretty                            31       1.5   2548.06   4252.92   4252.92      0       0     0
+es_suffix                            22       1.1      2.49      5.90      5.90      0       0     0
+inv_sync                           1734      86.7      5.37     21.19     37.74      0       0     0
+order_process_cancel               1034      51.7      2.25     10.86     31.13      0       0     0
+order_process_pay                  4126     206.3      1.89     10.13     35.36      0       0     0
+order_reserve                     13239     661.9      2.38     11.71     52.90      0       1  2816
+order_reserve_hot                  9184     459.2      0.48      6.14     22.48      0       6  8896
+web_filter                           62       3.1      0.56      1.56      1.56      0       0     0
+web_lookup                           68       3.4      0.22      0.49      0.49      0       0     0
+web_prefix                           69       3.4      1.68      4.46      4.46      0       0     0
+
+== phase import_copy_merge (55.9s)  import 1000000 rows: 55.90s (17889 rows/s) err=""
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           8       0.1   2441.00   3677.16   3677.16      0       0     0
+crm_revenue_by_day                    7       0.1   1803.49   1983.76   1983.76      0       0     0
+es_combined                          56       1.0      7.08    758.53    758.53      0       0     0
+es_contains                          57       1.0      0.98      4.71      4.71      0       0     0
+es_facet_carrier                     54       1.0   1707.41   5110.85   5110.85      0       0     0
+es_prefix_count                      63       1.1   1588.55   5074.76   5074.76      0       0     0
+es_pretty                            65       1.2   2705.29   4814.45   4814.45      0       0     0
+es_suffix                            57       1.0      2.61      7.02      7.02      0       0     0
+import_history_write                  1       0.0  15602.22  15602.22  15602.22      0       0     0
+inv_sync                           2383      42.6      5.88     31.94   6155.52      0       1     0
+order_process_cancel               1435      25.7      2.43     14.52   2718.44      0       0     0
+order_process_pay                  5761     103.1      2.10     14.11   6142.16      0       2     0
+order_reserve                     19008     340.0      2.55     19.54   6144.31      0       8  4307
+order_reserve_hot                 12760     228.3      0.52      5.40    476.56      0       5 12703
+web_filter                          126       2.3      0.59      5.80      7.04      0       0     0
+web_lookup                          115       2.1      0.23      0.41      0.48      0       0     0
+web_prefix                          102       1.8      1.61   1167.02   1254.37      0       0     0
+
+== phase import_batch_upsert (65.2s)  import 1000000 rows: 65.23s (15330 rows/s) err=""
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           2       0.0  10761.03  25538.47  25538.47      0       0     0
+crm_revenue_by_day                    3       0.0   7838.98  17642.81  17642.81      0       0     0
+es_combined                          23       0.4     10.27     55.13     55.13      0       0     0
+es_contains                          16       0.2      1.20   5625.90   5625.90      0       0     0
+es_facet_carrier                     18       0.3   6600.44  18066.36  18066.36      0       0     0
+es_prefix_count                      18       0.3   6546.53  16380.21  16380.21      0       0     0
+es_pretty                            21       0.3   8258.83  24321.31  24321.31      0       0     0
+es_suffix                            24       0.4      4.57   5294.53   5294.53      0       0     0
+import_batch                        500       7.7    122.57    215.32    268.81      0       0     0
+import_history_write                500       7.7      2.48     10.01     24.95      0       0     0
+inv_sync                           4990      76.5      6.38     26.15   9170.28      0      18     0
+order_process_cancel               2780      42.6      2.94     15.90     34.38      0       0     0
+order_process_pay                 11569     177.3      2.56     16.12   9170.24      0       0     0
+order_reserve                     41507     636.3      2.42     16.08   9173.31      0       9 15827
+order_reserve_hot                 28290     433.7      0.49      6.96     21.30      0       2 28241
+web_filter                           44       0.7      0.67      5.00      5.00      0       0     0
+web_lookup                           53       0.8      0.24      5.28      5.28      0       0     0
+web_prefix                           35       0.5      2.32   7660.29   7660.29      0       0     0
+
+== phase import_update_from (67.0s)  import 1000000 rows: 67.00s (14926 rows/s) err=""
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           9       0.1   3056.59  13443.52  13443.52      0       0     0
+crm_revenue_by_day                    8       0.1    847.18   8269.86   8269.86      0       0     0
+es_combined                          68       1.0      9.89     30.28     30.28      0       0     0
+es_contains                          74       1.1      1.20   2877.07   2877.07      0       0     0
+es_facet_carrier                     59       0.9   1280.71  12091.87  12091.87      0       0     0
+es_prefix_count                      75       1.1   1243.49   7614.40   7614.40      0       0     0
+es_pretty                            62       0.9   3034.02  15133.40  15133.40      0       0     0
+es_suffix                            60       0.9      3.60  12496.52  12496.52      0       0     0
+import_history_write                  1       0.0  16530.44  16530.44  16530.44      0       0     0
+inv_sync                           3121      46.6      5.82     33.20  11077.96      0       1     0
+order_process_cancel               1858      27.7      2.40     18.89   5499.00      0       1     0
+order_process_pay                  7579     113.1      2.04     13.75  11077.14      0       1     0
+order_reserve                     25960     387.5      2.12     16.32  11077.10      0       8 10889
+order_reserve_hot                 17467     260.7      0.51      5.92     35.86      0       0 17446
+web_filter                          130       1.9      0.82      6.60     11.26      0       0     0
+web_lookup                          157       2.3      0.23      4.39      4.58      0       0     0
+web_prefix                          120       1.8      1.26   2850.50  12613.56      0       0     0
+
+== phase after (20.0s)
+op                                    n     ops/s     p50ms     p99ms     maxms   fail retries  lost
+crm_count_by_carrier_status           2       0.1   2837.67   4380.97   4380.97      0       0     0
+crm_revenue_by_day                    2       0.1   2133.08   3992.44   3992.44      1       0     0
+    error x1: context canceled
+es_combined                          23       1.1     10.86    146.05    146.05      0       0     0
+es_contains                          23       1.1      1.16      4.67      4.67      0       0     0
+es_facet_carrier                     18       0.9   1767.74   4200.16   4200.16      1       0     0
+    error x1: context canceled
+es_prefix_count                      18       0.9   2089.51   4100.36   4100.36      4       0     0
+    error x4: context canceled
+es_pretty                            20       1.0   3416.80   6636.53   6636.53      3       0     0
+    error x3: context canceled
+es_suffix                            24       1.2      3.43     11.97     11.97      0       0     0
+inv_sync                           1833      91.6      5.28     15.51     32.98      0       0     0
+order_process_cancel               1111      55.5      2.09      7.37     20.27      0       0     0
+order_process_pay                  4379     218.9      1.78      6.92     22.54      1       0     0
+    error x1: context canceled
+order_reserve                     14449     722.4      1.89      7.44     24.10      1       0  6265
+    error x1: timeout: context already done: context canceled
+order_reserve_hot                 10002     500.1      0.46      2.48     14.05      0       0  9993
+web_filter                           41       2.0      0.74      3.86      3.86      0       0     0
+web_lookup                           38       1.9      0.23      0.50      0.50      0       0     0
+web_prefix                           41       2.0      0.95      4.10      4.10      0       0     0
+
+== latency under import vs baseline (p50 / p99 ratio; >1 = slower)
+import_copy_merge:
+  web_prefix             p50 1.68 -> 1.61 ms (x1.0)   p99 4.46 -> 1167.02 ms (x261.6)   ops/s 3 -> 2
+  web_filter             p50 0.56 -> 0.59 ms (x1.1)   p99 1.56 -> 5.80 ms (x3.7)   ops/s 3 -> 2
+  web_lookup             p50 0.22 -> 0.23 ms (x1.1)   p99 0.49 -> 0.41 ms (x0.8)   ops/s 3 -> 2
+  order_reserve          p50 2.38 -> 2.55 ms (x1.1)   p99 11.71 -> 19.54 ms (x1.7)   ops/s 662 -> 340
+  order_reserve_hot      p50 0.48 -> 0.52 ms (x1.1)   p99 6.14 -> 5.40 ms (x0.9)   ops/s 459 -> 228
+  order_process_pay      p50 1.89 -> 2.10 ms (x1.1)   p99 10.13 -> 14.11 ms (x1.4)   ops/s 206 -> 103
+  order_process_cancel   p50 2.25 -> 2.43 ms (x1.1)   p99 10.86 -> 14.52 ms (x1.3)   ops/s 52 -> 26
+  inv_sync               p50 5.37 -> 5.88 ms (x1.1)   p99 21.19 -> 31.94 ms (x1.5)   ops/s 87 -> 43
+import_batch_upsert:
+  web_prefix             p50 1.68 -> 2.32 ms (x1.4)   p99 4.46 -> 7660.29 ms (x1717.2)   ops/s 3 -> 1
+  web_filter             p50 0.56 -> 0.67 ms (x1.2)   p99 1.56 -> 5.00 ms (x3.2)   ops/s 3 -> 1
+  web_lookup             p50 0.22 -> 0.24 ms (x1.1)   p99 0.49 -> 5.28 ms (x10.9)   ops/s 3 -> 1
+  order_reserve          p50 2.38 -> 2.42 ms (x1.0)   p99 11.71 -> 16.08 ms (x1.4)   ops/s 662 -> 636
+  order_reserve_hot      p50 0.48 -> 0.49 ms (x1.0)   p99 6.14 -> 6.96 ms (x1.1)   ops/s 459 -> 434
+  order_process_pay      p50 1.89 -> 2.56 ms (x1.4)   p99 10.13 -> 16.12 ms (x1.6)   ops/s 206 -> 177
+  order_process_cancel   p50 2.25 -> 2.94 ms (x1.3)   p99 10.86 -> 15.90 ms (x1.5)   ops/s 52 -> 43
+  inv_sync               p50 5.37 -> 6.38 ms (x1.2)   p99 21.19 -> 26.15 ms (x1.2)   ops/s 87 -> 76
+import_update_from:
+  web_prefix             p50 1.68 -> 1.26 ms (x0.7)   p99 4.46 -> 2850.50 ms (x639.0)   ops/s 3 -> 2
+  web_filter             p50 0.56 -> 0.82 ms (x1.5)   p99 1.56 -> 6.60 ms (x4.2)   ops/s 3 -> 2
+  web_lookup             p50 0.22 -> 0.23 ms (x1.1)   p99 0.49 -> 4.39 ms (x9.0)   ops/s 3 -> 2
+  order_reserve          p50 2.38 -> 2.12 ms (x0.9)   p99 11.71 -> 16.32 ms (x1.4)   ops/s 662 -> 387
+  order_reserve_hot      p50 0.48 -> 0.51 ms (x1.1)   p99 6.14 -> 5.92 ms (x1.0)   ops/s 459 -> 261
+  order_process_pay      p50 1.89 -> 2.04 ms (x1.1)   p99 10.13 -> 13.75 ms (x1.4)   ops/s 206 -> 113
+  order_process_cancel   p50 2.25 -> 2.40 ms (x1.1)   p99 10.86 -> 18.89 ms (x1.7)   ops/s 52 -> 28
+  inv_sync               p50 5.37 -> 5.82 ms (x1.1)   p99 21.19 -> 33.20 ms (x1.6)   ops/s 87 -> 47
+
+== invariants
+ok   sims row count: got 1300423 want 1300423 (initial 1000000 + new 300423) .. 1300423 (if failed imports applied part of their rows)
+ok   orders count == committed orders: db 74483 client 74483 (+1 with unknown outcome at stop)
+ok   orders were actually committed (workload ran): 74483 committed
+ok   sum(total of live orders) == sum(active item prices): 232366719000 vs 232366719000 (<nil> <nil>)
+ok   no number sold/held twice (live items per number <= 1): 88710 live numbers, 0 duplicated
+ok   reserved/sold sims == live items: sims held 88710, live items 88710, mismatched 0
+
+RESULT VALID (stask)
+exit 0

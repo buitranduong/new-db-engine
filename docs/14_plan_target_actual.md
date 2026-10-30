@@ -1072,3 +1072,13 @@ Giới hạn: tham số mảng `interval[]` và `time[]` nhị phân vẫn trả
 - `pg_stats` rỗng (không có thống kê cột).
 
 Tái lập: `cd ~/wt/pgres && D=/tmp/pgdiff-pgres PGP=28442 HP=28190 SP=28443 NAME=pgdiff-pgres scripts/pgdiff-run.sh`; `go test ./internal/pgwire -run 'TestBinaryArray|TestPgres'`; `go test ./internal/sql -run 'TestPgres|TestSQLView'`; `scripts/merge-gate.sh`.
+
+## Phụ lục N. Đo simbench 1M số trên bản gộp `main` ca82fc5 (2026-10-30, pha 1 của D31)
+- **Plan:** xác nhận bằng số đo end-to-end các cải tiến occfix2, commitfair, sqlgaps, colnumeric; so với PG16 cùng khối lượng. **Target:** STASK không tệ hơn PG16 quá 2× ở OLTP, nhanh hơn ở import và tìm kiếm.
+- **Cách đo:** `scripts/perf-run.sh scripts/simrun.sh {stask|pg} 1000000 1000000 m1-<sys>`, máy yên tĩnh (load1 < 1 khi bắt đầu), cả hai RESULT VALID. Kết quả: `docs/simrun/m1-*.txt`.
+- **Actual — import 1M dòng (3 cách):** STASK 71 s / 81 s / 83 s, đều thành công. PG16: 112 s / 181 s / `update_from` **lỗi deadlock (40P01)** sau 71 s. STASK nhanh hơn 1,5–2,2× và không deadlock.
+- **Actual — tìm kiếm (p50, baseline):** es_suffix 4,2 ms vs 219 ms; es_contains 1,8 vs 5,3; es_combined 8,9 vs 13,0. Nhưng es_pretty 1686 ms vs 295 ms (chậm 5,7×); crm_count_by_carrier_status 708 vs 483 ms.
+- **Actual — OLTP (p50, baseline):** order_reserve 10,0 vs 4,9 ms (244 vs 500 ops/s; p99 74 vs 14 ms); order_process_pay 8,5 vs 3,9; inv_sync 23,9 vs 17,3.
+- **Actual — độ trễ khi đang import (copy_merge):** PG gần như phẳng (web_lookup p50 0,47 → 0,36 ms). STASK suy giảm: web_lookup 0,68 → 3,11 ms (×4,6), web_filter ×4,0, order_reserve ×1,7, inv_sync p99 ×4,2 (519 ms).
+- **Invariants:** đúng cả 6 (không bán trùng số, tổng tiền khớp, số đơn khớp).
+- **Kết luận bằng chứng:** import và tìm kiếm hậu tố/chứa đạt mục tiêu; **OLTP chậm hơn PG ~2× (p50) và ~5× (p99) — chưa đạt mục tiêu**; độ trễ đọc khi import suy giảm 1,5–6× trong khi PG phẳng. Giả thuyết cần kiểm bằng profile (chưa kiểm): tranh chấp giữa import và đường ghi nhóm/commit của STASK; es_pretty do plan sắp xếp/giới hạn. Việc tiếp: profile order_reserve và web_lookup khi import.

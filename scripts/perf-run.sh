@@ -8,7 +8,7 @@ LOCK=/tmp/stask-perf.lock
 QL=${QUIET_LOAD:-1.0}; QW=${QUIET_WAIT:-600}
 exec 9>"$LOCK"
 flock -w "$QW" 9 || { echo "perf-run: another perf job holds $LOCK"; exit 3; }
-busy() { pgrep -f "merge-gate.sh|go test|go build|go vet|claimcheck|pgdiff-run" | grep -v "^$$\$" >/dev/null; }
+busy() { ps -eo pid=,comm= | awk -v me=$$ '$1!=me && ($2=="go" || $2 ~ /\.test$/ || $2=="claimcheck" || $2=="pgdiff" || $2=="vet" || $2=="compile" || $2=="link")' | grep -q .; }
 load1() { cut -d" " -f1 /proc/loadavg; }
 t=0
 while busy || awk -v l="$(load1)" -v q="$QL" "BEGIN{exit !(l>q)}"; do

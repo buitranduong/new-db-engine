@@ -87,8 +87,8 @@ func TestPlsqlDoBlocks(t *testing.T) {
 	}
 	// unsupported constructs fail clearly
 	for _, q := range []string{
-		`DO $$ BEGIN FOR i IN 1..3 LOOP NULL; END LOOP; END $$`,
-		`DO $$ BEGIN CASE WHEN true THEN NULL; END CASE; END $$`,
+		`DO $$ BEGIN FOREACH x IN ARRAY ARRAY[1] LOOP NULL; END LOOP; END $$`,
+		`DO $$ BEGIN GET DIAGNOSTICS n = ROW_COUNT; END $$`,
 	} {
 		if _, err := tryRun(s, q); err == nil || AsError(err).Code != codeFeature {
 			t.Errorf("%s: %v", q, err)

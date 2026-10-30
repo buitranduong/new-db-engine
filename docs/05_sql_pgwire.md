@@ -806,9 +806,11 @@ Thân là các câu `INSERT`, `UPDATE`, `DELETE`, `SELECT` (kể cả `WITH`); `
 
 **Giá phải trả.** `Engine.Triggers(bảng)` đọc một con trỏ nguyên tử tới map đã dựng sẵn (bị huỷ mỗi lần tạo/xoá trigger, dựng lại ở lần đọc sau; `gen` chặn lần dựng đua với thay đổi): bảng không có trigger chỉ tốn một lần tra map rỗng mỗi câu lệnh, không thêm cấp phát. Thân được biên dịch một lần cho mỗi định nghĩa (`NEW.col` thành tham số `$n`); mỗi lần chạy tốn chừng 5 µs cho một thân `INSERT` một dòng (`BenchmarkWriteTrigger`).
 
-**Catalog.** `pg_trigger` (tgtype theo bit của PG), `pg_class.relhastriggers`, `pg_tables.hastriggers`. `pg_get_triggerdef` trả NULL, `information_schema.triggers` còn trống.
+**Catalog.** `pg_trigger` (tgtype theo bit của PG), `pg_class.relhastriggers`, `pg_tables.hastriggers`. `pg_get_triggerdef` có từ nhánh `trigplsql`, `information_schema.triggers` còn trống.
 
-**Chưa làm.** `UPDATE OF col`, trigger mức câu lệnh, `INSTEAD OF` (cả trên view), `REFERENCING`, `RAISE(IGNORE)`, `CREATE FUNCTION`/`EXECUTE FUNCTION` (P7.2), trigger `DEFERRABLE`, `ALTER TABLE ... DISABLE TRIGGER`.
+**Hàm trigger PL/pgSQL (nhánh `trigplsql`, 2026-10-30, docs/14 Phụ lục W).** `CREATE TRIGGER name {BEFORE|AFTER} {INSERT|UPDATE [OF col,..]|DELETE} [OR ..] ON t [FOR EACH ROW|STATEMENT] [WHEN (..)] EXECUTE {FUNCTION|PROCEDURE} f(args)` với `f` là hàm `RETURNS trigger` (`LANGUAGE plpgsql`): `NEW`/`OLD`, `TG_OP TG_NAME TG_TABLE_NAME TG_WHEN TG_LEVEL TG_ARGV`, `RETURN NEW|OLD|NULL` (BEFORE ROW: NULL bỏ dòng), `RAISE EXCEPTION` huỷ câu lệnh với đúng SQLSTATE; chạy trong giao dịch của câu lệnh. `UPDATE OF` bắn theo danh sách SET như PG. `pg_proc`, `pg_get_functiondef`, `pg_get_triggerdef`, `pg_trigger.tgfoid/tgattr` có dữ liệu. Giới hạn: AFTER ROW chạy ngay sau từng dòng (PG xếp hàng đến cuối câu lệnh), mức câu lệnh không cho COPY/MERGE, không dùng nguyên bản ghi `NEW`/`OLD` (`to_jsonb(NEW)`).
+
+**Chưa làm.** `INSTEAD OF` (cả trên view), `REFERENCING`, sự kiện `TRUNCATE`, `RAISE(IGNORE)`, trigger `DEFERRABLE`, `ALTER TABLE ... DISABLE TRIGGER`.
 
 **Kiểm chứng.** `internal/sql/trigger_test.go` (AFTER và mọi dạng ghi, BEFORE `SET`/`RAISE`, rollback, đệ quy, DDL và lỗi, tham số, khôi phục qua replay và checkpoint, CDC, COPY, catalog), `internal/repl/trigger_repl_test.go` (replica), `BenchmarkWriteNoTrigger`/`BenchmarkWriteTrigger`.
 ## 21. Index phụ, UNIQUE và khoá ngoại (2026-10-29)

@@ -671,11 +671,14 @@ func (ci *CopyIn) store(f []copyField) error {
 	tgs := ci.s.E.Triggers(t.Name) // row triggers (trigger.go)
 	if tgs != nil {
 		var err error
-		if row, err = ci.s.fireTriggers(ci.tx, t, tgs, "before", "insert", nil, row); err != nil {
+		var skip bool
+		if row, skip, err = ci.s.fireTriggers(ci.tx, t, tgs, "before", "insert", nil, row); err != nil {
 			return err
+		} else if skip {
+			return nil
 		}
 	}
-	if ci.own {
+	if ci.own && tgs == nil { // with triggers the rows are plain writes: a trigger's writes cannot follow an InsertUnique batch
 		key := t.KeyOf(row)
 		if _, dup := ci.seen[key]; dup {
 			return dupKeyErr(t, key)
@@ -701,7 +704,7 @@ func (ci *CopyIn) store(f []copyField) error {
 		}
 	}
 	if tgs != nil {
-		if _, err := ci.s.fireTriggers(ci.tx, t, tgs, "after", "insert", nil, row); err != nil {
+		if _, _, err := ci.s.fireTriggers(ci.tx, t, tgs, "after", "insert", nil, row); err != nil {
 			return err
 		}
 	}

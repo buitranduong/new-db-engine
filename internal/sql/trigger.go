@@ -41,9 +41,12 @@ import (
 // body is compiled once per definition (NEW.col / OLD.col become $n
 // parameters bound at each firing) and kept with the cached definition.
 //
-// Not supported: statement-level triggers, INSTEAD OF, UPDATE OF, WHEN
-// with OLD in an INSERT trigger or NEW in a DELETE trigger, TRUNCATE
-// triggers, and ALTER TABLE ... RENAME of a table that has triggers.
+// Triggers can also name a PL/pgSQL function (EXECUTE FUNCTION f(args), trigfunc.go) and be
+// UPDATE OF col or FOR EACH STATEMENT.
+//
+// Not supported: INSTEAD OF, WHEN with OLD in an INSERT trigger or NEW in a
+// DELETE trigger, TRUNCATE triggers, and ALTER TABLE ... RENAME of a table
+// that has triggers.
 
 const maxTriggerDepth = 16
 
@@ -55,8 +58,12 @@ type CreateTrigger struct {
 	Timing      string // before, after
 	Events      []string
 	Table       string
-	When        string // SQL text, "" if none
-	Body        string // SQL text between BEGIN and END
+	When        string   // SQL text, "" if none
+	Body        string   // SQL text between BEGIN and END
+	Func        string   // EXECUTE FUNCTION name(args): the trigger function ("" for an SQL body)
+	Args        []string // its arguments (TG_ARGV)
+	Level       string   // "row" or "statement"
+	UpdateOf    []string // UPDATE OF col, ...
 }
 
 // DropTrigger is DROP TRIGGER [IF EXISTS] name [ON table].
@@ -104,8 +111,19 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 			ev = "delete"
 		case p.acceptKw("update"):
 			ev = "update"
-			if p.isKw("of") {
-				return nil, true, errf(codeFeature, "UPDATE OF column triggers are not supported")
+			if p.acceptKw("of") {
+				for {
+					col, err := p.ident()
+					if err != nil {
+						return nil, true, err
+					}
+					if !slices.Contains(c.UpdateOf, col) {
+						c.UpdateOf = append(c.UpdateOf, col)
+					}
+					if !p.acceptOp(",") {
+						break
+					}
+				}
 			}
 		case p.isKw("truncate"):
 			return nil, true, errf(codeFeature, "TRUNCATE triggers are not supported")
@@ -127,12 +145,17 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 	}
 	if p.acceptKw("for") {
 		p.acceptKw("each")
-		if p.isKw("statement") {
-			return nil, true, errf(codeFeature, "statement-level triggers are not supported")
+		switch {
+		case p.acceptKw("statement"):
+			c.Level = "statement"
+		case p.acceptKw("row"):
+			c.Level = "row"
+		default:
+			return nil, true, p.errHere("syntax error at or near %q (expected ROW or STATEMENT)", p.peek().s)
 		}
-		if err := p.expectKw("row"); err != nil {
-			return nil, true, err
-		}
+	}
+	if len(c.UpdateOf) > 0 && !slices.Contains(c.Events, "update") {
+		return nil, true, errf(codeFeature, "UPDATE OF can only be used with UPDATE events")
 	}
 	if p.acceptKw("when") {
 		if err := p.expectOp("("); err != nil {
@@ -157,8 +180,40 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 			return nil, true, p.errHere("syntax error: empty WHEN condition")
 		}
 	}
-	if p.isKw("execute") || p.isKw("referencing") {
-		return nil, true, errf(codeFeature, "only triggers with an SQL body (BEGIN ... END) are supported; there is no CREATE FUNCTION")
+	if p.isKw("referencing") {
+		return nil, true, errf(codeFeature, "REFERENCING (transition tables) is not supported")
+	}
+	if p.acceptKw("execute") {
+		if !p.acceptKw("function") && !p.acceptKw("procedure") {
+			return nil, true, p.errHere("syntax error at or near %q (expected FUNCTION or PROCEDURE)", p.peek().s)
+		}
+		names, err := p.dottedName()
+		if err != nil {
+			return nil, true, err
+		}
+		c.Func = names[len(names)-1]
+		if err := p.expectOp("("); err != nil {
+			return nil, true, err
+		}
+		for !p.acceptOp(")") {
+			if len(c.Args) > 0 {
+				if err := p.expectOp(","); err != nil {
+					return nil, true, err
+				}
+			}
+			t := p.next()
+			if t.k != tString && t.k != tNumber && t.k != tIdent && t.k != tQuoted {
+				return nil, true, p.errHere("syntax error at or near %q in trigger arguments", t.s)
+			}
+			c.Args = append(c.Args, t.s)
+		}
+		if c.Level == "" {
+			c.Level = "statement" // PostgreSQL default
+		}
+		return c, true, nil
+	}
+	if c.Level == "" {
+		c.Level = "row" // the SQL-body form (SQLite style) is row-level unless FOR EACH STATEMENT says otherwise
 	}
 	if err := p.expectKw("begin"); err != nil {
 		return nil, true, err
@@ -452,6 +507,9 @@ func compileTrigger(t *schema.Table, tg *core.Trigger) (*trigProg, error) {
 	c := &trigCompiler{t: t, tg: tg, before: tg.Timing == "before"}
 	c.hasNew = slices.Contains(tg.Events, "insert") || slices.Contains(tg.Events, "update")
 	c.hasOld = slices.Contains(tg.Events, "update") || slices.Contains(tg.Events, "delete")
+	if tg.Statement() {
+		c.hasNew, c.hasOld = false, false
+	}
 	c.isDelet = !c.hasNew
 	p := &trigProg{}
 	if tg.When != "" {
@@ -459,13 +517,21 @@ func compileTrigger(t *schema.Table, tg *core.Trigger) (*trigProg, error) {
 		if err != nil {
 			return nil, err
 		}
+		// PostgreSQL: NEW is invalid in the WHEN of a trigger with a DELETE event, OLD with an INSERT event
+		bn, bo := c.hasNew, c.hasOld
+		c.hasNew, c.hasOld = !slices.Contains(tg.Events, "delete") && c.hasNew, !slices.Contains(tg.Events, "insert") && c.hasOld
 		txt, err := c.rewrite(tg.When, toks, 0, len(toks)-1)
+		c.hasNew, c.hasOld = bn, bo
 		if err != nil {
 			return nil, err
 		}
 		if p.when, err = c.parse("SELECT (" + txt + ")"); err != nil {
 			return nil, err
 		}
+	}
+	if tg.Func != "" {
+		p.refs = c.refs
+		return p, nil
 	}
 	toks, err := lex(tg.Body)
 	if err != nil {
@@ -535,22 +601,51 @@ func (s *Session) trigTrue(tx *core.Tx, st Stmt, params []Datum) (bool, error) {
 	return len(res.Rows) > 0 && len(res.Rows[0]) > 0 && res.Rows[0][0].Bool(), nil
 }
 
-// fireTriggers runs the triggers of a table for one row and returns the
-// row to write: NEW as the BEFORE triggers left it (nw itself if none
-// changed it). The AFTER triggers' result is nw.
+// runStep runs one step of an SQL-body trigger. It returns the NEW row after a SET NEW.col step
+// (nw itself if the step did not change it).
+func (s *Session) runStep(tx *core.Tx, t *schema.Table, step trigStep, params []Datum, nw schema.Row, changed *bool) error {
+	switch step.kind {
+	case stepRun:
+		var err error
+		switch step.st.(type) {
+		case *Select, *SetOp:
+			_, err = s.runQuery(tx, step.st, params)
+		default:
+			_, err = s.runHere(tx, step.st, params)
+		}
+		return err
+	case stepRaise:
+		if step.st != nil {
+			if ok, err := s.trigTrue(tx, step.st, params); err != nil {
+				return err
+			} else if !ok {
+				return nil
+			}
+		}
+		return errf("P0001", "%s", step.msg)
+	}
+	return nil
+}
+
+// fireTriggers runs the row triggers of a table for one row and returns the row to write: NEW
+// as the BEFORE triggers left it (nw itself if none changed it). skip is true when a BEFORE
+// trigger returned NULL: the row is not written. The AFTER triggers' result is nw.
 func (s *Session) fireTriggers(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, timing, event string,
-	old, nw schema.Row) (schema.Row, error) {
+	old, nw schema.Row) (schema.Row, bool, error) {
 	if s.noTrig {
-		return nw, nil
+		return nw, false, nil
 	}
 	entered := false
 	for _, tg := range tgs {
-		if !tg.Fires(timing, event) {
+		if tg.Statement() || !tg.Fires(timing, event) {
+			continue
+		}
+		if len(tg.UpdateOf) > 0 && event == "update" && !s.updateOfHit(t, tg, old, nw) {
 			continue
 		}
 		if !entered {
 			if s.trigDepth >= maxTriggerDepth {
-				return nil, errf("54001", "stack depth limit exceeded: triggers of %q nested more than %d levels", t.Name, maxTriggerDepth)
+				return nil, false, errf("54001", "stack depth limit exceeded: triggers of %q nested more than %d levels", t.Name, maxTriggerDepth)
 			}
 			s.trigDepth++
 			defer func() { s.trigDepth-- }()
@@ -558,85 +653,88 @@ func (s *Session) fireTriggers(tx *core.Tx, t *schema.Table, tgs []*core.Trigger
 		}
 		prog, err := progOf(t, tg)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if prog.when != nil {
 			params, err := prog.params(t, old, nw)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if ok, err := s.trigTrue(tx, prog.when, params); err != nil {
-				return nil, err
+				return nil, false, err
 			} else if !ok {
 				continue
 			}
+		}
+		if tg.Func != "" {
+			out, skip, err := s.runTriggerFunc(tx, t, tg, timing, event, old, nw)
+			if err != nil {
+				return nil, false, err
+			}
+			if skip {
+				return nil, true, nil
+			}
+			if out != nil {
+				if err := checkRow(t, out); err != nil {
+					return nil, false, err
+				}
+				nw = out
+			}
+			continue
 		}
 		changed := false
 		for _, step := range prog.steps {
 			params, err := prog.params(t, old, nw)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			switch step.kind {
-			case stepRun:
-				switch step.st.(type) {
-				case *Select, *SetOp:
-					_, err = s.runQuery(tx, step.st, params)
-				default:
-					_, err = s.runHere(tx, step.st, params)
+			if step.kind != stepSet {
+				if err := s.runStep(tx, t, step, params, nw, &changed); err != nil {
+					return nil, false, err
 				}
-				if err != nil {
-					return nil, err
+				continue
+			}
+			res, err := s.runQuery(tx, step.st, params)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(res.Rows) != 1 {
+				return nil, false, errf(codeInternal, "SET NEW.column did not produce a row")
+			}
+			if !changed {
+				nw = append(schema.Row(nil), nw...)
+				changed = true
+			}
+			for i, col := range step.cols {
+				ci, ok := t.Col(col)
+				if !ok {
+					return nil, false, errf(codeUndefinedColumn, "column %q of relation %q does not exist", col, t.Name)
 				}
-			case stepRaise:
-				if step.st != nil {
-					if ok, err := s.trigTrue(tx, step.st, params); err != nil {
-						return nil, err
-					} else if !ok {
-						continue
-					}
-				}
-				return nil, errf("P0001", "%s", step.msg)
-			case stepSet:
-				res, err := s.runQuery(tx, step.st, params)
-				if err != nil {
-					return nil, err
-				}
-				if len(res.Rows) != 1 {
-					return nil, errf(codeInternal, "SET NEW.column did not produce a row")
-				}
-				if !changed {
-					nw = append(schema.Row(nil), nw...)
-					changed = true
-				}
-				for i, col := range step.cols {
-					ci, ok := t.Col(col)
-					if !ok {
-						return nil, errf(codeUndefinedColumn, "column %q of relation %q does not exist", col, t.Name)
-					}
-					if nw[ci], err = toValueCol(&t.Columns[ci], res.Rows[0][i]); err != nil {
-						return nil, err
-					}
+				if nw[ci], err = toValueCol(&t.Columns[ci], res.Rows[0][i]); err != nil {
+					return nil, false, err
 				}
 			}
 		}
 		if changed {
 			if err := checkRow(t, nw); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 	}
-	return nw, nil
+	return nw, false, nil
 }
 
 // updateRow writes the new version upd of the row old (changing the key
 // if the update did) around the BEFORE and AFTER UPDATE triggers tgs (nil:
-// none). It returns the row written.
+// none). It returns the row written, nil if a BEFORE trigger skipped the row.
 func (s *Session) updateRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, old, upd schema.Row) (schema.Row, error) {
 	var err error
 	if tgs != nil {
-		if upd, err = s.fireTriggers(tx, t, tgs, "before", "update", old, upd); err != nil {
+		var skip bool
+		if upd, skip, err = s.fireTriggers(tx, t, tgs, "before", "update", old, upd); err != nil {
 			return nil, err
+		} else if skip {
+			return nil, nil
 		}
 	}
 	if ok, nk := t.KeyOf(old), t.KeyOf(upd); ok != nk {
@@ -664,28 +762,31 @@ func (s *Session) updateRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, o
 		return nil, err
 	}
 	if tgs != nil {
-		if _, err := s.fireTriggers(tx, t, tgs, "after", "update", old, upd); err != nil {
+		if _, _, err := s.fireTriggers(tx, t, tgs, "after", "update", old, upd); err != nil {
 			return nil, err
 		}
 	}
 	return upd, nil
 }
 
-// deleteRow deletes the row r around the DELETE triggers tgs (nil: none).
-func (s *Session) deleteRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, r schema.Row) error {
+// deleteRow deletes the row r around the DELETE triggers tgs (nil: none). It returns false if a
+// BEFORE trigger skipped the row.
+func (s *Session) deleteRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, r schema.Row) (bool, error) {
 	if tgs != nil {
-		if _, err := s.fireTriggers(tx, t, tgs, "before", "delete", r, nil); err != nil {
-			return err
+		if _, skip, err := s.fireTriggers(tx, t, tgs, "before", "delete", r, nil); err != nil {
+			return false, err
+		} else if skip {
+			return false, nil
 		}
 	}
 	if err := tx.Delete(t.Name, t.KeyOf(r)); err != nil {
-		return err
+		return false, err
 	}
 	if tgs != nil {
-		_, err := s.fireTriggers(tx, t, tgs, "after", "delete", r, nil)
-		return err
+		_, _, err := s.fireTriggers(tx, t, tgs, "after", "delete", r, nil)
+		return true, err
 	}
-	return nil
+	return true, nil
 }
 
 // ---- statements ----
@@ -715,7 +816,21 @@ func (s *Session) createTrigger(st *CreateTrigger) (*Result, error) {
 		}
 		return nil, errf(codeDuplicateObject, "trigger %q for relation %q already exists", st.Name, st.Table)
 	}
-	tg := &core.Trigger{Name: st.Name, Table: st.Table, Timing: st.Timing, Events: st.Events, When: st.When, Body: st.Body}
+	tg := &core.Trigger{Name: st.Name, Table: st.Table, Timing: st.Timing, Events: st.Events, When: st.When, Body: st.Body,
+		Func: st.Func, Args: st.Args, Level: st.Level, UpdateOf: st.UpdateOf}
+	for _, c := range tg.UpdateOf {
+		if _, ok := t.Schema().Col(c); !ok {
+			return nil, errf(codeUndefinedColumn, "column %q of relation %q does not exist", c, st.Table)
+		}
+	}
+	if tg.Func != "" {
+		if err := s.validateTriggerFunc(tg.Func); err != nil {
+			return nil, err
+		}
+	}
+	if tg.Statement() && st.When != "" && strings.Contains(strings.ToLower(st.When), "new.") {
+		return nil, errf("0A000", "statement-level trigger cannot have columns in its WHEN condition")
+	}
 	if _, err := compileTrigger(t.Schema(), tg); err != nil {
 		return nil, err
 	}
@@ -784,6 +899,9 @@ func pgTriggerRows(c *catSnap) [][]Datum {
 			continue
 		}
 		typ := int64(1)
+		if tg.Statement() {
+			typ = 0
+		}
 		if tg.Timing == "before" {
 			typ |= 2
 		}
@@ -794,9 +912,27 @@ func pgTriggerRows(c *catSnap) [][]Datum {
 		if tg.When != "" {
 			qual = TextD(tg.When)
 		}
-		rows = append(rows, []Datum{IntD(trigOID(tg.Table, tg.Name)), IntD(rel), IntD(0), TextD(tg.Name), IntD(0),
-			IntD(typ), TextD("O"), BoolD(false), IntD(0), IntD(0), IntD(0), BoolD(false), BoolD(false), IntD(0),
-			Null, TextD(""), qual, Null, Null})
+		var foid int64
+		if tg.Func != "" {
+			foid = funcOID(tg.Func)
+		}
+		attr := vecText() // int2vector of the UPDATE OF columns, empty if none
+		if len(tg.UpdateOf) > 0 {
+			var nums []int
+			for _, uc := range tg.UpdateOf {
+				for _, t := range c.tables {
+					if t.Name == tg.Table {
+						if i, ok := t.Col(uc); ok {
+							nums = append(nums, t.Columns[i].Num)
+						}
+					}
+				}
+			}
+			attr = vecText(nums...)
+		}
+		rows = append(rows, []Datum{IntD(trigOID(tg.Table, tg.Name)), IntD(rel), IntD(0), TextD(tg.Name), IntD(foid),
+			IntD(typ), TextD("O"), BoolD(false), IntD(0), IntD(0), IntD(0), BoolD(false), BoolD(false), IntD(int64(len(tg.Args))),
+			attr, TextD(""), qual, Null, Null})
 	}
 	return rows
 }

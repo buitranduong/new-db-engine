@@ -32,7 +32,8 @@ liquibase/run.sh pg;  liquibase/run.sh stask # 17-step Liquibase scenario, one f
 liquibase/compare.sh                         # update on both, diff catalog + data seen through psql
 liquibase/stmts.sh                           # every statement Liquibase+pgjdbc send, from the SERVER logs (staskd -slow-query 1ns, pg log_statement)
 LB_FILTER= liquibase/run.sh stask            # no label filter: shows the raw first failure
-liquibase/lb.sh stask --changelog-file=known-fail/blob-oid.xml update    # Liquibase BLOB -> OID
+LB_CHANGELOG=known-fail/blob-oid.xml liquibase/lb.sh stask update           # Liquibase BLOB -> OID (one --changelog-file only: the script takes it from LB_CHANGELOG)
+liquibase/txddl.sh                           # txddl2: a changeSet that fails half way must leave nothing behind (DROP TABLE x; CREATE TABLE x ...), pg vs stask diff (0 lines expected)
 . ./lib.sh && rc_psql stask < liquibase/gaps.sql; rc_psql pg < liquibase/gaps.sql   # the failing statements, VERBOSITY verbose (SQLSTATE + source line)
 jdbc/run.sh                                  # 94 JDBC operations; diff of pg vs stask
 sqla/run.sh                                  # 107 SQLAlchemy/psycopg2 operations (incl. 36 Superset-style queries); diff of pg vs stask
@@ -75,7 +76,7 @@ Statements that fail on STASK (and succeed on PG):
 Silent differences seen by Liquibase users: `CONSTRAINT PK_SIM PRIMARY KEY` is stored as `sim_pkey` (name ignored; PG keeps `pk_sim`), so name-based `dropPrimaryKey` and Jmix diffs would not match;
 `pg_constraint.conrelid::regclass::text` returns the numeric OID (`16388`) instead of the table name; `information_schema.columns.column_default` drops the cast (`'NEW'` vs `'NEW'::character varying`) and prints `TRUE` for `true`;
 `information_schema.columns` types of a view are all `text`; the 22 `DATABASECHANGELOG` rows and MD5 sums are identical to PG.
-DDL is not transactional (JDBC probe `jmix/transaction w/ DDL`: a `CREATE TABLE` inside a rolled-back transaction survives), which matters when a Liquibase changeset with several statements fails half way.
+DDL was not transactional (JDBC probe `jmix/transaction w/ DDL`: a `CREATE TABLE` inside a rolled-back transaction survived), which mattered when a Liquibase changeset with several statements failed half way. Since branches `txddl` and `txddl2` it is (docs/05 "DDL trong giao dich"); `liquibase/txddl.sh` checks it against PG.
 
 ### JDBC and SQLAlchemy failures
 

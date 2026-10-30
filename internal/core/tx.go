@@ -418,15 +418,27 @@ func (tx *Tx) Commit() (uint64, error) {
 		}
 		return tx.snap, nil
 	}
-	r := &commitReq{ops: tx.writes, reads: tx.reads, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
-		onCommit: tx.onCommit}
-	for k := range tx.shares {
-		r.shares = append(r.shares, k)
+	for try := 0; ; try++ {
+		// writes encoded before an ALTER TABLE / CREATE INDEX (of this
+		// transaction or of another session) are re-encoded (alterwrites.go)
+		n, rerr := tx.reencodeStale()
+		if rerr != nil {
+			return 0, rerr
+		}
+		r := &commitReq{ops: tx.writes, reads: tx.reads, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
+			onCommit: tx.onCommit}
+		for k := range tx.shares {
+			r.shares = append(r.shares, k)
+		}
+		err := tx.e.submit(r)
+		if err == ErrConflict && try < 3 && (n > 0 || tx.hasStale()) {
+			continue // an ALTER came in between: encode again
+		}
+		if err != nil {
+			return 0, err
+		}
+		return r.lsn, nil
 	}
-	if err := tx.e.submit(r); err != nil {
-		return 0, err
-	}
-	return r.lsn, nil
 }
 
 // decodeOwn decodes a write of this transaction with the table's current

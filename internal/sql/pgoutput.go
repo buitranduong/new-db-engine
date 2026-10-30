@@ -294,6 +294,9 @@ func arrayOID(ek Kind, typ string) uint32 {
 
 // elemOID is the element type of an array type.
 func elemOID(arr uint32) uint32 {
+	if e := ArrayElemOID(arr); e != 0 {
+		return e
+	}
 	if t, ok := pgTypeByOID[int64(arr)]; ok && t.elem != 0 {
 		return uint32(t.elem)
 	}

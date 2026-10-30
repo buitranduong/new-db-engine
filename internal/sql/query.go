@@ -298,7 +298,7 @@ func (b *binder) resolve(cr *ColRef) (Expr, error) {
 					s.lvl.mark()
 				}
 			}
-			return &OuterRef{Depth: depth, I: idx}, nil
+			return &OuterRef{Depth: depth, I: idx, K: sc.cols[idx].kind, Ty: sc.cols[idx].ty}, nil
 		}
 		if cr.Table == "" {
 			if x, ok := sc.scalars[cr.Name]; ok {
@@ -615,7 +615,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				return e.plan.outCols()[0].ty, true
 			}
 			return pgTy{}, true
-		case *OuterRef, *groupingFn:
+		case *OuterRef:
+			return e.Ty, true
+		case *groupingFn:
 			return pgTy{}, true
 		}
 		return pgTy{}, false
@@ -837,6 +839,11 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			}
 			sk = append(sk, funcKind(f.Name, ak))
 			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: a.args}, slotTy).forKind(sk[len(sk)-1]))
+			if sk[len(sk)-1] == KArray {
+				if at := arrTyFor(&Func{Name: f.Name, Args: a.args}, func(x Expr) Kind { return staticKind(x, sk[:p.nFrom]) }, slotTy); at.oid != 0 {
+					st2[len(st2)-1] = at
+				}
+			}
 		}
 		gi.setSlot = slot
 		slot++
@@ -892,6 +899,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		post = &wb
 	}
 	srfBase := slot
+	var srfErr error
 	for _, it := range items {
 		x := it.X
 		if !hasAggOrWin(x) {
@@ -903,9 +911,24 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		}
 		// set-returning functions in the select list expand rows
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) {
-			if f, ok := e.(*Func); ok && (f.Name == "generate_series" || f.Name == "unnest") {
+			if f, ok := e.(*Func); ok && isJSONArrSRF(f.Name) && f.Over == nil {
+				if d, multi := srfDefs[f.Name]; multi && len(d.cols) > 1 {
+					srfErr = errf(codeFeature, "%s in the select list is not supported; use FROM %s(...)", f.Name, f.Name)
+				}
+				return srfCall(f, 0, false), true
+			}
+			return nil, false
+		})
+		if srfErr != nil {
+			return nil, srfErr
+		}
+		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) {
+			if f, ok := e.(*Func); ok && (f.Name == "generate_series" || f.Name == "unnest" || f.Name == "stask_srf") {
 				p.srfs = append(p.srfs, f)
 				k, t := KNull, pgTy{}
+				if f.Name == "stask_srf" {
+					k, t = srfKind(f, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
+				}
 				if f.Name == "generate_series" && len(f.Args) >= 2 {
 					switch ak := staticKind(f.Args[0], sk); ak {
 					case KInt:
@@ -925,7 +948,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		})
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) { // pg_typeof knows static types
 			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
-				if n := staticTypeName(f.Args[0], inferTy(f.Args[0], slotTy), staticKind(f.Args[0], sk)); n != "" {
+				ptk, ptt := staticKind(f.Args[0], sk), inferTy(f.Args[0], slotTy)
+				ptk, ptt = jsonarrCol(f.Args[0], ptk, ptt, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
+				if n := staticTypeName(f.Args[0], ptt, ptk); n != "" {
 					return &Lit{TextD(n)}, true
 				}
 			}
@@ -934,7 +959,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		markWidths(bx, slotTy)
 		p.items = append(p.items, bx)
 		ik := staticKind(bx, sk)
-		p.cols = append(p.cols, relCol{name: itemName(it), kind: ik, ty: inferTy(bx, slotTy).forKind(ik)})
+		ity := inferTy(bx, slotTy).forKind(ik)
+		ik, ity = jsonarrCol(bx, ik, ity, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
+		p.cols = append(p.cols, relCol{name: itemName(it), kind: ik, ty: ity})
 	}
 	// ORDER BY: output columns by position or name, else expressions
 	for _, o := range st.OrderBy {
@@ -1395,7 +1422,14 @@ func staticKind(x Expr, kinds []Kind) Kind {
 		case "and", "or", "=", "<>", "<", "<=", ">", ">=":
 			return KBool
 		case "||":
+			if k, ok := jsonarrBinKind("||", staticKind(e.L, kinds), staticKind(e.R, kinds)); ok {
+				return k
+			}
 			return KText
+		case "-":
+			if k, ok := jsonarrBinKind("-", staticKind(e.L, kinds), staticKind(e.R, kinds)); ok {
+				return k
+			}
 		case "^":
 			if l, r := staticKind(e.L, kinds), staticKind(e.R, kinds); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
 				return KNumeric
@@ -1427,6 +1461,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 		return KBool
 	case *groupingFn:
 		return KInt
+	case *OuterRef:
+		return e.K
 	case *boundSub:
 		if e.kind == "scalar" {
 			return e.plan.outCols()[0].kind
@@ -1942,6 +1978,9 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		}
 		return vp, nil
 	case *FromFunc:
+		if sub := srfFrom(f); sub != nil {
+			return c.compileFrom(sub, sc, lvl, lat)
+		}
 		return c.compileTableFunc(f, here)
 	case *FromJoin:
 		l, err := c.compileFrom(f.L, sc, lvl, lat)
@@ -2464,6 +2503,9 @@ const funcTickEvery = 4096
 
 // tableFuncRows is the rows of a set-returning function over its arguments.
 func tableFuncRows(name string, args []Datum, tick funcTick) ([][]Datum, error) {
+	if name == "stask_srf" {
+		return srfSelect(args)
+	}
 	const maxRows = 100_000_000
 	var out [][]Datum
 	// emit appends a row and ticks every funcTickEvery rows

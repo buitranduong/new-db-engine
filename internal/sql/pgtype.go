@@ -53,6 +53,9 @@ type pgTy struct {
 
 // specTy reads the spelling the parser recorded (Cast.PG, Column.PG).
 func specTy(spec string) pgTy {
+	if strings.HasSuffix(spec, "[]") {
+		return arraySpecTy(spec)
+	}
 	name, n := spec, -1
 	if i := strings.IndexByte(spec, '('); i > 0 && strings.HasSuffix(spec, ")") {
 		name = spec[:i]
@@ -109,6 +112,9 @@ func colKind(c *schema.Column) Kind {
 
 // family is the Kind whose values a type's OID describes.
 func (t pgTy) family() Kind {
+	if isArrayTyOID(t.oid) {
+		return KArray
+	}
 	switch t.oid {
 	case tyInt2, tyInt4, tyInt8:
 		return KInt
@@ -230,6 +236,11 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		if e.Over != nil && !tySameAsArg[e.Name] && e.Name != "ntile" {
 			return pgTy{}
 		}
+		if jsonarrNames[e.Name] || e.Name == "array_agg" {
+			if t := arrTyFor(e, func(Expr) Kind { return KNull }, leaf); t.oid != 0 {
+				return t
+			}
+		}
 		switch {
 		case tyInt4Fn[e.Name]:
 			return pgTy{oid: tyInt4, mod: -1}
@@ -294,6 +305,11 @@ func commonTy(ts []pgTy, args []Expr) pgTy {
 // pgTypeName is the name format_type and pg_typeof print for t, or "" when
 // t is not known.
 func pgTyName(t pgTy) string {
+	if IsArrayOID(t.oid) {
+		if n := pgTyName(pgTy{oid: ArrayElemOID(t.oid)}); n != "" {
+			return n + "[]"
+		}
+	}
 	switch t.oid {
 	case tyBool:
 		return "boolean"
@@ -355,6 +371,9 @@ func formatType(oid uint32, mod int32) string {
 
 // castName is the name PostgreSQL gives an unnamed cast column: the type.
 func castName(c *Cast) string {
+	if n := arrayCastName(c); n != "" {
+		return n
+	}
 	if t := specTy(c.PG); t.oid != 0 {
 		switch t.oid {
 		case tyVarchar:
@@ -403,7 +422,11 @@ func tableCol(c *schema.Column) Column {
 
 // itemCol is the result column of a select item over a single table.
 func itemCol(it SelItem, sc *scope, pk map[int]Kind) Column {
-	return Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}.withTy(inferTy(it.X, sc.leafTy))
+	c := Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}.withTy(inferTy(it.X, sc.leafTy))
+	if k, t := jsonarrCol(it.X, c.Kind, pgTy{}, func(x Expr) Kind { return typeOf(x, sc, pk) }, sc.leafTy); t.oid != 0 {
+		c.Kind, c.OID, c.Mod = k, t.oid, t.mod
+	}
+	return c
 }
 
 // TimeOfDayMicros reads a time of day ("10:30", "10:30:45.5") as

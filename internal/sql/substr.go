@@ -114,7 +114,7 @@ func (p *parser) createSubstrIndex() (st Stmt, ok bool, err error) {
 		if err != nil {
 			return nil, true, err
 		}
-		if (m == "gin" || m == "gist") && !strings.HasSuffix(strings.ToLower(oc), "_trgm_ops") {
+		if (m == "gin" || m == "gist") && !strings.HasSuffix(strings.ToLower(oc), "_trgm_ops") && !ginOpClasses[strings.ToLower(oc)] {
 			return nil, true, errf(codeFeature, "operator class %q is not supported (only gin_trgm_ops, gist_trgm_ops)", oc)
 		}
 	}
@@ -188,6 +188,9 @@ func (s *Session) createSubstrIndex(c *CreateSubstrIndex) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if ginColumn(t, c.Col) {
+		return s.createGinIndex(c, t)
+	}
 	name := c.Name
 	if name == "" {
 		name = c.Table + "_" + c.Col + "_trgm_idx"
@@ -236,6 +239,11 @@ func (s *Session) indexNameTaken(string) bool { return false }
 
 func (s *Session) dropSubstrIndex(d *DropSubstrIndex) (*Result, error) {
 	for _, n := range d.Names {
+		if ok, err := s.dropGinIndex(n); err != nil {
+			return nil, err
+		} else if ok {
+			continue
+		}
 		found := false
 		for _, ts := range s.E.Tables() {
 			t := ts.Schema()

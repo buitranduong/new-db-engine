@@ -228,6 +228,9 @@ type Table struct {
 	ForeignKeys []ForeignKey `json:"foreign_keys,omitempty"`
 	// Substr are the substring (trigram) search indexes (substr.go).
 	Substr []SubstrIndex `json:"substr_indexes,omitempty"`
+	// Gin are GIN indexes on jsonb and array columns: accepted and kept
+	// for DDL compatibility; reads do not use them (docs/05 section 26).
+	Gin []GinIndex `json:"gin_indexes,omitempty"`
 	// HistoryRetention (nanoseconds) is how long the superseded versions
 	// of the table's rows are kept for as-of and history reads; zero uses
 	// the engine-wide setting (ALTER TABLE ... SET (history_retention=...)).

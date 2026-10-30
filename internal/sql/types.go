@@ -32,7 +32,14 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 		case "and", "or", "=", "<>", "<", "<=", ">", ">=":
 			return KBool
 		case "||":
+			if k, ok := jsonarrBinKind("||", typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)); ok {
+				return k
+			}
 			return KText
+		case "-":
+			if k, ok := jsonarrBinKind("-", typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)); ok {
+				return k
+			}
 		case "^":
 			if l, r := typeOf(e.L, sc, pk), typeOf(e.R, sc, pk); l == KNumeric && r != KFloat || r == KNumeric && l != KFloat {
 				return KNumeric

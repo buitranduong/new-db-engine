@@ -151,13 +151,19 @@ func lex(src string) ([]token, error) {
 				i += 3
 				continue
 			}
+			if three := jsonarrLex3(src[i:]); three != "" {
+				out = append(out, token{tOp, three, start})
+				i += 3
+				continue
+			}
 			switch two {
-			case "<=", ">=", "<>", "!=", "||", "::", "!~", "~*", "->", "==", "<<", ">>", "^@":
+			case "<=", ">=", "<>", "!=", "||", "::", "!~", "~*", "->", "==", "<<", ">>", "^@",
+				"#>", "#-", "@>", "<@", "@?", "@@", "?|", "?&", "&&":
 				out = append(out, token{tOp, two, start})
 				i += 2
 				continue
 			}
-			if strings.IndexByte("=<>+-*/%(),.;[]?:~{}&|^#", c) < 0 {
+			if strings.IndexByte("=<>+-*/%(),.;[]?:~{}&|^#@", c) < 0 {
 				return nil, syntaxErr(i, fmt.Sprintf("unexpected character %q", c))
 			}
 			out = append(out, token{tOp, string(c), start})

@@ -826,15 +826,16 @@ func (p *parser) typeName() (string, error) {
 		}
 		return "", errf(codeUndefinedObject, "type %q does not exist", t.s)
 	}
-	if p.acceptOp("[") {
-		if err := p.expectOp("]"); err != nil {
-			return "", err
+	if p.isOp("[") {
+		for p.acceptOp("[") { // int[], int[][], int[3]: the number of dimensions is not part of the type
+			if p.peek().k == tNumber {
+				p.next()
+			}
+			if err := p.expectOp("]"); err != nil {
+				return "", err
+			}
 		}
-		p.pgSpec = ""
-		if et, err := schema.ParseType(out); err == nil && et != schema.TArray && et != schema.TBytea && et != schema.TJSON && et != schema.TJSONB {
-			return out + "[]", nil
-		}
-		return "array", nil
+		return p.arrayTypeName(out), nil
 	}
 	return out, nil
 }
@@ -1218,7 +1219,7 @@ func (p *parser) predicate() (Expr, error) {
 					if err := p.expectOp(")"); err != nil {
 						return nil, err
 					}
-					l = &Func{Name: "stask_anyarr", Args: []Expr{l, arr, &Lit{TextD(op)}, &Lit{BoolD(all)}}}
+					l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(op)}, &Lit{BoolD(all)}}}
 					continue
 				}
 				q, err := p.queryStmt()
@@ -1366,11 +1367,11 @@ func (p *parser) predicate() (Expr, error) {
 
 // bitExpr: the "other operators" of PostgreSQL, looser than + and -.
 func (p *parser) bitExpr() (Expr, error) {
-	l, err := p.addExpr()
+	l, err := p.otherExpr()
 	for err == nil && (p.isOp("|") || p.isOp("&") || p.isOp("#") || p.isOp("<<") || p.isOp(">>") || p.isOp("^@")) {
 		op := p.next().s
 		var r Expr
-		if r, err = p.addExpr(); err == nil {
+		if r, err = p.otherExpr(); err == nil {
 			if op == "^@" {
 				l = &Func{Name: "starts_with", Disp: "?column?", Args: []Expr{l, r}}
 			} else {
@@ -1381,9 +1382,9 @@ func (p *parser) bitExpr() (Expr, error) {
 	return l, err
 }
 
-func (p *parser) addExpr() (Expr, error) {
+func (p *parser) arithExpr() (Expr, error) {
 	l, err := p.mulExpr()
-	for err == nil && (p.isOp("+") || p.isOp("-") || p.isOp("||")) {
+	for err == nil && (p.isOp("+") || p.isOp("-")) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.mulExpr(); err == nil {
@@ -1458,11 +1459,7 @@ func (p *parser) unary() (Expr, error) {
 			continue
 		case p.isOp("[") && p.i > 0 && (p.toks[p.i-1].s == ")" || p.toks[p.i-1].s == "]" && p.toks[p.i-1].k == tOp ||
 			p.toks[p.i-1].k == tIdent && !reserved[p.toks[p.i-1].s] || p.toks[p.i-1].k == tQuoted): // (array)[i], col[i]
-			p.next()
-			var i Expr
-			if i, err = p.expr(); err == nil {
-				x, err = &Func{Name: "stask_subscript", Args: []Expr{x, i}}, p.expectOp("]")
-			}
+			x, err = p.subscriptSuffix(x)
 			continue
 		case p.isOp(".") && p.i > 0 && p.toks[p.i-1].s == ")" && p.toks[p.i-1].k == tOp: // (record).field
 			p.next()

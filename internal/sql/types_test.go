@@ -140,7 +140,7 @@ func TestTypeArrays(t *testing.T) {
 	expectRows(t, s, `SELECT i, t FROM ar WHERE id = 2`, "{4,5},{x,y}")
 	expectRows(t, s, `SELECT i, array_length(i, 1) FROM ar ORDER BY id`, "{1,2,3},3;{4,5},2;{},NULL")
 	expectRows(t, s, `SELECT i[2], t[1] FROM ar WHERE id = 2`, "5,x")
-	expectRows(t, s, `SELECT pg_typeof(i), pg_typeof(t) FROM ar WHERE id = 1`, "bigint[],text[]")
+	expectRows(t, s, `SELECT pg_typeof(i), pg_typeof(t) FROM ar WHERE id = 1`, "integer[],text[]")
 	if _, err := tryRun(s, `INSERT INTO ar (id, i) VALUES (9, '{1,x}')`); code(err) != "22P02" {
 		t.Errorf("bad int array: %v", err)
 	}

@@ -88,3 +88,8 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 - Không chạy lệnh đụng cache/tài nguyên (go clean -cache, xoá dữ liệu) khi cổng đang chạy.
 - Máy benchmark riêng vẫn là điều kiện để số đo hiệu năng có giá trị cuối cùng.
 - D31 bổ sung (ba pha): (1) đo đường nền (ghi, index, log, GC lịch sử, bộ nhớ) ngay, vì quyết định kiến trúc; (2) Làn B phủ nốt tính năng có hạn chót, rồi đóng băng (tag) và gộp; (3) đo từng phần + chỉnh tối ưu SQL/Superset/trigram/cột trên bản đóng băng, mỗi chỉnh sửa có số trước/sau. Phát hiện kiến trúc ở pha 1 thì dừng tính năng mới vào vùng đó đến khi sửa xong.
+
+## D32 — Đo hiệu năng dồn về cuối, phủ tính năng trước (2026-10-30, quyết định của người dùng)
+- Thay D31 pha 1: không lặp vòng đo–sửa hiệu năng giữa chừng (mỗi vòng 3–10 phút, cả tiếng cho một vấn đề). Phủ tính năng Làn B trước (pgparity, txddl2, pgcmds), đóng băng, rồi đo và tối ưu từng phần.
+- Ngoại lệ: chỉ sửa hiệu năng khi nó chặn đúng đắn hoặc là lỗi rõ ràng. `lanefix` (làn nặng) được đóng gói, gộp sau cổng, và các số đo chưa chạy lại ghi vào danh sách đo cuối.
+- Danh sách đo cuối: simbench trên bản đóng băng (lanes: facet/đếm bị chậm khi làn nặng bão hòa; `-heavy-workers` mặc định; phiên bản cuối của khoá dạng truy vấn), memmap (công cụ chưa có), 3 điều kiện D29 cho pindex, GC lịch sử. Mọi phép đo vẫn qua scripts/perf-run.sh.

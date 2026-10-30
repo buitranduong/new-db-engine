@@ -88,8 +88,10 @@ type Session struct {
 	curs       *cursorSet
 	lk         *sessLocks
 	rc         roleCtx
-	tmp        *tempState // temporary tables (temptable.go)
-	refreshing string     // materialized view being refreshed (ctas_exec.go)
+	tmp        *tempState  // temporary tables (temptable.go)
+	refreshing string      // materialized view being refreshed (ctas_exec.go)
+	dj         *ddlJournal // transactional DDL journal of the open transaction (ddltx.go)
+	djBypass   bool        // running a statement already journaled by txDDL
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -99,7 +101,9 @@ type Session struct {
 func (s *Session) clickHouse() bool { return s.vars["sql_dialect"] == "clickhouse" }
 
 func NewSession(e *core.Engine) *Session {
-	return &Session{E: e, vars: sessionDefaults()}
+	s := &Session{E: e, vars: sessionDefaults()}
+	s.recoverDDL()
+	return s
 }
 
 // TxStatus is the ReadyForQuery indicator: 'I' idle, 'T' in transaction, 'E' failed.
@@ -120,6 +124,7 @@ func (s *Session) Close() {
 		s.tx = nil
 	}
 	s.explicit, s.failed = false, false
+	s.ddlUndo()
 	s.closeCursors()
 	s.releaseAllLocks()
 	s.discardPending()
@@ -156,6 +161,11 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		s.markFailed()
 		return nil, errf("25006", "cannot execute %s in a read-only transaction", what)
 	}
+	if s.explicit && !s.djBypass {
+		if res, done, err := s.txDDL(st, params); done {
+			return res, err
+		}
+	}
 	switch st := st.(type) {
 	case *WithDML:
 		return s.withDML(st, params)
@@ -188,19 +198,28 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			tx.Abort()
 			s.cursorsOnAbort()
 			s.discardPending()
+			s.ddlUndo()
 			s.afterTxEnd(false)
 			return &Result{Tag: "ROLLBACK"}, nil
 		}
 		if err := s.cursorsOnCommit(tx); err != nil {
 			tx.Abort()
 			s.discardPending()
+			s.ddlUndo()
 			return nil, err
 		}
 		ops := s.beforeCommit(tx)
-		lsn, err := tx.Commit()
-		if err != nil {
+		if err := s.ddlMark(tx); err != nil {
+			tx.Abort()
+			s.ddlUndo()
 			return nil, AsError(err)
 		}
+		lsn, err := tx.Commit()
+		if err != nil {
+			s.ddlUndo()
+			return nil, AsError(err)
+		}
+		s.ddlAfterCommit()
 		s.noteCommit(lsn)
 		for _, op := range ops {
 			s.applyListen(op)
@@ -217,6 +236,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		s.endTx()
 		s.cursorsOnAbort()
 		s.discardPending()
+		s.ddlUndo()
 		s.afterTxEnd(false)
 		return &Result{Tag: "ROLLBACK"}, nil
 	case *SetVar:

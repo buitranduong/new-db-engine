@@ -983,3 +983,13 @@ Dạng **không** rơi vào đường băm trên `main` (đo: > 100 s ở 260k x
 **F.6 Thay đổi hành vi client cần biết.** (1) Cột `oid` của catalog nay là kiểu `oid`: Go/pgx phải quét vào `uint32` (như với PG; `catalog_wire_test.go` đã sửa); `relkind`... là `"char"` (pgx trả `byte`/`rune`). (2) `sum(bigint)` và cửa sổ `sum(count(*))` công bố `numeric` (OID 1700): `pgx` quét vào `int64` được khi giá trị nguyên? **chưa kiểm cho mọi driver**; psycopg2 trả `Decimal` như PG. (3) `pg_backend_pid()` trả pid thật của phiên (trước: luôn 1), nên probe `pg_stat_activity` không còn phụ thuộc thứ tự kết nối.
 
 **F.7 Hạn chế, nói thẳng.** `x::regclass` đứng một mình vẫn in OID; `pg_get_viewdef` chỉ cho view đơn giản và thiếu `::numeric` ở hằng số so với cột numeric; `percentile_disc` trên `int4` công bố `bigint`; `SUM(bigint)` tràn `int64` vẫn tràn; `to_char` luôn múi giờ UTC; `reltuples`/kích thước là ước lượng, `EXPLAIN` `cost=` là số thô; quét song song tăng đỉnh bộ nhớ (hàng chục MB mỗi bảng 260k dòng, vẫn tính vào `-query-mem-mb`) và mới đo trên một VM tải; đường băm vẫn đọc toàn bảng (chưa đẩy cột/lọc xuống), nên không đạt 50 ms của PG; chưa chạy Superset/SQLAlchemy thật (tiếp tục **[chưa kiểm với Superset thật]**). Phát hiện ngoài phạm vi: `WITH c(y) AS (..), d AS (..) SELECT d.*` in thừa cột của `c`; `CREATE TABLE AS`/`TEMP TABLE` còn thiếu (5 câu `g`); `EXPLAIN (FORMAT JSON)` trả `text`; `SHOW transaction isolation level` = `repeatable read`.
+
+
+## Phụ lục L. Nhánh `txddl`: DDL giao dịch (2026-10-30, gốc `main` @ 5f6de3c)
+
+| Mã | Kế hoạch | Mục tiêu | Thực tế | Nhãn |
+|---|---|---|---|---|
+| TXDDL-1 | Nhật ký undo/redo bằng hàng `__stask_objs` (không đổi định dạng); `CREATE TABLE`/CTAS/`CREATE INDEX`/`ADD COLUMN` áp ngay + undo; `DROP TABLE`/`DROP INDEX`/`DROP COLUMN` hoãn tới COMMIT; dấu commit ghi trong chính giao dịch | `BEGIN; DDL; ROLLBACK` không để lại gì; COMMIT nguyên tử kể cả crash; Liquibase changeSet an toàn | `ddltx.go`, hook 3 chỗ trong `exec.go` (+ `Tx.PutObj`, `Engine.EnsureObjs/Logf` trong `core/objcat.go`). Test `TestTxDDL*` qua dưới `-race -count=3` (rollback, commit, commit lỗi, đóng phiên, crash trước commit, crash sau commit trước redo, có/không checkpoint, 8 phiên song song, phụ thuộc). Chi tiết thiết kế và 6 giới hạn: docs/05 mục "DDL trong giao dịch". Sửa kèm: `objsTable` bị đua khi nhiều phiên cùng tạo bảng danh mục lần đầu ("already exists") | Xong-chưa-kiểm với Liquibase thật |
+| TXDDL-2 | Bảng tạm không vào log bền/replica | Nếu đổi nhỏ được | **Không làm**: giá trị chỉ nằm trong log (`Version.Loc`), xem docs/05. Cần quyết định thiết kế (kho giá trị thứ hai) | Chưa làm (có lý do) |
+
+Phát hiện #10 ở Phụ lục F (DDL không giao dịch) được xử lý một phần bởi TXDDL-1; phần còn lại là các DDL liệt kê ở giới hạn 4.

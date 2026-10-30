@@ -109,3 +109,8 @@ docs/15 §5: ORM/ngôn ngữ ba hệ, cấu hình PG hiện tại, `pg_locks` l�
 ## Cập nhật: txddl + exprindex + pgres vào main
 - DDL giao dịch (CREATE TABLE/INDEX btree/ADD COLUMN có undo; DROP hoãn tới COMMIT), index biểu thức một cột (lower, upper, trim, length, abs…), mảng nhị phân tham số, sửa phần dư pgdiff (2277/2464).
 - Cổng RACE xanh, claimcheck 471/477. Tiếp theo: pha 1 của D31 (memmap, simbench qua scripts/perf-run.sh).
+
+## Cập nhật: txddl2 + pgcmds vào main
+- DDL giao dịch đầy đủ (savepoint, DROP/CREATE cùng tên, view/sequence/constraint); Liquibase thật 17/17 khớp PG.
+- Lệnh cơ bản: index từng phần, DO/CREATE FUNCTION/CALL (PL/pgSQL tập con), phân vùng giả lập, inet/cidr, ORDER BY lower(col) theo index, tham số nhị phân interval.
+- Cổng RACE xanh, claimcheck 491/497. Đang chạy: gatefix, pindexpre, histmem, crmcompat (Jmix CRM thật trên STASK).

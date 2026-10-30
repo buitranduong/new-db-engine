@@ -1,6 +1,6 @@
 # 15 — Index chính trên đĩa (P3.1): nghiên cứu, quyết định, cài đặt, số đo
 
-Trạng thái: **đã cài và kiểm thử trong gói độc lập `internal/pindex`; chưa nối vào engine** (hai nhánh `types` và `index` đang đổi lõi). Kế hoạch nối ở §8. Nhánh: `btree`.
+Trạng thái: **đã cài và kiểm thử trong gói độc lập `internal/pindex`; index chính chưa nối vào engine**. Nhánh `pindexpre` (§10) làm xong điều kiện 1 và 2 của D29 và nối **index phụ** vào engine sau tuỳ chọn mặc định tắt `-secindex-disk`; điều kiện 3 (đo trên đĩa thật) còn lại, đặc tả ở §11. Kế hoạch nối index chính ở §8. Nhánh gốc: `btree`.
 
 ## 1. Bài toán, nói đúng theo STASK
 
@@ -160,10 +160,10 @@ Kết luận có điều kiện: trong cấu hình không tinh chỉnh, dưới 
 ## 7. Chưa làm / hướng tối ưu đã nhận ra
 
 - **Tra trang trong lá**: hồ sơ CPU (`cmd/pibench -cpuprofile`) cho thấy ~45% thời gian đọc điểm là đọc `leafKey`/`innerKey`, tức là cache-miss CPU khi nhị phân qua mảng slot rồi nhảy sang ô. Cách rẻ: lưu 4 byte tiền tố khoá cạnh mỗi slot (hoặc nén tiền tố theo trang, như các engine OLTP hiện đại) để nhị phân chỉ chạm mảng slot. Dự kiến cắt gần nửa số cache-miss. Chưa làm.
-- **Đường đọc không ghi vào bộ nhớ chung**: hiện mỗi lần tra trang thực hiện CAS ghim/bỏ ghim; trang gốc là điểm nóng khi đọc song song (x4 chỉ đạt ~2–3× thông lượng). Latch lạc quan kiểu LeanStore (đọc phiên bản trước/sau) loại bỏ việc ghi này.
-- `Snapshot()` lấy khoá ghi; đổi sang con trỏ gốc `atomic` để đường đọc không bao giờ đụng khoá.
+- ~~**Đường đọc không ghi vào bộ nhớ chung**~~ **Đã cài (nhánh `pindexpre`, §10.2), mặc định tắt (`Options.Optimistic`); chưa đo.** Thiết kế khác LeanStore (không kiểm phiên bản trên từng trang vì trình phát hiện race của Go không cho đọc trang đang bị ghi): đọc trang *bất biến* của gốc đã công bố + chu kỳ ân hạn (epoch) trước khi tái dùng bộ nhớ.
+- ~~`Snapshot()` lấy khoá ghi~~ Đã cài: với `Optimistic`, `Snapshot()` đăng ký trên gốc đã công bố bằng con trỏ `atomic`, không đụng `Tree.mu`.
 - **Pool dùng chung nhiều file/bảng** (cần trước khi nối, §8 bước 1): hiện mỗi `Tree` có pool riêng.
-- Dựng hàng loạt (`BulkLoad` từ iterator đã sắp xếp, lá đầy 100%) cho khởi tạo replica và dựng lại từ log; quét ngược; gộp lá thưa; khoá > 512 byte; quét xác minh CRC toàn file chạy nền.
+- ~~Dựng hàng loạt (`BulkLoad`)~~ và ~~quét ngược~~ (`Snapshot.ScanDesc`) đã cài (§10.1). Còn: dùng `BulkLoad` cho khởi tạo replica và dựng lại index chính từ log; gộp lá thưa; khoá > 512 byte; quét xác minh CRC toàn file chạy nền.
 - Đo trên **đĩa thật**: các số ở §6 chạy trên `/dev/shm` (tmpfs) vì ổ đĩa của máy đo còn dưới 2 GB trống và chia sẻ cho ~8 agent. Vì vậy mọi lần "đọc đĩa" ở đây là `memcpy` từ page cache, **không phản ánh độ trễ NVMe/SSD**; số đọc hụt cache là cận dưới.
 
 ## 8. Kế hoạch nối vào engine (chưa làm)
@@ -191,6 +191,69 @@ Các bước, mỗi bước có thể gộp riêng:
 5. Sau đó: tối ưu §7 (tiền tố khoá, latch lạc quan) nếu số đo ở bước 4 chưa đạt.
 
 Không đụng: định dạng log, thứ tự commit, MVCC chain. Rủi ro lớn nhất: (a) khoá > 512 byte; (b) ngân sách bộ nhớ dùng chung giữa pool, view cột (P3.2) và heap; (c) chưa đo trên đĩa thật.
+
+## 10. Điều kiện 1 và 2 của D29: đã làm (nhánh `pindexpre`)
+
+Phạm vi: thư viện `pindex` + móc vào engine cho **index phụ**, sau tuỳ chọn **mặc định tắt**. Không đổi hành vi mặc định; không đổi định dạng đĩa của bảng/log/checkpoint hiện có (chỉ thêm trường tuỳ chọn `storage` trong định nghĩa index, docs/09). **Không có phép đo hiệu năng nào** (D32): mọi bằng chứng dưới đây là đúng/sai, không phải nhanh/chậm.
+
+### 10.1 `BulkLoad` (`internal/pindex/bulk.go`)
+
+- `BulkBuild(f File, feed Feed, BulkOptions)` dựng cả file từ luồng khoá **tăng ngặt**, từ dưới lên: lá đóng gói trái→phải (độ đầy `Fill` 50–100%, mặc định 100), rồi từng tầng trong từ tầng dưới, ghi tuần tự theo cụm 256 trang; không đọc lại, không tách trang. Khoá sai thứ tự/trùng → `ErrNotSorted`. Trang meta ghi **cuối cùng** sau `Sync` mọi trang khác, nên file chưa có meta hợp lệ thì chưa là index.
+- `BulkLoad(path, feed, ...)` dựng vào `path+".bulk"`, `fsync`, **`rename` nguyên tử** lên `path`, `fsync` thư mục, rồi `Open`. Có điểm tiêm sự cố `BeforeRename`/`AfterRename`. `CleanupBulk` dọn tệp tạm do sự cố để lại; lần `BulkLoad` kế tiếp tự dọn.
+- Bằng chứng (`go test -race ./internal/pindex -run Bulk`): `TestBulkBuildVsMap` (n = 0,1,2,60,5000,30000, khoá lớn ~400 B tạo cây 3+ tầng, Fill 100/70/50: đối chiếu `map` bằng quét xuôi, quét ngược, `Seek`, khoảng; rồi ghi tiếp/xoá/checkpoint/mở lại: kết quả là cây bình thường); `TestBulkLeavesAreFull` (cùng 20 000 khoá: 479 trang bulk-100%, 992 trang bulk-50%, 481 trang `Put` tuần tự: **đếm trang, không phải thời gian**); `TestBulkRejectsBadInput`; `TestBulkBuildCrashImages` (lỗi I/O ở 30 bước + ảnh crash mất/rách ghi chưa `fsync`: ảnh hoặc không mở được/rỗng, hoặc đầy đủ và đúng; **không có index nửa vời**); `TestBulkLoadCrashPoints` (sự cố trước rename: file cũ nguyên vẹn, còn tệp tạm; sau rename: file mới đầy đủ, không tệp tạm; feed lỗi: file đích không đổi và tạm bị xoá; tệp tạm cũ không cản lần dựng sau).
+
+### 10.2 Đường đọc lạc quan (`optimistic.go`, `epoch.go`; `Options.Optimistic`, mặc định tắt)
+
+- **Người đọc không ghi vào bộ nhớ chung dùng chung**: không `Tree.mu`, không CAS ghim trang; chỉ tăng/giảm bộ đếm của *một trong 64 mảnh* epoch (mỗi mảnh một dòng cache).
+- Đúng đắn nhờ hai điều: (1) người đọc chỉ đi theo trang **bất biến** — trang thuộc gốc đã công bố (`pubState`, kèm `seq` = số thao tác ghi đã gồm trong gốc). `Get` chỉ chấp nhận gốc nếu `seq >= done` (mọi ghi đã hoàn tất trước khi đọc đều có trong gốc), nên đọc thấy mọi ghi đã trả về trước đó; (2) bộ nhớ có thể còn đang bị đọc chỉ được tái dùng sau chu kỳ ân hạn: khung bộ đệm bị đuổi (`pool.release`) và id trang đã giải phóng (`Tree.reclaim`) đều gọi `epoch.quiesce()` — chờ mọi người đọc đã vào epoch từ trước thoát ra (hai ô chẵn/lẻ + kiểm lại thế hệ sau khi tăng, chứng minh trong chú thích `epoch.go`).
+- Người ghi vẫn một lúc một người, dưới `Tree.mu`. Cuối mỗi thao tác ghi, **nếu có người đọc trong 20 ms qua** thì công bố gốc (tăng thế hệ: lần ghi kế phải sao chép lại đường đi một lần); nếu không thì không công bố, và người đọc đầu tiên sau lúc rảnh lấy `Tree.mu` một lần để công bố. Nên người đọc chỉ chờ người ghi ở lần đọc đầu sau lúc rảnh (hoặc khi đúng lúc đó đang có ghi). **Chi phí chưa đo**: ghi khuếch đại khi đọc xen ghi dày (mỗi thao tác ghi có người đọc sao chép lại đường đi; trang cũ nằm danh sách chờ tới checkpoint kế tiếp), và chờ ân hạn khi đuổi trang.
+- `Get` đọc cả đường đi trong một epoch; gặp trang chưa nằm cache thì ra khỏi epoch, nạp trang, thử lại (tối đa 16 lần rồi rơi về đường ghim dưới `RLock`). Snapshot/iterator đọc từng trang qua `pool.view` (một epoch mỗi trang).
+- Thêm `Snapshot.ScanDesc(lo, hi)` (quét ngược) cho `ORDER BY .. DESC` trên index đĩa.
+- Bằng chứng (`go test -race ./internal/pindex -run Optimistic`): `TestOptimisticVsMap` (40 000 thao tác tuần tự đối chiếu `map`, pool 4 MB đuổi liên tục); **`TestOptimisticStress`**: 1 người ghi (Put/Delete/Batch cặp khoá) + 4 người `Get` + 3 người snapshot (quét xuôi/ngược, `Get`) + checkpoint liên tục, 60 000 thao tác, 25 000+ khoá, pool 4 MB, chạy cả `optimistic=false` và `true` dưới `-race`. Kiểm: mỗi `Get` phải bằng trạng thái sau **một** thao tác trong khoảng [đã hoàn tất lúc bắt đầu, đã bắt đầu lúc kết thúc] (lịch sử từng khoá); quét tăng ngặt; hai nửa `a*`/`b*` của cặp ghi bằng một `Batch` phải **giống hệt** trong cùng snapshot; quét xuôi = đảo quét ngược; cuối cùng trạng thái = mô hình, và sau mở lại. `TestOptimisticGracePeriod`: người đọc dừng trong epoch giữ checkpoint (đang giải phóng trang) đứng ≥ 300 ms và đọc đúng gốc cũ.
+- **Phá thử (mutation)**: bỏ `quiesce` ở `pool.release` → `TestOptimisticStress/optimistic=true` **fail** ("snapshot saw a torn pair batch"); bỏ `quiesce` ở `reclaim` → `TestOptimisticGracePeriod` **fail**; (stress đơn lẻ không bắt được lỗi thứ hai trong một lần chạy 94 s: cửa sổ hẹp, nên có test xác định riêng).
+
+### 10.3 Index phụ trên đĩa, chuyển đổi ONLINE (`internal/core/secdisk.go`)
+
+- Bật: `staskd -secindex-disk [-secindex-cache-mb N]` (`core.Options.DiskIndexes`). **Tắt thì không có gì thay đổi**: `ALTER .. SET (index_storage='disk')` trả `0A000`; không thư mục `sidx` nào được tạo.
+- SQL: `ALTER INDEX [IF EXISTS] tên SET (index_storage = 'disk' | 'memory')`; `ALTER TABLE t SET (index_storage = ...)` (mọi index phụ *hiện có* của `t`, kể cả index của UNIQUE và khoá ngoại); `ALTER TABLE t RESET (index_storage)` = memory. Không trộn với tuỳ chọn/hành động khác. **Index chính không đổi** (D29 b). Index trigram **chưa làm** (§11.3).
+- Chuyển đổi (`convertSec`): (1) lấy cây RAM hiện tại (bất biến, O(1)) và bật nhật ký ghi lại mọi thay đổi index từ lúc đó (vị trí "log" ở đây là nhật ký riêng của index dưới `si.mu`, không phải LSN: thay đổi index đều đi qua `si.edit`); (2) `BulkLoad` file từ cây đó **trong khi ghi vẫn tiếp tục**; (3) áp nhật ký vào file theo lô cho đến khi tồn dư ≤ 128; (4) giữ `si.mu`, áp nốt và **đổi nguyên tử** (seqlock `swaps` + đếm tham chiếu `diskStore`: người đọc cũ đọc nốt kho cũ, kho cũ đóng khi người đọc cuối thoát); (5) cập nhật catalog bằng `AlterTable` (bản ghi DDL trong log). Catalog cập nhật *sau* khi kho mới đã chạy; nếu `AlterTable` lỗi thì chuyển ngược về chỗ cũ.
+- Hướng ngược (disk→memory) dùng `treeBuilder` từ snapshot file, cùng nhật ký.
+- **File là bộ đệm dẫn xuất** (như index RAM): thư mục `sidx` bị xoá sạch mỗi lần mở engine; index `storage=disk` được dựng lại từ index chính (sắp xếp + `BulkLoad`) và replay log duy trì tiếp. Nhờ vậy sự cố ở mọi bước đều vô hại: *trước rename* — tệp `.bulk` rác; *sau rename, trước catalog* — catalog còn nói `memory`, file mồ côi bị xoá lúc mở; *sau catalog* — catalog nói `disk`, dựng lại thành index đĩa. Replica/replay: DDL đổi `storage` đến sau khi index đã dựng thì `reconcileSec` chuyển đổi (chặn, không online).
+- Ghi vào file lỗi (hết đĩa...): index bị đánh dấu **không dùng được** — `IndexScan` trả "không phục vụ được" (planner quay về quét bảng, vẫn đúng), index UNIQUE từ chối ghi (không giả vờ kiểm tra), `SecIndexStats().Failed` có lý do; khởi động lại dựng lại. Dựng file lúc khởi động lỗi → dựng ở RAM.
+- Bằng chứng (`go test -race ./internal/core -run DiskIndex`, `./internal/sql -run SQLIndexStorage`): `TestDiskIndexOnline` (3 người ghi + người đọc đối chiếu index với quét bảng + sweeper chạy liên tục suốt 3 vòng disk↔memory, rồi khởi động lại từ log, từ checkpoint, và với tuỳ chọn tắt; `DROP INDEX` xoá file); `TestDiskIndexWritesDuringBuild` (ghi xác định *giữa* lúc dựng và lúc đổi, cả hai hướng, đếm `ConvCatchUp`/`ConvFinal`); `TestDiskIndexCrashPoints` (ảnh thư mục dữ liệu chụp ở `bulk-before-rename`, `bulk-after-rename`, `before-catalog`, `after-catalog`, mở lại có và không có tuỳ chọn: index ở đúng chỗ catalog nói, không file rác, đọc đúng, ghi tiếp được, chuyển đổi lại được); `TestDiskIndexUnique`; `TestDiskIndexOffByDefault`; `TestSQLIndexStorage` (10 truy vấn kể cả `ORDER BY .. DESC LIMIT` cho cùng dòng từ RAM và đĩa, index được đọc thật, lỗi SQLSTATE, khởi động lại). Phá thử: tắt ghi nhật ký chuyển đổi → `TestDiskIndexOnline` **fail** ("concurrent check: index [...] scan [...]" thiếu khoá).
+
+## 11. Điều kiện 3 của D29: việc còn lại (đặc tả để làm ở cuối, theo D32)
+
+Chưa làm và **không được ghi là xong** cho tới khi có số đo. Không dùng số `tmpfs` cũ (§6) làm bằng chứng cho điều này.
+
+### 11.1 Khung đo (bắt buộc)
+1. Qua `scripts/perf-run.sh`; không agent/cổng/test/build nào khác chạy; `load1 < 1`; kết quả `VALID`. `df -h /` còn ≥ 3× kích thước file index + 3 GB.
+2. **Đĩa thật**: thư mục trên thiết bị khối (không `/dev/shm`, không tmpfs). Ghi vào báo cáo `findmnt -T <dir>`, `lsblk -d -o NAME,ROTA,MODEL,SIZE`, hệ tệp, và `iostat -x 1` (await, %util) trong mỗi pha.
+3. **Kiểm soát page cache**, nếu không "đọc đĩa" vẫn là `memcpy`: chạy trong cgroup v2 với `memory.max` = pool + heap + 1 GB (page cache bị tính vào nhóm), hoặc `echo 3 > /proc/sys/vm/drop_caches` (cần quyền) trước pha lạnh. Ghi rõ cách nào; kiểm `Stats.Reads` (số đọc file) khớp tỷ lệ hụt.
+4. Cỡ: 20M và 50M khoá (index phụ: 50M mục); pool = 1/3 kích thước index (và một lượt pool đủ lớn để làm mốc "trúng cache"); ≥ 3 lần lặp, báo trung vị + min/max.
+
+### 11.2 Công cụ còn thiếu (viết trước khi đo)
+`cmd/pibench` hiện chỉ có `-mode seq|rand|both -par -ckpt-each -cache-mb`. Cần thêm: (a) `-bulk`: `BulkLoad` vs `Put` tuần tự vs `Put` ngẫu nhiên, cùng dữ liệu; (b) `-opt`: bật `Options.Optimistic`, quét `-par` 1,2,4,8, **cùng lượt** với cây RAM và đường ghim (số mở rộng 2,0–2,8× trong D29 đo nhiễu và không có đối chứng cùng lượt); (c) kịch bản **nhập Excel**: lô 10k–100k cập nhật ngẫu nhiên khoá index phụ trên dữ liệu vượt pool, có đọc đồng thời; (d) **chuyển đổi dưới tải**: `ALTER INDEX .. SET (index_storage='disk')` trên bảng 20M/50M dòng có ghi liên tục (qua `simbench` hoặc `staskstress`); (e) công cụ `memmap` (heap `inuse_space`, D29 a) — chưa có.
+
+### 11.3 Số cần đo và tiêu chí
+| # | Đo | Tiêu chí (D29 nếu có; còn lại là **đề xuất**, orchestrator chốt) |
+|---|---|---|
+| 1 | Thông lượng `BulkLoad` (khoá/s) và thời gian đến file dùng được, so với `Put` tuần tự/ngẫu nhiên | không có tiêu chí D29; báo tỷ lệ. Giả thuyết **[chưa kiểm]**: ≫ `Put` ngẫu nhiên vì ghi tuần tự |
+| 2 | Đọc điểm trúng cache: RAM vs ghim vs lạc quan, 1/2/4/8 luồng | ≤ 2× bản RAM (docs/12); tỷ lệ mở rộng 4 luồng so với 1 luồng, cùng lượt |
+| 3 | Đọc lạnh (dữ liệu 3× pool) p50/p99, tỷ lệ hụt, `iostat` | báo; so với 3,6× của tmpfs |
+| 4 | Ghi khuếch đại của đường lạc quan: thao tác ghi/s và `Stats.PendingPages`/`FilePages` giữa hai checkpoint, **có và không có người đọc**; số lần `Quiesces`, `CatchUps` | không phình file không giới hạn giữa hai checkpoint; ghi/s với người đọc ≥ 70% không có người đọc **[đề xuất]**. Nếu tệ: công bố theo lô/thời gian thay vì mỗi thao tác |
+| 5 | Chuyển đổi online dưới tải: tổng thời gian `ALTER`, độ trễ ghi p50/p99 trong lúc đổi so với ngoài, `ConvCatchUp`/`ConvFinal` cực đại, thời gian giữ `si.mu` ở bước 4 | ghi không dừng quá vài ms ở bước cuối **[đề xuất]**; đặc biệt trên hàng chục triệu mục. Chú ý: nhật ký chuyển đổi nằm RAM, lớn theo tốc độ ghi × thời gian dựng |
+| 6 | Nhập Excel: cập nhật ngẫu nhiên index phụ vượt pool (số "chậm 3×" trong D29) | nếu tệ: **gộp cập nhật index phụ theo lô và sắp xếp trước khi ghi** (chưa cài; `BulkLoad`/`Batch` đã cho phép) |
+| 7 | Khởi động với N index đĩa: thời gian và **RSS đỉnh** dựng lại (hiện gom toàn bộ khoá vào một slice rồi sắp xếp trước khi `BulkLoad`) | < 20 s khởi động (D29); nếu RSS đỉnh ≈ cỡ index RAM thì mục đích bộ nhớ bị phá lúc khởi động → cần sắp xếp ngoài bộ nhớ (`internal/sql` đã có external sort/spill) hoặc **giữ file qua lần khởi động + vị trí replay** (chưa làm, đổi định dạng) |
+| 8 | `pindex.Checkpoint` khi tải, 20M+ | < 5 s (D29). Hiện index phụ đĩa **không gọi** Checkpoint (file bỏ khi khởi động); chỉ cần khi nối index chính |
+| 9 | RSS ≤ pool + heap cố định ở 50M; heap `inuse_space` từng cấu trúc, gồm trigram với số SIM phân bố thật | D29 (a), (d) |
+
+### 11.4 Còn lại ngoài phép đo (không thuộc "3 điều kiện" nhưng cần biết)
+- **Index chính chưa nối** (`TableState.idx` vẫn là cây RAM): §8 bước 1–4 (pool dùng chung nhiều file, `primaryIndex` interface, checkpoint/phục hồi, nghiệm thu).
+- **Trigram (`internal/proj`) chưa chuyển được**: là cấu trúc posting list, không phải KV sắp xếp; `BulkLoad` dùng được chỉ nếu thiết kế lại (khoá = trigram ‖ docid, giá trị rỗng). Quyết định riêng, chưa có.
+- Chuyển đổi trên **replica/replay** là chặn (không online); `DROP INDEX` đua với chuyển đổi chưa có test.
+- Nhật ký chuyển đổi và slice dựng lại khi khởi động nằm RAM (xem #5, #7).
+- `Snapshot()` lạc quan vẫn lấy `Tree.fl` (mutex ngắn) để đăng ký; iterator dùng closure/cấp phát — tối ưu để sau khi đo.
 
 ## 9. Nguồn
 

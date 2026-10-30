@@ -342,8 +342,18 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+<<<<<<< HEAD
 	case *RenameIndex:
 		return s.renameIndex(st)
+=======
+	case *AlterIndex:
+		// applied at once (the conversion is online, not transactional)
+		res, err := s.alterIndex(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+>>>>>>> pindexpre
 	case *AlterTable:
 		// applied at once, like CREATE TABLE
 		res, err := s.alterTable(st)

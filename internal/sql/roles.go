@@ -554,7 +554,7 @@ func collectNeeds(st Stmt) (needs []need, ddl string) {
 	case *Merge:
 		w.add(st.Table, core.PrivSelect|core.PrivInsert|core.PrivUpdate|core.PrivDelete)
 		w.walkFields(reflect.ValueOf(st), nil)
-	case *AlterTable, *AlterReplicaIdentity:
+	case *AlterTable, *AlterReplicaIdentity, *AlterIndex:
 		return nil, "ALTER TABLE"
 	case *DropTable:
 		return nil, "DROP TABLE"

@@ -46,7 +46,7 @@ func kindOfStmt(st Stmt) int {
 		return kindDelete
 	case *Begin, *Commit, *Rollback:
 		return kindTx
-	case *CreateTable, *AlterTable, *DropTable, *Truncate, *CreateView, *DropView, *CreateSequence, *AlterSequence,
+	case *CreateTable, *AlterTable, *DropTable, *Truncate, *CreateView, *DropView, *CreateSequence, *AlterSequence, *AlterIndex,
 		*DropSequence, *CreatePublication, *DropPublication, *AlterReplicaIdentity, *CreateRole, *AlterRole, *DropRole, *Grant:
 		return kindDDL
 	}

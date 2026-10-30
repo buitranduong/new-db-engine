@@ -74,6 +74,41 @@ func checkSnap(t *testing.T, s Snapshot, m refMap, rng *rand.Rand, what string) 
 			t.Fatalf("%s: get %q = %v %v %v", what, k, v, ok, err)
 		}
 	}
+	// descending scans are the reverse of the ascending ones: windows of at
+	// most 400 keys, including the two open-ended ones (a full descending
+	// scan is only done for small maps; the stress test covers big ones)
+	if len(ks) > 0 {
+		type win struct{ from, to int }
+		w := []win{{0, min(len(ks), 1+rng.Intn(400))}, {max(0, len(ks)-1-rng.Intn(400)), len(ks)}}
+		if len(ks) < 3000 {
+			w = append(w, win{0, len(ks)})
+		}
+		for n := 0; n < 3; n++ {
+			a := rng.Intn(len(ks))
+			w = append(w, win{a, min(len(ks), a+1+rng.Intn(400))})
+		}
+		for _, x := range w {
+			var lo, hi []byte
+			if x.from > 0 {
+				lo = []byte(ks[x.from])
+			}
+			if x.to < len(ks) {
+				hi = []byte(ks[x.to])
+			}
+			want := ks[x.from:x.to] // ks is sorted: the keys in [lo, hi)
+			di := s.ScanDesc(lo, hi)
+			i := len(want) - 1
+			for ; di.Next(); i-- {
+				if i < 0 || string(di.Key()) != want[i] || !bytes.Equal(di.Value(), m[want[i]]) {
+					t.Fatalf("%s: desc range [%q,%q) mismatch at %d (key %q)", what, lo, hi, i, di.Key())
+				}
+			}
+			if di.Err() != nil || i != -1 {
+				t.Fatalf("%s: desc range [%q,%q): stopped at %d, err %v", what, lo, hi, i, di.Err())
+			}
+			di.Close()
+		}
+	}
 	for n := 0; n < 20; n++ {
 		lo := mkKey(rng, 5000)
 		hi := mkKey(rng, 5000)

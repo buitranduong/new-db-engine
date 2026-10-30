@@ -95,6 +95,7 @@ func (p *parser) queryStmt1() (Stmt, error) {
 	var limit, offset Expr
 	var limitBy *LimitBy
 	forUpd := false
+	var locks []*LockClause
 	if p.acceptKw("order", "by") {
 		if order, err = p.orderList(); err != nil {
 			return nil, err
@@ -159,22 +160,12 @@ func (p *parser) queryStmt1() (Stmt, error) {
 					return nil, p.errHere("expected ONLY")
 				}
 			}
-		case p.acceptKw("for", "update"), p.acceptKw("for", "share"), p.acceptKw("for", "no", "key", "update"),
-			p.acceptKw("for", "key", "share"):
-			// row locks are not taken (snapshot isolation: a conflicting write fails at commit)
-			forUpd = true
-			if p.acceptKw("of") { // FOR UPDATE OF t1, t2
-				for {
-					if _, err := p.qualifiedName(); err != nil {
-						return nil, err
-					}
-					if !p.acceptOp(",") {
-						break
-					}
-				}
+		case p.isLockClause():
+			lc, err := p.lockClause()
+			if err != nil {
+				return nil, err
 			}
-			for p.acceptKw("nowait") || p.acceptKw("skip", "locked") || p.acceptKw("wait") {
-			}
+			forUpd, locks = true, append(locks, lc)
 		case p.acceptKw("settings"): // ClickHouse query settings: ignored
 			for p.peek().k != tEOF && !p.isOp(";") && !p.isOp(")") && !p.isKw("format") {
 				p.next()
@@ -189,6 +180,7 @@ done:
 	if sel, ok := q.(*Select); ok && sel.OrderBy == nil && sel.Limit == nil && sel.Offset == nil && sel.LimitBy == nil &&
 		(sel.With == nil || with == nil) {
 		sel.OrderBy, sel.Limit, sel.Offset, sel.LimitBy, sel.ForUpd = order, limit, offset, limitBy, forUpd
+		sel.Lock = locks
 		if with != nil {
 			sel.With = with
 		}

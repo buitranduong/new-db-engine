@@ -455,6 +455,9 @@ func (s *Session) authorize(st Stmt) error {
 	if s.role == "" {
 		return nil
 	}
+	if _, ok := st.(selfAuthorized); ok {
+		return nil
+	}
 	switch st.(type) {
 	case *Begin, *Commit, *Rollback, *SetVar, *Show, *Listen, *Unlisten, *Notify:
 		return nil

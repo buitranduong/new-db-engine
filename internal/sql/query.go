@@ -571,6 +571,7 @@ type selPlan struct {
 	groupKinds []Kind
 	limit      Expr
 	offset     Expr
+	lock       *rowLocker // FOR UPDATE / SHARE (rowlock.go)
 }
 
 func (p *selPlan) outCols() []relCol  { return p.cols }
@@ -1008,6 +1009,11 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	if p.offset, err = ob.bind(st.Offset); err != nil {
 		return nil, err
 	}
+	if len(st.Lock) > 0 && c.tx != nil {
+		if p.lock, err = c.s.planLocker(c.tx, st, p.from); err != nil {
+			return nil, err
+		}
+	}
 	return p, nil
 }
 
@@ -1090,7 +1096,7 @@ func (c *compiler) constEval(x Expr) (Datum, error) {
 }
 
 func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
-	if qx.sp != nil {
+	if qx.sp != nil && p.lock == nil {
 		if rel, ok, err := p.runSpill(qx, outer); ok {
 			return rel, err
 		}
@@ -1149,6 +1155,7 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	type outRow2 struct {
 		vals, keys []Datum
 		dkey, lkey string
+		src        []Datum
 	}
 	if len(p.srfs) > 0 {
 		if rows, err = p.expandSRFs(ctx, rows); err != nil {
@@ -1158,7 +1165,7 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	out := make([]outRow2, 0, len(rows))
 	for _, r := range rows {
 		ctx.drow = r
-		o := outRow2{vals: make([]Datum, len(p.items))}
+		o := outRow2{vals: make([]Datum, len(p.items)), src: r}
 		for i, x := range p.items {
 			if o.vals[i], err = ctx.eval(x); err != nil {
 				return nil, err
@@ -1250,6 +1257,20 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	limit, offset, err := limitValues(ctx, p.limit, p.offset)
 	if err != nil {
 		return nil, err
+	}
+	if p.lock != nil { // lock rows in output order until OFFSET+LIMIT are locked
+		kept := out[:0]
+		for _, o := range out {
+			if limit >= 0 && int64(len(kept)) >= offset+limit {
+				break
+			}
+			if ok, err := p.lock.lockWorking(o.src); err != nil {
+				return nil, err
+			} else if ok {
+				kept = append(kept, o)
+			}
+		}
+		out = kept
 	}
 	if offset > 0 {
 		out = out[min(int(offset), len(out)):]

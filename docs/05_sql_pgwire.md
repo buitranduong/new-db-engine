@@ -980,3 +980,56 @@ Mã: `internal/sql/jsonops.go` (cây JSON, toán tử, hàm), `jsonpath.go` (jso
 **GIN.** `CREATE INDEX .. USING gin (cột_jsonb | cột_mảng) [jsonb_ops|jsonb_path_ops|array_ops]` được **chấp nhận và lưu** (`Table.Gin`), `DROP INDEX` bỏ nó, trùng tên báo 42P07. **Không tăng tốc** `@>`/`?`/`&&` (vẫn quét bảng) và chưa hiện trong `pg_indexes`/`pg_class`; một cột, không `WHERE`.
 
 **Chưa làm / sai khác đã biết** (xem docs/14 JA1): tham số mảng nhị phân (pgjdbc `setArray`, pgx `= ANY($1)` với `[]int64`: STASK chưa báo OID mảng cho tham số, probe `ext_param_any_array` vẫn trượt) và kết quả nhị phân của mảng không phải `text[]`/một chiều; `row_to_json(t)`, `jsonb_populate_record`, `json_to_record` (cần giá trị hàng/record); `ARRAY[..] || 'literal'` coi chuỗi là literal mảng (như PG, nhưng cũng áp cho cột text); lát cắt mảng nhiều chiều chỉ theo chiều đầu; thứ tự `<`/`>` của jsonb so văn bản; `pg_typeof` của biểu thức NULL ở đường một bảng không phân tích kế hoạch trả NULL; trong truy vấn đơn bảng `pg_typeof(i4[1])` là kiểu theo giá trị (`bigint`), trong đường kế hoạch là `integer`.
+
+## 26. Con trỏ SQL, khoá mềm (FOR UPDATE, LOCK TABLE, advisory), SET ROLE (nhánh `cursors`, 2026-10-30)
+
+Mã: `internal/sql/cursor.go`, `locks.go`, `rowlock.go`, `advisory.go`, `setrole.go`, `showall.go`; `internal/core/rowlock.go` (hai hàm cộng thêm, không đổi log/đĩa). Test: `internal/sql/cursors_test.go`, `internal/pgwire/cursors_wire_test.go`, `scripts/pgdiff/h_cursors.sql` (256 câu), `cmd/claimcheck/probes_cursors.go` (32 probe), `scripts/cursors-clients.sh` (psycopg2 + pgjdbc).
+
+### 25.1 Con trỏ: `DECLARE`, `FETCH`, `MOVE`, `CLOSE`, `pg_cursors`
+
+`DECLARE name [BINARY] [INSENSITIVE] [[NO] SCROLL] CURSOR [WITH|WITHOUT HOLD] FOR query`; `FETCH|MOVE [NEXT|PRIOR|FIRST|LAST|ABSOLUTE n|RELATIVE n|n|ALL|FORWARD [n|ALL]|BACKWARD [n|ALL]] [FROM|IN] name`; `CLOSE name|ALL`; view `pg_cursors` (`name, statement, is_holdable, is_binary, is_scrollable, creation_time`). Thẻ lệnh `DECLARE CURSOR`, `FETCH n`, `MOVE n`, `CLOSE CURSOR`. Lỗi như PG: `34000` (không có con trỏ), `42P03` (trùng tên), `25P01` (`DECLARE` không `WITH HOLD` ngoài khối giao dịch), `55000` (`NO SCROLL` mà lùi, `FETCH LAST` hay `ABSOLUTE` âm). Extended protocol: `Describe` của `DECLARE` trả tham số của truy vấn, của `FETCH` trả cột của con trỏ (pgx ở cả ba chế độ chạy).
+
+**Đọc từ snapshot lúc `DECLARE`** (đúng `INSENSITIVE`): ghi sau đó trong cùng giao dịch không thấy. Con trỏ sống trong giao dịch: `COMMIT` đóng mọi con trỏ không `WITH HOLD`; `ROLLBACK` (và `COMMIT` của giao dịch đã hỏng) đóng cả con trỏ `HOLD` khai báo trong giao dịch đó. `WITH HOLD`: lúc `COMMIT` phần kết quả còn lại được chép ra bộ nhớ hoặc, quá ngân sách bộ nhớ truy vấn (`-query-mem-mb`), ra tệp tạm của `internal/spill` (cần `SpillDir`, nếu không `COMMIT` lỗi `53200` thay vì mất con trỏ); ngoài khối giao dịch, `DECLARE ... WITH HOLD` chạy truy vấn ngay.
+
+**Phát trực tiếp theo lô hay vật chất hoá.** Dạng truy vấn quyết định:
+
+| Truy vấn | Cách chạy | Bộ nhớ |
+|---|---|---|
+| một bảng, `WHERE`/danh sách chọn tuỳ ý, **không** `ORDER BY`, tổng hợp, cửa sổ, `DISTINCT`, SRF, `FOR UPDATE`; có thể `LIMIT/OFFSET`; bảng chưa bị chính giao dịch ghi | **phát trực tiếp**: đọc bảng theo thứ tự khoá từng lô 1024 dòng (`Tx.ScanFrom`, không giữ khoá engine giữa hai `FETCH`), mỗi lô đi qua bộ thực thi thường | một lô + cửa sổ 4096 dòng, không phụ thuộc cỡ bảng |
+| mọi truy vấn khác (`ORDER BY`, join, nhóm, `VALUES`, `SetOp`, `FOR UPDATE`, bảng đã ghi trong giao dịch) | **vật chất hoá**: chạy một lần trên bộ thực thi chung (có ngân sách `53200` và spill của nó), con trỏ giữ cả kết quả | đỉnh = cỡ kết quả (bộ thực thi chung chưa phát dòng) |
+
+Lùi (`PRIOR`, `BACKWARD`, `ABSOLUTE` nhỏ) trong cửa sổ trả từ bộ nhớ; xa hơn thì đọc lại snapshot từ đầu (snapshot được ghim bởi giao dịch nên cùng kết quả). Thứ tự dòng của con trỏ phát trực tiếp là thứ tự khoá của chỉ mục chính (khoá số là chuỗi thập phân nên `1,10,2,...`), như `SELECT` không `ORDER BY`; PG trả theo thứ tự vật lý. Mặc định (không `SCROLL`/`NO SCROLL`) con trỏ cuộn được, trừ khi có `FOR UPDATE`.
+
+**Số đo bộ nhớ** (`/tmp/memtest.sh`, bảng 1,2 triệu dòng, `psycopg2` con trỏ có tên `itersize=2000` so với `fetchall()` cùng truy vấn, RSS của staskd, `GOGC=10` để loại độ trễ GC): con trỏ **+7 MB** đỉnh (1.113.403 dòng, 3,6 s), `SELECT` thường **+278 MB** (5,5 s). Với `GOGC` mặc định, RSS tăng theo kích thước bộ nhớ đã sống (chỉ mục) chứ không theo kết quả: 600k dòng +107 MB, 1,1M dòng +413 MB cho con trỏ; đây là độ trễ của GC Go, không phải con trỏ giữ dòng (với `GOGC=10` còn +7 MB).
+
+**Chưa có / hạn chế:** `BINARY` được nhận nhưng kết quả vẫn ra định dạng cột client yêu cầu; `ROLLBACK TO SAVEPOINT` không đóng con trỏ mở sau savepoint; `DECLARE ... FOR UPDATE` khoá mọi dòng lúc `DECLARE` (PG khoá khi `FETCH`); `UPDATE/DELETE ... WHERE CURRENT OF` chưa có.
+
+### 25.2 `SELECT ... FOR UPDATE | NO KEY UPDATE | SHARE | KEY SHARE [OF t] [NOWAIT | SKIP LOCKED]`
+
+Trước đây `FOR ...` được phân tích rồi bỏ. Ngữ nghĩa đúng cho OCC (STASK không có khoá hàng trong engine, người ghi không chờ; first-committer-wins) là **bảng khoá mềm trong bộ nhớ + ghi nhận đọc để commit thua**:
+
+1. Các dòng thoả `WHERE`, theo thứ tự `ORDER BY`, lấy cho đến khi đủ `OFFSET+LIMIT` dòng **đã khoá được** được xin khoá mềm `(bảng, khoá chính)` theo ma trận xung đột của PG (hàng: `KEY SHARE < SHARE < NO KEY UPDATE < UPDATE`) và được ghi vào tập đọc của giao dịch (`Tx.LockRead`; bộ commit đã kiểm tập đọc như với `serializable`). Nếu ai đó commit ghi vào dòng đó trước, **`COMMIT` trượt `40001`** (người thua).
+2. Dòng đã bị ghi sau snapshot không khoá được: trong `BEGIN` báo `40001` ngay (như PG `REPEATABLE READ`); lệnh đơn ngoài `BEGIN` được thử lại tự động trên snapshot mới (thấy bản mới như `READ COMMITTED`); `SKIP LOCKED` bỏ qua dòng đó.
+3. Dòng đang bị giao dịch khác giữ khoá xung đột: **chờ** (huỷ bằng cancel, `statement_timeout`, `lock_timeout` → `55P03`); `NOWAIT` → `55P03` ngay; `SKIP LOCKED` → bỏ qua dòng và **không tính vào `LIMIT`**. Chờ vòng → `40P01` (đồ thị chờ trong `locks.go`).
+4. Khoá nhả khi `COMMIT`, `ROLLBACK`, đóng phiên (kể cả `DISCARD ALL`), lệnh đơn xong, và biến mất khi tiến trình chết; không ghi gì ra log, không đổi định dạng đĩa.
+5. `UPDATE/DELETE/INSERT` thường **không** nhìn bảng khoá (vẫn lạc quan): người giữ `FOR UPDATE` không chặn người ghi, mà thua ở commit. Mẫu của kho SIM `UPDATE sims SET ... WHERE number IN (SELECT number FROM sims WHERE status='free' ORDER BY number LIMIT n FOR UPDATE SKIP LOCKED) RETURNING number` chạy được và không cấp trùng số (test đồng thời).
+
+`FOR UPDATE OF t` khoá đúng bảng nêu (join: khoá theo từng bảng lá của `FROM`); khoá trên view/CTE/subquery trong `FROM` không có tác dụng. Lỗi `0A000` với `DISTINCT`, `GROUP BY`, tổng hợp, cửa sổ. Đường nhanh một bảng (`selectRows`, vẫn dùng khoá chính và chỉ mục) và bộ thực thi chung (join) đều khoá. Khác PG: một dòng giữ khoá mà ghi bởi người khác chỉ làm hỏng commit của người giữ (không chặn người ghi); `SKIP LOCKED` cũng bỏ qua dòng đã đổi sau snapshot (không đánh giá lại `WHERE` trên bản mới nên có thể trả ít dòng hơn PG, không bao giờ trùng).
+
+### 25.3 `LOCK TABLE`
+
+`LOCK [TABLE] [ONLY] t [, ...] [IN <8 chế độ> MODE] [NOWAIT]`: nhận mọi chế độ của PG; ngoài khối giao dịch `25P01`; bảng không tồn tại `42P01`; kiểm quyền với vai trò. Chế độ ghi vào bảng khoá mềm và xung đột với `LOCK TABLE` của phiên khác theo ma trận PG (chờ/`NOWAIT` `55P03`/`40P01`), nhả khi hết giao dịch. **Không** chặn `SELECT/INSERT/UPDATE/DELETE` của phiên khác (OCC không có khoá bảng thật): chỉ phục vụ ứng dụng dùng `LOCK TABLE` để tuần tự hoá lẫn nhau.
+
+### 25.4 Khoá tư vấn
+
+`pg_advisory_lock[_shared]`, `pg_try_advisory_lock[_shared]`, `pg_advisory_unlock[_shared]`, `pg_advisory_unlock_all`, `pg_advisory_xact_lock[_shared]`, `pg_try_advisory_xact_lock[_shared]`, với `bigint` hoặc hai `int4` (hai không gian khoá riêng, hai `int4` ngoài miền → `42883` như PG). Mức phiên đếm lồng (khoá hai lần phải nhả hai lần), nhả khi đóng phiên; mức giao dịch nhả khi `COMMIT/ROLLBACK`; cùng phiên không bao giờ tự chặn. Chặn có thời hạn bằng `statement_timeout`/`lock_timeout`, phát hiện vòng chờ. Kiểu trả về đúng PG (`bool`, `void` hiện chuỗi rỗng). `pg_locks` liệt kê khoá mềm (loại `advisory`, `relation`, `tuple`).
+
+### 25.5 `SET ROLE`, `current_user`, `session_user`
+
+`SET [SESSION|LOCAL] ROLE r|NONE`, `RESET ROLE`, `SET SESSION AUTHORIZATION r|DEFAULT`, `RESET SESSION AUTHORIZATION`, `SHOW role`, `SHOW session_authorization`. Phiên có người dùng phiên (đăng nhập, đổi bằng `SESSION AUTHORIZATION`) và người dùng hiện tại (`SET ROLE`); quyền kiểm theo người hiện tại. Chỉ siêu người dùng đổi sang vai trò khác (`42501` cho vai trò giới hạn); vai trò không có `22023`. **Sửa lỗi `realclients`:** phiên đăng nhập bằng mật khẩu chung `-pg-password` không có vai trò lưu, `current_user` trước đây ra `stask`; nay ra tên người dùng trong gói khởi động (`app`), kiểu `name` (OID 19) như PG. `RESET ALL` không đụng vai trò (như PG), `DISCARD ALL` đưa về đăng nhập, đóng con trỏ, nhả khoá tư vấn, bỏ câu lệnh `PREPARE` và `LISTEN`.
+
+### 25.6 Còn lại
+
+`SHOW ALL` (3 cột `name, setting, description`), `DISCARD ALL/PLANS/SEQUENCES/TEMP` (trong khối giao dịch `25001`), `DEALLOCATE ALL` đã có từ trước. Vai trò giới hạn trước đây bị `42501` với `DISCARD`, `RESET`, `SAVEPOINT`, `RELEASE`, `ROLLBACK TO` (pooler gửi `DISCARD ALL` hỏng); nay được phép (không cần quyền bảng).
+
+**Kiểm chứng.** `go test -p 2 ./internal/sql ./internal/pgwire` (đủ gói, qua), `-race` cho các test mới (`-count=3`, sạch). `pgdiff` nhóm `h`: **256 câu, PASS 254, PASS-MSG 2 (thông điệp), DIFF 0**. `claimcheck`: 32 probe `cursors` đều qua. pgx (ba chế độ), psycopg2 `stream_results`/`scrollable`/`withhold`, SQLAlchemy `stream_results`, pgjdbc `setFetchSize(500)` + `DECLARE` + `SKIP LOCKED`/`NOWAIT` giữa hai kết nối: `bash scripts/cursors-clients.sh` (cần `~/rc-tools`).

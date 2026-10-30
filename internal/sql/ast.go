@@ -154,6 +154,7 @@ type Select struct {
 	Limit    Expr
 	Offset   Expr
 	ForUpd   bool
+	Lock     []*LockClause // FOR UPDATE / SHARE ... (rowlock.go)
 
 	// general executor (query.go)
 	Rel        FromNode // FROM beyond one table; nil: From/Alias

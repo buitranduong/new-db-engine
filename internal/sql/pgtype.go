@@ -120,7 +120,7 @@ func (t pgTy) family() Kind {
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
-	case tyVarchar, tyBpchar, tyName, tyText, tyTime:
+	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid:
 		return KText
 	case tyDate:
 		return KDate
@@ -242,6 +242,10 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			}
 		}
 		switch {
+		case voidFn[e.Name]:
+			return pgTy{oid: tyVoid, mod: -1}
+		case nameFn[e.Name]:
+			return pgTy{oid: tyName, mod: -1}
 		case tyInt4Fn[e.Name]:
 			return pgTy{oid: tyInt4, mod: -1}
 		case e.Name == "mod" || e.Name == "modulo":

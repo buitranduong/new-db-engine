@@ -68,7 +68,7 @@ func (p *parser) indexPredicate() ([]schema.IndexPred, error) {
 }
 
 func predUnsupported() error {
-	return errf(codeFeature, "partial index predicates are limited to AND of: col IS [NOT] NULL, col <op> literal (=, <>, <, <=, >, >=), col, NOT col")
+	return errf(codeFeature, "partial index predicates are limited to AND of: col IS [NOT] NULL, col <op> literal (=, <>, <, <=, >, >=), col [NOT] IN (literals), col, NOT col")
 }
 
 func (p *parser) indexPredTerm() ([]schema.IndexPred, error) {
@@ -93,7 +93,41 @@ func (p *parser) indexPredTerm() ([]schema.IndexPred, error) {
 	one := func(op, lit string) ([]schema.IndexPred, error) {
 		return []schema.IndexPred{{Col: col, Op: op, Lit: lit}}, nil
 	}
+	inList := func(op string) ([]schema.IndexPred, error) {
+		if err := p.expectOp("("); err != nil {
+			return nil, predUnsupported()
+		}
+		var lits []string
+		for {
+			t := p.next()
+			lit := t.s
+			switch {
+			case t.k == tNumber, t.k == tString:
+			case t.k == tOp && t.s == "-" && p.peek().k == tNumber:
+				lit = "-" + p.next().s
+			default:
+				return nil, predUnsupported()
+			}
+			if p.acceptOp("::") {
+				if _, err := p.ident(); err != nil {
+					return nil, predUnsupported()
+				}
+			}
+			lits = append(lits, lit)
+			if p.acceptOp(",") {
+				continue
+			}
+			if err := p.expectOp(")"); err != nil {
+				return nil, predUnsupported()
+			}
+			return []schema.IndexPred{{Col: col, Op: op, Lits: lits}}, nil
+		}
+	}
 	switch {
+	case !neg && p.acceptKw("in"):
+		return inList("in")
+	case !neg && p.acceptKw("not", "in"):
+		return inList("notin")
 	case p.acceptKw("is"):
 		if neg {
 			return nil, predUnsupported()

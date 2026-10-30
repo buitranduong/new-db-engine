@@ -39,7 +39,9 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 	after := s.beforeAlterComments(st)
 	var res *Result
 	var err error
-	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool { return a.Kind == "add_constraint" || a.Kind == "drop_constraint" }) {
+	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool {
+		return a.Kind == "add_constraint" || a.Kind == "drop_constraint" || a.Kind == "rename_constraint"
+	}) {
 		res, err = s.alterConstraints(st)
 	} else {
 		res, err = s.alterTableActions(st)

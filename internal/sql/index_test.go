@@ -168,7 +168,7 @@ func TestSQLIndexPlans(t *testing.T) {
 	wantErr(`CREATE INDEX t_a ON t (b)`, codeDuplicateTable)
 	run(t, s, `CREATE INDEX IF NOT EXISTS t_a ON t (b)`)
 	wantErr(`CREATE INDEX x ON t (nope)`, codeUndefinedColumn)
-	wantErr(`CREATE INDEX x ON t (a) WHERE a IN (1, 2)`, codeFeature)
+	wantErr(`CREATE INDEX x ON t (a) WHERE a + 1 > 2`, codeFeature)
 	wantErr(`CREATE INDEX x ON nope (a)`, codeUndefinedTable)
 	run(t, s, `CREATE INDEX ON t (c, a)`) // generated name
 	if r := run(t, s, `SELECT count(*) FROM t WHERE c > 0`); r.Rows[0][0].I == 0 {

@@ -20,6 +20,8 @@ type IndexPred struct {
 	Col string `json:"c"`
 	Op  string `json:"o"`
 	Lit string `json:"l,omitempty"`
+	// Lits are the constants of IN / NOT IN (Op "in", "notin")
+	Lits []string `json:"ls,omitempty"`
 }
 
 // PredText is the predicate as pg_get_expr / pg_get_indexdef print it, "" for a full index.
@@ -44,6 +46,19 @@ func (p IndexPred) text() string {
 		return "(" + c + " IS NULL)"
 	case "notnull":
 		return "(" + c + " IS NOT NULL)"
+	case "in", "notin":
+		qs := make([]string, len(p.Lits))
+		for i, l := range p.Lits {
+			qs[i] = l
+			if _, err := strconv.ParseInt(l, 10, 64); err != nil {
+				qs[i] = "'" + strings.ReplaceAll(l, "'", "''") + "'"
+			}
+		}
+		not := ""
+		if p.Op == "notin" {
+			not = "NOT "
+		}
+		return "(" + c + " " + not + "IN (" + strings.Join(qs, ", ") + "))"
 	case "eq", "ne", "lt", "le", "gt", "ge":
 		op := map[string]string{"eq": " = ", "ne": " <> ", "lt": " < ", "le": " <= ", "gt": " > ", "ge": " >= "}[p.Op]
 		if p.Lit == "true" || p.Lit == "false" {
@@ -81,6 +96,8 @@ type predTerm struct {
 	i    int64
 	s    string
 	null bool
+	is   []int64  // IN list of an integer column
+	ss   []string // IN list of a text column
 }
 
 func (t *Table) compilePred(def IndexDef) ([]predTerm, error) {
@@ -93,6 +110,21 @@ func (t *Table) compilePred(def IndexDef) ([]predTerm, error) {
 		pt := predTerm{col: i, op: p.Op, typ: t.Columns[i].T}
 		switch p.Op {
 		case "null", "notnull":
+		case "in", "notin":
+			for _, l := range p.Lits {
+				switch pt.typ {
+				case TInt:
+					n, err := strconv.ParseInt(l, 10, 64)
+					if err != nil {
+						return nil, fmt.Errorf("index %q: predicate literal %q is not an integer", def.Name, l)
+					}
+					pt.is = append(pt.is, n)
+				case TString, TText:
+					pt.ss = append(pt.ss, l)
+				default:
+					return nil, fmt.Errorf("index %q: IN on column %q of this type is not supported", def.Name, p.Col)
+				}
+			}
 		case "eq", "ne", "lt", "le", "gt", "ge":
 			if pt.typ == TBool && p.Op != "eq" && p.Op != "ne" {
 				return nil, fmt.Errorf("index %q: predicate on boolean column %q supports = and <> only", def.Name, p.Col)
@@ -135,6 +167,23 @@ func matchPred(terms []predTerm, r Row) bool {
 			}
 		case "notnull":
 			if v.Null {
+				return false
+			}
+		case "in", "notin":
+			if v.Null {
+				return false
+			}
+			hit := false
+			if p.typ == TString || p.typ == TText {
+				for _, s := range p.ss {
+					hit = hit || s == v.S
+				}
+			} else {
+				for _, n := range p.is {
+					hit = hit || n == v.I
+				}
+			}
+			if hit != (p.op == "in") {
 				return false
 			}
 		case "eq", "ne", "lt", "le", "gt", "ge":

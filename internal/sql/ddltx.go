@@ -217,6 +217,9 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		if err != nil {
 			return nil, false, nil
 		}
+		if err := s.djDropBeforeCreate(st.Name); err != nil {
+			return fail(err)
+		}
 		if _, err := s.djUndo(ddlStep{Op: "drop_indexes", Table: ts.Schema().Name, Before: indexNames(ts)}); err != nil {
 			return fail(err)
 		}
@@ -257,6 +260,33 @@ func (s *Session) djDropIndex(names []string) (*Result, bool, error) {
 		}
 	}
 	return &Result{Tag: "DROP INDEX"}, true, nil
+}
+
+// djDropBeforeCreate handles DROP INDEX x; CREATE INDEX x in one transaction
+// (Liquibase and Jmix changelogs do this to change an index): the deferred
+// drop is applied now, so the name is free, and its undo step rebuilds the
+// old index on ROLLBACK. The pending redo step is removed, or COMMIT would
+// drop the new index.
+func (s *Session) djDropBeforeCreate(name string) error {
+	if s.dj == nil || name == "" {
+		return nil
+	}
+	at := slices.IndexFunc(s.dj.redo, func(r ddlStep) bool { return r.Op == "drop_index" && slices.Contains(r.Names, name) })
+	if at < 0 {
+		return nil
+	}
+	s.dj.redo = slices.Delete(s.dj.redo, at, at+1)
+	for _, ts := range s.E.UserTables() {
+		ix := ts.Schema().Index(name)
+		if ix == nil {
+			continue
+		}
+		if _, err := s.djUndo(ddlStep{Op: "create_index", Table: ts.Schema().Name, Idx: []schema.IndexDef{*ix}}); err != nil {
+			return err
+		}
+		return s.E.DropIndex(ts.Schema().Name, name)
+	}
+	return nil
 }
 
 func (s *Session) indexDroppable(name string) bool {
@@ -730,6 +760,12 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 		stmt = &DropIndex{Names: names, IfExists: true}
 	case "drop_index":
 		stmt = &DropIndex{Names: st.Names, IfExists: true}
+	case "create_index":
+		ts, err := s.E.Table(st.Table)
+		if err != nil || len(st.Idx) != 1 || ts.Schema().Index(st.Idx[0].Name) != nil {
+			return "", nil
+		}
+		return "", s.E.CreateIndex(st.Table, st.Idx[0])
 	case "drop_constraints":
 		return "", s.undoConstraints(st)
 	case "drop_constraint":

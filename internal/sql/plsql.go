@@ -272,6 +272,12 @@ func (s *Session) createFunc(c *CreateFunc) (*Result, error) {
 			return nil, err
 		}
 	}
+	// PostgreSQL's way of adding a varchar overload of a text function is a body that calls
+	// the function by its own name; with the name as identity here that would replace the
+	// real body by a recursion, so such a definition is ignored when the name is defined
+	if _, exists := s.E.Obj("func", d.Name); exists && d.Lang == "sql" && strings.Contains(strings.ToLower(d.Body), strings.ToLower(d.Name)+"(") {
+		return &Result{Tag: "CREATE FUNCTION", Notice: fmt.Sprintf("function %s already exists (overloads by argument type are not distinguished), skipping", d.Name)}, nil
+	}
 	if _, exists := s.E.Obj("func", d.Name); exists && !c.OrReplace {
 		return nil, errf("42723", "function %q already exists with same argument types", d.Name)
 	}

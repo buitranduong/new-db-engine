@@ -610,6 +610,7 @@ var extensions = map[string]extInfo{
 	"btree_gin":  {version: "1.3", comment: "support for indexing common datatypes in GIN"},
 	"btree_gist": {version: "1.7", comment: "support for indexing common datatypes in GiST"},
 	"citext":     {version: "1.6", comment: "data type for case-insensitive character strings", reason: "the citext type is not implemented"},
+	"unaccent":   {version: "1.1", comment: "text search dictionary that removes accents"},
 	"hstore":     {version: "1.8", comment: "data type for storing sets of (key, value) pairs", reason: "the hstore type is not implemented"},
 }
 

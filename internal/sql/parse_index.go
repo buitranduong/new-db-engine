@@ -97,8 +97,20 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 				return nil, true, errf(codeFeature, "function %s cannot be used in an index expression (lower, upper, trim, btrim, ltrim, rtrim, length, char_length, abs on one column)", col)
 			}
 			fn = f
+			inner := p.acceptOp("(") // lower((name)::text): the cast PostgreSQL writes
 			if col, err = p.ident(); err != nil || p.isOp(".") {
 				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+			}
+			if inner {
+				if err = p.expectOp(")"); err != nil {
+					return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+				}
+			}
+			for p.acceptOp("::") { // the argument cast is ignored: lower and friends take text
+				if _, err = p.ident(); err != nil {
+					return nil, true, err
+				}
+				p.acceptKw("varying")
 			}
 			if err = p.expectOp(")"); err != nil {
 				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")

@@ -30,7 +30,7 @@ var extFuncNeeds = map[string]string{
 	"uuid_generate_v1": "uuid-ossp", "uuid_generate_v1mc": "uuid-ossp", "uuid_generate_v3": "uuid-ossp",
 	"uuid_generate_v5": "uuid-ossp", "uuid_nil": "uuid-ossp", "uuid_ns_dns": "uuid-ossp", "uuid_ns_url": "uuid-ossp",
 	"uuid_ns_oid": "uuid-ossp", "uuid_ns_x500": "uuid-ossp",
-	"similarity": "pg_trgm",
+	"similarity": "pg_trgm", "unaccent": "unaccent",
 }
 
 // extFuncKinds are the result kinds of the functions of this file, and of
@@ -40,7 +40,7 @@ var extFuncKinds = map[string]Kind{
 	"sha224": KBytea, "sha256": KBytea, "sha384": KBytea, "sha512": KBytea,
 	"uuid_generate_v1": KUUID, "uuid_generate_v1mc": KUUID, "uuid_generate_v3": KUUID, "uuid_generate_v5": KUUID,
 	"uuid_nil": KUUID, "uuid_ns_dns": KUUID, "uuid_ns_url": KUUID, "uuid_ns_oid": KUUID, "uuid_ns_x500": KUUID,
-	"similarity": KFloat,
+	"similarity": KFloat, "unaccent": KText,
 }
 
 func rawBytes(d Datum) string {
@@ -307,6 +307,14 @@ func (c *evalCtx) extCall(f *Func, args []Datum) (Datum, bool, error) {
 		copy(b[:], sum)
 		b[6], b[8] = b[6]&0x0f|ver, b[8]&0x3f|0x80
 		return uuidD(b), true, nil
+	case "unaccent":
+		if len(args) != 1 {
+			return bad(len(args))
+		}
+		if nullIn() {
+			return Null, true, nil
+		}
+		return TextD(unaccent(args[0].String())), true, nil
 	case "similarity":
 		if len(args) != 2 {
 			return bad(len(args))

@@ -390,6 +390,9 @@ func (p *parser) statement() (Stmt, error) {
 			}
 			return a, nil
 		}
+		if p.acceptKw("index") {
+			return p.alterIndex()
+		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err
 		}
@@ -2201,7 +2204,17 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				break
 			}
 			if p.acceptKw("constraint") {
-				return nil, errf(codeFeature, "RENAME CONSTRAINT is not supported")
+				act.Kind = "rename_constraint"
+				if act.Column, err = p.ident(); err != nil {
+					return nil, err
+				}
+				if err = p.expectKw("to"); err != nil {
+					return nil, err
+				}
+				if act.NewName, err = p.ident(); err != nil {
+					return nil, err
+				}
+				break
 			}
 			p.acceptKw("column")
 			act.Kind = "rename_column"

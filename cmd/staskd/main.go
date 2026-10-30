@@ -26,6 +26,7 @@ import (
 
 	"stask/internal/cluster"
 	"stask/internal/core"
+	"stask/internal/histstore"
 	"stask/internal/pgwire"
 	"stask/internal/planner"
 	"stask/internal/proj"
@@ -54,6 +55,10 @@ func main() {
 	zeroRate := flag.Int64("zero-rate-mb", 150, "cap for background zeroing (MB/s)")
 	gc := flag.Bool("gc", true, "reclaim log space (relocate current versions out of old segments, then delete them)")
 	gcRetentionS := flag.String("history-retention", "1h", "history kept for as-of reads and /v1/history when -gc is on: 36h, 60d, \"60 days\" (a table's ALTER TABLE ... SET (history_retention=...) overrides it)")
+	histStore := flag.Bool("hist-store", false, "keep the update history of -hist-store-tables in the history store <dir>/histstore (compact, time-bucketed, expired by whole segment; docs/19). Default off. With it, set the tables' history_retention to hours: the log then needs no deep chains and GC stays cheap")
+	histStoreTables := flag.String("hist-store-tables", "", "comma list of tables whose history goes to the history store (needs -hist-store)")
+	histStoreRetentionS := flag.String("hist-store-retention", "60d", "how long the history store keeps versions (36h, 60d, ...)")
+	histStoreBucket := flag.Duration("hist-store-bucket", time.Hour, "time span of one base segment of the history store; 24 of them are merged into one daily segment")
 	gcInterval := flag.Duration("gc-interval", 10*time.Second, "time between log reclamation rounds")
 	gcRate := flag.Int64("gc-rate-mb", 64, "cap for relocation writes (MB/s)")
 	gcLive := flag.Float64("gc-max-live", 0.5, "clean segments whose still-current data is at most this share")
@@ -365,6 +370,10 @@ func main() {
 		log.Printf("replicas connect to %s", rs.Addr())
 	}
 	p := planner.Start(e)
+	var histSt *histstore.Store
+	if *histStore {
+		histSt = startHistStore(e, *dir, *histStoreTables, *histStoreRetentionS, *histStoreBucket, *replicaOf != "" || cl != nil)
+	}
 	go memoryStats(e, 10*time.Second)
 	hsrv := server.New(p, fault)
 	if cl != nil {
@@ -441,6 +450,40 @@ func main() {
 		log.Fatal(err)
 	}
 	e.Close()
+	if histSt != nil {
+		histSt.Close()
+	}
+}
+
+// startHistStore opens the history store and follows the log with it. It is
+// only reached with -hist-store; any error is fatal (a silently missing
+// history would be worse than not starting).
+func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.Duration, replicaOrCluster bool) *histstore.Store {
+	if replicaOrCluster {
+		log.Fatal("-hist-store: not supported on a replica or a cluster node (the position it saves is a leader log position)")
+	}
+	var names []string
+	for _, t := range strings.Split(tables, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			names = append(names, t)
+		}
+	}
+	if len(names) == 0 {
+		log.Fatal("-hist-store needs -hist-store-tables")
+	}
+	ret, err := core.ParseRetention(retention)
+	if err != nil || ret <= 0 {
+		log.Fatalf("-hist-store-retention: %q: %v", retention, err)
+	}
+	hs, err := histstore.Open(histstore.Options{Dir: filepath.Join(dir, "histstore"), Retention: ret, Bucket: bucket, Logf: log.Printf})
+	if err != nil {
+		log.Fatalf("history store: %v", err)
+	}
+	c := histstore.NewConsumer(hs, names...)
+	e.Follow(c)
+	c.Attach(e)
+	log.Printf("history store on for %v, retention %v, dir %s", names, ret, filepath.Join(dir, "histstore"))
+	return hs
 }
 
 // httpSecurity builds TLS and authentication of the HTTP API from the

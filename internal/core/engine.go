@@ -226,6 +226,8 @@ func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
 	trig trigCache // row triggers (trigger.go)
+	// histTail supplies versions older than the log still holds (histtail.go); nil = none
+	histTail atomic.Pointer[HistoryTailFunc]
 	// foreign keys (fk.go): the cache of who references whom, and the
 	// committer's record of the newest commit that shared or guarded a key
 	fkCache atomic.Pointer[fkIndex]
@@ -927,6 +929,7 @@ func (e *Engine) History(table, key string, limit int) ([]HistoryEntry, error) {
 		return nil, err
 	}
 	var out []HistoryEntry
+	truncated := false
 	if v != nil {
 		if err := e.fill(v); err != nil {
 			return nil, err
@@ -941,8 +944,15 @@ func (e *Engine) History(table, key string, limit int) ([]HistoryEntry, error) {
 		}
 		out = append(out, h)
 		if v, err = e.previous(v); err == errTruncated {
+			truncated = true
 			break // older history was reclaimed
 		} else if err != nil {
+			return nil, err
+		}
+	}
+	if truncated && len(out) < limit {
+		out, err = e.appendHistoryTail(table, key, out, limit)
+		if err != nil {
 			return nil, err
 		}
 	}

@@ -517,7 +517,7 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 		}
 	}
 	for i, c := range t.Columns {
-		if !given[i] && c.Default != "" {
+		if !given[i] && columnDefaultText(&c) != "" {
 			ci.defCols = append(ci.defCols, i)
 		}
 	}

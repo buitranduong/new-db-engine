@@ -66,7 +66,7 @@ func init() {
 		var rows [][]Datum
 		mod := int64(-1) // atttypmod of the column being added
 		att := func(rel int64, name string, typ int64, num int, notNull, def bool, ident string, missing, dropped bool) {
-			ty := pgTypeByOID[typ]
+			ty := typeByOID(typ)
 			coll := int64(0)
 			if ty.cat == "S" {
 				coll = 100

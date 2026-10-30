@@ -259,10 +259,11 @@ func i2vec(n ...int) Datum {
 
 // seqOwner is the table and column owning a sequence, if any.
 func (c *catSnap) seqOwner(q core.Sequence) (*schema.Table, *schema.Column) {
-	tn, cn, ok := strings.Cut(q.Owner, ".")
-	if !ok {
+	i := strings.LastIndexByte(q.Owner, '.') // the table name may hold a schema
+	if i < 0 {
 		return nil, nil
 	}
+	tn, cn := q.Owner[:i], q.Owner[i+1:]
 	for _, t := range c.tables {
 		if t.Name == tn {
 			if i, ok := t.Col(cn); ok {

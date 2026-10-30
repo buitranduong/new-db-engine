@@ -265,6 +265,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if strings.HasPrefix(e.PG, "ut:") { // a cast to an enum or domain
+			return c.castUser(e, v)
+		}
 		if d, ok, err := c.castCatalog(v, e.Type); ok {
 			return d, err
 		}
@@ -275,6 +278,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		d, err := coerce(v, k)
 		if err != nil {
 			return Null, err
+		}
+		if d.K == KText && d.I != 0 && !strings.HasPrefix(e.PG, "enum:") { // an enum cast to text sorts as text
+			d.I, d.F = 0, 0
 		}
 		if d.K == KFloat && d.S != "" {
 			d.S = "" // a real cast to double precision prints with double digits
@@ -694,7 +700,7 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 	case "current_database":
 		return TextD("stask"), nil
 	case "current_schema":
-		return TextD("public"), nil
+		return TextD(c.currentSchema()), nil
 	case "concat":
 		var b strings.Builder
 		for _, a := range args {

@@ -10,12 +10,16 @@ import (
 )
 
 // Parse parses a string holding zero or more ';'-separated statements.
-func Parse(src string) ([]Stmt, error) {
+func Parse(src string) ([]Stmt, error) { return parseWith(src, nil) }
+
+// parseWith parses for a session (nil: none), which resolves relation names
+// along its search path (ddlobjs_names.go).
+func parseWith(src string, sess *Session) ([]Stmt, error) {
 	toks, err := lex(src)
 	if err != nil {
 		return nil, err
 	}
-	p := &parser{toks: catalogTokens(toks), src: src}
+	p := &parser{toks: catalogTokens(toks), src: src, sess: sess}
 	var out []Stmt
 	for {
 		for p.isOp(";") {
@@ -54,6 +58,7 @@ type parser struct {
 	toks []token
 	i    int
 	src  string
+	sess *Session // resolves relation names along the search path; nil: none
 	// pgSpec is the PostgreSQL spelling of the type typeName parsed last
 	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
 	// when the schema type says it all.
@@ -145,11 +150,12 @@ func (p *parser) qualifiedName() (string, error) {
 			return infoPrefix + v, err
 		}
 		if n != "public" && n != "pg_catalog" && n != "pg_temp" {
-			return "", errf(codeUndefinedTable, "schema %q does not exist", n)
+			v, err := p.ident()
+			return n + "." + v, err
 		}
 		return p.ident()
 	}
-	return n, nil
+	return p.searchRel(n), nil
 }
 
 // tableList parses [ONLY] name [*] [, ...] (no inheritance: ONLY and *
@@ -196,6 +202,9 @@ func (p *parser) statement() (Stmt, error) {
 		return p.explainStmt()
 	case "drop":
 		p.next()
+		if st, ok, err := p.dropObj(); ok {
+			return st, err
+		}
 		if st, ok, err := p.dropSubstrIndex(); ok {
 			return st, err
 		}
@@ -357,6 +366,9 @@ func (p *parser) statement() (Stmt, error) {
 		return n, nil
 	case "alter":
 		p.next()
+		if st, ok, err := p.alterObj(); ok {
+			return st, err
+		}
 		if p.acceptKw("role") || p.acceptKw("user") {
 			return p.alterRole()
 		}
@@ -417,6 +429,9 @@ func (p *parser) createStmt() (Stmt, error) {
 	if st, ok, err := p.createCtas(); ok {
 		return st, err
 	}
+	if st, ok, err := p.createObj(); ok {
+		return st, err
+	}
 	if st, ok, err := p.createSubstrIndex(); ok {
 		return st, err
 	}
@@ -441,7 +456,7 @@ func (p *parser) createStmt() (Stmt, error) {
 	if p.acceptKw("sequence") {
 		c := &CreateSequence{IfNotExists: p.acceptKw("if", "not", "exists")}
 		var err error
-		if c.Name, err = p.qualifiedName(); err != nil {
+		if c.Name, err = p.qualifiedNameNew(); err != nil {
 			return nil, err
 		}
 		if c.Opts, err = p.seqOpts(false); err != nil {
@@ -454,7 +469,7 @@ func (p *parser) createStmt() (Stmt, error) {
 	}
 	c := &CreateTable{IfNotExists: p.acceptKw("if", "not", "exists"), Options: map[string]string{}}
 	var err error
-	if c.Name, err = p.qualifiedName(); err != nil {
+	if c.Name, err = p.qualifiedNameNew(); err != nil {
 		return nil, err
 	}
 	if err := p.expectOp("("); err != nil {
@@ -703,7 +718,7 @@ func (p *parser) colDef() (ColDef, error) {
 func (p *parser) typeName() (string, error) {
 	p.pgSpec = ""
 	t := p.next()
-	if t.k != tIdent {
+	if t.k != tIdent && t.k != tQuoted {
 		return "", p.errHere("syntax error: expected a type name")
 	}
 	// modN is the first number of "(n[, m])", or -1
@@ -849,6 +864,14 @@ func (p *parser) typeName() (string, error) {
 	default:
 		if unsupportedTypes[t.s] {
 			return "", errf(codeFeature, "type %q is not supported", t.s)
+		}
+		if t.k == tIdent && t.s == "pg_catalog" && p.isOp(".") { // pg_catalog.text, as psql's \dT+ writes it
+			p.next()
+			return p.typeName()
+		}
+		if o, ok := p.userTypeName(t); ok { // an enum or domain (ddlobjs_types.go)
+			out = o
+			break
 		}
 		return "", errf(codeUndefinedObject, "type %q does not exist", t.s)
 	}

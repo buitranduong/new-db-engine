@@ -797,7 +797,7 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 	if cs, ok, err := sql.ParseCopy(q); ok {
 		return c.copyCommand(cs, err)
 	}
-	stmts, err := sql.Parse(q)
+	stmts, err := c.sess.Parse(q)
 	if err != nil {
 		c.sendError(sql.AsError(err))
 		return false
@@ -842,7 +842,7 @@ func (c *conn) parse(body []byte) {
 		c.fail(&sql.Error{Code: "08P01", Msg: "malformed Parse message"})
 		return
 	}
-	st, err := sql.ParseOne(q)
+	st, err := c.sess.ParseOne(q)
 	if err != nil {
 		c.fail(err)
 		return

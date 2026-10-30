@@ -224,7 +224,7 @@ func (s *Session) seqFunc(name string, args []Datum) (rows [][]Datum, ok bool, e
 	}
 	var seq string
 	if len(args) > 0 {
-		seq = seqName(args[0].String())
+		seq = s.resolveRel(seqName(args[0].String()))
 		if args[0].K == KInt { // nextval('s'::regclass): the sequence's OID
 			seq = s.seqNameByOID(args[0].I)
 		}
@@ -331,8 +331,8 @@ func parseStored(text string, full bool) (Expr, error) {
 }
 
 func hasDefaults(t *schema.Table) bool {
-	for _, c := range t.Columns {
-		if c.Default != "" {
+	for i := range t.Columns {
+		if columnDefaultText(&t.Columns[i]) != "" {
 			return true
 		}
 	}
@@ -341,7 +341,7 @@ func hasDefaults(t *schema.Table) bool {
 
 // columnDefault evaluates column i's default (NULL if it has none).
 func (s *Session) columnDefault(t *schema.Table, i int, now int64) (Datum, error) {
-	text := t.Columns[i].Default
+	text := columnDefaultText(&t.Columns[i])
 	if text == "" {
 		return Null, nil
 	}
@@ -380,7 +380,7 @@ func (s *Session) rowValues(t *schema.Table, cols []int, exprs []Expr, ctx *eval
 		rc, rv = append(rc, ci), append(rv, v)
 	}
 	for ci, c := range t.Columns {
-		if given[ci] || c.Default == "" {
+		if given[ci] || columnDefaultText(&c) == "" {
 			continue
 		}
 		v, err := s.columnDefault(t, ci, ctx.now)

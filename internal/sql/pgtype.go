@@ -56,6 +56,12 @@ func specTy(spec string) pgTy {
 	if strings.HasSuffix(spec, "[]") {
 		return arraySpecTy(spec)
 	}
+	if len(spec) > 5 && spec[:5] == "enum:" {
+		return pgTy{oid: userTypeOID(spec[5:]), mod: -1}
+	}
+	if len(spec) > 3 && spec[:3] == "ut:" {
+		return userSpecTy(spec)
+	}
 	name, n := spec, -1
 	if i := strings.IndexByte(spec, '('); i > 0 && strings.HasSuffix(spec, ")") {
 		name = spec[:i]
@@ -126,6 +132,9 @@ func (t pgTy) family() Kind {
 		return KText
 	case tyDate:
 		return KDate
+	}
+	if isUserOID(t.oid) {
+		return KText
 	}
 	return KNull
 }
@@ -248,6 +257,8 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			return pgTy{oid: tyVoid, mod: -1}
 		case nameFn[e.Name]:
 			return pgTy{oid: tyName, mod: -1}
+		case e.Name == "similarity":
+			return pgTy{oid: tyFloat4, mod: -1}
 		case tyInt4Fn[e.Name]:
 			return pgTy{oid: tyInt4, mod: -1}
 		case e.Name == "mod" || e.Name == "modulo":
@@ -360,6 +371,9 @@ func pgTyName(t pgTy) string {
 	case tyJSONB:
 		return "jsonb"
 	}
+	if n, ok := userTypeFormat(int64(t.oid)); ok {
+		return n
+	}
 	return ""
 }
 
@@ -381,6 +395,12 @@ func formatType(oid uint32, mod int32) string {
 func castName(c *Cast) string {
 	if n := arrayCastName(c); n != "" {
 		return n
+	}
+	if strings.HasPrefix(c.PG, "enum:") {
+		return bareName(c.PG[len("enum:"):])
+	}
+	if strings.HasPrefix(c.PG, "ut:") {
+		return bareName(c.PG[len("ut:"):])
 	}
 	if t := specTy(c.PG); t.oid != 0 {
 		switch t.oid {
@@ -538,6 +558,9 @@ func FormatFloat4(f float64) string {
 func applyPG(pg string, d Datum, explicit bool) (Datum, error) {
 	if pg == "" || d.IsNull() {
 		return d, nil
+	}
+	if strings.HasPrefix(pg, "enum:") || strings.HasPrefix(pg, "ut:") {
+		return applyUserPG(pg, d, explicit)
 	}
 	switch name := specName(pg); name {
 	case "int2", "int4":

@@ -118,6 +118,9 @@ func (p *parser) dropIndex() (Stmt, error) {
 	if d.Names, err = p.tableList(); err != nil {
 		return nil, err
 	}
+	for i, n := range d.Names { // indexes have one namespace here
+		d.Names[i] = bareName(n)
+	}
 	if !p.acceptKw("cascade") {
 		p.acceptKw("restrict")
 	}

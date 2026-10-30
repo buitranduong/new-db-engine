@@ -1243,6 +1243,7 @@ type commitReq struct {
 	moves       []moveOp    // log reclamation: relocate or drop heads
 	own         *reqOwn     // checkUnique: the request's ops by key
 	stage       *stageState // big request whose index entries are staged first (commitstage.go)
+	stageEng    *Engine     // set with stage: finishReq removes the staged entries of a failed request before answering it
 	shares      []pk        // parents of the children written (fk.go)
 	repair      bool        // occ_repair.go: report every write-write conflict (indexes into ops)
 	gate        *WriteGate
@@ -1668,6 +1669,7 @@ func (e *Engine) committer() {
 			for _, q := range batch {
 				if StageBig && stageable(q) {
 					q.stage = &stageState{}
+					q.stageEng = e
 					staging = append(staging, q)
 				} else {
 					batch[k] = q
@@ -1772,6 +1774,11 @@ func (e *Engine) flushOpen(b *commitBatch) error {
 }
 
 func finishReq(r *commitReq, err error) {
+	if err != nil && r.stage != nil && r.stageEng != nil {
+		// the caller must not see the failure while the failed request's staged
+		// index entries are still in the trees (commitstage.go)
+		r.stageEng.unstage(r)
+	}
 	r.err = err
 	if LatDebug {
 		r.acked = time.Now()

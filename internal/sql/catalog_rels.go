@@ -141,7 +141,7 @@ func init() {
 					TextD(t.name + "send"), TextD("-"), TextD("-"), TextD("-"), TextD(align), TextD("p"), BoolD(false),
 					IntD(0), IntD(-1), IntD(0), IntD(coll), Null, Null, Null})
 			}
-			return rows
+			return supfixDomainRows(rows)
 		})
 
 	defCat("pg_index", "indexrelid:i indrelid:i indnatts:i indnkeyatts:i indisunique:b indnullsnotdistinct:b "+

@@ -348,6 +348,8 @@ func formatType(oid uint32, mod int32) string {
 	switch {
 	case n == "":
 		return ""
+	case oid == tyTimestamptz && mod >= 0:
+		return "timestamp(" + strconv.Itoa(int(mod)) + ") with time zone"
 	case (oid == tyVarchar || oid == tyBpchar) && mod >= 4:
 		return n + "(" + strconv.Itoa(int(mod)-4) + ")"
 	case oid == tyBpchar:
@@ -406,7 +408,7 @@ func tableCol(c *schema.Column) Column {
 
 // itemCol is the result column of a select item over a single table.
 func itemCol(it SelItem, sc *scope, pk map[int]Kind) Column {
-	return Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}.withTy(inferTy(it.X, sc.leafTy))
+	return Column{Name: itemName(it), Kind: supfixItemKind(it.X, typeOf(it.X, sc, pk), sc, pk)}.withTy(inferTy(it.X, sc.leafTy))
 }
 
 // TimeOfDayMicros reads a time of day ("10:30", "10:30:45.5") as

@@ -9,7 +9,7 @@ DROP TABLE IF EXISTS hs_sims;
 DROP VIEW IF EXISTS hs_v_sold;
 CREATE TABLE hs_sims (number text PRIMARY KEY, carrier text NOT NULL, status text NOT NULL, price numeric(12,2) NOT NULL, qty integer NOT NULL, big bigint NOT NULL, created timestamptz NOT NULL, note text);
 CREATE TABLE hs_items (id bigint PRIMARY KEY, number text NOT NULL, qty integer NOT NULL, unit_price numeric(12,2) NOT NULL, active boolean NOT NULL);
-INSERT INTO hs_sims SELECT '09' || lpad(g::text, 6, '0'), CASE g % 3 WHEN 0 THEN 'viettel' WHEN 1 THEN 'mobi' ELSE 'vina' END, CASE g % 4 WHEN 0 THEN 'sold' WHEN 1 THEN 'reserved' ELSE 'available' END, (g % 50) * 1000 + 0.5, g % 7, g * 1000000000, timestamptz '2026-01-01 00:00:00+00' + g * interval '19 hours', CASE WHEN g % 5 = 0 THEN NULL ELSE 'n' || g END FROM generate_series(1, 400) g;
+INSERT INTO hs_sims SELECT '09' || lpad(g::text, 6, '0'), CASE g % 3 WHEN 0 THEN 'viettel' WHEN 1 THEN 'mobi' ELSE 'vina' END, CASE g % 4 WHEN 0 THEN 'sold' WHEN 1 THEN 'reserved' ELSE 'available' END, (g % 50) * 1000 + 0.5, g % 7, g::bigint * 1000000000, timestamptz '2026-01-01 00:00:00+00' + g * interval '19 hours', CASE WHEN g % 5 = 0 THEN NULL ELSE 'n' || g END FROM generate_series(1, 400) g;
 INSERT INTO hs_items SELECT g, '09' || lpad((1 + (g * 7) % 400)::text, 6, '0'), 1 + g % 3, ((g * 13) % 90 + 10) * 100 + 0.25, g % 3 <> 0 FROM generate_series(1, 700) g;
 CREATE INDEX hs_sims_created_idx ON hs_sims (created);
 CREATE INDEX hs_items_number_idx ON hs_items (number);

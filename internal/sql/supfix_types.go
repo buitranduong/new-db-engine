@@ -120,3 +120,28 @@ func supfixTyName(oid uint32) string {
 	}
 	return ""
 }
+
+// supfixItemKind refines the kind typeOf gives a top-level aggregate of a single-table select item.
+func supfixItemKind(x Expr, k Kind, sc *scope, pk map[int]Kind) Kind {
+	f, ok := x.(*Func)
+	if !ok || f.Over != nil {
+		return k
+	}
+	ak := make([]Kind, len(f.Args))
+	for i, a := range f.Args {
+		ak[i] = typeOf(a, sc, pk)
+	}
+	return supfixAggKind(f.Name, f.Args, ak, k, sc.leafTy)
+}
+
+// supfixFuncKind: kinds funcKind does not know (statistical aggregates).
+func supfixFuncKind(name string) (Kind, bool) {
+	switch name {
+	case "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_avgx", "regr_avgy",
+		"regr_sxx", "regr_syy", "regr_sxy":
+		return KFloat, true
+	case "regr_count":
+		return KInt, true
+	}
+	return KNull, false
+}

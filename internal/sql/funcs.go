@@ -1342,6 +1342,9 @@ func funcKind(name string, args []Kind) Kind {
 	if k, ok := catalogFuncKinds[name]; ok {
 		return k
 	}
+	if k, ok := supfixFuncKind(name); ok {
+		return k
+	}
 	switch name {
 	case "count", "length", "char_length", "strpos", "position", "locate", "ascii", "octet_length", "lengthutf8", "bit_length",
 		"toyear", "tomonth", "todayofmonth", "tohour", "tominute", "tosecond", "todayofweek", "todayofyear",

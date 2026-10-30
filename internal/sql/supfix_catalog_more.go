@@ -34,3 +34,34 @@ func (s *Session) supfixSleep(args []Datum) (Datum, error) {
 		time.Sleep(min(left, 20*time.Millisecond))
 	}
 }
+
+// The five domains of information_schema as pg_type rows (typtype 'd'), which SQLAlchemy's
+// get_columns lists with every reflection.
+const domainOIDBase = 13001
+
+var infoDomains = []struct {
+	name, cat string
+	base      int64
+	mod       int64
+	def       Datum
+}{
+	{"cardinal_number", "N", 23, -1, Null},
+	{"character_data", "S", 1043, -1, Null},
+	{"sql_identifier", "S", 19, -1, Null},
+	{"time_stamp", "D", 1184, 2, TextD("CURRENT_TIMESTAMP(2)")},
+	{"yes_or_no", "S", 1043, 7, Null},
+}
+
+func supfixDomainRows(rows [][]Datum) [][]Datum {
+	for i, d := range infoDomains {
+		rows = append(rows, []Datum{IntD(domainOIDBase + int64(i)), TextD(d.name), IntD(nsInfoSchema), IntD(ownerOID), IntD(-1),
+			BoolD(false), TextD("d"), TextD(d.cat), BoolD(false), BoolD(true), TextD(","), IntD(0),
+			IntD(0), IntD(0), IntD(0), TextD("domain_in"), TextD("domain_recv"), TextD("-"), TextD("-"), TextD("-"), TextD("-"), TextD("-"),
+			TextD("i"), TextD("p"), BoolD(false), IntD(d.base), IntD(d.mod), IntD(0), IntD(0), Null, d.def, Null})
+	}
+	return rows
+}
+
+func isInfoDomain(oid int64) bool {
+	return oid >= domainOIDBase && oid < domainOIDBase+int64(len(infoDomains))
+}

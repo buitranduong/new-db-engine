@@ -257,6 +257,11 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 					return TextD(formatType(uint32(oid.I), int32(m.I))), nil
 				}
 			}
+			if oid.I == tyTimestamptz && len(args) > 1 && !args[1].IsNull() {
+				if m, err := coerce(args[1], KInt); err == nil && m.I >= 0 {
+					return TextD(formatType(uint32(oid.I), int32(m.I))), nil
+				}
+			}
 			if oid.I == tyBpchar {
 				return TextD("bpchar"), nil // PostgreSQL prints char without a length as bpchar
 			}
@@ -345,6 +350,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_is_other_temp_schema", "pg_is_in_recovery":
 		return BoolD(false), nil
 	case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible":
+		if name == "pg_type_is_visible" && len(args) == 1 && args[0].K == KInt && isInfoDomain(args[0].I) {
+			return BoolD(false), nil
+		}
 		return BoolD(true), nil // everything is in pg_catalog or public, both on the search path
 	case "pg_get_userbyid":
 		return TextD(roleName), nil

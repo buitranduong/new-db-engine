@@ -181,14 +181,48 @@ type tcluster struct {
 	lead    atomic.Int32 // index of the last known leader
 }
 
+// portLockDir is shared by every `go test` process on the machine (and by
+// every user), so it is a fixed path and not os.TempDir (TMPDIR may differ).
+const portLockDir = "/tmp/stask-test-ports"
+
+// lockPort takes an exclusive, non-blocking flock on a per-port lock file. The
+// lock lives as long as the returned file is open (the kernel drops it if the
+// test process dies), so two concurrent test processes never get the same port.
+func lockPort(port int) *os.File {
+	_ = os.MkdirAll(portLockDir, 0o777)
+	_ = os.Chmod(portLockDir, 0o777)
+	f, err := os.OpenFile(filepath.Join(portLockDir, fmt.Sprintf("%d.lock", port)), os.O_CREATE|os.O_RDWR, 0o666)
+	if err != nil {
+		return nil
+	}
+	_ = f.Chmod(0o666)
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil
+	}
+	return f
+}
+
+// freeBase reserves need consecutive ports in 21000-21999: each port is flocked
+// (cross-process, held until the test ends) and also probed with a real listen
+// (guards against processes that are not stask tests). Ports are therefore
+// collision free between concurrent go test runs.
 func freeBase(t *testing.T, need int) int {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(os.Getpid())))
 	var lastErr error
-	for try := 0; try < 200; try++ {
+	for try := 0; try < 500; try++ {
 		base := 21000 + rng.Intn(980-need)
 		var ls []net.Listener
+		var locks []*os.File
 		ok := true
 		for i := 0; i < need; i++ {
+			lk := lockPort(base + i)
+			if lk == nil {
+				lastErr = fmt.Errorf("port %d locked by another test process", base+i)
+				ok = false
+				break
+			}
+			locks = append(locks, lk)
 			l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", base+i))
 			if err != nil {
 				lastErr = err
@@ -201,10 +235,18 @@ func freeBase(t *testing.T, need int) int {
 			l.Close()
 		}
 		if ok {
+			t.Cleanup(func() {
+				for _, f := range locks {
+					f.Close()
+				}
+			})
 			return base
 		}
+		for _, f := range locks {
+			f.Close()
+		}
 	}
-	t.Fatalf("no free port block in 21000-21999 (last listen error: %v)", lastErr)
+	t.Fatalf("no free port block in 21000-21999 (last error: %v)", lastErr)
 	return 0
 }
 

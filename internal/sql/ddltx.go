@@ -69,18 +69,30 @@ type ddlStep struct {
 	Views   []viewSnap        `json:"views,omitempty"`
 	Seqs    []seqSnap         `json:"seqs,omitempty"`
 	Objs    []objSnap         `json:"objs,omitempty"`
+	Trigs   []trigSnap        `json:"trigs,omitempty"`
 }
 
 type ddlJournal struct {
-	id   string
-	n    int // counter for private names
-	undo []ddlStep
-	redo []ddlStep
+	id    string
+	n     int             // counter for private names
+	views map[string]bool // views this transaction created, replaced or dropped: read live, not at its snapshot
+	undo  []ddlStep
+	redo  []ddlStep
 }
 
 type ddlData struct {
 	Undo []ddlStep `json:"undo,omitempty"`
 	Redo []ddlStep `json:"redo,omitempty"`
+}
+
+// viewAt reads a view for the compiler: a transaction sees the view
+// definitions of its snapshot (TestSQLViewSnapshot), except those its own
+// DDL changed, which are applied at once and read live.
+func (s *Session) viewAt(tx *core.Tx, name string) (*core.View, bool, error) {
+	if s.dj != nil && s.dj.views[name] {
+		tx = nil
+	}
+	return s.E.View(tx, name)
 }
 
 // djMark is a position in the journal (a savepoint remembers one).
@@ -226,6 +238,8 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		return s.djSeqs(st, run)
 	case *ObjDDL, *CommentOn:
 		return s.djObjs(st, run)
+	case *CreateTrigger, *DropTrigger:
+		return s.djTriggers(st, run)
 	}
 	return nil, false, nil
 }
@@ -765,6 +779,8 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 		return "", s.restoreObjs(st.Objs)
 	case "restore_objs":
 		return "", s.restoreObjs(st.Objs)
+	case "restore_trigs":
+		return "", s.restoreTrigs(st.Trigs)
 	default:
 		return "", fmt.Errorf("unknown ddl journal step %q", st.Op)
 	}

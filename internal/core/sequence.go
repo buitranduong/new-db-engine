@@ -93,11 +93,7 @@ func (e *Engine) seqTable() error {
 	if _, err := e.Table(seqTableName); err == nil {
 		return nil
 	}
-	_, err := e.CreateTable(seqSchema())
-	if err != nil && e.tableExists(seqTableName) {
-		return nil // created concurrently
-	}
-	return err
+	return e.createSystemTable(seqSchema())
 }
 
 func (e *Engine) tableExists(name string) bool {

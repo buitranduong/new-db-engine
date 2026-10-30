@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Transactional DDL (branch txddl2): each changeSet is one transaction. tx3-fail must leave nothing behind. -->
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+  <changeSet id="tx1" author="txddl2">
+    <createTable tableName="T1">
+      <column name="ID" type="BIGINT"><constraints primaryKey="true"/></column>
+      <column name="A" type="VARCHAR(20)"/>
+    </createTable>
+  </changeSet>
+  <changeSet id="tx2-drop-create-same-name" author="txddl2">
+    <sql>DROP TABLE T1</sql>
+    <sql>CREATE TABLE T1 (ID BIGINT PRIMARY KEY, B VARCHAR(20))</sql>
+    <sql>CREATE TABLE T2 (ID BIGINT PRIMARY KEY)</sql>
+    <sql>CREATE INDEX IDX_T1_B ON T1 (B)</sql>
+  </changeSet>
+  <changeSet id="tx3-fail" author="txddl2">
+    <addColumn tableName="T1"><column name="X" type="INT"/></addColumn>
+    <createTable tableName="T3"><column name="ID" type="BIGINT"/></createTable>
+    <sql>CREATE INDEX IDX_T2_ID ON T2 (ID)</sql>
+    <sql>CREATE VIEW V_T1 AS SELECT ID FROM T1</sql>
+    <sql>INSERT INTO NO_SUCH_TABLE VALUES (1)</sql>
+  </changeSet>
+</databaseChangeLog>

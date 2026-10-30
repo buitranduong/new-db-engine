@@ -44,11 +44,7 @@ func (e *Engine) cdcTable() error {
 	if e.tableExists(cdcTableName) {
 		return nil
 	}
-	_, err := e.CreateTable(cdcSchema())
-	if err != nil && e.tableExists(cdcTableName) {
-		return nil // created concurrently
-	}
-	return err
+	return e.createSystemTable(cdcSchema())
 }
 
 // cdcMirror writes (val != nil) or deletes key in the CDC table, through

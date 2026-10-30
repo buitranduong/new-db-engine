@@ -193,6 +193,15 @@ func (s *Session) djViews(st Stmt, run func() (*Result, error)) (*Result, bool, 
 		}
 	}
 	undo := ddlStep{Op: "restore_views", Views: s.viewSnaps(names), Objs: s.commentSnaps(comments...)}
+	if err := s.djStart(); err != nil {
+		return s.djFail(err)
+	}
+	if s.dj.views == nil {
+		s.dj.views = map[string]bool{}
+	}
+	for _, n := range names {
+		s.dj.views[n] = true
+	}
 	return s.djRun(undo, run)
 }
 
@@ -367,4 +376,57 @@ func (s *Session) djTruncate(st *Truncate, run func() (*Result, error)) (*Result
 		}
 	}
 	return res, true, nil
+}
+
+type trigSnap struct {
+	Table  string       `json:"table"`
+	Name   string       `json:"name"`
+	Exists bool         `json:"exists,omitempty"`
+	Def    core.Trigger `json:"def"`
+}
+
+func (s *Session) restoreTrigs(snaps []trigSnap) error {
+	for i := len(snaps) - 1; i >= 0; i-- {
+		sn := snaps[i]
+		_, cur := s.E.Trigger(sn.Table, sn.Name)
+		switch {
+		case sn.Exists:
+			if _, err := s.E.Table(sn.Table); err != nil {
+				continue // the table is gone: so are its triggers
+			}
+			def := sn.Def
+			if err := s.E.PutTrigger(&def, true); err != nil {
+				return err
+			}
+		case cur:
+			if err := s.E.DropTrigger(sn.Table, sn.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// djTriggers journals CREATE [OR REPLACE] TRIGGER and DROP TRIGGER.
+func (s *Session) djTriggers(st Stmt, run func() (*Result, error)) (*Result, bool, error) {
+	var table, name string
+	switch st := st.(type) {
+	case *CreateTrigger:
+		table, name = st.Table, st.Name
+	case *DropTrigger:
+		table, name = st.Table, st.Name
+		if table == "" {
+			for _, tg := range s.E.AllTriggers() {
+				if tg.Name == name {
+					table = tg.Table
+					break
+				}
+			}
+		}
+	}
+	sn := trigSnap{Table: table, Name: name}
+	if tg, ok := s.E.Trigger(table, name); ok {
+		sn.Exists, sn.Def = true, *tg
+	}
+	return s.djRun(ddlStep{Op: "restore_trigs", Trigs: []trigSnap{sn}}, run)
 }

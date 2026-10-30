@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -43,6 +44,10 @@ func dbState(t *testing.T, s *Session) string {
 		b, _ := json.Marshal(v)
 		out = append(out, "VIEW "+string(b))
 	}
+	for _, tg := range s.E.AllTriggers() {
+		b, _ := json.Marshal(tg)
+		out = append(out, "TRIGGER "+string(b))
+	}
 	for _, q := range s.E.Sequences() {
 		last, called, _ := s.E.SequenceState(q.Name)
 		out = append(out, fmt.Sprintf("SEQ %+v last=%d called=%v", q, last, called))
@@ -73,10 +78,13 @@ var txdSetup2 = []string{
 	`CREATE TABLE tr (id BIGSERIAL PRIMARY KEY, x TEXT)`,
 	`INSERT INTO tr (x) VALUES ('q'),('r')`,
 	`CREATE TABLE dz (id BIGSERIAL PRIMARY KEY, z TEXT)`,
+	`CREATE INDEX dz_z ON dz (z)`,
 	`INSERT INTO dz (z) VALUES ('old1'),('old2')`,
+	`CREATE TABLE aud (id BIGINT PRIMARY KEY)`,
 	`CREATE SEQUENCE sq0`,
 	`CREATE SEQUENCE sq1`,
 	`CREATE TABLE vt (id BIGINT PRIMARY KEY, name TEXT, qty INT)`,
+	`CREATE TRIGGER tg_old AFTER INSERT ON vt FOR EACH ROW BEGIN INSERT INTO aud VALUES (NEW.id); END`,
 	`CREATE VIEW vp AS SELECT id, name FROM vt`,
 	`CREATE VIEW vold AS SELECT id FROM vt`,
 	`CREATE TYPE mood AS ENUM ('a','b')`,
@@ -98,6 +106,7 @@ var txdScriptA = []string{
 	`CREATE TABLE fresh (id BIGINT PRIMARY KEY, w TEXT)`,
 	`DROP TABLE dz`,
 	`CREATE TABLE dz (id BIGSERIAL PRIMARY KEY, z2 TEXT)`,
+	`CREATE INDEX dz_z ON dz (z2)`,
 	`INSERT INTO dz (z2) VALUES ('new1')`,
 	`DROP INDEX ch_v`,
 	`ALTER TABLE ch RENAME TO ch2`,
@@ -105,6 +114,8 @@ var txdScriptA = []string{
 
 // second half: views, sequences, types, schemas, comments, truncate
 var txdScriptB = []string{
+	`DROP TRIGGER tg_old ON vt`,
+	`CREATE TRIGGER tg_new AFTER DELETE ON vt FOR EACH ROW BEGIN INSERT INTO aud VALUES (OLD.id); END`,
 	`CREATE VIEW vq AS SELECT id FROM vt`,
 	`CREATE OR REPLACE VIEW vp AS SELECT id, name, qty FROM vt`,
 	`DROP VIEW vold`,
@@ -652,5 +663,92 @@ func TestTxDDLHiddenTableIndexes(t *testing.T) {
 	}
 	if _, err := tryRun(s, `INSERT INTO ix VALUES (3,'a','y')`); code(err) != codeUniqueViolation {
 		t.Fatalf("unique index not rebuilt: %v", err)
+	}
+}
+
+// A table with triggers cannot be hidden: its DROP is deferred to COMMIT.
+func TestTxDDLDropTableWithTrigger(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE a (id BIGINT PRIMARY KEY)`)
+	run(t, s, `CREATE TABLE au (id BIGINT PRIMARY KEY)`)
+	run(t, s, `CREATE TRIGGER a_t AFTER INSERT ON a FOR EACH ROW BEGIN INSERT INTO au VALUES (NEW.id); END`)
+	want := dbState(t, s)
+	run(t, s, `BEGIN`)
+	run(t, s, `DROP TABLE a`)
+	if !hasTable(s, "a") {
+		t.Fatal("deferred drop applied before COMMIT")
+	}
+	run(t, s, `ROLLBACK`)
+	if got := dbState(t, s); got != want {
+		t.Fatalf("--- want\n%s\n--- got\n%s", want, got)
+	}
+	run(t, s, `BEGIN`)
+	run(t, s, `DROP TABLE a`)
+	run(t, s, `COMMIT`)
+	if hasTable(s, "a") || len(s.E.AllTriggers()) != 0 {
+		t.Fatal("committed drop incomplete")
+	}
+}
+
+// Concurrent sessions each drop and recreate their own table, with views,
+// savepoints and sequences, committing or rolling back; run under -race.
+func TestTxDDLConcurrentDropCreate(t *testing.T) {
+	e := newEngine(t)
+	const N = 8
+	setup := NewSession(e)
+	for i := 0; i < N; i++ {
+		run(t, setup, fmt.Sprintf(`CREATE TABLE d%d (id BIGSERIAL PRIMARY KEY, v TEXT)`, i))
+		run(t, setup, fmt.Sprintf(`CREATE INDEX d%d_v ON d%d (v)`, i, i))
+		run(t, setup, fmt.Sprintf(`INSERT INTO d%d (v) VALUES ('old')`, i))
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s := NewSession(e)
+			defer s.Close()
+			tb := fmt.Sprintf("d%d", i)
+			qs := []string{`BEGIN`,
+				`DROP TABLE ` + tb,
+				`CREATE TABLE ` + tb + ` (id BIGSERIAL PRIMARY KEY, w TEXT)`,
+				`CREATE INDEX ` + tb + `_v ON ` + tb + ` (w)`,
+				`SAVEPOINT sp`,
+				fmt.Sprintf(`CREATE VIEW dv%d AS SELECT id FROM %s`, i, tb),
+				fmt.Sprintf(`CREATE SEQUENCE dq%d`, i),
+				`ROLLBACK TO sp`,
+				`INSERT INTO ` + tb + ` (w) VALUES ('new')`}
+			for _, q := range qs {
+				if _, err := tryRun(s, q); err != nil {
+					t.Errorf("%s: %v", q, err)
+					return
+				}
+			}
+			end := `COMMIT`
+			if i%2 == 1 {
+				end = `ROLLBACK`
+			}
+			if _, err := tryRun(s, end); err != nil {
+				t.Errorf("%s: %v", end, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	s := NewSession(e)
+	for i := 0; i < N; i++ {
+		col := "w"
+		want := "new"
+		if i%2 == 1 {
+			col, want = "v", "old"
+		}
+		if r := run(t, s, fmt.Sprintf(`SELECT %s FROM d%d`, col, i)); render(r) != want {
+			t.Fatalf("d%d: %s, want %s", i, render(r), want)
+		}
+		if s.isView(fmt.Sprintf("dv%d", i)) {
+			t.Fatalf("view dv%d survived ROLLBACK TO", i)
+		}
+	}
+	if n := len(e.Objs(ddlKind)); n != 0 || hiddenLeft(s) != 0 {
+		t.Fatalf("journal rows %d, hidden objects %d", n, hiddenLeft(s))
 	}
 }

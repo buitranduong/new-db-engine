@@ -116,11 +116,7 @@ func (e *Engine) rolesTable() error {
 	if e.tableExists(roleTableName) {
 		return nil
 	}
-	_, err := e.CreateTable(roleSchema())
-	if err != nil && e.tableExists(roleTableName) {
-		return nil // created concurrently
-	}
-	return err
+	return e.createSystemTable(roleSchema())
 }
 
 // Role returns a role as of the newest durable commit.

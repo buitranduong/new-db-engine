@@ -54,17 +54,7 @@ func (e *Engine) objsTable() error {
 	if e.tableExists(objTableName) {
 		return nil
 	}
-	_, err := e.CreateTable(objSchema())
-	if err != nil && strings.Contains(err.Error(), "already exists") {
-		// created concurrently: wait until it is installed
-		for i := 0; i < 1000 && !e.tableExists(objTableName); i++ {
-			time.Sleep(time.Millisecond)
-		}
-	}
-	if err != nil && e.tableExists(objTableName) {
-		return nil
-	}
-	return err
+	return e.createSystemTable(objSchema())
 }
 
 // EnsureObjs creates the object catalog table if it does not exist.
@@ -138,3 +128,20 @@ func (tx *Tx) PutObj(o Obj) error {
 
 // Logf logs through the engine's log function.
 func (e *Engine) Logf(format string, a ...any) { e.logf(format, a...) }
+
+// createSystemTable creates a hidden catalog table. Sessions racing to be
+// the first to need it all call this: the loser of the race gets "already
+// exists" while the table is still being installed, so it waits until the
+// table is visible instead of failing.
+func (e *Engine) createSystemTable(t schema.Table) error {
+	_, err := e.CreateTable(t)
+	if err != nil && strings.Contains(err.Error(), "already exists") {
+		for i := 0; i < 2000 && !e.tableExists(t.Name); i++ {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if err != nil && e.tableExists(t.Name) {
+		return nil // created concurrently
+	}
+	return err
+}

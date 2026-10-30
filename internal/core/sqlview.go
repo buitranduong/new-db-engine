@@ -54,11 +54,7 @@ func (e *Engine) viewsTable() error {
 	if e.tableExists(viewTableName) {
 		return nil
 	}
-	_, err := e.CreateTable(viewSchema())
-	if err != nil && e.tableExists(viewTableName) {
-		return nil // created concurrently
-	}
-	return err
+	return e.createSystemTable(viewSchema())
 }
 
 // PutView stores a view; with replace an existing definition is replaced.
@@ -86,16 +82,19 @@ func (e *Engine) DropViews(names []string) error {
 	return err
 }
 
-// View returns the definition of a view as of the newest durable commit.
-// Like tables, views are catalog objects that CREATE/DROP VIEW apply at
-// once, outside the transaction's snapshot, so a transaction must see its
-// own CREATE VIEW (and not a view it dropped): tx is accepted for the
-// callers' sake and not used.
+// View returns the definition of a view as tx sees it (as of tx's
+// snapshot); with a nil tx, as of the newest durable commit.
 func (e *Engine) View(tx *Tx, name string) (*View, bool, error) {
 	if !e.tableExists(viewTableName) {
 		return nil, false, nil
 	}
-	r, _, err := e.Get(viewTableName, name)
+	var r schema.Row
+	var err error
+	if tx != nil {
+		r, _, err = tx.Get(viewTableName, name)
+	} else {
+		r, _, err = e.Get(viewTableName, name)
+	}
 	if err != nil || r == nil {
 		return nil, false, err
 	}

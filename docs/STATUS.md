@@ -105,3 +105,7 @@ docs/15 §5: ORM/ngôn ngữ ba hệ, cấu hình PG hiện tại, `pg_locks` l�
 ## Cập nhật: gộp integ5 vào main
 - integ3+integ4+integ5 (cursors, ctas, jsonarr, jmixfix, ddlobjs, supfix) đã gộp vào main; cổng RACE đầy đủ xanh, claimcheck 454/461.
 - Còn lại: chạy lại client suites, pgdiff, simbench trên bản gộp; memmap; binary array params, expression index.
+
+## Cập nhật: txddl + exprindex + pgres vào main
+- DDL giao dịch (CREATE TABLE/INDEX btree/ADD COLUMN có undo; DROP hoãn tới COMMIT), index biểu thức một cột (lower, upper, trim, length, abs…), mảng nhị phân tham số, sửa phần dư pgdiff (2277/2464).
+- Cổng RACE xanh, claimcheck 471/477. Tiếp theo: pha 1 của D31 (memmap, simbench qua scripts/perf-run.sh).

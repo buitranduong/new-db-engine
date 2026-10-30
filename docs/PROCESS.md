@@ -87,3 +87,4 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 - Làn B (tương thích, client, DDL, vận hành): agent song song, nhánh riêng, rebase lên main trước khi báo xong; gộp theo đợt nhỏ vào nhánh tích hợp, một cổng RACE + claimcheck mỗi đợt.
 - Không chạy lệnh đụng cache/tài nguyên (go clean -cache, xoá dữ liệu) khi cổng đang chạy.
 - Máy benchmark riêng vẫn là điều kiện để số đo hiệu năng có giá trị cuối cùng.
+- D31 bổ sung (ba pha): (1) đo đường nền (ghi, index, log, GC lịch sử, bộ nhớ) ngay, vì quyết định kiến trúc; (2) Làn B phủ nốt tính năng có hạn chót, rồi đóng băng (tag) và gộp; (3) đo từng phần + chỉnh tối ưu SQL/Superset/trigram/cột trên bản đóng băng, mỗi chỉnh sửa có số trước/sau. Phát hiện kiến trúc ở pha 1 thì dừng tính năng mới vào vùng đó đến khi sửa xong.

@@ -1312,3 +1312,10 @@ Các việc không thuộc nhánh agent nào; mỗi dòng có plan, target, actu
 **Giới hạn của chính bài kiểm.** Chỉ một người dùng (quản trị), không có nhiều chi nhánh/quyền hàng (row-level) nên các ngoại lệ quyền chưa thử; hai ứng dụng chạy song song trên hai DB độc lập nên ID sinh ra khác, script thay UUID bằng tên tượng trưng; thứ tự dòng khác nhau được tính là "khác" (mục 1).
 
 Tái lập: `cd ~/wt/crmcompat/accept/clients/crm` (README); `go test ./internal/sql -run 'TestCrm|TestPartial'`; `claimcheck -only crm_`.
+
+### Phụ lục U (bổ sung 2026-10-30): dữ liệu prod và kiểm cron
+| Việc | Plan | Target | Actual (bằng chứng) |
+|---|---|---|---|
+| Lấy backup DB từ server prod | Dùng bản dump có sẵn của script hằng ngày, không tạo tải lên prod | Có bản dump đúng nguyên vẹn trên VM, quyền hạn chế | Chỉ đọc trên prod; chép `crm-20261030-0230.dump` (43 767 094 byte) qua đường ống; SHA-256 hai đầu trùng (`72751cf3…a9704`); lưu `~/crm-data/` mode 600, ngoài repo. Không chép `files-*.tgz` (1,7 GB). Khôi phục vào container postgres:18 `prod-copy-pg` (91 bảng, khớp 91 bảng của CRM). Dữ liệu thật: không đưa vào repo/docs/log. |
+| Kiểm cronjob backup hằng ngày | Tìm vì sao "chưa hoạt động" | Kết luận theo bằng chứng | Cron **đang chạy**: root crontab `30 2 * * *`, nhật ký cron ghi chạy các ngày 20–24 và 28–30/10; 14 cặp dump+tgz liên tục 17–30/10; `backup.log` rỗng là bình thường (không in khi thành công). Dump mới nhất hợp lệ (TOC 780 mục, gzip). Sai sót của tôi: kết luận ban đầu "chỉ một file tgz" là do cắt danh sách bằng `head`, đã sửa. Rủi ro thật: giờ chạy 02:30 UTC = 09:30 ICT; backup cùng ổ `/dev/sda1` với DB (81%), không có bản sao ngoài máy; `tar … || true` và dump lỗi không báo, vòng giữ 14 bản có thể xoá dần bản tốt; chưa có thử khôi phục định kỳ. Chưa sửa gì trên prod, chờ người dùng duyệt. |
+| Tích hợp crmcompat | Gộp sau cổng RACE | Xanh, claimcheck không giảm | `integ10` xanh, claimcheck 504/510, gate 1277 s (P=4, VM không rảnh). |

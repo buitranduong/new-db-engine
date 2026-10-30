@@ -80,9 +80,9 @@ func TestSQLView(t *testing.T) {
 	if _, err := tryRun(s, `CREATE VIEW bad (a, b, c) AS SELECT 1`); code(err) != codeSyntax {
 		t.Fatalf("too many column names: %v", err)
 	}
-	if _, err := tryRun(s, `CREATE MATERIALIZED VIEW bad AS SELECT 1`); code(err) != codeFeature {
-		t.Fatalf("materialized: %v", err)
-	}
+	// materialized views are supported since the ctas branch (ctas2_test.go)
+	run(t, s, `CREATE MATERIALIZED VIEW bad AS SELECT 1`)
+	run(t, s, `DROP MATERIALIZED VIEW bad`)
 	// a view is read-only and is not a table
 	for _, q := range []string{`INSERT INTO rich VALUES (9,'x',1)`, `UPDATE rich SET sal = 1`, `DELETE FROM rich`} {
 		if _, err := tryRun(s, q); code(err) != codeObjectNotInState {

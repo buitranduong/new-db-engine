@@ -1,6 +1,8 @@
 package sql
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"stask/internal/core"
@@ -109,4 +111,61 @@ func skReplicaSQL(t *testing.T, leader *core.Engine) *core.Engine {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// TestTempNotInCDC: a temporary table's rows are not delivered to logical decoding.
+func TestTempNotInCDC(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE pubt (id INTEGER PRIMARY KEY)`)
+	run(t, s, `SELECT pg_create_logical_replication_slot('tc', 'test_decoding')`)
+	run(t, s, `CREATE TEMP TABLE secret_tmp (id INTEGER PRIMARY KEY, v TEXT)`)
+	run(t, s, `INSERT INTO secret_tmp VALUES (1, 'x')`)
+	run(t, s, `INSERT INTO pubt VALUES (1)`)
+	var all string
+	for _, row := range run(t, s, `SELECT * FROM pg_logical_slot_peek_changes('tc', NULL, NULL)`).Rows {
+		for _, d := range row {
+			all += d.String() + "\n"
+		}
+	}
+	if !strings.Contains(all, "pubt") {
+		t.Fatalf("the public table's change is missing:\n%s", all)
+	}
+	if strings.Contains(all, "secret_tmp") || strings.Contains(all, "pg_temp") {
+		t.Fatalf("temporary table in the change stream:\n%s", all)
+	}
+}
+
+// TestMergeConcurrent: MERGE retries as a whole when a concurrent writer
+// changes a row it read, and loses no update.
+func TestMergeConcurrent(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE ct (id INTEGER PRIMARY KEY, status TEXT, price INTEGER)`)
+	run(t, s, `CREATE TABLE cs (id INTEGER)`)
+	run(t, s, `INSERT INTO ct SELECT g, 'old', 0 FROM generate_series(1, 400) g`)
+	run(t, s, `INSERT INTO cs SELECT g FROM generate_series(1, 400) g`)
+	done := make(chan struct{})
+	last := make([]int64, 401)
+	go func() {
+		defer close(done)
+		b := NewSession(e)
+		for i := int64(1); i <= 300; i++ {
+			id := 1 + (i*7)%400
+			if _, err := tryRun(b, fmt.Sprintf(`UPDATE ct SET price = %d WHERE id = %d`, i, id)); err != nil {
+				t.Errorf("update: %v", err)
+				return
+			}
+			last[id] = i
+		}
+	}()
+	for i := 0; i < 5; i++ {
+		run(t, s, `MERGE INTO ct USING cs ON ct.id = cs.id WHEN MATCHED THEN UPDATE SET status = 'merged'`)
+	}
+	<-done
+	run(t, s, `MERGE INTO ct USING cs ON ct.id = cs.id WHEN MATCHED THEN UPDATE SET status = 'merged'`)
+	wantRows(t, s, `SELECT count(*) FROM ct WHERE status = 'merged'`, "400")
+	for id := 1; id <= 400; id++ {
+		wantRows(t, s, fmt.Sprintf(`SELECT price FROM ct WHERE id = %d`, id), fmt.Sprint(last[id]))
+	}
 }

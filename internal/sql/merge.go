@@ -2,6 +2,7 @@ package sql
 
 import (
 	"fmt"
+	"strconv"
 
 	"stask/internal/core"
 	"stask/internal/schema"
@@ -46,7 +47,11 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 		qual = st.Table
 	}
 	nt := len(t.Columns)
-	q := &Select{Rel: &FromJoin{Kind: "left", L: st.Source, R: &FromTable{Name: st.Table, Alias: st.Alias}, On: st.On}}
+	var right FromNode = &FromTable{Name: st.Table, Alias: st.Alias}
+	if keys, ok := s.mergeKeys(tx, t, qual, st, params); ok {
+		right = &FromKeyed{Name: st.Table, Alias: st.Alias, Keys: keys}
+	}
+	q := &Select{Rel: &FromJoin{Kind: "left", L: st.Source, R: right, On: st.On}}
 	for _, c := range t.Columns {
 		q.Items = append(q.Items, SelItem{X: &ColRef{Table: qual, Name: c.Name}})
 	}
@@ -228,4 +233,156 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 		}
 	}
 	return &Result{Tag: fmt.Sprintf("MERGE %d", n)}, nil
+}
+
+// ---- keyed probe ----
+//
+// When ON has a conjunct "target.pk = X" with X reading only the source, the
+// target rows that can match are those whose key is one of the values of X.
+// The join then reads just those rows by key (point reads) instead of the
+// whole target table: for 200k source rows and a 1M-row target the full scan
+// was most of the time of the statement.
+
+// FromKeyed is a FROM item that reads the rows of a table with the given
+// primary keys (made by MERGE only; never parsed).
+type FromKeyed struct {
+	Name, Alias string
+	Keys        []string
+}
+
+func (*FromKeyed) fromNode() {}
+
+type keyedPlan struct {
+	t    *schema.Table
+	c    []relCol
+	keys []string
+}
+
+func (p *keyedPlan) cols() []relCol { return p.c }
+func (p *keyedPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
+	rows := make([][]Datum, 0, len(p.keys))
+	for i, k := range p.keys {
+		if i&1023 == 1023 && qx.s.interrupted() {
+			return nil, core.ErrInterrupted
+		}
+		r, ok, err := qx.tx.Get(p.t.Name, k)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		d := make([]Datum, len(p.t.Columns))
+		for j := range p.t.Columns {
+			d[j] = fromCol(&p.t.Columns[j], r[j])
+		}
+		if err := qx.charge(d); err != nil {
+			return nil, err
+		}
+		rows = append(rows, d)
+	}
+	return rows, nil
+}
+
+// compileKeyed plans a FromKeyed (the hook of compileFrom).
+func (c *compiler) compileKeyed(f *FromKeyed) (fromPlan, error) {
+	t, err := c.s.table(f.Name)
+	if err != nil {
+		return nil, err
+	}
+	c.noteDep(f.Name)
+	qual := f.Alias
+	if qual == "" {
+		qual = f.Name
+	}
+	p := &keyedPlan{t: t, keys: f.Keys}
+	for i, col := range t.Columns {
+		p.c = append(p.c, relCol{qual: qual, name: col.Name, kind: colKind(&t.Columns[i]), ty: colTy(&t.Columns[i]), sys: col.Hidden})
+	}
+	return p, nil
+}
+
+// mergeKeys finds the keys the target rows that ON can match have, or
+// ok=false when ON has no usable "target.pk = X" conjunct.
+func (s *Session) mergeKeys(tx *core.Tx, t *schema.Table, qual string, st *Merge, params []Datum) (keys []string, ok bool) {
+	if !t.HasPK() || len(t.KeyCols) > 1 || t.Key == schema.RowIDCol || t.Key == schema.KeyCol {
+		return nil, false
+	}
+	var conj []Expr
+	var split func(x Expr)
+	split = func(x Expr) {
+		if b, isB := x.(*Binary); isB && b.Op == "and" {
+			split(b.L)
+			split(b.R)
+			return
+		}
+		conj = append(conj, x)
+	}
+	split(st.On)
+	isKey := func(x Expr) bool {
+		c, isC := x.(*ColRef)
+		return isC && c.Name == t.Key && c.Table == qual
+	}
+	sourceOnly := func(x Expr) bool {
+		good := true
+		walk(x, func(e Expr) {
+			switch e := e.(type) {
+			case *ColRef:
+				if e.Table == "" || e.Table == qual {
+					good = false
+				}
+			case *Func:
+				if aggFuncs[e.Name] || e.Over != nil {
+					good = false
+				}
+			case *Subquery, *Exists, *InSub, *AnyAll:
+				good = false
+			}
+		})
+		return good
+	}
+	var x Expr
+	for _, c := range conj {
+		b, isB := c.(*Binary)
+		if !isB || b.Op != "=" {
+			continue
+		}
+		switch {
+		case isKey(b.L) && sourceOnly(b.R):
+			x = b.R
+		case isKey(b.R) && sourceOnly(b.L):
+			x = b.L
+		}
+		if x != nil {
+			break
+		}
+	}
+	if x == nil {
+		return nil, false
+	}
+	res, err := s.runQuery(tx, &Select{Distinct: true, Items: []SelItem{{X: x}}, Rel: st.Source}, params)
+	if err != nil || len(res.Rows) == 0 {
+		return nil, false // let the full plan report the error
+	}
+	keyKind := kindOf(t.Columns[t.KeyIndex()].T)
+	seen := make(map[string]struct{}, len(res.Rows))
+	for _, r := range res.Rows {
+		v := r[0]
+		if v.IsNull() {
+			continue
+		}
+		cv, err := coerce(v, keyKind)
+		if err != nil {
+			return nil, false
+		}
+		k := cv.S
+		if keyKind == KInt {
+			k = strconv.FormatInt(cv.I, 10)
+		}
+		if _, dup := seen[k]; !dup {
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+	return keys, true
 }

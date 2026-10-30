@@ -81,3 +81,8 @@ Dọn dẹp: <đã xoá gì>
 3. Xem tiến trình nền: `pgrep -af staskd`, `docker ps`, `df -h /`; **đừng giết thứ không nhận ra**.
 4. Hàng việc kế tiếp ở `PROCESS §4`. Bắt đầu từ đó.
 5. Trước khi kết thúc phiên: cập nhật `STATUS` và `PROCESS`, commit, push.
+
+## §6. Đo hiệu năng độc quyền (D31)
+- Mọi phép đo hiệu năng (simbench, simfresh, memmap, pibench, searchbench…) chạy qua `scripts/perf-run.sh <lệnh>`: khoá flock toàn máy, chỉ một job đo một lúc; không bắt đầu khi có cổng/test/build đang chạy hoặc load1 > 1.0; nếu giữa chừng có build/test khác chạy thì kết quả bị đánh dấu INVALID (exit 5) và không được ghi vào docs.
+- Agent Làn B không chạy go test/go build nặng trong cửa sổ đo của orchestrator.
+- Số đo không đi qua perf-run.sh không được dùng làm bằng chứng hiệu năng.

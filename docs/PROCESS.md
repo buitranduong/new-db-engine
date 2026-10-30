@@ -81,3 +81,10 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 - Trường JSON `pk_name` của schema là thêm mới (omitempty), không phải đổi định dạng checkpoint.
 - B16: dòng bảng tạm vẫn đi vào log. Lý do (txddl, bằng chứng): `core.Version` giữ `Loc/ValOff/ValLen` trỏ vào log, index không giữ giá trị; bỏ log cần kho giá trị thứ hai (đọc, GC, checkpoint, replica, drop). Không làm trong giai đoạn này; giảm nhẹ: bảng tạm ẩn khỏi CDC/publication/catalog phiên khác, bị xoá khi đóng phiên và quét khi khởi động.
 - DDL trong giao dịch (nhánh txddl): CREATE TABLE / CREATE INDEX btree / ADD COLUMN áp ngay kèm undo; DROP TABLE / DROP INDEX / DROP COLUMN hoãn tới COMMIT; nhật ký 2 dòng trong `__stask_objs` (kind ddltx). Giới hạn ghi ở docs/05.
+
+## D31 — Hai làn: hiệu năng tuần tự, phần còn lại song song (2026-10-30)
+- Làn A (hiệu năng): memmap → simbench → 3 điều kiện D29 cho pindex → thiết kế GC lịch sử. Tuần tự, chỉ chạy trong cửa sổ yên tĩnh (không agent, không cổng đang chạy). Chủ: orchestrator.
+- Làn B (tương thích, client, DDL, vận hành): agent song song, nhánh riêng, rebase lên main trước khi báo xong; gộp theo đợt nhỏ vào nhánh tích hợp, một cổng RACE + claimcheck mỗi đợt.
+- Không chạy lệnh đụng cache/tài nguyên (go clean -cache, xoá dữ liệu) khi cổng đang chạy.
+- Máy benchmark riêng vẫn là điều kiện để số đo hiệu năng có giá trị cuối cùng.
+- D31 bổ sung (ba pha): (1) đo đường nền (ghi, index, log, GC lịch sử, bộ nhớ) ngay, vì quyết định kiến trúc; (2) Làn B phủ nốt tính năng có hạn chót, rồi đóng băng (tag) và gộp; (3) đo từng phần + chỉnh tối ưu SQL/Superset/trigram/cột trên bản đóng băng, mỗi chỉnh sửa có số trước/sau. Phát hiện kiến trúc ở pha 1 thì dừng tính năng mới vào vùng đó đến khi sửa xong.

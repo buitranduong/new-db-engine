@@ -972,6 +972,11 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		})
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) { // pg_typeof knows static types
 			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
+				if p, ok := f.Args[0].(*Param); ok {
+					if n := paramCastTypeName(st, p.N); n != "" {
+						return &Lit{TextD(n)}, true
+					}
+				}
 				ptk, ptt := staticKind(f.Args[0], sk), inferTy(f.Args[0], slotTy)
 				ptk, ptt = jsonarrCol(f.Args[0], ptk, ptt, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
 				if n := staticTypeName(f.Args[0], ptt, ptk); n != "" {
@@ -1424,6 +1429,8 @@ func unifyKinds(rel *relation) {
 				k = v.K
 			case (k == KInt && v.K == KFloat) || (k == KFloat && v.K == KInt):
 				k = KFloat
+			case (k == KInt || k == KNumeric || k == KFloat) && (v.K == KInt || v.K == KNumeric || v.K == KFloat):
+				k = unifyKindPair(k, v.K) // integer with numeric is numeric, a float wins
 			case (k == KDate && v.K == KTime) || (k == KTime && v.K == KDate):
 				k = KTime
 			default:
@@ -1435,6 +1442,12 @@ func unifyKinds(rel *relation) {
 				rel.cols[i].kind = KText
 			}
 			continue
+		}
+		// the static kind of a CASE/COALESCE/UNION column is the widest of its
+		// branches (numeric for integer and numeric), even when the branch
+		// that produced the rows is narrower
+		if sk := rel.cols[i].kind; sk == KNumeric && k == KInt {
+			k = sk
 		}
 		rel.cols[i].kind = k
 		for _, r := range rel.rows {
@@ -1522,12 +1535,14 @@ func staticKind(x Expr, kinds []Kind) Kind {
 		}
 		return KBool
 	case *Case:
+		var ks []Kind
 		for _, w := range e.Whens {
-			if k := staticKind(w.Then, kinds); k != KNull {
-				return k
-			}
+			ks = append(ks, staticKind(w.Then, kinds))
 		}
-		return staticKind(e.Else, kinds)
+		if e.Else != nil {
+			ks = append(ks, staticKind(e.Else, kinds))
+		}
+		return unifyBranchKinds(ks, KNull)
 	case *Func:
 		ak := make([]Kind, len(e.Args))
 		for i, a := range e.Args {
@@ -1709,6 +1724,7 @@ func (c *compiler) compileSetOp(so *SetOp, outer *qscope) (qplan, error) {
 		if so.R != nil && p.r != nil {
 			if rcs := p.r.outCols(); len(p.cols) < len(rcs) && rcs[len(p.cols)].ty != col.ty {
 				rc.ty = pgTy{}
+				rc.kind = unifyBranchKinds([]Kind{col.kind, rcs[len(p.cols)].kind}, KNull)
 			}
 		}
 		p.cols = append(p.cols, rc)

@@ -36,6 +36,9 @@ func needsGeneral(st *Select) bool {
 			case *Subquery, *Exists, *InSub, *AnyAll, *RowExpr:
 				found = true
 			case *Func:
+				if _, isParam := firstArg(f).(*Param); f.Name == "pg_typeof" && isParam { // typed from a cast of the parameter (pgparity.go)
+					found = true
+				}
 				if f.Over != nil || f.Filter != nil || f.Order != nil || f.Within != nil || f.Params != nil ||
 					aggNames[f.Name] && !aggFuncs[f.Name] || f.Name == "grouping" || isSelectSRF(f.Name) || isJSONArrSRF(f.Name) || f.Name == "stask_srf" ||
 					sessionFuncs[f.Name] {

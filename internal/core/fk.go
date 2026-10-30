@@ -69,6 +69,31 @@ func (e *Engine) fkReferrers(table string) []FKRef {
 // itself included).
 func (e *Engine) FKRefs(table string) []FKRef { return e.fkReferrers(table) }
 
+// CheckKeyChange refuses, with a ForeignKeyError (23503, like PostgreSQL's
+// default ON UPDATE NO ACTION), the change of a referenced column of the row
+// old to the values in upd while children still use it.
+func (tx *Tx) CheckKeyChange(sch *schema.Table, old, upd schema.Row) error {
+	for _, ref := range tx.e.fkReferrers(sch.Name) {
+		changed := false
+		for _, col := range ref.FK.RefCols {
+			i, _ := sch.Col(col)
+			changed = changed || !valuesEqual(sch.Columns[i].T, old[i], upd[i])
+		}
+		if !changed {
+			continue
+		}
+		kids, err := tx.children(ref, sch, old)
+		if err != nil {
+			return err
+		}
+		if len(kids) > 0 {
+			return &ForeignKeyError{Table: ref.Child, Constraint: ref.FK.Name, Ref: sch.Name, Delete: true,
+				Detail: fmt.Sprintf("Key %s is still referenced from table %q.", describe(sch, ref.FK.RefCols, old), ref.Child)}
+		}
+	}
+	return nil
+}
+
 // NotNullError: SET NULL (or another write the engine makes itself) would
 // put NULL in a NOT NULL column.
 type NotNullError struct{ Table, Column string }

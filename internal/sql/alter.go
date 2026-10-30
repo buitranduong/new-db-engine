@@ -17,7 +17,7 @@ import (
 // volatileFuncs give a different value per row: an ADD COLUMN default
 // using one would need every existing row rewritten.
 var volatileFuncs = map[string]bool{"nextval": true, "setval": true, "gen_random_uuid": true, "uuid_generate_v4": true,
-	"generateuuidv4": true, "random": true, "rand": true, "clock_timestamp": true}
+	"generateuuidv4": true, "random": true, "rand": true, "setseed": true, "clock_timestamp": true}
 
 func colIndex(t *schema.Table, name string) int {
 	for i, c := range t.Columns {

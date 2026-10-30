@@ -642,7 +642,13 @@ func (s *Session) updateRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, o
 		} else if exists {
 			return nil, dupKeyErr(t, nk)
 		}
-		if err := s.keyChangeAllowed(t); err != nil {
+		if err := tx.CheckKeyChange(t, old, upd); err != nil {
+			if fe := fkErrorOf(err); fe != nil {
+				return nil, fe
+			}
+			return nil, err
+		}
+		if err := s.keyChangeAllowed(t, old, upd); err != nil {
 			return nil, err
 		}
 		if err := tx.Delete(t.Name, ok); err != nil {

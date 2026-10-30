@@ -53,6 +53,7 @@ type Result struct {
 // Session holds per-connection state: the open transaction and settings.
 type Session struct {
 	E        *core.Engine
+	prng     pgPRNG // random() / setseed()
 	tx       *core.Tx
 	explicit bool       // inside BEGIN ... COMMIT
 	spilled  bool       // the last query ran in spill mode (EXPLAIN ANALYZE)

@@ -77,12 +77,14 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 	case *Cast:
 		return kindOfType(e.Type)
 	case *Case:
+		var ks []Kind
 		for _, w := range e.Whens {
-			if k := typeOf(w.Then, sc, pk); k != KText || e.Else == nil {
-				return k
-			}
+			ks = append(ks, typeOf(w.Then, sc, pk))
 		}
-		return typeOf(e.Else, sc, pk)
+		if e.Else != nil {
+			ks = append(ks, typeOf(e.Else, sc, pk))
+		}
+		return unifyBranchKinds(ks, KText)
 	case *Func:
 		arg := func() Kind {
 			if len(e.Args) == 0 {
@@ -110,13 +112,14 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			}
 			return KFloat
 		case "coalesce":
+			var ks []Kind
 			for _, a := range e.Args {
 				if l, ok := a.(*Lit); ok && l.V.IsNull() {
 					continue
 				}
-				return typeOf(a, sc, pk)
+				ks = append(ks, typeOf(a, sc, pk))
 			}
-			return KText
+			return unifyBranchKinds(ks, KText)
 		case "min", "max", "abs", "nullif":
 			return arg()
 		case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "to_timestamp":

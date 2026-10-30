@@ -315,6 +315,13 @@ func commonTy(ts []pgTy, args []Expr) pgTy {
 			if intWidth(t) == 2 && intWidth(out) == 2 {
 				out = t
 			}
+		case numericCategory(out) && numericCategory(t):
+			// PostgreSQL's common type of integer, numeric and float branches
+			if out.oid == tyFloat8 || out.oid == tyFloat4 || t.oid == tyFloat8 || t.oid == tyFloat4 {
+				out = pgTy{oid: tyFloat8, mod: -1}
+			} else {
+				out = pgTy{oid: tyNumeric, mod: -1}
+			}
 		default:
 			return pgTy{}
 		}

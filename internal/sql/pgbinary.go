@@ -155,8 +155,14 @@ func BinaryValue(d Datum) ([]byte, bool) {
 	case KBool:
 		return []byte{byte(d.I)}, true
 	case KTime, KTimestamp:
+		if isInfTime(d.I) { // PostgreSQL's infinity is the same extreme int64
+			return binary.BigEndian.AppendUint64(nil, uint64(d.I)), true
+		}
 		return binary.BigEndian.AppendUint64(nil, uint64(d.I-PgEpochUs)), true
 	case KDate:
+		if isInfTime(d.I) {
+			return binary.BigEndian.AppendUint32(nil, uint32(int32(d.I>>32))), true // MaxInt32 / MinInt32
+		}
 		return binary.BigEndian.AppendUint32(nil, uint32(int32((d.I-PgEpochUs)/usPerDay))), true
 	case KInterval:
 		b := binary.BigEndian.AppendUint64(nil, uint64(d.I))
@@ -186,10 +192,19 @@ func ValueFromBinary(k Kind, raw []byte) (Datum, error) {
 		if len(raw) != 8 {
 			return Null, bad
 		}
+		if v := int64(binary.BigEndian.Uint64(raw)); isInfTime(v) {
+			return tsD(k, v), nil
+		}
 		return tsD(k, int64(binary.BigEndian.Uint64(raw))+PgEpochUs), nil
 	case KDate:
 		if len(raw) != 4 {
 			return Null, bad
+		}
+		switch v := int32(binary.BigEndian.Uint32(raw)); v {
+		case math.MaxInt32:
+			return DateD(tsInfinity), nil
+		case math.MinInt32:
+			return DateD(tsNegInfinity), nil
 		}
 		return DateD(PgEpochUs + int64(int32(binary.BigEndian.Uint32(raw)))*usPerDay), nil
 	case KNumeric:
@@ -272,6 +287,18 @@ func BinaryValueFor(oid uint32, d Datum) ([]byte, bool) {
 	case tyInt2:
 		if d.K == KInt {
 			return binary.BigEndian.AppendUint16(nil, uint16(int16(d.I))), true
+		}
+	case tyNumeric:
+		if d.K == KInt || d.K == KFloat && !math.IsInf(d.F, 0) && !math.IsNaN(d.F) {
+			if n, err := coerce(d, KNumeric); err == nil {
+				return NumericBinary(numOf(n)), true
+			}
+		}
+	case tyFloat8:
+		if d.K == KInt || d.K == KNumeric {
+			if f, err := coerce(d, KFloat); err == nil {
+				return binary.BigEndian.AppendUint64(nil, math.Float64bits(f.F)), true
+			}
 		}
 	case tyFloat4:
 		if d.K == KFloat {

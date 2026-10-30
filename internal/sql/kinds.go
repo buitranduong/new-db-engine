@@ -19,7 +19,42 @@ const (
 	usPerDay = 86_400_000_000
 )
 
-func DateD(us int64) Datum { return Datum{K: KDate, I: floorDiv(us, usPerDay) * usPerDay} }
+func DateD(us int64) Datum {
+	if isInfTime(us) {
+		return Datum{K: KDate, I: us}
+	}
+	return Datum{K: KDate, I: floorDiv(us, usPerDay) * usPerDay}
+}
+
+// Timestamps and dates hold PostgreSQL's infinity as the extreme int64
+// values, like PostgreSQL itself (timestamp.h).
+const (
+	tsInfinity    = int64(math.MaxInt64)
+	tsNegInfinity = int64(math.MinInt64)
+)
+
+func isInfTime(us int64) bool { return us == tsInfinity || us == tsNegInfinity }
+
+func infinityText(us int64) (string, bool) {
+	switch us {
+	case tsInfinity:
+		return "infinity", true
+	case tsNegInfinity:
+		return "-infinity", true
+	}
+	return "", false
+}
+
+// parseInfinity reads the special inputs infinity, +infinity and -infinity.
+func parseInfinity(s string) (int64, bool) {
+	switch strings.ToLower(s) {
+	case "infinity", "+infinity":
+		return tsInfinity, true
+	case "-infinity":
+		return tsNegInfinity, true
+	}
+	return 0, false
+}
 func IntervalD(months, us int64) Datum {
 	return Datum{K: KInterval, F: float64(months), I: us}
 }
@@ -175,6 +210,9 @@ func formatInterval(d Datum) string {
 
 // addInterval adds n times interval iv to time us (months by the calendar).
 func addInterval(us int64, iv Datum, n int64) int64 {
+	if isInfTime(us) {
+		return us
+	}
 	if m := int64(iv.F) * n; m != 0 {
 		us = addMonths(goTime(us), int(m)).UnixMicro()
 	}
@@ -232,8 +270,17 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 		return tsD(tk, addInterval(l.I, r, n)), true, nil
 	case l.K == KInterval && tsr && op == "+":
 		return tsD(tk, addInterval(r.I, l, 1)), true, nil
+	case (l.K == KDate && r.K == KDate || isTime(l.K) && isTime(r.K)) && op == "-" && (isInfTime(l.I) || isInfTime(r.I)):
+		if l.K == KDate {
+			return Null, true, errf("22008", "cannot subtract infinite dates")
+		}
+		return Null, true, errf("22008", "cannot subtract infinite timestamps")
 	case l.K == KDate && r.K == KDate && op == "-":
 		return IntD((l.I - r.I) / usPerDay), true, nil
+	case l.K == KDate && r.K == KInt && (op == "+" || op == "-") && isInfTime(l.I):
+		return l, true, nil
+	case l.K == KInt && r.K == KDate && op == "+" && isInfTime(r.I):
+		return r, true, nil
 	case l.K == KDate && r.K == KInt && (op == "+" || op == "-"):
 		if op == "-" {
 			return DateD(l.I - r.I*usPerDay), true, nil

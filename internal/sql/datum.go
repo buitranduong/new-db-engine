@@ -422,6 +422,9 @@ var timeLayouts = []string{
 // PostgreSQL does.
 func parseTime(s string) (int64, error) {
 	s = strings.TrimSpace(s)
+	if us, ok := parseInfinity(s); ok {
+		return us, nil
+	}
 	for _, l := range timeLayouts {
 		if t, err := time.Parse(l, s); err == nil {
 			return t.Round(time.Microsecond).UnixMicro(), nil
@@ -437,6 +440,9 @@ func parseTimeKind(s string, k Kind) (int64, error) {
 		return parseTime(s)
 	}
 	s = strings.TrimSpace(s)
+	if us, ok := parseInfinity(s); ok {
+		return us, nil
+	}
 	for _, l := range timeLayouts {
 		if t, err := time.Parse(l, s); err == nil {
 			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
@@ -486,10 +492,19 @@ func (d Datum) String() string {
 		}
 		return "f"
 	case KTime:
+		if s, ok := infinityText(d.I); ok {
+			return s
+		}
 		return goTime(d.I).Format("2006-01-02 15:04:05.999999-07")
 	case KTimestamp:
+		if s, ok := infinityText(d.I); ok {
+			return s
+		}
 		return goTime(d.I).Format("2006-01-02 15:04:05.999999")
 	case KDate:
+		if s, ok := infinityText(d.I); ok {
+			return s
+		}
 		return goTime(d.I).Format("2006-01-02")
 	case KInterval:
 		return formatInterval(d)

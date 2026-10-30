@@ -474,6 +474,15 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if f.Name == "div" && !c.dialectCH() && a.K != KFloat && b.K != KFloat { // div(numeric, numeric) is numeric
+			na, _ := coerce(a, KNumeric)
+			nb, _ := coerce(b, KNumeric)
+			q, err := numDiv(numOf(na), numOf(nb))
+			if err != nil {
+				return Null, err
+			}
+			return NumericD(q), nil
+		}
 		if a.K == KInt && b.K == KInt {
 			if b.I == 0 {
 				return Null, errf(codeDivisionByZero, "division by zero")
@@ -498,6 +507,16 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 	case "power", "pow":
 		if err := nargs(2, 2); err != nil {
 			return Null, err
+		}
+		if !c.dialectCH() && (args[0].K == KNumeric || args[1].K == KNumeric) &&
+			(args[0].K == KNumeric || args[0].K == KInt) && (args[1].K == KNumeric || args[1].K == KInt) {
+			na, _ := coerce(args[0], KNumeric)
+			nb, _ := coerce(args[1], KNumeric)
+			r, err := numPower(numOf(na), numOf(nb))
+			if err != nil {
+				return Null, err
+			}
+			return NumericD(r), nil
 		}
 		x, err := fl(0)
 		if err != nil {
@@ -553,8 +572,30 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		return math1(func(x float64) float64 { return x * 180 / math.Pi })
 	case "radians":
 		return math1(func(x float64) float64 { return x * math.Pi / 180 })
+	case "isfinite":
+		if err := nargs(1, 1); err != nil {
+			return Null, err
+		}
+		v, err := coerce(args[0], KTime)
+		if err != nil {
+			return Null, err
+		}
+		return BoolD(!isInfTime(v.I)), nil
 	case "random", "rand":
-		return FloatD(randFloat()), nil
+		return FloatD(c.sessionRand().float()), nil
+	case "setseed":
+		if err := nargs(1, 1); err != nil {
+			return Null, err
+		}
+		x, err := fl(0)
+		if err != nil {
+			return Null, err
+		}
+		if math.IsNaN(x) || x < -1 || x > 1 {
+			return Null, errf("22003", "setseed parameter %s is out of allowed range [-1,1]", args[0].String())
+		}
+		c.sessionRand().setseed(x)
+		return TextD(""), nil // void
 	// ---- date / time ----
 	case "date_part", "datepart":
 		if err := nargs(2, 2); err != nil {
@@ -807,23 +848,6 @@ func sgn(x float64) float64 {
 	return 0
 }
 
-var randState struct {
-	sync.Mutex
-	x uint64
-}
-
-func randFloat() float64 {
-	randState.Lock()
-	defer randState.Unlock()
-	if randState.x == 0 {
-		randState.x = uint64(time.Now().UnixNano()) | 1
-	}
-	randState.x ^= randState.x << 13
-	randState.x ^= randState.x >> 7
-	randState.x ^= randState.x << 17
-	return float64(randState.x>>11) / (1 << 53)
-}
-
 var regexCache sync.Map
 
 func compileRegex(p string) (*regexp.Regexp, error) {
@@ -859,6 +883,15 @@ func extractNumeric(field string, v Datum) (Datum, error) {
 			return Null, err
 		}
 		us := t.I
+		if isInfTime(us) { // PostgreSQL 14+: epoch is +-Infinity, other fields are NULL
+			if field != "epoch" {
+				return Null, nil
+			}
+			if us < 0 {
+				return Datum{K: KNumeric, S: "-Infinity"}, nil
+			}
+			return Datum{K: KNumeric, S: "Infinity"}, nil
+		}
 		secUs := us - floorDiv(us, 60*usPerSec)*60*usPerSec
 		var s string
 		switch field {
@@ -917,6 +950,9 @@ func datePart(field string, v Datum) (Datum, error) {
 	if err != nil {
 		return Null, err
 	}
+	if isInfTime(t.I) && field != "epoch" {
+		return Null, nil // PostgreSQL 14+: only epoch is defined for infinite values
+	}
 	u := goTime(t.I)
 	var x float64
 	switch field {
@@ -958,6 +994,12 @@ func datePart(field string, v Datum) (Datum, error) {
 		x = math.Ceil(float64(u.Year()) / 1000)
 	case "epoch":
 		x = float64(t.I) / usPerSec
+		if isInfTime(t.I) {
+			x = math.Inf(1)
+			if t.I < 0 {
+				x = math.Inf(-1)
+			}
+		}
 	case "timezone", "timezone_hour", "timezone_minute":
 		x = 0
 	default:
@@ -1056,6 +1098,9 @@ func chFormat(t time.Time, f string) string {
 // toChar is PostgreSQL's to_char for timestamps and numbers (common
 // patterns).
 func toChar(v Datum, f string) (Datum, error) {
+	if (isTime(v.K) || v.K == KDate) && isInfTime(v.I) {
+		return TextD(""), nil
+	}
 	if v.K == KTime || v.K == KTimestamp || v.K == KDate {
 		return TextD(supfixToCharTS(goTime(v.I), f)), nil
 	}
@@ -1165,6 +1210,14 @@ func fmtWidth(s string, w int, fm bool) string {
 func numChar(get func(nfrac int) (neg bool, s string), f string) string {
 	fm := strings.Contains(f, "FM")
 	f = strings.ReplaceAll(f, "FM", "")
+	pre, f, suf := splitNumLiterals(f)
+	if f == "" {
+		return pre
+	}
+	return pre + numCharCore(get, f, fm) + suf
+}
+
+func numCharCore(get func(nfrac int) (neg bool, s string), f string, fm bool) string {
 	f = strings.ReplaceAll(f, "D", ".")
 	intPat, fracPat, _ := strings.Cut(f, ".")
 	digits := 0
@@ -1390,12 +1443,19 @@ func funcKind(name string, args []Kind) Kind {
 		if (arg(0) == KInt || arg(0) == KBool) && (name == "avg") {
 			return KNumeric
 		}
+		if (name == "power" || name == "pow") && len(args) == 2 && (arg(0) == KNumeric || arg(1) == KNumeric) &&
+			(arg(0) == KNumeric || arg(0) == KInt) && (arg(1) == KNumeric || arg(1) == KInt) {
+			return KNumeric
+		}
 		if arg(0) == KNumeric && name != "extract_epoch" && name != "epoch" && name != "date_part" &&
 			(name == "avg" || name == "avgif" || name == "round" || name == "floor" || name == "ceil" || name == "ceiling" || name == "trunc") {
 			return KNumeric
 		}
 		return KFloat
 	case "sign", "abs", "mod", "modulo", "div":
+		if name == "div" && arg(0) != KFloat && arg(1) != KFloat { // only div(numeric, numeric) exists
+			return KNumeric
+		}
 		if name == "sign" && arg(0) == KInt { // sign(int) goes through double precision
 			return KFloat
 		}
@@ -1421,12 +1481,7 @@ func funcKind(name string, args []Kind) Kind {
 		"minif", "maxif", "first_value", "last_value", "nth_value", "lag", "lead", "mode", "percentile_disc",
 		"quantileexact", "quantileexactlow", "quantileexacthigh", "median", "medianexact":
 		if name == "coalesce" || name == "greatest" || name == "least" {
-			for _, k := range args {
-				if k != KNull {
-					return k
-				}
-			}
-			return KNull
+			return unifyBranchKinds(args, KNull)
 		}
 		if name == "argmax" || name == "argmin" || len(args) > 0 {
 			return arg(0)
@@ -1436,6 +1491,10 @@ func funcKind(name string, args []Kind) Kind {
 		return arg(1)
 	case "multiif":
 		return arg(1)
+	case "isfinite":
+		return KBool
+	case "setseed":
+		return KText
 	case "similar_to", "bool_and", "bool_or", "every", "starts_with", "startswith", "endswith", "ends_with", "regexp_like", "sim_pretty",
 		"match", "isnull", "isnotnull", "is_distinct_from", "is_not_distinct_from", "has", "empty", "notempty":
 		return KBool

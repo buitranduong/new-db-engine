@@ -426,7 +426,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			}
 			for i, ck := range t.Checks {
 				if checkOID(t, i) == oid {
-					return TextD("CHECK (" + ck.Expr + ")"), nil
+					return TextD("CHECK (" + numericConstCasts(ck.Expr, t) + ")"), nil
 				}
 			}
 		}

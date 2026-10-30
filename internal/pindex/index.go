@@ -47,6 +47,9 @@ type Snapshot interface {
 	// Scan iterates keys in [lo, hi); nil lo means from the start, nil hi
 	// means to the end.
 	Scan(lo, hi []byte) Iterator
+	// ScanDesc iterates the keys in [lo, hi) in descending order; nil lo
+	// means to the start, nil hi means from the end.
+	ScanDesc(lo, hi []byte) Iterator
 	Len() int64
 	Close() error
 }
@@ -77,4 +80,10 @@ type Stats struct {
 	Evictions    int64
 	Writebacks   int64 // pages written (eviction and checkpoint)
 	Checkpoints  int64
+
+	// Optimistic read path counters (zero when it is off).
+	Publishes int64 // roots published for lock-free readers
+	CatchUps  int64 // readers that had to take the tree lock to publish
+	OptMisses int64 // lock-free reads restarted by a page that was not cached
+	Quiesces  int64 // grace periods waited for
 }

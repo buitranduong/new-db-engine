@@ -45,6 +45,16 @@ type Tree struct {
 	hadOld  bool
 
 	checkpoints atomic.Int64
+
+	// Optimistic read path (Options.Optimistic, optimistic.go).
+	opt                       bool
+	pub                       atomic.Pointer[pubState]
+	done                      atomic.Uint64 // write operations completed (written under mu)
+	lastRead                  atomic.Int64  // unix nanoseconds of a recent optimistic read
+	failedErr                 atomic.Pointer[error]
+	pubs, catchUps, optMisses atomic.Int64
+
+	hookAfterLoad func() // tests: called by an optimistic Get inside the epoch, after it loaded the root
 }
 
 // ErrFailed is returned once an I/O error has left the in-memory state
@@ -149,6 +159,7 @@ func (t *Tree) own(f *frame) (*frame, error) {
 func (t *Tree) fail(err error) error {
 	if t.failed == nil {
 		t.failed = err
+		t.failedErr.Store(&err)
 	}
 	return err
 }
@@ -156,6 +167,13 @@ func (t *Tree) fail(err error) error {
 // ---- reads ----
 
 func get(p *pool, root uint64, key, dst []byte) ([]byte, bool, error) {
+	if p.ep != nil {
+		return getView(p, root, key, dst)
+	}
+	return getPinned(p, root, key, dst)
+}
+
+func getPinned(p *pool, root uint64, key, dst []byte) ([]byte, bool, error) {
 	if root == 0 {
 		return dst[:0], false, nil
 	}
@@ -184,12 +202,15 @@ func get(p *pool, root uint64, key, dst []byte) ([]byte, bool, error) {
 
 // Get reads from the live tree.
 func (t *Tree) Get(key, dst []byte) ([]byte, bool, error) {
+	if t.opt {
+		return t.getOpt(key, dst)
+	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	if t.failed != nil {
 		return nil, false, t.failed
 	}
-	return get(t.pool, t.root, key, dst)
+	return getPinned(t.pool, t.root, key, dst)
 }
 
 func (t *Tree) Len() int64 {
@@ -209,6 +230,7 @@ type res struct {
 func (t *Tree) Put(key, val []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.endOp()
 	return t.putLocked(key, val)
 }
 
@@ -445,6 +467,7 @@ func fill(p []byte, cells [][]byte) {
 func (t *Tree) Delete(key []byte) (bool, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.endOp()
 	return t.deleteLocked(key)
 }
 
@@ -559,7 +582,7 @@ func (b Batch) Swap(key, val, dst []byte) (old []byte, had bool, err error) {
 
 func (b Batch) Delete(key []byte) (bool, error) { return b.t.deleteLocked(key) }
 func (b Batch) Get(key, dst []byte) ([]byte, bool, error) {
-	return get(b.t.pool, b.t.root, key, dst)
+	return getPinned(b.t.pool, b.t.root, key, dst)
 }
 
 // Batch runs fn with the writer lock held: no Snapshot or Get can observe the
@@ -569,6 +592,7 @@ func (b Batch) Get(key, dst []byte) ([]byte, bool, error) {
 func (t *Tree) Batch(fn func(b Batch) error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer t.endOp()
 	return fn(Batch{t})
 }
 
@@ -586,6 +610,10 @@ func (t *Tree) Stats() Stats {
 	s.Evictions = t.pool.evictions.Load()
 	s.Writebacks = t.pool.writebacks.Load()
 	s.Checkpoints = t.checkpoints.Load()
+	s.Publishes, s.CatchUps, s.OptMisses = t.pubs.Load(), t.catchUps.Load(), t.optMisses.Load()
+	if t.pool.ep != nil {
+		s.Quiesces = t.pool.ep.quiesces.Load()
+	}
 	return s
 }
 

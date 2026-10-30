@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"stask/internal/pindex"
 	"stask/internal/schema"
 )
 
@@ -54,12 +56,23 @@ type secIndex struct {
 	unique bool
 	mu     sync.Mutex
 	tr     atomic.Pointer[tree]
-	ar     keyArena
+	ar     *keyArena
 	// a snapshot older than minSnap may need versions that were not
 	// indexed (the index was built from the heads at that LSN)
 	minSnap atomic.Uint64
 	dead    []deadRec // guarded by mu, in LSN order
 	colsFor atomic.Pointer[secCols]
+
+	// Disk-resident storage (secdisk.go). dk is nil for a RAM index. swaps
+	// is a seqlock over (tr, dk): odd while a conversion swaps the stores.
+	// mig records mutations during a conversion (guarded by mu); conv
+	// serializes conversions.
+	dk      atomic.Pointer[diskStore]
+	swaps   atomic.Uint64
+	mig     *migLog
+	conv    sync.Mutex
+	failed  atomic.Pointer[error]
+	retired atomic.Bool
 
 	Adds, Dead, Swept, Scans atomic.Int64
 }
@@ -76,8 +89,8 @@ type deadRec struct {
 }
 
 func newSec(def schema.IndexDef) *secIndex {
-	si := &secIndex{name: def.Name, unique: def.Unique}
-	si.tr.Store(newTree(&si.ar))
+	si := &secIndex{name: def.Name, unique: def.Unique, ar: &keyArena{}}
+	si.tr.Store(newTree(si.ar))
 	return si
 }
 
@@ -119,6 +132,9 @@ func (t *TableState) addSec(si *secIndex) {
 }
 
 func (t *TableState) removeSec(name string) {
+	if si := t.secNamed(name); si != nil {
+		si.retireDisk(true)
+	}
 	l := slices.DeleteFunc(slices.Clone(t.secList()), func(x *secIndex) bool { return x.name == name })
 	t.sec.Store(&l)
 }
@@ -165,12 +181,11 @@ func secKeyFor(sch *schema.Table, keys []secKey, name string) (secKey, bool) {
 
 // ---- maintenance ----
 
-// apply runs f on a clone of the index tree and publishes the result.
-func (si *secIndex) apply(f func(tr *tree)) {
+// apply runs f on the index's store (a clone of the tree, published
+// afterwards, for a RAM index).
+func (si *secIndex) apply(f func(w *secW)) {
 	si.mu.Lock()
-	tr := si.tr.Load().clone()
-	f(tr)
-	si.tr.Store(tr)
+	si.edit(f)
 	si.mu.Unlock()
 }
 
@@ -200,11 +215,11 @@ func flushAdds(adds []secAdd) {
 			slices.SortStableFunc(l, func(x, y secAdd) int { return strings.Compare(x.key, y.key) })
 		}
 		si.mu.Lock()
-		tr := si.tr.Load().clone()
-		for _, a := range l {
-			tr.put(a.key, secVersion(a.lsn, 0))
-		}
-		si.tr.Store(tr)
+		si.edit(func(w *secW) {
+			for _, a := range l {
+				w.put(a.key, a.lsn, 0)
+			}
+		})
 		si.mu.Unlock()
 		si.Adds.Add(int64(len(l)))
 	}
@@ -239,18 +254,18 @@ func (si *secIndex) markDead(recs []deadRec) {
 		chunk := recs[:min(slice, len(recs))]
 		recs = recs[len(chunk):]
 		si.mu.Lock()
-		tr := si.tr.Load().clone()
 		n := 0
-		for _, d := range chunk {
-			en, ok := tr.get(d.key)
-			if !ok || en.lsn >= d.lsn || en.flags&entDeleted != 0 {
-				continue
+		si.edit(func(w *secW) {
+			for _, d := range chunk {
+				added, dead, ok := w.get(d.key)
+				if !ok || added >= d.lsn || dead != 0 {
+					continue
+				}
+				w.put(d.key, added, d.lsn)
+				si.dead = append(si.dead, d)
+				n++
 			}
-			tr.put(d.key, secVersion(en.lsn, d.lsn))
-			si.dead = append(si.dead, d)
-			n++
-		}
-		si.tr.Store(tr)
+		})
 		si.mu.Unlock()
 		si.Dead.Add(int64(n))
 	}
@@ -268,15 +283,15 @@ func (si *secIndex) sweep(h uint64) int {
 	if n == 0 {
 		return 0
 	}
-	tr := si.tr.Load().clone()
 	removed := 0
-	for _, d := range si.dead[:n] {
-		if en, ok := tr.get(d.key); ok && en.deadLSN() == d.lsn {
-			tr.del(d.key)
-			removed++
+	si.edit(func(w *secW) {
+		for _, d := range si.dead[:n] {
+			if _, dead, ok := w.get(d.key); ok && dead == d.lsn {
+				w.del(d.key)
+				removed++
+			}
 		}
-	}
-	si.tr.Store(tr)
+	})
 	si.dead = slices.Clone(si.dead[n:])
 	si.Swept.Add(int64(removed))
 	return removed
@@ -346,7 +361,7 @@ func (e *Engine) secReplay(t *TableState, lsn uint64, key string, val []byte, de
 		for _, si := range list {
 			if _, pos := si.cols(sch); pos >= 0 {
 				k := keys[pos].enc + key
-				si.apply(func(tr *tree) { tr.put(k, secVersion(lsn, 0)) })
+				si.apply(func(w *secW) { w.put(k, lsn, 0) })
 			}
 		}
 	}
@@ -396,7 +411,6 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 	}
 	slices.SortFunc(ks, func(a, b builtKey) int { return strings.Compare(a.key, b.key) })
 	si := newSec(def)
-	b := newTreeBuilder(&si.ar)
 	last := -1 // the previous entry that counts for uniqueness (not NULL, inside a partial index)
 	for i, k := range ks {
 		if def.Unique && !k.null {
@@ -405,6 +419,15 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 			}
 			last = i
 		}
+	}
+	if def.Storage == "disk" {
+		if d := e.buildDisk(t, def, ks); d != nil {
+			si.dk.Store(d)
+			return si, nil
+		}
+	}
+	b := newTreeBuilder(si.ar)
+	for _, k := range ks {
 		var en entry
 		en.ikey = si.ar.ikeyOf(k.key)
 		en.setVersion(secVersion(k.lsn, 0))
@@ -412,6 +435,39 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 	}
 	si.tr.Store(b.finish())
 	return si, nil
+}
+
+// buildDisk writes the sorted entries ks into a new disk index file (crash
+// safe: pindex.BulkLoad). It returns nil, after logging why, if the engine
+// has disk indexes off or the file cannot be built: the index is then built
+// in RAM, which is always correct.
+func (e *Engine) buildDisk(t *TableState, def schema.IndexDef, ks []builtKey) *diskStore {
+	if !e.opts.DiskIndexes {
+		e.logf("index %s: index_storage is 'disk' but disk indexes are not enabled: kept in memory", def.Name)
+		return nil
+	}
+	path := e.sidxPath(t, def.Name)
+	if err := os.MkdirAll(e.sidxDir(), 0o755); err != nil {
+		e.logf("index %s: %v: kept in memory", def.Name, err)
+		return nil
+	}
+	i := 0
+	var val [secValLen]byte
+	feed := func() ([]byte, []byte, bool, error) {
+		if i >= len(ks) {
+			return nil, nil, false, nil
+		}
+		k := ks[i]
+		i++
+		encSecVal(val[:], k.lsn, 0)
+		return bytesOf(k.key), val[:], true, nil
+	}
+	nt, err := pindex.BulkLoad(path, feed, pindex.BulkOptions{Fill: 85}, pindex.Options{CacheBytes: e.sidxCache(), Optimistic: true})
+	if err != nil {
+		e.logf("index %s: cannot build the disk index: %v: kept in memory", def.Name, err)
+		return nil
+	}
+	return newDiskStore(nt, path)
 }
 
 // uniqueError describes a violation of unique index def by the row at pk.
@@ -501,7 +557,14 @@ func (e *Engine) reconcileSec(t *TableState, sch *schema.Table, src *tree) error
 		}
 	}
 	for _, def := range sch.Indexes {
-		if t.secNamed(def.Name) != nil {
+		if si := t.secNamed(def.Name); si != nil {
+			// a storage change that arrives by replay or on a replica (the
+			// leader converted online before logging it)
+			if want := cmp(def.Storage, "memory"); si.storageOf() != want && (want == "memory" || e.opts.DiskIndexes) {
+				if err := e.convertSec(t, si, want); err != nil {
+					e.logf("index %s: cannot change storage to %s: %v", def.Name, want, err)
+				}
+			}
 			continue
 		}
 		if src == nil {
@@ -723,15 +786,18 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 	if pos < 0 {
 		return false, nil
 	}
+	rd, ok, rerr := si.openRead()
+	if rerr != nil || !ok {
+		return false, rerr
+	}
+	defer rd.close()
 	si.Scans.Add(1)
 	defer e.enterRead().Add(-1)
 	if err := e.checkSnapshot(snap); err != nil {
 		return true, err
 	}
-	tr := si.tr.Load()
 	var buf []byte
-	visit := func(en *entry) bool {
-		k := tr.keyOf(en)
+	visit := func(k string, _ bool) bool {
 		if desc {
 			if k < lo {
 				return false
@@ -759,10 +825,14 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 		}
 		return fn(strings.Clone(pk), row)
 	}
+	var serr error
 	if desc {
-		tr.descend(hi, visit)
+		serr = rd.descend(hi, visit)
 	} else {
-		tr.ascend(lo, visit)
+		serr = rd.ascend(lo, visit)
+	}
+	if err == nil {
+		err = serr
 	}
 	return true, err
 }
@@ -770,16 +840,19 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 // IndexHolders calls fn with the primary key of every entry whose indexed
 // value is exactly enc, dead ones included, until fn returns false.
 func (e *Engine) indexHolders(si *secIndex, enc string, fn func(pk string) bool) {
-	tr := si.tr.Load()
-	tr.ascend(enc, func(en *entry) bool {
-		k := tr.keyOf(en)
+	rd, ok, err := si.openRead()
+	if err != nil || !ok {
+		return // checkUnique has refused an unusable index already
+	}
+	defer rd.close()
+	rd.ascend(enc, func(k string, dead bool) bool {
 		if !strings.HasPrefix(k, enc) {
 			return false
 		}
-		if en.flags&entDeleted != 0 {
+		if dead {
 			return true // superseded: the row no longer has this value
 		}
-		return fn(k[len(enc):])
+		return fn(strings.Clone(k[len(enc):]))
 	})
 }
 
@@ -805,6 +878,8 @@ type SecStats struct {
 	Swept       int64
 	Pending     int
 	Scans       int64
+	Storage     string // "memory" or "disk"
+	Failed      string // why a disk index is unusable, if it is
 }
 
 // SecIndexStats lists the secondary indexes of the user tables.
@@ -815,8 +890,17 @@ func (e *Engine) SecIndexStats() []SecStats {
 			si.mu.Lock()
 			p := len(si.dead)
 			si.mu.Unlock()
-			out = append(out, SecStats{Table: t.Schema().Name, Name: si.name, Entries: si.tr.Load().Len(),
-				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load()})
+			n := 0
+			if rd, ok, _ := si.openRead(); ok {
+				n = rd.len()
+				rd.close()
+			}
+			st := SecStats{Table: t.Schema().Name, Name: si.name, Entries: n, Storage: si.storageOf(),
+				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load()}
+			if err := si.unusable(); err != nil {
+				st.Failed = err.Error()
+			}
+			out = append(out, st)
 		}
 	}
 	return out
@@ -897,6 +981,9 @@ func (e *Engine) checkUnique(b *commitBatch, inflight []*commitBatch, r *commitR
 		si := op.t.secNamed(ix.Name)
 		if si == nil {
 			continue
+		}
+		if err := si.unusable(); err != nil {
+			return err
 		}
 		conflict := false
 		visit := func(other string) bool {

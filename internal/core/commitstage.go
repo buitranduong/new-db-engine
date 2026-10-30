@@ -114,19 +114,19 @@ func (e *Engine) stageStep(r *commitReq) bool {
 		g := &st.groups[st.gi]
 		si := g.si
 		si.mu.Lock()
-		tr := si.tr.Load().clone()
 		n := 0
-		for st.ki < len(g.keys) {
-			key := g.keys[st.ki]
-			if _, had := tr.put(key, secVersion(st.tok, 0)); !had {
-				g.fresh = append(g.fresh, key)
+		si.edit(func(w *secW) {
+			for st.ki < len(g.keys) {
+				key := g.keys[st.ki]
+				if had := w.put(key, st.tok, 0); !had {
+					g.fresh = append(g.fresh, key)
+				}
+				st.ki++
+				if n++; n%16 == 0 && time.Now().After(deadline) {
+					break
+				}
 			}
-			st.ki++
-			if n++; n%16 == 0 && time.Now().After(deadline) {
-				break
-			}
-		}
-		si.tr.Store(tr)
+		})
 		si.mu.Unlock()
 		si.Adds.Add(int64(n))
 		if st.ki < len(g.keys) {
@@ -154,13 +154,13 @@ func (e *Engine) unstage(r *commitReq) {
 			continue
 		}
 		g.si.mu.Lock()
-		tr := g.si.tr.Load().clone()
-		for _, key := range g.fresh {
-			if en, ok := tr.get(key); ok && en.lsn == st.tok && en.flags&entDeleted == 0 {
-				tr.del(key)
+		g.si.edit(func(w *secW) {
+			for _, key := range g.fresh {
+				if added, dead, ok := w.get(key); ok && added == st.tok && dead == 0 {
+					w.del(key)
+				}
 			}
-		}
-		g.si.tr.Store(tr)
+		})
 		g.si.mu.Unlock()
 	}
 }

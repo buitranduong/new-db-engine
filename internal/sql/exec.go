@@ -341,6 +341,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *AlterIndex:
+		// applied at once (the conversion is online, not transactional)
+		res, err := s.alterIndex(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *AlterTable:
 		// applied at once, like CREATE TABLE
 		res, err := s.alterTable(st)

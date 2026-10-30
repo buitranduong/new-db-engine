@@ -74,6 +74,54 @@ func checkSnap(t *testing.T, s Snapshot, m refMap, rng *rand.Rand, what string) 
 			t.Fatalf("%s: get %q = %v %v %v", what, k, v, ok, err)
 		}
 	}
+	// descending scans are the reverse of the ascending ones
+	dit := s.ScanDesc(nil, nil)
+	for i := len(ks) - 1; dit.Next(); i-- {
+		if i < 0 || string(dit.Key()) != ks[i] || !bytes.Equal(dit.Value(), m[ks[i]]) {
+			t.Fatalf("%s: desc scan mismatch at %d (key %q)", what, i, dit.Key())
+		}
+		if i == 0 {
+			if dit.Next() {
+				t.Fatalf("%s: desc scan too long", what)
+			}
+			break
+		}
+	}
+	if dit.Err() != nil {
+		t.Fatal(dit.Err())
+	}
+	for n := 0; n < 20 && len(ks) > 0; n++ {
+		a, b := rng.Intn(len(ks)), rng.Intn(len(ks))
+		if a > b {
+			a, b = b, a
+		}
+		lo, hi := []byte(ks[a]), []byte(ks[b])
+		if rng.Intn(3) == 0 {
+			lo = nil
+		}
+		if rng.Intn(3) == 0 {
+			hi = nil
+		}
+		var want []string
+		for _, k := range ks {
+			if (lo == nil || k >= string(lo)) && (hi == nil || k < string(hi)) {
+				want = append(want, k)
+			}
+		}
+		di := s.ScanDesc(lo, hi)
+		var got []string
+		for di.Next() {
+			got = append(got, string(di.Key()))
+		}
+		if di.Err() != nil || len(got) != len(want) {
+			t.Fatalf("%s: desc range [%q,%q): %d keys want %d, err %v", what, lo, hi, len(got), len(want), di.Err())
+		}
+		for i := range got {
+			if got[i] != want[len(want)-1-i] {
+				t.Fatalf("%s: desc range item %d mismatch", what, i)
+			}
+		}
+	}
 	for n := 0; n < 20; n++ {
 		lo := mkKey(rng, 5000)
 		hi := mkKey(rng, 5000)

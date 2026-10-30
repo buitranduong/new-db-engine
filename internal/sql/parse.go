@@ -379,6 +379,21 @@ func (p *parser) statement() (Stmt, error) {
 		if p.acceptKw("role") || p.acceptKw("user") {
 			return p.alterRole()
 		}
+		if p.acceptKw("index") {
+			a := &AlterIndex{IfExists: p.acceptKw("if", "exists")}
+			var err error
+			if a.Name, err = p.qualifiedName(); err != nil {
+				return nil, err
+			}
+			if !p.isKw("set") || p.peekN(1).k != tOp || p.peekN(1).s != "(" {
+				return nil, p.errHere("syntax error at or near %q", p.peek().s)
+			}
+			p.next()
+			if a.Opts, err = p.parseOptions(); err != nil {
+				return nil, err
+			}
+			return a, nil
+		}
 		if p.acceptKw("sequence") {
 			a := &AlterSequence{IfExists: p.acceptKw("if", "exists")}
 			var err error

@@ -236,13 +236,13 @@ func TestDDLObjsSchemaTypes(t *testing.T) {
 	wantErr(t, s, `INSERT INTO a.t VALUES (3, 'x', 3)`, "22P02")
 	wantErr(t, s, `INSERT INTO a.t VALUES (3, 'r', 30)`, "23514")
 	ddlWantRows(t, s, `SELECT id FROM a.t ORDER BY c`, "2;1")
-	ddlWantRows(t, s, `SELECT n.nspname, t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typtype IN ('e','d') ORDER BY 2`,
+	ddlWantRows(t, s, `SELECT n.nspname, t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typtype IN ('e','d') AND n.nspname <> 'information_schema' ORDER BY 2`,
 		"a,color;a,small")
 	mustq(t, s, `SET search_path TO a`)
 	mustq(t, s, `CREATE TABLE u (c color)`)
 	ddlWantRows(t, s, `SELECT count(*) FROM a.u`, "0")
 	mustq(t, s, `DROP SCHEMA a CASCADE`)
-	ddlWantRows(t, s, `SELECT count(*) FROM pg_type WHERE typtype IN ('e','d')`, "0")
+	ddlWantRows(t, s, `SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typtype IN ('e','d') AND n.nspname <> 'information_schema'`, "0")
 }
 
 func TestDDLObjsExtension(t *testing.T) {

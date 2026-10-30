@@ -84,7 +84,8 @@ type qexec struct {
 	now      int64
 	subCache map[*boundSub]*relation
 	inSets   map[*boundSub]*inSet
-	hashSubs map[*boundSub]*hashSub // semijoin.go
+	hashSubs map[*boundSub]*hashSub  // semijoin.go
+	extSubs  map[*boundSub]*extState // supfix_semijoin.go
 	cteCache map[*cteDef]*relation
 
 	memUsed, memReserved int64       // membudget.go
@@ -259,6 +260,7 @@ type boundSub struct {
 
 	corr     []Expr    // semijoin.go: bound outer key expressions of the hash form
 	fallback *boundSub // the nested-loop form of a hash-form subquery
+	ext      *extSub   // supfix_semijoin.go: residual / HAVING forms
 }
 
 func (*boundSub) expr() {}
@@ -2110,6 +2112,9 @@ func (p *tablePlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	if p.asOf != nil {
 		return p.runAsOf(qx, outer)
 	}
+	if rows, ok, err := p.runParallel(qx); ok || err != nil {
+		return rows, err
+	}
 	var rows [][]Datum
 	cols := p.t.Columns
 	var err error
@@ -2579,6 +2584,9 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 		return Null, errf(codeFeature, "subqueries are not supported here")
 	}
 	if b.corr != nil {
+		if b.ext != nil {
+			return c.evalExtSub(b)
+		}
 		return c.evalHashSub(b)
 	}
 	run := func() (*relation, error) {

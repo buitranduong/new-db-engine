@@ -325,7 +325,7 @@ func (p *parser) statement() (Stmt, error) {
 		for p.peek().k != tEOF && !p.isOp(";") {
 			val = append(val, p.next().s)
 		}
-		return &SetVar{Name: strings.Join(name, "."), Value: strings.Join(val, " "), Local: local}, nil
+		return &SetVar{Name: strings.Join(name, "."), Value: supfixJoinSetVal(val), Local: local}, nil
 	case "listen":
 		p.next()
 		ch, err := p.ident()

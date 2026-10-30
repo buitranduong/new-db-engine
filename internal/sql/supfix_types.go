@@ -8,11 +8,6 @@ import "strings"
 // supfixAggKind refines funcKind(name, ak) = k for an aggregate / window call with bound args.
 func supfixAggKind(name string, args []Expr, ak []Kind, k Kind, slotTy func(Expr) (pgTy, bool)) Kind {
 	switch name {
-	case "corr", "covar_pop", "covar_samp", "regr_slope", "regr_intercept", "regr_r2", "regr_avgx", "regr_avgy",
-		"regr_sxx", "regr_syy", "regr_sxy":
-		return KFloat
-	case "regr_count":
-		return KInt
 	case "stddev", "stddev_samp", "stddev_pop", "variance", "var_samp", "var_pop":
 		if len(ak) == 1 && k == KFloat && (ak[0] == KInt || ak[0] == KNumeric) {
 			return KNumeric
@@ -69,4 +64,59 @@ func scanQuotedIdent(src string, i int) (string, int, bool) {
 		b.WriteByte(src[j])
 	}
 	return "", 0, false
+}
+
+// normKeysInPlace is normKeys without allocating (ck belongs to the caller).
+func normKeysInPlace(vals []Datum) []Datum {
+	for i := range vals {
+		if vals[i].K == KInt {
+			vals[i] = FloatD(float64(vals[i].I))
+		} else if vals[i].K == KDate {
+			vals[i].K = KTime
+		}
+	}
+	return vals
+}
+
+// scratch returns a reusable key slice of length n.
+func (h *hashSub) scratch(n int) []Datum {
+	if cap(h.ck) < n {
+		h.ck = make([]Datum, n)
+	}
+	return h.ck[:n]
+}
+
+// supfixJoinSetVal joins the tokens of a SET value as PostgreSQL prints a list: "public, pg_catalog".
+func supfixJoinSetVal(val []string) string {
+	var b strings.Builder
+	for i, t := range val {
+		if t == "," {
+			b.WriteByte(',')
+			continue
+		}
+		if i > 0 && val[i-1] != "," || i > 0 && val[i-1] == "," {
+			b.WriteByte(' ')
+		}
+		b.WriteString(t)
+	}
+	return b.String()
+}
+
+// supfixTyName names the extra catalog types (format_type, pg_typeof).
+func supfixTyName(oid uint32) string {
+	switch oid {
+	case tyOid:
+		return "oid"
+	case tyChar:
+		return `"char"`
+	case tyXid:
+		return "xid"
+	case tyNodeTree:
+		return "pg_node_tree"
+	case tyInt2Vector:
+		return "int2vector"
+	case tyOidVector:
+		return "oidvector"
+	}
+	return ""
 }

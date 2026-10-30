@@ -370,7 +370,7 @@ func init() {
 	defCat("pg_views", "schemaname:t viewname:t viewowner:t definition:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, v := range c.views {
-			rows = append(rows, []Datum{TextD("public"), TextD(v.Name), TextD(roleName), TextD(" " + v.Query + ";")})
+			rows = append(rows, []Datum{TextD("public"), TextD(v.Name), TextD(roleName), TextD(c.s.viewDefText(v.Query, false))})
 		}
 		return rows
 	})

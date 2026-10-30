@@ -307,7 +307,7 @@ func TestCatalogFunctions(t *testing.T) {
 			"public.items_id_seq,true,public.ident_id_seq"},
 		{`SELECT quote_ident('items'), quote_ident('Mixed'), quote_ident('a b'), quote_ident('select')`, `items,"Mixed","a b","select"`},
 		{`SELECT has_table_privilege('items', 'SELECT'), has_schema_privilege('public', 'USAGE'), has_database_privilege('stask', 'CONNECT')`, "true,true,true"},
-		{`SELECT pg_relation_size('items'::regclass), pg_total_relation_size('items'::regclass)`, "0,0"},
+		{`SELECT pg_relation_size('items'::regclass) > 0, pg_total_relation_size('items'::regclass) > pg_relation_size('items'::regclass)`, "true,true"},
 		{`SELECT pg_backend_pid() > 0, pg_is_in_recovery()`, "true,false"},
 		// spellings psql and JDBC use
 		{`SELECT 'items' OPERATOR(pg_catalog.~) '^(it)'`, "true"},

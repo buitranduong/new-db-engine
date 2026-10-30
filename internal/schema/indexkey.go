@@ -48,7 +48,7 @@ type ForeignKey struct {
 // IndexableType reports whether columns of type ct can be indexed.
 func IndexableType(ct ColType) bool {
 	switch ct {
-	case TInt, TFloat, TString, TText, TTime, TBool:
+	case TInt, TFloat, TString, TText, TTime, TTimestamp, TTimestamptz, TBool:
 		return true
 	}
 	return false
@@ -122,7 +122,7 @@ func AppendKeyValue(dst []byte, ct ColType, v Value) []byte {
 	}
 	dst = append(dst, keyPresent)
 	switch ct {
-	case TInt, TTime, TBool:
+	case TInt, TTime, TTimestamp, TTimestamptz, TBool:
 		return binary.BigEndian.AppendUint64(dst, uint64(v.I)^1<<63)
 	case TFloat:
 		f := v.F
@@ -166,7 +166,7 @@ func KeyValueLen(b []byte, ct ColType) int {
 		return 1
 	}
 	switch ct {
-	case TInt, TTime, TBool, TFloat:
+	case TInt, TTime, TTimestamp, TTimestamptz, TBool, TFloat:
 		if len(b) < 9 {
 			return -1
 		}

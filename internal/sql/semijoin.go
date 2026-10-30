@@ -27,9 +27,11 @@ import "sync/atomic"
 type hashSub struct {
 	exists map[string]struct{}
 	sets   map[string]*inSet
-	cls    []Kind // kind class of each inner key column (KNull: not seen yet)
-	valCls Kind   // kind class of the IN value column
-	mixed  bool   // a column held two kind classes: use the nested path
+	cls    []Kind  // kind class of each inner key column (KNull: not seen yet)
+	valCls Kind    // kind class of the IN value column
+	mixed  bool    // a column held two kind classes: use the nested path
+	ck     []Datum // reusable probe key (supfix_types.go)
+	kb     []byte
 }
 
 func kindClass(k Kind) Kind {
@@ -73,6 +75,9 @@ var NoDecorrelate bool
 var decorrelated atomic.Int64
 
 func (b *binder) decorrelate(orig *boundSub, q Stmt, lhs Expr) (*boundSub, bool) {
+	if hs, ok, done := b.supfixDecorrelate(orig, q, lhs); done {
+		return hs, ok
+	}
 	sel, ok := q.(*Select)
 	if NoDecorrelate || !ok || sel.Distinct || len(sel.GroupBy) > 0 || sel.Having != nil || sel.Limit != nil || sel.Offset != nil ||
 		len(sel.With) > 0 || len(sel.Sets) > 0 || len(sel.DistinctOn) > 0 || sel.LimitBy != nil || len(sel.Windows) > 0 ||
@@ -214,7 +219,7 @@ func (c *evalCtx) evalHashSub(b *boundSub) (Datum, error) {
 	if h.mixed {
 		return c.evalSub(b.fallback)
 	}
-	ck := make([]Datum, nk)
+	ck := h.scratch(nk)
 	for i, x := range b.corr {
 		v, err := c.eval(x)
 		if err != nil {
@@ -236,12 +241,12 @@ func (c *evalCtx) evalHashSub(b *boundSub) (Datum, error) {
 		}
 	}
 	if !miss {
-		key := groupKey(normKeys(ck))
+		h.kb = appendGroupKey(h.kb[:0], normKeysInPlace(ck))
 		if h.exists != nil {
-			_, hit := h.exists[key]
+			_, hit := h.exists[string(h.kb)]
 			return BoolD(hit), nil
 		}
-		set = h.sets[key]
+		set = h.sets[string(h.kb)]
 	} else if h.exists != nil {
 		return BoolD(false), nil
 	}

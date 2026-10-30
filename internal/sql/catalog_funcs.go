@@ -204,6 +204,8 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return arrayD([]Datum{TextD("public")}), nil
 	case "pg_backend_pid":
 		return IntD(1), nil
+	case "pg_sleep":
+		return s.supfixSleep(args)
 	case "pg_my_temp_schema":
 		return IntD(0), nil
 	case "set_config": // set_config(name, value, is_local)
@@ -216,6 +218,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		}
 		if _, err := s.set(&SetVar{Name: args[0].String(), Value: val, Local: args[2].Bool()}); err != nil {
 			return Null, err
+		}
+		if cur, ok := s.vars[strings.ToLower(args[0].String())]; ok {
+			return TextD(cur), nil // the setting after the change, e.g. 5s for statement_timeout
 		}
 		return TextD(val), nil
 	case "current_setting": // current_setting(name [, missing_ok])
@@ -348,7 +353,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_get_viewdef":
 		for _, v := range s.E.Views() {
 			if o := arg(0); o.K == KInt && o.I == viewOID(v.Name) || o.K == KText && o.S == v.Name {
-				return TextD(" " + v.Query + ";"), nil
+				return TextD(s.viewDefText(v.Query, len(args) > 1 && args[1].Bool())), nil
 			}
 		}
 		return Null, nil

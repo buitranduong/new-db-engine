@@ -339,7 +339,7 @@ func pgTyName(t pgTy) string {
 	case tyJSONB:
 		return "jsonb"
 	}
-	return ""
+	return supfixTyName(t.oid)
 }
 
 // formatType is format_type(oid, typmod).

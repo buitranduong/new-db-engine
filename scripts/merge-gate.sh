@@ -4,6 +4,7 @@
 #   RACE=1 scripts/merge-gate.sh     also -race on the packages that have concurrency
 #   P=n                              packages tested in parallel (default 4 when the
 #                                    machine has >=8 CPUs, else 2)
+#   RACE_P=n                         packages under -race in parallel (default 2)
 # Independent steps overlap: vet runs together with the tests; claimcheck (own
 # staskd on a free port) runs together with the -race stage. Nothing is skipped.
 # Test harnesses reserve their ports with flock (internal/cluster/harness_test.go),
@@ -14,6 +15,7 @@ cd "$(dirname "$0")/.."
 export PATH=$PATH:/usr/local/go/bin
 NCPU=$(nproc 2>/dev/null || echo 2)
 if [ -z "${P:-}" ]; then if [ "$NCPU" -ge 8 ]; then P=4; else P=2; fi; fi
+RP=${RACE_P:-2}   # -race slows timing-sensitive tests (pgwire statement_timeout failed at 4 + claimcheck): keep it at 2
 T0=$(date +%s)
 step() { echo; echo "== $* (+$(( $(date +%s) - T0 ))s)"; }
 W=$(mktemp -d)
@@ -50,7 +52,7 @@ claim() {
 if [ "${RACE:-}" = 1 ]; then
   step "race + claimcheck (parallel)"
   claim > "$W/claim.log" 2>&1 & CPID=$!
-  go test -p "$P" -race -count=1 ./internal/core ./internal/sql ./internal/pgwire ./internal/repl ./internal/wal || { wait "$CPID" 2>/dev/null; exit 1; }
+  go test -p "$RP" -race -count=1 ./internal/core ./internal/sql ./internal/pgwire ./internal/repl ./internal/wal || { wait "$CPID" 2>/dev/null; exit 1; }
   wait "$CPID" || { cat "$W/claim.log"; echo "claimcheck run failed"; exit 1; }
 else
   step claimcheck

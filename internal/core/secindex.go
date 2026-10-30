@@ -397,9 +397,13 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 	slices.SortFunc(ks, func(a, b builtKey) int { return strings.Compare(a.key, b.key) })
 	si := newSec(def)
 	b := newTreeBuilder(&si.ar)
+	last := -1 // the previous entry that counts for uniqueness (not NULL, inside a partial index)
 	for i, k := range ks {
-		if def.Unique && !k.null && i > 0 && ks[i-1].plen == k.plen && ks[i-1].key[:k.plen] == k.key[:k.plen] {
-			return nil, e.uniqueError(t, sch, def, k.key[k.plen:])
+		if def.Unique && !k.null {
+			if last >= 0 && ks[last].plen == k.plen && ks[last].key[:k.plen] == k.key[:k.plen] {
+				return nil, e.uniqueError(t, sch, def, k.key[k.plen:])
+			}
+			last = i
 		}
 		var en entry
 		en.ikey = si.ar.ikeyOf(k.key)
@@ -922,14 +926,14 @@ func (e *Engine) checkUnique(b *commitBatch, inflight []*commitBatch, r *commitR
 func (e *Engine) holds(b *commitBatch, inflight []*commitBatch, r *commitReq, t *TableState, sch *schema.Table, ix int, other, enc string) bool {
 	k := pk{t, other}
 	if o, ok := r.own.ops[k]; ok {
-		return !o.del && o.sch == sch && o.sk[ix].enc == enc
+		return !o.del && o.sch == sch && !o.sk[ix].null && o.sk[ix].enc == enc
 	}
 	if ks, ok := b.sk[k]; ok {
-		return len(ks) > 0 && ks[ix].enc == enc
+		return len(ks) > 0 && !ks[ix].null && ks[ix].enc == enc
 	}
 	for i := len(inflight) - 1; i >= 0; i-- {
 		if ks, ok := inflight[i].sk[k]; ok {
-			return len(ks) > 0 && ks[ix].enc == enc
+			return len(ks) > 0 && !ks[ix].null && ks[ix].enc == enc
 		}
 	}
 	v := t.head(other)
@@ -940,8 +944,8 @@ func (e *Engine) holds(b *commitBatch, inflight []*commitBatch, r *commitReq, t 
 	if err != nil {
 		return true // cannot tell: refuse rather than risk a duplicate
 	}
-	cur, _ := sch.IndexKeyAt(nil, ix, row)
-	return string(cur) == enc
+	cur, null := sch.IndexKeyAt(nil, ix, row)
+	return !null && string(cur) == enc // a row with a NULL element (or outside a partial index) holds nothing
 }
 
 // placeSec records the index entries of a write placed in batch b at lsn.

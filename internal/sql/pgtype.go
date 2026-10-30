@@ -801,7 +801,7 @@ func checkConflictTarget(t *schema.Table, target []string) error {
 		return nil
 	}
 	for _, ix := range t.Indexes {
-		if ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, target) {
+		if ix.Unique && !ix.HasExpr() && len(ix.Where) == 0 && slices.Equal(ix.Columns, target) {
 			return errf(codeFeature, "ON CONFLICT on the unique index %q is not supported: name the primary key", ix.Name)
 		}
 	}

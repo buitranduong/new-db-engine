@@ -195,6 +195,10 @@ func (p *parser) statement() (Stmt, error) {
 		return p.deleteStmt()
 	case "create":
 		return p.createStmt()
+	case "do":
+		return p.doStmt()
+	case "call":
+		return p.callStmt()
 	case "grant", "revoke":
 		p.next()
 		return p.grantStmt(t.s == "revoke")
@@ -202,6 +206,9 @@ func (p *parser) statement() (Stmt, error) {
 		return p.explainStmt()
 	case "drop":
 		p.next()
+		if st, ok, err := p.dropFunction(); ok {
+			return st, err
+		}
 		if st, ok, err := p.dropObj(); ok {
 			return st, err
 		}
@@ -275,7 +282,7 @@ func (p *parser) statement() (Stmt, error) {
 		} else if !p.acceptKw("transaction") {
 			p.acceptKw("work")
 		}
-		b := &Begin{}
+		b := &Begin{Start: t.s == "start"}
 		for {
 			switch {
 			case p.acceptKw("isolation", "level"):
@@ -427,6 +434,9 @@ func (p *parser) statement() (Stmt, error) {
 func (p *parser) createStmt() (Stmt, error) {
 	p.next()
 	if st, ok, err := p.createCtas(); ok {
+		return st, err
+	}
+	if st, ok, err := p.createFunction(); ok {
 		return st, err
 	}
 	if st, ok, err := p.createObj(); ok {

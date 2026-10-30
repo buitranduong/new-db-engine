@@ -54,6 +54,9 @@ type Result struct {
 type Session struct {
 	E        *core.Engine
 	tx       *core.Tx
+	txid     pgTxid     // txid_current() of the current transaction (pgcmds.go)
+	plDepth  int        // nesting of user functions being run (plsql.go)
+	plNotice string     // the last RAISE NOTICE message of the running DO / CALL
 	explicit bool       // inside BEGIN ... COMMIT
 	spilled  bool       // the last query ran in spill mode (EXPLAIN ANALYZE)
 	rep      *repairRec // occ_repair.go: the autocommit statement being run
@@ -103,6 +106,7 @@ func (s *Session) clickHouse() bool { return s.vars["sql_dialect"] == "clickhous
 func NewSession(e *core.Engine) *Session {
 	s := &Session{E: e, vars: sessionDefaults()}
 	s.recoverDDL()
+	loadUserFuncs(e)
 	return s
 }
 
@@ -185,6 +189,9 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		}
 		s.tx, s.explicit, s.failed = s.begin(iso), true, false
 		s.readOnly = st.ReadOnly || s.vars["default_transaction_read_only"] == "on"
+		if st.Start {
+			return &Result{Tag: "START TRANSACTION"}, nil
+		}
 		return &Result{Tag: "BEGIN"}, nil
 	case *Commit:
 		if !s.explicit {
@@ -267,6 +274,22 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			col = c
 		}
 		return &Result{Cols: []Column{{Name: col, Kind: KText}}, Rows: [][]Datum{{TextD(v)}}, Tag: "SHOW", HasRows: true}, nil
+	case *CreateFunc:
+		res, err := s.createFunc(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *DropFunc:
+		res, err := s.dropFunc(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *DoStmt:
+		return s.execDo(st)
+	case *CallStmt:
+		return s.execCall(st)
 	case *ObjDDL, *CommentOn:
 		// applied at once, like CREATE TABLE (ddlobjs_exec.go)
 		res, err := s.objDDL(st)

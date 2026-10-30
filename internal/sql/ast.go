@@ -176,6 +176,7 @@ type Select struct {
 type Begin struct {
 	Iso      string
 	ReadOnly bool
+	Start    bool // START TRANSACTION (the command tag says so)
 }
 type Commit struct{}
 type Rollback struct{}

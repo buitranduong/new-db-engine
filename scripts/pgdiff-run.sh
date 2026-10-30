@@ -23,7 +23,7 @@ cleanup() { kill $SPID 2>/dev/null; wait $SPID 2>/dev/null; docker rm -f "$NAME"
 trap cleanup EXIT
 for i in $(seq 100); do curl -s 127.0.0.1:$HP/v1/health >/dev/null && break; sleep 0.1; done
 "$D/bin/pgdiff" -pg "postgres://postgres@127.0.0.1:$PGP/postgres?sslmode=disable" \
-  -stask "postgres://app@127.0.0.1:$SP/stask?sslmode=disable" scripts/pgdiff > "$OUT" 2> "$D/err.log"
+  -stask "postgres://app@127.0.0.1:$SP/stask?sslmode=disable" ${SCRIPTS:-scripts/pgdiff} > "$OUT" 2> "$D/err.log"
 rc=$?
 [ -s "$D/err.log" ] && head -c 400 "$D/err.log"
 sed -n 3,12p "$OUT"

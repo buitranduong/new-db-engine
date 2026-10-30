@@ -112,6 +112,11 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 	if err := indexElems(t, c.Cols, c.Exprs); err != nil {
 		return nil, err
 	}
+	for _, w := range c.Where {
+		if _, ok := t.Col(w.Col); !ok {
+			return nil, errf(codeUndefinedColumn, "column %q does not exist", w.Col)
+		}
+	}
 	if c.Name == "" {
 		c.Name = s.genName(append([]string{t.Name}, indexNameParts(c)...), "idx")
 	} else if tbl, taken := s.E.IndexNameTaken(c.Name); taken || s.relationExists(c.Name) {
@@ -122,7 +127,7 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 		_ = tbl
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
-	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Unique: c.Unique}); err != nil {
+	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Unique: c.Unique, Where: c.Where}); err != nil {
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", c.Name)
@@ -222,7 +227,7 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	// the referenced columns must be the primary key or a unique constraint
 	ok := parent.IsPK(refCols)
 	for _, ix := range parent.Indexes {
-		ok = ok || ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, refCols)
+		ok = ok || ix.Unique && !ix.HasExpr() && len(ix.Where) == 0 && slices.Equal(ix.Columns, refCols)
 	}
 	if parent == child {
 		for _, u := range selfUnique {

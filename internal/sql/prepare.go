@@ -66,7 +66,7 @@ func (p *parser) prepareStatements(word string) (Stmt, bool, error) {
 		}
 		name, err := p.ident()
 		return &DeallocateStmt{Name: name}, true, err
-	case "analyze", "vacuum", "analyse":
+	case "analyze", "vacuum", "analyse", "checkpoint", "reindex", "cluster":
 		p.next()
 		for p.peek().k != tEOF && !p.isOp(";") { // options and table names are ignored
 			p.next()

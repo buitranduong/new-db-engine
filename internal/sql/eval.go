@@ -675,6 +675,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			return TextD("unknown"), nil
 		}
 	}
+	if v, ok, err := c.callUser(f, args); ok {
+		return v, err
+	}
 	if v, ok, err := c.callPre(f, args); ok {
 		return v, err
 	}

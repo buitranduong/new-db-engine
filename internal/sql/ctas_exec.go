@@ -433,7 +433,7 @@ func (s *Session) likeIndexes(c *CreateTable, likes []likeDef) []*CreateIndex {
 			if ix.Internal || ix.Constraint != "" {
 				continue
 			}
-			out = append(out, &CreateIndex{Cols: slices.Clone(ix.Columns), Exprs: slices.Clone(ix.Exprs), Unique: ix.Unique})
+			out = append(out, &CreateIndex{Cols: slices.Clone(ix.Columns), Exprs: slices.Clone(ix.Exprs), Unique: ix.Unique, Where: slices.Clone(ix.Where)})
 		}
 	}
 	return out

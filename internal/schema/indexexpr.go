@@ -145,11 +145,16 @@ type Indexer struct {
 	cols  []int
 	fns   []string
 	types []ColType
+	pred  []predTerm // partial index: rows outside it get a NULL-like key
 }
 
 // NewIndexer resolves def against t.
 func (t *Table) NewIndexer(def IndexDef) (*Indexer, error) {
 	x := &Indexer{}
+	var err error
+	if x.pred, err = t.compilePred(def); err != nil {
+		return nil, err
+	}
 	for k, c := range def.Columns {
 		i, ok := t.idx[c]
 		if !ok {
@@ -181,6 +186,9 @@ func (x *Indexer) Key(dst []byte, r Row) (out []byte, hasNull bool) {
 			hasNull = true
 		}
 		dst = AppendKeyValue(dst, x.types[k], v)
+	}
+	if x.pred != nil && !matchPred(x.pred, r) {
+		hasNull = true
 	}
 	return dst, hasNull
 }

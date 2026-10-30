@@ -284,5 +284,8 @@ func BinaryValueFor(oid uint32, d Datum) ([]byte, bool) {
 			}
 		}
 	}
+	if b, ok := supfixBinary(oid, d); ok {
+		return b, true
+	}
 	return BinaryValue(d)
 }

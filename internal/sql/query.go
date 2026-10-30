@@ -87,7 +87,8 @@ type qexec struct {
 	now      int64
 	subCache map[*boundSub]*relation
 	inSets   map[*boundSub]*inSet
-	hashSubs map[*boundSub]*hashSub // semijoin.go
+	hashSubs map[*boundSub]*hashSub  // semijoin.go
+	extSubs  map[*boundSub]*extState // supfix_semijoin.go
 	cteCache map[*cteDef]*relation
 
 	memUsed, memReserved int64       // membudget.go
@@ -262,6 +263,7 @@ type boundSub struct {
 
 	corr     []Expr    // semijoin.go: bound outer key expressions of the hash form
 	fallback *boundSub // the nested-loop form of a hash-form subquery
+	ext      *extSub   // supfix_semijoin.go: residual / HAVING forms
 }
 
 func (*boundSub) expr() {}
@@ -841,7 +843,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			if len(a.order) > 0 && f.Name != "string_agg" && f.Name != "array_agg" {
 				ak = []Kind{staticKind(a.order[0].x, sk[:p.nFrom])}
 			}
-			sk = append(sk, funcKind(f.Name, ak))
+			sk = append(sk, supfixAggKind(f.Name, a.args, ak, funcKind(f.Name, ak), slotTy))
 			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: a.args}, slotTy).forKind(sk[len(sk)-1]))
 			if sk[len(sk)-1] == KArray {
 				if at := arrTyFor(&Func{Name: f.Name, Args: a.args}, func(x Expr) Kind { return staticKind(x, sk[:p.nFrom]) }, slotTy); at.oid != 0 {
@@ -897,7 +899,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			for i, x := range w.args {
 				ak[i] = staticKind(x, sk)
 			}
-			sk = append(sk, funcKind(f.Name, ak))
+			sk = append(sk, supfixAggKind(f.Name, w.args, ak, funcKind(f.Name, ak), slotTy))
 			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: w.args, Over: f.Over}, slotTy).forKind(sk[len(sk)-1]))
 		}
 		post = &wb
@@ -1482,6 +1484,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			return KInterval
 		case l == KFloat || r == KFloat:
 			return KFloat
+		case l == KNumeric || r == KNumeric:
+			return KNumeric
 		case l == KInt && r == KInt:
 			return KInt
 		case l == KNull || r == KNull:
@@ -2181,6 +2185,9 @@ func (p *tablePlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	if p.asOf != nil {
 		return p.runAsOf(qx, outer)
 	}
+	if rows, ok, err := p.runParallel(qx); ok || err != nil {
+		return rows, err
+	}
 	var rows [][]Datum
 	cols := p.t.Columns
 	var err error
@@ -2656,6 +2663,9 @@ func (c *evalCtx) evalSub(b *boundSub) (Datum, error) {
 		return Null, errf(codeFeature, "subqueries are not supported here")
 	}
 	if b.corr != nil {
+		if b.ext != nil {
+			return c.evalExtSub(b)
+		}
 		return c.evalHashSub(b)
 	}
 	run := func() (*relation, error) {

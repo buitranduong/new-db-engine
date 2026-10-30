@@ -167,7 +167,7 @@ func run(ctx context.Context, url string, conn *pgx.Conn, c check) (string, bool
 
 func fullStatement(s string) bool {
 	u := strings.ToUpper(strings.TrimSpace(s))
-	for _, p := range []string{"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "SHOW", "VALUES", "EXECUTE"} {
+	for _, p := range []string{"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "SHOW", "VALUES", "EXECUTE", "EXPLAIN"} {
 		if strings.HasPrefix(u, p) {
 			return true
 		}

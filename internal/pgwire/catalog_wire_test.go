@@ -52,6 +52,13 @@ func TestCatalogOverWire(t *testing.T) {
 					for _, v := range vals {
 						if v == nil {
 							cells = append(cells, "NULL")
+						} else if c, ok := v.(rune); ok && c >= 0 && c < 128 && fieldIsChar(rows, len(cells)) {
+							// "char" (OID 18) is a single byte: print it as the character, 0 as empty
+							if c == 0 {
+								cells = append(cells, "")
+							} else {
+								cells = append(cells, string(c))
+							}
 						} else {
 							cells = append(cells, fmt.Sprint(v))
 						}
@@ -73,7 +80,7 @@ func TestCatalogOverWire(t *testing.T) {
 			check(all(`SELECT n.nspname as "Schema", c.relname as "Name", CASE c.relkind WHEN 'r' THEN 'table' WHEN 'S' THEN 'sequence' END as "Type", pg_catalog.pg_get_userbyid(c.relowner) as "Owner" FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','') AND n.nspname <> 'pg_catalog' AND n.nspname !~ '^pg_toast' AND n.nspname <> 'information_schema' AND pg_catalog.pg_table_is_visible(c.oid) ORDER BY 1,2`),
 				"public,ev,table,stask;public,items,table,stask")
 			// psql \d items
-			var oid int64
+			var oid uint32 // pg_class.oid is type oid (26), which pgx scans into uint32 only
 			if err := conn.QueryRow(ctx, `SELECT c.oid FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relname OPERATOR(pg_catalog.~) '^(items)$' COLLATE pg_catalog.default AND pg_catalog.pg_table_is_visible(c.oid) ORDER BY 1`).Scan(&oid); err != nil {
 				t.Fatal(err)
 			}
@@ -91,4 +98,10 @@ func TestCatalogOverWire(t *testing.T) {
 				"ev,id,bigint;ev,v,double precision")
 		})
 	}
+}
+
+// fieldIsChar reports whether result column i is type "char" (OID 18).
+func fieldIsChar(rows pgx.Rows, i int) bool {
+	fds := rows.FieldDescriptions()
+	return i < len(fds) && fds[i].DataTypeOID == 18
 }

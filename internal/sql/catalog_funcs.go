@@ -216,7 +216,12 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "current_schemas":
 		return s.currentSchemas(len(args) == 1 && args[0].Bool()), nil
 	case "pg_backend_pid":
+		if s.PID > 0 {
+			return IntD(int64(s.PID)), nil // the pid pg_stat_activity shows for this session
+		}
 		return IntD(1), nil
+	case "pg_sleep":
+		return s.supfixSleep(args)
 	case "pg_my_temp_schema":
 		return IntD(0), nil
 	case "set_config": // set_config(name, value, is_local)
@@ -229,6 +234,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		}
 		if _, err := s.set(&SetVar{Name: args[0].String(), Value: val, Local: args[2].Bool()}); err != nil {
 			return Null, err
+		}
+		if cur, ok := s.vars[strings.ToLower(args[0].String())]; ok {
+			return TextD(cur), nil // the setting after the change, e.g. 5s for statement_timeout
 		}
 		return TextD(val), nil
 	case "current_setting": // current_setting(name [, missing_ok])
@@ -262,6 +270,11 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			}
 			if len(args) > 1 && !args[1].IsNull() && (oid.I == tyVarchar || oid.I == tyBpchar) {
 				if m, err := coerce(args[1], KInt); err == nil && m.I >= 4 {
+					return TextD(formatType(uint32(oid.I), int32(m.I))), nil
+				}
+			}
+			if oid.I == tyTimestamptz && len(args) > 1 && !args[1].IsNull() {
+				if m, err := coerce(args[1], KInt); err == nil && m.I >= 0 {
 					return TextD(formatType(uint32(oid.I), int32(m.I))), nil
 				}
 			}
@@ -356,6 +369,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_is_other_temp_schema", "pg_is_in_recovery":
 		return BoolD(false), nil
 	case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible":
+		if name == "pg_type_is_visible" && len(args) == 1 && args[0].K == KInt && isInfoDomain(args[0].I) {
+			return BoolD(false), nil
+		}
 		return BoolD(s.visible(args)), nil
 	case "pg_get_userbyid":
 		return TextD(roleName), nil
@@ -364,7 +380,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "pg_get_viewdef":
 		for _, v := range s.E.Views() {
 			if o := arg(0); o.K == KInt && o.I == viewOID(v.Name) || o.K == KText && o.S == v.Name {
-				return TextD(" " + v.Query + ";"), nil
+				return TextD(s.viewDefText(v.Query, len(args) > 1 && args[1].Bool())), nil
 			}
 		}
 		return Null, nil
@@ -378,7 +394,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	case "quote_ident":
 		return TextD(quoteIdent(arg(0).String())), nil
 	case "pg_relation_size", "pg_total_relation_size", "pg_table_size", "pg_indexes_size":
-		return IntD(0), nil
+		return s.supfixRelSize(arg(0), name != "pg_relation_size" && name != "pg_table_size"), nil
 	case "pg_get_indexdef":
 		oid := argInt(0)
 		for _, t := range s.catSnap().tables {

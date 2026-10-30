@@ -43,6 +43,7 @@ func init() {
 			}
 			rel(tableOID(t), t.Name, heapAMOID, kind, maxNum(t), len(t.Checks), true, ident, relOptions(t))
 			c.relExt(rows[len(rows)-1], t)
+			supfixRelStats(c, t, rows[len(rows)-1])
 			if t.HasPK() {
 				rel(indexOID(t), pkeyName(t), btreeAMOID, "i", len(t.PKCols()), 0, false, "n", Null)
 			}
@@ -145,7 +146,7 @@ func init() {
 					TextD(t.name + "send"), TextD("-"), TextD("-"), TextD("-"), TextD(align), TextD("p"), BoolD(false),
 					IntD(0), IntD(-1), IntD(0), IntD(coll), Null, Null, Null})
 			}
-			return rows
+			return supfixDomainRows(rows)
 		})
 
 	defCat("pg_index", "indexrelid:i indrelid:i indnatts:i indnkeyatts:i indisunique:b indnullsnotdistinct:b "+
@@ -377,7 +378,7 @@ func init() {
 	defCat("pg_views", "schemaname:t viewname:t viewowner:t definition:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, v := range c.views {
-			rows = append(rows, []Datum{TextD("public"), TextD(v.Name), TextD(roleName), TextD(" " + v.Query + ";")})
+			rows = append(rows, []Datum{TextD("public"), TextD(v.Name), TextD(roleName), TextD(c.s.viewDefText(v.Query, false))})
 		}
 		return rows
 	})

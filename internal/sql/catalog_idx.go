@@ -135,7 +135,7 @@ func secIndexRows(c *catSnap, f func(t *schema.Table, ix schema.IndexDef)) {
 func secConstraintRows(c *catSnap, rows *[][]Datum) {
 	row := func(oid int64, name, typ string, rel, ind, frel int64, upd, del string, key, fkey Datum) {
 		*rows = append(*rows, []Datum{IntD(oid), TextD(name), IntD(nsPublic), TextD(typ), BoolD(false), BoolD(false),
-			BoolD(true), IntD(rel), IntD(0), IntD(ind), IntD(0), IntD(frel), TextD(upd), TextD(del), TextD(" "),
+			BoolD(true), IntD(rel), IntD(0), IntD(ind), IntD(0), IntD(frel), TextD(upd), TextD(del), TextD(supfixMatchType(typ)),
 			BoolD(true), IntD(0), BoolD(false), key, fkey, Null, Null, Null, Null, Null, Null})
 	}
 	for _, t := range c.tables {

@@ -175,6 +175,9 @@ func (d Dec) String() string {
 	case negInf:
 		return "-Infinity"
 	}
+	if s, ok := d.fastString(); ok {
+		return s
+	}
 	s := d.c().String()
 	if d.scale > 0 {
 		sc := int(d.scale)

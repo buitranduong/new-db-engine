@@ -1056,6 +1056,9 @@ func chFormat(t time.Time, f string) string {
 // toChar is PostgreSQL's to_char for timestamps and numbers (common
 // patterns).
 func toChar(v Datum, f string) (Datum, error) {
+	if v.K == KTime || v.K == KTimestamp || v.K == KDate {
+		return TextD(supfixToCharTS(goTime(v.I), f)), nil
+	}
 	switch v.K {
 	case KTime, KTimestamp, KDate:
 		t := goTime(v.I)
@@ -1343,6 +1346,9 @@ func funcKind(name string, args []Kind) Kind {
 		return k
 	}
 	if k, ok := catalogFuncKinds[name]; ok {
+		return k
+	}
+	if k, ok := supfixFuncKind(name); ok {
 		return k
 	}
 	if k, ok := extFuncKinds[name]; ok {

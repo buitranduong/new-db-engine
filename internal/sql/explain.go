@@ -542,6 +542,9 @@ func (x *explainer) subplans(depth int, e Expr) {
 				kind = "Anti"
 			}
 			x.node(depth+1, "SubPlan: Hash %s Join on %d key(s) (correlated EXISTS rewritten, built once)", kind, len(b.corr))
+			if b.ext != nil && b.ext.k != nil {
+				x.detail(depth+2, "Join Filter: residual predicate on the outer row, tested on the rows of the key's bucket")
+			}
 		case b.corr != nil:
 			x.node(depth+1, "SubPlan: Hash %s Join on %d key(s) (correlated IN rewritten, per-key sets, NULL-aware)", semiName(b), len(b.corr))
 		case b.plan.isCorrelated():
@@ -618,6 +621,7 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 		s.markFailed()
 		return nil, err
 	}
+	x.lines = s.supfixAnnotate(x.lines)
 	if o := len(x.lines); o > 0 && (SpillDir != "" || QueryMemLimit > 0) {
 		x.detail(0, "Memory: query budget %s; sort/join/aggregate spill to temp files when exceeded (spill %s)", memStr(QueryMemLimit), onOff(SpillDir != ""))
 	}

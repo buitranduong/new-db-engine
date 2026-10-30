@@ -1831,6 +1831,9 @@ func stripPtrs(x Expr) any {
 	case *Cast:
 		return []any{"cast", e.Type, stripPtrs(e.X)}
 	}
+	if k, ok := stripPtrsMore(x); ok {
+		return k
+	}
 	return fmt.Sprintf("%p", x)
 }
 

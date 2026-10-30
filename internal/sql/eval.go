@@ -258,6 +258,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		}
 		return BoolD(likeMatch(s, p) != e.Not), nil
 	case *Cast:
+		if d, ok, err := c.supfixRegclassText(e); ok {
+			return d, err
+		}
 		if d, ok, err := c.regclassText(e); ok {
 			return d, err
 		}

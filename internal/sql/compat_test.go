@@ -39,7 +39,7 @@ func TestViewsInCatalogs(t *testing.T) {
 		`SELECT column_name FROM information_schema.columns WHERE table_name = 'vv' ORDER BY ordinal_position`: "id;name",
 		`SELECT attname FROM pg_attribute WHERE attrelid = 'vv'::regclass AND attnum > 0 ORDER BY attnum`:      "id;name",
 		`SELECT relnatts FROM pg_class WHERE relname = 'vv'`:                                                   "2",
-		`SELECT pg_get_viewdef('vv'::regclass)`:                                                                " SELECT id, name FROM vt;",
+		`SELECT pg_get_viewdef('vv'::regclass)`:                                                                " SELECT id,\n    name\n   FROM vt;",
 	} {
 		if got := render(run(t, s, q)); got != want {
 			t.Errorf("%s = %q, want %q", q, got, want)

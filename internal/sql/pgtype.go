@@ -136,7 +136,7 @@ func (t pgTy) family() Kind {
 	if isUserOID(t.oid) {
 		return KText
 	}
-	return KNull
+	return supfixFamily(t.oid)
 }
 
 func (t pgTy) isInt() bool { return t.oid == tyInt2 || t.oid == tyInt4 || t.oid == tyInt8 }
@@ -244,6 +244,9 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		}
 		return commonTy(ts, as)
 	case *Func:
+		if t, ok := supfixFuncTy(e); ok {
+			return t
+		}
 		if e.Over != nil && !tySameAsArg[e.Name] && e.Name != "ntile" {
 			return pgTy{}
 		}
@@ -374,7 +377,7 @@ func pgTyName(t pgTy) string {
 	if n, ok := userTypeFormat(int64(t.oid)); ok {
 		return n
 	}
-	return ""
+	return supfixTyName(t.oid)
 }
 
 // formatType is format_type(oid, typmod).
@@ -383,6 +386,8 @@ func formatType(oid uint32, mod int32) string {
 	switch {
 	case n == "":
 		return ""
+	case oid == tyTimestamptz && mod >= 0:
+		return "timestamp(" + strconv.Itoa(int(mod)) + ") with time zone"
 	case (oid == tyVarchar || oid == tyBpchar) && mod >= 4:
 		return n + "(" + strconv.Itoa(int(mod)-4) + ")"
 	case oid == tyBpchar:
@@ -450,7 +455,7 @@ func tableCol(c *schema.Column) Column {
 
 // itemCol is the result column of a select item over a single table.
 func itemCol(it SelItem, sc *scope, pk map[int]Kind) Column {
-	c := Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}.withTy(inferTy(it.X, sc.leafTy)).withItemSrc(it, sc)
+	c := Column{Name: itemName(it), Kind: supfixItemKind(it.X, typeOf(it.X, sc, pk), sc, pk)}.withTy(inferTy(it.X, sc.leafTy)).withItemSrc(it, sc)
 	if k, t := jsonarrCol(it.X, c.Kind, pgTy{}, func(x Expr) Kind { return typeOf(x, sc, pk) }, sc.leafTy); t.oid != 0 {
 		c.Kind, c.OID, c.Mod = k, t.oid, t.mod
 	}

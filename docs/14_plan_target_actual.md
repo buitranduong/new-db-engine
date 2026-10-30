@@ -1253,3 +1253,19 @@ Chi tiết, công thức và danh sách số cần từ người dùng: `docs/19
 Tái lập: `scripts/vm-quiet.sh`; `RACE=1 scripts/merge-gate.sh`; `go test -count=1 ./internal/cluster` (nhiều tiến trình cùng lúc).
 
 **Cổng.** `RACE=1 scripts/merge-gate.sh` OK trên nhánh `gatefix`: gofmt, build, vet, `go test -p 4 -count=1 ./...`, `-race`, `claimcheck` **491** (nền không tụt).
+
+## Phụ lục U. Điều phối và tích hợp (orchestrator, 2026-10-30)
+Các việc không thuộc nhánh agent nào; mỗi dòng có plan, target, actual và bằng chứng.
+
+| Việc | Plan | Target | Actual (bằng chứng) |
+|---|---|---|---|
+| Tích hợp integ3–integ5 vào `main` | Gộp cursors, ctas, jsonarr, jmixfix, ddlobjs, supfix | Cổng RACE xanh, claimcheck không giảm | Xanh; claimcheck 454/461, đẩy `main` `5f6de3c`. Test ddlobjs sửa vì supfix thêm domain information_schema. |
+| Tích hợp txddl, rồi exprindex+pgres | Mỗi đợt một cổng RACE | Xanh trước khi đẩy | txddl: claimcheck 463/470 (`cef97ce`); exprindex+pgres: 471/477 (`ca82fc5`). |
+| Tích hợp lanefix, pgparity, txddl2+pgcmds | Như trên | Xanh trước khi đẩy | `85aad76`, `6400495`, `1e81227` (claimcheck 491/497). |
+| Gate lỗi giả (3 lần) | Tìm nguyên nhân, không bỏ qua | Biết nguyên nhân từng lần | (1) tôi chạy `go clean -cache` giữa lúc gate đang build ⇒ "could not import … no such file"; (2) `TestProcChaos` "no leader within 40s" và (3) `TestProcSecure` "no free port block … address already in use": va chạm với lần chạy test khác trên cùng dải cổng 21000–21999; chạy lại riêng 2/2 đạt, gate lần 3 xanh. Sửa gốc: nhánh `gatefix` (Phụ lục T). |
+| Đo simbench 1M trên `main` | Xác nhận cải tiến end-to-end so với PG16 | OLTP không tệ hơn PG | Phụ lục N: import nhanh hơn 1,5–2,2×, OLTP chậm ~2× ở mix đầy đủ ⇒ mở lanefix (Phụ lục O). |
+| `scripts/perf-run.sh` | Mọi phép đo hiệu năng độc quyền | Số đo không bị nhiễu | Khoá flock + kiểm máy bận theo tên tiến trình + đánh dấu INVALID khi có build/test chen vào. Một lần chạy profile bị gắn INVALID đúng vì tôi chạy `go tool pprof` trong lúc đo; số đó chỉ dùng làm chỉ báo. AGENT_PROTOCOL §6. |
+| Quyết định D31 (hai làn) rồi D32 (đo hiệu năng dồn về cuối) | Theo phản hồi người dùng | Ghi lại để không mất dấu | `docs/PROCESS.md` D31, D32. D32 thay pha 1 của D31 theo yêu cầu của người dùng sau khi một vòng đo–sửa mất hơn 1 giờ (phần lớn do ssh đứt do đổi mạng Mac/VM). |
+| Chép mã Jmix CRM lên VM để thử | Có sự đồng ý của người dùng; không chép bí mật | Không có khoá/mật khẩu/dữ liệu thật trên VM | `git archive` chỉ file đã commit: `src`, `build.gradle`, `gradle*` và `web/` (React UI, theo yêu cầu người dùng). Loại: `application*.properties`, `backups/*.dump`, `deploy/` (có `secret.yaml`), `web/tools/cleanup-zz.sql`. Kiểm: `find -name 'application*.properties'` trên VM = 0. Agent `crmcompat` tự viết cấu hình riêng. Kết quả: Phụ lục của `crmcompat` khi xong. |
+| Dọn đĩa VM | Giải phóng chỗ cho đo | Còn ≥ 15 GB trống | Gỡ worktree nhánh đã gộp, xoá binary tạm và cache Go: 9,7 GB → 17 GB trống. `~/stask-data` 12 GB (dữ liệu benchmark cũ) chưa xoá: lệnh `rm -rf` bị hệ thống chặn, không tìm đường vòng. |
+| Tiến trình rác trên VM | Dọn trước khi đo | VM yên tĩnh | 15 vòng chờ `pgrep -f` tự khớp và 2 `staskd` cũ (`vm-quiet.sh`, Phụ lục T). Lệnh kill bị chặn; `perf-run.sh` đã đổi sang nhận diện theo tên tiến trình nên không bị nhiễu. Chờ người dùng quyết định dọn. |

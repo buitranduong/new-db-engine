@@ -86,3 +86,7 @@ Dọn dẹp: <đã xoá gì>
 - Mọi phép đo hiệu năng (simbench, simfresh, memmap, pibench, searchbench…) chạy qua `scripts/perf-run.sh <lệnh>`: khoá flock toàn máy, chỉ một job đo một lúc; không bắt đầu khi có cổng/test/build đang chạy hoặc load1 > 1.0; nếu giữa chừng có build/test khác chạy thì kết quả bị đánh dấu INVALID (exit 5) và không được ghi vào docs.
 - Agent Làn B không chạy go test/go build nặng trong cửa sổ đo của orchestrator.
 - Số đo không đi qua perf-run.sh không được dùng làm bằng chứng hiệu năng.
+
+## §7. Dấu vết cho mọi nhiệm vụ (kể cả của orchestrator)
+- Mỗi nhiệm vụ, kể cả tích hợp, đo, dọn dẹp, chép dữ liệu, quyết định quy trình, có một dòng plan-target-actual trong docs/14 (phụ lục của nhánh hoặc Phụ lục U) với bằng chứng tái hiện được. Việc không có dòng này coi là chưa làm.
+- Khi một agent báo xong mà thiếu phụ lục, orchestrator bổ sung trước khi gộp.

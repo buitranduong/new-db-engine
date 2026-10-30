@@ -983,3 +983,62 @@ Dạng **không** rơi vào đường băm trên `main` (đo: > 100 s ở 260k x
 **F.6 Thay đổi hành vi client cần biết.** (1) Cột `oid` của catalog nay là kiểu `oid`: Go/pgx phải quét vào `uint32` (như với PG; `catalog_wire_test.go` đã sửa); `relkind`... là `"char"` (pgx trả `byte`/`rune`). (2) `sum(bigint)` và cửa sổ `sum(count(*))` công bố `numeric` (OID 1700): `pgx` quét vào `int64` được khi giá trị nguyên? **chưa kiểm cho mọi driver**; psycopg2 trả `Decimal` như PG. (3) `pg_backend_pid()` trả pid thật của phiên (trước: luôn 1), nên probe `pg_stat_activity` không còn phụ thuộc thứ tự kết nối.
 
 **F.7 Hạn chế, nói thẳng.** `x::regclass` đứng một mình vẫn in OID; `pg_get_viewdef` chỉ cho view đơn giản và thiếu `::numeric` ở hằng số so với cột numeric; `percentile_disc` trên `int4` công bố `bigint`; `SUM(bigint)` tràn `int64` vẫn tràn; `to_char` luôn múi giờ UTC; `reltuples`/kích thước là ước lượng, `EXPLAIN` `cost=` là số thô; quét song song tăng đỉnh bộ nhớ (hàng chục MB mỗi bảng 260k dòng, vẫn tính vào `-query-mem-mb`) và mới đo trên một VM tải; đường băm vẫn đọc toàn bảng (chưa đẩy cột/lọc xuống), nên không đạt 50 ms của PG; chưa chạy Superset/SQLAlchemy thật (tiếp tục **[chưa kiểm với Superset thật]**). Phát hiện ngoài phạm vi: `WITH c(y) AS (..), d AS (..) SELECT d.*` in thừa cột của `c`; `CREATE TABLE AS`/`TEMP TABLE` còn thiếu (5 câu `g`); `EXPLAIN (FORMAT JSON)` trả `text`; `SHOW transaction isolation level` = `repeatable read`.
+
+## Phụ lục L. Nhánh `pgres`: tham số mảng nhị phân và phần dư của `pgdiff` (2026-10-30, gốc `main` @ 5f6de3c)
+
+**Kế hoạch.** (1) Sửa tham số mảng ở dạng nhị phân (pgjdbc `setArray`, `= ANY(?)`, mảng int/text/uuid). (2) Giảm phần dư `pgdiff` (58 DIFF + 38 ERR-ONLY-ONE-SIDE trên 2464 câu), nhóm b, c, g trước; chỉ sửa chỗ là khoảng trống tương thích PG thật, phần cố ý thì ghi lý do.
+**Mục tiêu.** Mỗi sửa có test; `go vet`, `go test -p 2` sạch; `claimcheck` >= 454.
+**Thực tế.** `scripts/merge-gate.sh` qua trên nhánh (gofmt, build, vet, toàn bộ `go test -p 2 -count=1 ./...`, `claimcheck` **455/461**, nền 454). `scripts/pgdiff-run.sh`: PASS 2264 -> **2277**, DIFF 58 -> **55**, ERR-ONLY-ONE-SIDE 38 -> **28** (nhóm c: 14+20 -> 9+16; nhóm g: 20+16 -> 18+0 sau khi trừ khác biệt môi trường; b: 8+16 -> 9+12, trong đó 1 câu chuyển từ ERR sang DIFF vì giờ chạy nhưng khác OID).
+
+### L.1 Mảng nhị phân (`internal/pgwire/pgwire.go`, `internal/sql/arraybin.go`, `types.go`)
+
+| Lỗi | Sửa | Test |
+|---|---|---|
+| Tham số `$n` dạng nhị phân với OID mảng (`int2[]`, `int4[]`, `int8[]`, `text[]`, `uuid[]`...) trả `0A000 binary format for type oid 1007 is not supported` | `decodeArrayParam`: đọc ndim/hasnull/OID phần tử/kích thước/độ dài từng phần tử (NULL = -1), nhiều chiều, sai cấu trúc trả `22P03` | `TestBinaryArrayParams` (pgx và gói `Parse` tự khai báo OID 1007 + `Bind` nhị phân như pgjdbc) |
+| `x = ANY($1)` không có ép kiểu: máy chủ suy `$1` là `text`, pgx không mã hoá được `[]int64` | `Description.ParamElem`: `paramKinds` ghi kiểu phần tử cho `ANY/ALL ($n)` (theo kiểu vế trái), `$n::int4[]` và `unnest($n::...)` trong `FROM`; `Parse` công bố OID mảng tương ứng (`int8[]`, `text[]`, `uuid[]`...) | cùng test (9 ca: ANY, ALL, rỗng, `unnest`, join) |
+| Kết quả mảng nhị phân luôn mã hoá phần tử là `text` (OID 25) bất kể cột công bố `int4[]`, `uuid[]` | `sql.ArrayResultBinary`: phần tử theo kiểu của OID cột, nhiều chiều, NULL | `TestBinaryArrayResults` (`int4[]`, `int2[]`, `text[]`, `uuid[]`, NULL, 2 chiều) |
+
+Giới hạn: tham số mảng `interval[]` và `time[]` nhị phân vẫn trả `0A000`; mảng `bytea[]`/`json[]` nhị phân chưa có test riêng. Khi client không khai báo OID, kiểu phần tử suy từ vế trái nên `int4` thành `int8[]` (pgx vẫn mã hoá được; pgjdbc khai báo OID nên không dính).
+
+### L.2 Phần dư `pgdiff` đã sửa (đều là khoảng trống tương thích thật)
+
+| Nhóm / câu | Việc | Test |
+|---|---|---|
+| (phát hiện thêm) | **`SELECT a.* FROM a JOIN b` trả cả cột của `b`**: parser bỏ qualifier của `t.*`. Nay `t.*` chỉ lấy cột của `t`; `x.*` không có `x` trong `FROM` -> `42P01` (`c/missing-objects:56`) | `TestPgresErrors`, `TestPgresShapes` |
+| b/strings:34 | `overlay(x placing y from n [for m])` và dạng hàm | `TestPgresValues` |
+| b/strings:39 | `format()` có độ rộng, `-`, vị trí `n$`; `%I` với NULL báo `22004` | `TestPgresValues` |
+| b/functions-misc:310 | `SELECT` không cột | `TestPgresShapes` |
+| b/casts:138 | `ROW(...)`, `(a,b) = (c,d)`, `<, <=, >, >=, <>` giữa hai hàng (khai triển thành so sánh từng cột, từ điển cho thứ tự) | `TestPgresShapes` |
+| c/arith:149, 160, 161 | `1 IN (SELECT 1,2)` -> `42601 subquery has too many columns`; `COALESCE()`, `GREATEST()`, `NULLIF(1)` -> `42601` ở lúc parse | `TestPgresErrors` |
+| c/permissions:242, 268, 269, 271 | `INSERT/UPDATE/DELETE` qua view tự cập nhật được (chiếu một bảng, `WHERE` đơn giản; cột đổi tên được ở `INSERT` cols/`SET`). Ba câu CTAS/`SELECT INTO` sau đó chỉ lệch vì dòng này. Đổi hành vi: `TestSQLView` từng khẳng định mọi view là chỉ-đọc; nay chỉ view không phải phép chiếu đơn (nhóm, join, biểu thức) còn bị `55000` | `TestPgresUpdatableView`, `TestPgresUpdatableViewDescribe`, `TestSQLView` (sửa) |
+| c/permissions:281 | `EXECUTE name` mô tả đúng cột của câu đã `PREPARE` (trước đó `RowDescription` rỗng ở giao thức mở rộng) | `TestPgresExecuteDescribe` |
+| g/ss-reflect-keys:110 | `pg_constraint.conkey/confkey` công bố `int2[]` (1005) | `TestPgresCatalog` |
+| g/ss-reflect-keys:121, 123 | thêm `pg_stat_user_tables`, `pg_stat_all_tables` (`n_live_tup` thật, bộ đếm truy cập = 0) và `pg_stats` (rỗng: STASK không có thống kê `ANALYZE`) | `TestPgresCatalog` |
+| g/ss-sqllab:379, 380 | `pg_roles`/`pg_user` có dòng của người đăng nhập mật khẩu chung (`WHERE rolname = current_user` trước đó 0 dòng) | `TestPgresCatalog` |
+
+### L.3 Phần dư cố ý không sửa (và lý do)
+
+| Câu | Lý do |
+|---|---|
+| a/transaction-basics:196, g/ss-connect:36, b `SHOW transaction_isolation` | STASK là snapshot isolation (`repeatable read`); đổi chữ sẽ nói sai bản chất (docs/03) |
+| g/ss-connect:31,32,37,38; b/functions-misc:294 | `version()`, `server_version(_num)`: STASK công bố `16.0 (STASK prototype)`, không giả vá cụ thể của PG |
+| g/ss-connect:39,40; g/ss-reflect-tables:82; g/ss-sqllab:377,379,380 | tên DB/người dùng/pid là môi trường |
+| g/ss-reflect-tables:73,79,91; g/ss-sqllab:378; g/ss-reflect-keys:122,123 | OID, danh sách schema/DB, `relpages`, `n_live_tup` do vị trí vật lý/số đếm của PG (6000 do nạp hai lần), khác theo thiết kế |
+| f/explain (8), g/ss-sqllab:328 to 331, c/permissions:263 | `EXPLAIN` của STASK thêm dòng `Note:`/`Memory:` và chi phí ước lượng; `EXPLAIN (FORMAT JSON)` chưa có |
+| a/insert-returning:84 | `now()` hai bên khác vài micro giây (nhiễu) |
+| b/strings:45, b/like-in-exists:164 | STASK so sánh chuỗi theo byte (collation `C`); PG trong container dùng `en_US.utf8`. Đổi collation là đổi thứ tự chỉ mục (docs/09): dừng, không tự đổi |
+| b/strings:26, case-coalesce:71,75, joins-setops:200, c/arith:114,141,153,155,156,163,164,166,170,173,174,175, c/unique:20, b/casts:134, c/arith:116 | STASK **dễ tính hơn** PG (nhận `1 \|\| 2`, `length(1)`, `UNION` int/text, `sum(true)`...) hoặc báo SQLSTATE khác cho cùng lỗi. Ứng dụng đúng chuẩn không dính; siết lại có nguy cơ làm gãy ứng dụng đang chạy nhờ ép kiểu ngầm. Chưa kiểm ứng dụng nào dựa vào đó nên giữ nguyên |
+| b/casts:139,141,142,143,144; b/strings:48,49; c/permissions:247 to 254,273,279 | kiểu `int2vector`, `money`, `inet/cidr`, `bit`, range; `"char"`; `U&''`; `CREATE FUNCTION`/`DO`; bảng phân vùng; `CHECKPOINT`: tính năng ngoài phạm vi hiện tại (chưa kiểm nhu cầu thật từ kho/CRM/web) |
+
+### L.4 Còn lại thật sự (không sửa trong nhánh này)
+
+- b/arithmetic:12: `power(numeric, numeric)` và `div()` trả `numeric` ở PG, STASK `double`/`bigint`.
+- b/case-coalesce:72: `CASE ... 1 ELSE 2.5` phải là `numeric`; STASK lấy kiểu nhánh đầu (`bigint`). Cần hợp nhất kiểu theo PG ở mức `Kind`, thay đổi lớn.
+- b/timestamps:106: `'infinity'::timestamp`.
+- b/functions-misc:289: `setseed()`; b/functions-misc:322: `pg_typeof($1)` khi `$1::int` ở chỗ khác.
+- c/arith:140: `to_char(1, 'ZZZ')` (chữ không phải mẫu).
+- c/unique:20: đổi khoá chính khi có FK trỏ tới bị `0A000` thay vì kiểm tra `23503` theo từng dòng.
+- g/ss-reflect-keys:120: `pg_get_constraintdef` thiếu `::numeric` ở hằng số (đã ghi ở F.7).
+- `pg_stats` rỗng (không có thống kê cột).
+
+Tái lập: `cd ~/wt/pgres && D=/tmp/pgdiff-pgres PGP=28442 HP=28190 SP=28443 NAME=pgdiff-pgres scripts/pgdiff-run.sh`; `go test ./internal/pgwire -run 'TestBinaryArray|TestPgres'`; `go test ./internal/sql -run 'TestPgres|TestSQLView'`; `scripts/merge-gate.sh`.

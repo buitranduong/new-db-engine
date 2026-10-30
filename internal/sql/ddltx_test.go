@@ -20,6 +20,27 @@ func hasColT(t *testing.T, s *Session, tbl, col string) bool {
 	return colIndex(ts.Schema(), col) >= 0
 }
 
+// hiddenLeft counts the private objects of hidden drops (ddltx.go).
+func hiddenLeft(s *Session) int {
+	n := 0
+	for _, ts := range s.E.UserTables() {
+		if strings.HasPrefix(ts.Schema().Name, "__txd_") {
+			n++
+		}
+		for _, c := range ts.Schema().Columns {
+			if strings.HasPrefix(c.Name, "__txd_") {
+				n++
+			}
+		}
+	}
+	for _, q := range s.E.Sequences() {
+		if strings.HasPrefix(q.Name, "__txd_") {
+			n++
+		}
+	}
+	return n
+}
+
 func hasIdx(s *Session, name string) bool {
 	for _, ts := range s.E.UserTables() {
 		if ts.Schema().Index(name) != nil {
@@ -47,12 +68,20 @@ func txdBody(t *testing.T, s *Session) {
 	run(t, s, `ALTER TABLE keep DROP COLUMN b`)
 	run(t, s, `DROP INDEX keep_a_idx`)
 	run(t, s, `DROP TABLE gone`)
-	// created objects are visible inside; dropped ones still are until COMMIT
+	// created objects are visible inside; dropped ones are gone for this session
 	if r := run(t, s, `SELECT count(*) FROM fresh2`); r.Rows[0][0].I != 2 {
 		t.Fatalf("CTAS rows in tx: %s", render(r))
 	}
-	if !hasTable(s, "gone") || !hasColT(t, s, "keep", "b") {
-		t.Fatal("deferred drops applied before COMMIT")
+	if hasTable(s, "gone") {
+		t.Fatal("dropped table still visible in the transaction")
+	}
+	// keep was written by this transaction (UPDATE): renaming the column away
+	// would conflict at COMMIT, so DROP COLUMN is deferred and b stays visible
+	if !hasColT(t, s, "keep", "b") {
+		t.Fatal("deferred DROP COLUMN applied before COMMIT")
+	}
+	if !hasIdx(s, "keep_a_idx") {
+		t.Fatal("DROP INDEX is deferred: the index stays until COMMIT")
 	}
 }
 
@@ -78,6 +107,9 @@ func txdRolledBack(t *testing.T, s *Session) {
 	if n := len(s.E.Objs(ddlKind)); n != 0 {
 		t.Fatalf("%d journal rows left", n)
 	}
+	if n := hiddenLeft(s); n != 0 {
+		t.Fatalf("%d hidden objects left", n)
+	}
 	// names are reusable
 	run(t, s, `CREATE TABLE fresh (id BIGINT PRIMARY KEY)`)
 	run(t, s, `DROP TABLE fresh`)
@@ -99,6 +131,9 @@ func txdCommitted(t *testing.T, s *Session) {
 	}
 	if n := len(s.E.Objs(ddlKind)); n != 0 {
 		t.Fatalf("%d journal rows left", n)
+	}
+	if n := hiddenLeft(s); n != 0 {
+		t.Fatalf("%d hidden objects left", n)
 	}
 }
 
@@ -194,7 +229,7 @@ func TestTxDDLCrashAfterCommit(t *testing.T) {
 		ddlCrashAfterCommit = func() bool { return true }
 		run(t, s, `COMMIT`)
 		ddlCrashAfterCommit = nil
-		if !hasTable(s, "gone") { // redo steps did not run yet
+		if hiddenLeft(s) == 0 { // redo steps did not run yet
 			t.Fatal("redo ran despite the crash hook")
 		}
 		if ckpt {

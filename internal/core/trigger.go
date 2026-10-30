@@ -97,11 +97,7 @@ func (e *Engine) triggersTable() error {
 	if e.tableExists(triggerTableName) {
 		return nil
 	}
-	_, err := e.CreateTable(triggerSchema())
-	if err != nil && e.tableExists(triggerTableName) {
-		return nil // created concurrently
-	}
-	return err
+	return e.createSystemTable(triggerSchema())
 }
 
 func (e *Engine) triggersChanged() {

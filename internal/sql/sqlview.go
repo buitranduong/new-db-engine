@@ -122,7 +122,7 @@ func (c *compiler) noteDep(name string) {
 // expandView plans a reference to a view as a derived table. ok is false
 // if name is not a view.
 func (c *compiler) expandView(f *FromTable, qual string) (fromPlan, bool, error) {
-	def, ok, err := c.s.E.View(c.tx, f.Name)
+	def, ok, err := c.s.viewAt(c.tx, f.Name)
 	if err != nil {
 		return nil, false, AsError(err)
 	}
@@ -194,7 +194,7 @@ func (s *Session) isView(name string) bool {
 	if name == "" {
 		return false
 	}
-	_, ok, _ := s.E.View(s.tx, name)
+	_, ok, _ := s.viewAt(s.tx, name)
 	return ok
 }
 

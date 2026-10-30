@@ -19,7 +19,7 @@ type simpleView struct {
 
 // simpleViewOf describes view name if it is automatically updatable.
 func (s *Session) simpleViewOf(name string) (*simpleView, bool) {
-	v, ok, _ := s.E.View(s.tx, name)
+	v, ok, _ := s.viewAt(s.tx, name)
 	if !ok || v == nil {
 		return nil, false
 	}

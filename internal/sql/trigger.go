@@ -540,6 +540,9 @@ func (s *Session) trigTrue(tx *core.Tx, st Stmt, params []Datum) (bool, error) {
 // changed it). The AFTER triggers' result is nw.
 func (s *Session) fireTriggers(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, timing, event string,
 	old, nw schema.Row) (schema.Row, error) {
+	if s.noTrig {
+		return nw, nil
+	}
 	entered := false
 	for _, tg := range tgs {
 		if !tg.Fires(timing, event) {

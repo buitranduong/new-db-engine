@@ -54,11 +54,7 @@ func (e *Engine) viewsTable() error {
 	if e.tableExists(viewTableName) {
 		return nil
 	}
-	_, err := e.CreateTable(viewSchema())
-	if err != nil && e.tableExists(viewTableName) {
-		return nil // created concurrently
-	}
-	return err
+	return e.createSystemTable(viewSchema())
 }
 
 // PutView stores a view; with replace an existing definition is replaced.

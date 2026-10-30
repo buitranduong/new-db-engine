@@ -6,6 +6,6 @@ T=$1; shift
 D="$(cd "$(dirname "$0")" && pwd)"
 if [ $T = pg ]; then USER=postgres PASS=rc; else USER=app PASS=x; fi
 LOG=$RC_OUT/pgjdbc-$T.log
-exec $RC_TOOLS/lb/liquibase --classpath=$RC_JDBC --search-path=$D/changelog --changelog-file=root.xml \
+exec $RC_TOOLS/lb/liquibase --classpath=$RC_JDBC --search-path=$D/changelog --changelog-file=${LB_CHANGELOG:-root.xml} \
   --url="jdbc:postgresql://$(rc_url $T)/stask?sslmode=disable&loggerLevel=TRACE&loggerFile=$LOG" \
   --username=$USER --password=$PASS --log-level=WARNING "$@"

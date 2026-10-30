@@ -93,6 +93,8 @@ type Session struct {
 	refreshing string      // materialized view being refreshed (ctas_exec.go)
 	dj         *ddlJournal // transactional DDL journal of the open transaction (ddltx.go)
 	djBypass   bool        // running a statement already journaled by txDDL
+	noTrig     bool        // TRUNCATE inside a transaction: row triggers do not fire (ddltx_objs.go)
+	djRel      uint32      // RelID the next CREATE TABLE gives its table (ddltx.go)
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -152,7 +154,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 		}
 	}
-	if s.role != "" {
+	if s.role != "" && !s.djBypass { // djBypass: a journaled step, already authorized as part of its statement
 		if err := s.authorize(st); err != nil {
 			s.markFailed()
 			return nil, err
@@ -220,13 +222,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.ddlUndo()
 			return nil, AsError(err)
 		}
-		s.ddlAfterCommit()
+		warn := s.ddlAfterCommit()
 		s.noteCommit(lsn)
 		for _, op := range ops {
 			s.applyListen(op)
 		}
 		s.afterTxEnd(true)
-		return &Result{Tag: "COMMIT"}, nil
+		return &Result{Tag: "COMMIT", Notice: warn}, nil
 	case *Rollback:
 		if !s.explicit {
 			return &Result{Tag: "ROLLBACK", Notice: "there is no transaction in progress"}, nil
@@ -599,6 +601,9 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 	}
 	if err := s.constraintsOf(c, &t); err != nil {
 		return nil, err
+	}
+	if s.djRel != 0 {
+		t.RelID, s.djRel = s.djRel, 0 // identity marker of the transactional-DDL journal (ddltx.go)
 	}
 	if _, err := s.E.CreateTable(t); err != nil {
 		if strings.Contains(err.Error(), "already exists") {

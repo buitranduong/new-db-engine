@@ -86,19 +86,16 @@ func (e *Engine) DropViews(names []string) error {
 	return err
 }
 
-// View returns the definition of a view as tx sees it (as of tx's
-// snapshot); with a nil tx, as of the newest durable commit.
+// View returns the definition of a view as of the newest durable commit.
+// Like tables, views are catalog objects that CREATE/DROP VIEW apply at
+// once, outside the transaction's snapshot, so a transaction must see its
+// own CREATE VIEW (and not a view it dropped): tx is accepted for the
+// callers' sake and not used.
 func (e *Engine) View(tx *Tx, name string) (*View, bool, error) {
 	if !e.tableExists(viewTableName) {
 		return nil, false, nil
 	}
-	var r schema.Row
-	var err error
-	if tx != nil {
-		r, _, err = tx.Get(viewTableName, name)
-	} else {
-		r, _, err = e.Get(viewTableName, name)
-	}
+	r, _, err := e.Get(viewTableName, name)
 	if err != nil || r == nil {
 		return nil, false, err
 	}

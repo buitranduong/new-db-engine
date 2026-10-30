@@ -107,6 +107,7 @@ func (p *parser) compatStatement(word string) (st Stmt, ok bool, err error) {
 type savepointState struct {
 	name string
 	sp   *core.Savepoint
+	dj   djMark // DDL journal position (ddltx.go)
 }
 
 // execCompat runs the statements above.
@@ -116,7 +117,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 		if !s.explicit {
 			return nil, errf("25P01", "SAVEPOINT can only be used in transaction blocks")
 		}
-		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint()})
+		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark()})
 		return &Result{Tag: "SAVEPOINT"}, nil
 	case *ReleaseStmt:
 		i, err := s.findSavepoint(st.Name)
@@ -133,6 +134,10 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 		s.tx.RollbackTo(s.savepoints[i].sp)
 		s.savepoints = s.savepoints[:i+1]
 		s.failed = false // the transaction is usable again
+		if err := s.djRollbackTo(s.savepoints[i].dj); err != nil {
+			s.markFailed()
+			return nil, AsError(err)
+		}
 		return &Result{Tag: "ROLLBACK"}, nil
 	case *DiscardStmt:
 		switch st.What {

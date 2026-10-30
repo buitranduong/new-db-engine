@@ -59,6 +59,7 @@ type Session struct {
 	plDepth  int        // nesting of user functions being run (plsql.go)
 	plNotice string     // the last RAISE NOTICE message of the running DO / CALL
 	explicit bool       // inside BEGIN ... COMMIT
+	txLevel  string     // isolation level of the explicit transaction (readcommitted.go)
 	spilled  bool       // the last query ran in spill mode (EXPLAIN ANALYZE)
 	rep      *repairRec // occ_repair.go: the autocommit statement being run
 	failed   bool       // an error occurred inside the explicit transaction
@@ -187,10 +188,16 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return &Result{Tag: "BEGIN", Notice: "there is already a transaction in progress"}, nil
 		}
 		iso := core.SnapshotIsolation
-		if st.Iso == "serializable" || st.Iso == "" && s.vars["default_transaction_isolation"] == "serializable" {
+		level := st.Iso
+		if level == "" {
+			level = isoLevel(s.vars["default_transaction_isolation"])
+		}
+		if level == "serializable" {
 			iso = core.Serializable
 		}
 		s.tx, s.explicit, s.failed = s.begin(iso), true, false
+		s.txLevel = level
+		s.tx.SetReadCommitted(level == "read committed")
 		s.readOnly = st.ReadOnly || s.vars["default_transaction_read_only"] == "on"
 		if st.Start {
 			return &Result{Tag: "START TRANSACTION"}, nil
@@ -266,8 +273,12 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if name == "transaction_read_only" && s.explicit && s.readOnly {
 			v = "on"
 		}
-		if name == "transaction_isolation" && s.explicit && s.tx.Iso() == core.Serializable {
-			v = "serializable"
+		if name == "transaction_isolation" {
+			if s.explicit && s.txLevel != "" {
+				v = s.txLevel
+			} else if d := isoLevel(s.vars["default_transaction_isolation"]); d != "" {
+				v = d
+			}
 		}
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
@@ -515,6 +526,9 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		local.Local = false
 		return s.set(&local)
 	}
+	if name == "characteristics" { // SET SESSION CHARACTERISTICS AS ...: the parser took SESSION
+		name = "session characteristics"
+	}
 	switch name {
 	case "transaction", "session characteristics":
 		if strings.Contains(val, "read only") || strings.Contains(val, "read write") {
@@ -535,13 +549,21 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		}
 		// SET TRANSACTION ISOLATION LEVEL x / SET SESSION CHARACTERISTICS AS TRANSACTION ...
 		val = strings.TrimPrefix(strings.TrimPrefix(val, "as transaction "), "isolation level ")
+		level := isoLevel(val)
 		if name == "session characteristics" {
-			s.vars["default_transaction_isolation"] = val
+			if level == "" {
+				level = val
+			}
+			s.vars["default_transaction_isolation"] = level
 			return &Result{Tag: "SET"}, nil
 		}
-		if s.explicit && val == "serializable" && s.tx.Iso() != core.Serializable {
-			s.tx.Abort()
-			s.tx = s.begin(core.Serializable)
+		if s.explicit && level != "" {
+			if level == "serializable" && s.tx.Iso() != core.Serializable {
+				s.tx.Abort()
+				s.tx = s.begin(core.Serializable)
+			}
+			s.txLevel = level
+			s.tx.SetReadCommitted(level == "read committed")
 		}
 		return &Result{Tag: "SET"}, nil
 	case "time zone":
@@ -2017,6 +2039,9 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	}
 	t, err := s.table(st.Table)
 	if err != nil {
+		return nil, err
+	}
+	if st, err = s.valuesSubqueries(tx, st, params); err != nil {
 		return nil, err
 	}
 	sc := &scope{t: t}

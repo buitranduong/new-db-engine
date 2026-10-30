@@ -61,6 +61,7 @@ type Tx struct {
 	shares   map[pk]struct{}
 	uniq     map[string]string
 	implicit bool
+	rc       bool // READ COMMITTED: Refresh moves the snapshot, writes remember theirs (readcommitted.go)
 }
 
 // SetImplicit marks the transaction as one statement that commits at once:
@@ -309,8 +310,14 @@ func (tx *Tx) add(op WriteOp) error {
 		} else {
 			p[0].ifAbsent = p[0].ifAbsent || tx.writes[i].ifAbsent
 		}
+		if tx.rc {
+			p[0].base = tx.writes[i].base // the first statement that wrote the key decides what it conflicts with
+		}
 		tx.writes[i] = p[0]
 		return tx.postConstraints(op, &p[0], fc)
+	}
+	if tx.rc {
+		p[0].base = tx.snap
 	}
 	tx.widx[k] = len(tx.writes)
 	tx.writes = append(tx.writes, p[0])
@@ -369,6 +376,9 @@ func (tx *Tx) InsertUniqueAs(table string, sch *schema.Table, r schema.Row) erro
 		if err := tx.checkParents(&p, r); err != nil {
 			return err
 		}
+	}
+	if tx.rc {
+		p.base = tx.snap
 	}
 	tx.unindexed = true
 	tx.writes = append(tx.writes, p)

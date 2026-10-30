@@ -86,3 +86,64 @@ func TestGapsRollbackToAfterAlter(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestGapsReadCommitted(t *testing.T) {
+	e := newEngine(t)
+	a, b := NewSession(e), NewSession(e)
+	run(t, a, `CREATE TABLE rc (id INT PRIMARY KEY, v INT)`)
+	run(t, a, `INSERT INTO rc VALUES (1, 10), (2, 20)`)
+	if got := one(t, a, `SHOW transaction_isolation`); got != "read committed" {
+		t.Fatal(got)
+	}
+	// default level: a statement sees what committed since the previous one
+	run(t, a, `BEGIN`)
+	if got := one(t, a, `SHOW transaction_isolation`); got != "read committed" {
+		t.Fatal(got)
+	}
+	if got := one(t, a, `SELECT sum(v) FROM rc`); got != "30" {
+		t.Fatal(got)
+	}
+	run(t, b, `UPDATE rc SET v = 11 WHERE id = 1`)
+	run(t, b, `INSERT INTO rc VALUES (3, 30)`)
+	if got := one(t, a, `SELECT sum(v) FROM rc`); got != "61" {
+		t.Fatalf("read committed statement did not see committed rows: %s", got)
+	}
+	// own writes stay visible; a row written by this transaction that
+	// another session changed since fails the commit
+	run(t, a, `UPDATE rc SET v = 99 WHERE id = 2`)
+	run(t, b, `UPDATE rc SET v = 21 WHERE id = 2`)
+	if _, err := tryRun(a, `COMMIT`); err == nil {
+		t.Fatal("lost update committed")
+	}
+	// a write after the other session committed (new statement snapshot) succeeds
+	run(t, a, `BEGIN`)
+	run(t, b, `UPDATE rc SET v = 22 WHERE id = 2`)
+	run(t, a, `UPDATE rc SET v = v + 1 WHERE id = 2`)
+	run(t, a, `COMMIT`)
+	if got := one(t, a, `SELECT v FROM rc WHERE id = 2`); got != "23" {
+		t.Fatal(got)
+	}
+	// repeatable read keeps the transaction snapshot
+	run(t, a, `BEGIN ISOLATION LEVEL REPEATABLE READ`)
+	if got := one(t, a, `SHOW transaction_isolation`); got != "repeatable read" {
+		t.Fatal(got)
+	}
+	run(t, a, `SELECT 1`)
+	run(t, b, `UPDATE rc SET v = 0 WHERE id = 1`)
+	if got := one(t, a, `SELECT v FROM rc WHERE id = 1`); got != "11" {
+		t.Fatalf("repeatable read saw a later commit: %s", got)
+	}
+	run(t, a, `ROLLBACK`)
+	run(t, a, `BEGIN`)
+	run(t, a, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`)
+	run(t, a, `SELECT 1`)
+	run(t, b, `UPDATE rc SET v = 5 WHERE id = 1`)
+	if got := one(t, a, `SELECT v FROM rc WHERE id = 1`); got != "0" {
+		t.Fatalf("SET TRANSACTION repeatable read: %s", got)
+	}
+	run(t, a, `ROLLBACK`)
+	run(t, a, `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ`)
+	if got := one(t, a, `SHOW transaction_isolation`); got != "repeatable read" {
+		t.Fatal(got)
+	}
+}

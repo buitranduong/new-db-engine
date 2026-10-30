@@ -354,6 +354,10 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		}
 		return c.call(e)
 	}
+	switch x.(type) {
+	case *Subquery, *Exists, *InSub, *AnyAll:
+		return Null, errf(codeFeature, "subqueries are not supported in this context")
+	}
 	return Null, errf(codeInternal, "unknown expression %T", x)
 }
 

@@ -134,3 +134,36 @@ func TestBinaryArrayParams(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// Binary array results carry the element type the column announces
+// (pgx asks for binary for every array OID it knows).
+func TestBinaryArrayResults(t *testing.T) {
+	ctx := context.Background()
+	url := startServer(t, "")
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var ints []int32
+	var strs []string
+	var i2 []int16
+	var m [][]int64
+	var us []pgtype.UUID
+	if err := conn.QueryRow(ctx, `SELECT ARRAY[1,2,3]::int4[], ARRAY['a','b c'], ARRAY[1,2]::int2[]`).Scan(&ints, &strs, &i2); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ints, []int32{1, 2, 3}) || !reflect.DeepEqual(strs, []string{"a", "b c"}) || !reflect.DeepEqual(i2, []int16{1, 2}) {
+		t.Errorf("got %v %v %v", ints, strs, i2)
+	}
+	var nulls []*int64
+	if err := conn.QueryRow(ctx, `SELECT ARRAY[1,NULL,3]::bigint[]`).Scan(&nulls); err != nil || len(nulls) != 3 || nulls[1] != nil || *nulls[2] != 3 {
+		t.Errorf("NULL element: %v %v", nulls, err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT ARRAY['550e8400-e29b-41d4-a716-446655440000']::uuid[]`).Scan(&us); err != nil || len(us) != 1 || us[0].Bytes[0] != 0x55 {
+		t.Errorf("uuid[]: %v %v", us, err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT ARRAY[[1,2],[3,4]]::bigint[]`).Scan(&m); err != nil || len(m) != 2 || m[1][0] != 3 {
+		t.Errorf("2-d: %v %v", m, err)
+	}
+}

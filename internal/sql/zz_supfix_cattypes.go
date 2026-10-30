@@ -25,7 +25,7 @@ var catColTypes = map[string]string{
 	"pg_attribute":                         "attrelid=o attname=n atttypid=o attlen=s attnum=s attcacheoff=i atttypmod=i attndims=s attalign=c attstorage=c attcompression=c attidentity=c attgenerated=c attinhcount=s attstattarget=s attcollation=o",
 	"pg_type":                              "oid=o typname=n typnamespace=o typowner=o typlen=s typtype=c typcategory=c typdelim=c typrelid=o typelem=o typarray=o typalign=c typstorage=c typbasetype=o typtypmod=i typndims=i typcollation=o typdefaultbin=N",
 	"pg_index":                             "indexrelid=o indrelid=o indnatts=s indnkeyatts=s indkey=V indcollation=W indclass=W indoption=V indexprs=N indpred=N",
-	"pg_constraint":                        "oid=o conname=n connamespace=o contype=c conrelid=o contypid=o conindid=o conparentid=o confrelid=o confupdtype=c confdeltype=c confmatchtype=c coninhcount=s conbin=N",
+	"pg_constraint":                        "oid=o conname=n connamespace=o contype=c conrelid=o contypid=o conindid=o conparentid=o confrelid=o confupdtype=c confdeltype=c confmatchtype=c coninhcount=s conkey=S confkey=S conbin=N",
 	"pg_attrdef":                           "oid=o adrelid=o adnum=s adbin=N",
 	"pg_sequence":                          "seqrelid=o seqtypid=o",
 	"pg_depend":                            "classid=o objid=o objsubid=i refclassid=o refobjid=o refobjsubid=i deptype=c",
@@ -76,7 +76,7 @@ var catTypeCode = map[string]pgTy{
 	"n": {oid: tyName, mod: -1}, "c": {oid: tyChar, mod: -1}, "o": {oid: tyOid, mod: -1},
 	"s": {oid: tyInt2, mod: -1}, "i": {oid: tyInt4, mod: -1}, "f": {oid: tyFloat4, mod: -1},
 	"x": {oid: tyXid, mod: -1}, "v": {oid: tyVarchar, mod: -1}, "v3": {oid: tyVarchar, mod: 7},
-	"N": {oid: tyNodeTree, mod: -1}, "V": {oid: tyInt2Vector, mod: -1}, "W": {oid: tyOidVector, mod: -1},
+	"S": {oid: 1005, mod: -1}, "N": {oid: tyNodeTree, mod: -1}, "V": {oid: tyInt2Vector, mod: -1}, "W": {oid: tyOidVector, mod: -1},
 }
 
 // supfixFamily is the Kind whose values the extra catalog OIDs describe.
@@ -84,6 +84,8 @@ func supfixFamily(oid uint32) Kind {
 	switch oid {
 	case tyOid, tyXid:
 		return KInt
+	case 1005:
+		return KArray
 	case tyChar, tyNodeTree, tyInt2Vector, tyOidVector:
 		return KText
 	}

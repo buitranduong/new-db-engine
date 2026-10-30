@@ -1099,7 +1099,15 @@ func (c *conn) dataRow(row []sql.Datum, formats []int16, cols []sql.Column) erro
 			var b []byte
 			switch {
 			case d.K == sql.KArray:
-				b = textArrayBinary(d.S)
+				oid := uint32(0)
+				if i < len(cols) {
+					oid = colOID(cols[i])
+				}
+				if v, ok := sql.ArrayResultBinary(d, oid); ok {
+					b = v
+				} else {
+					b = textArrayBinary(d.S)
+				}
 			default:
 				oid := uint32(0)
 				if i < len(cols) {

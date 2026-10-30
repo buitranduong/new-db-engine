@@ -33,19 +33,31 @@ func TestHeavyBoundedSelect(t *testing.T) {
 	if s.heavy(st, nil) {
 		t.Fatal("new bounded shape must start on the normal lane")
 	}
-	noteSelectTime(st, 5*time.Millisecond)
-	noteSelectTime(st, 5*time.Millisecond)
+	noteSelectTime(st, nil, 5*time.Millisecond)
+	noteSelectTime(st, nil, 5*time.Millisecond)
 	if s.heavy(st, nil) {
 		t.Fatal("a fast run must not demote the shape")
 	}
-	noteSelectTime(st, 2*slowSelect)
+	noteSelectTime(st, nil, 2*slowSelect)
 	if s.heavy(st, nil) {
 		t.Fatal("one slow run among fast ones must not demote the shape")
 	}
 	for i := 0; i < 4; i++ {
-		noteSelectTime(st, 10*slowSelect)
+		noteSelectTime(st, nil, 10*slowSelect)
 	}
 	if !s.heavy(st, nil) {
 		t.Fatal("repeated slow runs must move the shape to the heavy lane")
+	}
+	for i := 0; i < 12; i++ {
+		noteSelectTime(st, nil, time.Millisecond)
+	}
+	if s.heavy(st, nil) {
+		t.Fatal("a shape that is fast again must return to the normal lane")
+	}
+	// the pattern kind of a text parameter separates a prefix from a suffix search
+	q, _ := ParseOne(`SELECT number FROM sims WHERE number LIKE $1 LIMIT 50`)
+	sq := q.(*Select)
+	if selectShape(sq, []Datum{TextD("090%")}) == selectShape(sq, []Datum{TextD("%1234")}) {
+		t.Fatal("prefix and suffix patterns must be different shapes")
 	}
 }

@@ -637,7 +637,16 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 		var res *Result
 		var err error
 		defer admit(ClassHeavy)()
-		onHeavyLane(func() { res, err = s.runHere(tx, st, params) })
+		lane := onHeavyLane
+		switch st.(type) {
+		case *Insert, *Update, *Delete:
+			lane = onHeavyWriteLane
+		}
+		lane(func() {
+			t0 := time.Now() // run time only, not the wait for a heavy thread: a shape that is fast again goes back
+			res, err = s.runHere(tx, st, params)
+			noteSelectTime(st, params, time.Since(t0))
+		})
 		return res, err
 	}
 	// the slot covers execution only: an autocommit's fsync wait happens
@@ -648,7 +657,7 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 	}
 	t0 := time.Now()
 	res, err := s.runHere(tx, st, params)
-	noteSelectTime(st, time.Since(t0))
+	noteSelectTime(st, params, time.Since(t0))
 	return res, err
 }
 

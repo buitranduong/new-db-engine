@@ -26,7 +26,7 @@ var catalogFuncKinds = map[string]Kind{
 	"current_setting": KText, "set_config": KText, "to_regclass": KInt, "to_regtype": KInt, "pg_relation_is_publishable": KBool,
 	"pg_get_statisticsobjdef_columns": KText, "pg_get_triggerdef": KText, "pg_get_ruledef": KText,
 	"pg_get_partkeydef": KText, "pg_backend_pid": KInt, "pg_database_size": KInt, "pg_my_temp_schema": KInt,
-	"pg_is_other_temp_schema": KBool, "pg_is_in_recovery": KBool, "pg_get_function_arguments": KText, "pg_get_function_result": KText,
+	"pg_is_other_temp_schema": KBool, "pg_is_in_recovery": KBool, "pg_get_function_arguments": KText, "pg_get_functiondef": KText, "pg_get_function_result": KText,
 }
 
 // vecElems are the elements of an array value, or of an int2vector or
@@ -361,8 +361,10 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return BoolD(res), nil
 	case "pg_relation_is_publishable":
 		return BoolD(true), nil
-	case "pg_get_statisticsobjdef_columns", "pg_get_triggerdef", "pg_get_ruledef", "pg_get_partkeydef",
-		"pg_get_function_arguments", "pg_get_function_result":
+	case "pg_get_functiondef", "pg_get_triggerdef", "pg_get_function_arguments", "pg_get_function_result":
+		d, _ := s.funcCatalogFn(name, args)
+		return d, nil
+	case "pg_get_statisticsobjdef_columns", "pg_get_ruledef", "pg_get_partkeydef":
 		return Null, nil
 	case "pg_database_size":
 		return s.pgcmdsDatabaseSize(), nil

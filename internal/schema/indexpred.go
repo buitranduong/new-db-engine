@@ -36,6 +36,85 @@ func (ix IndexDef) PredText() string {
 	return strings.Join(parts, "")
 }
 
+// PredTextT is PredText with the column types of t, which decide how PostgreSQL spells a term:
+// a varchar column is cast ((status)::text = 'A'::text), an IN list is = ANY (ARRAY[..]) with the
+// element type of the column ('A'::character varying for varchar, 'A'::text for text, a plain
+// ARRAY[1, 2] for integer and '{1,2}'::bigint[] for bigint). A one-element IN is an equality.
+func (ix IndexDef) PredTextT(t *Table) string {
+	parts := make([]string, len(ix.Where))
+	for i, p := range ix.Where {
+		parts[i] = p.textT(t)
+	}
+	if len(parts) > 1 {
+		return "(" + strings.Join(parts, " AND ") + ")"
+	}
+	return strings.Join(parts, "")
+}
+
+func (p IndexPred) textT(t *Table) string {
+	ci, ok := t.Col(p.Col)
+	if !ok {
+		return p.text()
+	}
+	col := t.Columns[ci]
+	c := `"` + p.Col + `"`
+	if isPlainIdent(p.Col) {
+		c = p.Col
+	}
+	switch {
+	case p.Op == "in" || p.Op == "notin":
+		if len(p.Lits) == 1 {
+			q := p
+			q.Lit, q.Lits = p.Lits[0], nil
+			q.Op = "eq"
+			if p.Op == "notin" {
+				q.Op = "ne"
+			}
+			return q.textT(t)
+		}
+		lhs, elems, arr := c, make([]string, len(p.Lits)), ""
+		q := func(l string) string { return "'" + strings.ReplaceAll(l, "'", "''") + "'" }
+		switch col.T {
+		case TString:
+			lhs = "(" + c + ")::text"
+			for i, l := range p.Lits {
+				elems[i] = q(l) + "::character varying"
+			}
+			arr = "(ARRAY[" + strings.Join(elems, ", ") + "])::text[]"
+		case TText:
+			for i, l := range p.Lits {
+				elems[i] = q(l) + "::text"
+			}
+			arr = "ARRAY[" + strings.Join(elems, ", ") + "]"
+		case TInt:
+			if col.PG == "int4" {
+				arr = "ARRAY[" + strings.Join(p.Lits, ", ") + "]"
+			} else {
+				ty := "bigint"
+				if col.PG == "int2" {
+					ty = "smallint"
+				}
+				for i, l := range p.Lits {
+					elems[i] = "(" + l + ")::" + ty
+				}
+				arr = "ARRAY[" + strings.Join(elems, ", ") + "]"
+			}
+		default:
+			return p.text()
+		}
+		if p.Op == "notin" {
+			return "(" + lhs + " <> ALL (" + arr + "))"
+		}
+		return "(" + lhs + " = ANY (" + arr + "))"
+	case p.Op == "eq" || p.Op == "ne" || p.Op == "lt" || p.Op == "le" || p.Op == "gt" || p.Op == "ge":
+		if col.T == TText && p.Lit != "true" && p.Lit != "false" {
+			op := map[string]string{"eq": " = ", "ne": " <> ", "lt": " < ", "le": " <= ", "gt": " > ", "ge": " >= "}[p.Op]
+			return "(" + c + op + "'" + strings.ReplaceAll(p.Lit, "'", "''") + "'::text)"
+		}
+	}
+	return p.text()
+}
+
 func (p IndexPred) text() string {
 	c := `"` + p.Col + `"`
 	if isPlainIdent(p.Col) {

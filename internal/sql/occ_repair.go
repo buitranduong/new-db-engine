@@ -359,7 +359,7 @@ func (s *Session) redoWrite(r *repairRec, tx *core.Tx, t *schema.Table, keys []s
 			}
 		}
 		if del {
-			if err := s.deleteRow(tx, t, nil, old); err != nil {
+			if _, err := s.deleteRow(tx, t, nil, old); err != nil {
 				return 0, err
 			}
 			n++

@@ -16,10 +16,11 @@ import (
 // [INTO v] [USING ...], any SQL statement (with SELECT/RETURNING ... INTO v), nested
 // BEGIN .. END blocks and EXCEPTION WHEN <condition> THEN handlers (a savepoint per block
 // that has handlers). FOUND, SQLSTATE and SQLERRM exist. LANGUAGE sql bodies are a list of
-// statements whose last SELECT gives the result. Not supported (0A000 at CREATE/DO time):
-// loops, CASE statements, cursors, GET DIAGNOSTICS, RETURN NEXT/QUERY, set-returning and
-// trigger functions (a trigger function can be created but not attached), OUT parameters,
-// default argument values, overloading by argument types (the name is the identity).
+// statements whose last SELECT gives the result. LOOP / WHILE / FOR, EXIT / CONTINUE and the
+// CASE statement exist, and trigger functions (RETURNS trigger, trigfunc.go) with NEW / OLD.
+// Not supported (0A000 at CREATE/DO time): cursors, GET DIAGNOSTICS, FOREACH, RETURN NEXT/QUERY,
+// set-returning functions, OUT parameters, default argument values, overloading by argument
+// types (the name is the identity).
 //
 // Variables reach SQL as $n parameters (the identifier is replaced by a placeholder), so a
 // variable that has the name of a column in the same statement wins over the column; PostgreSQL
@@ -34,8 +35,10 @@ type CreateFunc struct {
 
 // DropFunc is DROP FUNCTION / PROCEDURE.
 type DropFunc struct {
-	Name     string
-	IfExists bool
+	Procedure bool
+	Name      string
+	IfExists  bool
+	Cascade   bool
 }
 
 // DoStmt is DO [LANGUAGE x] 'body'.
@@ -52,6 +55,7 @@ func (*CallStmt) stmt()   {}
 type funcArg struct {
 	Name string `json:"n,omitempty"`
 	Type string `json:"t"`
+	PG   string `json:"pg,omitempty"` // the PostgreSQL type as declared (int4, varchar(20)...), for pg_proc
 }
 
 // funcDef is the stored definition.
@@ -62,6 +66,9 @@ type funcDef struct {
 	Lang      string    `json:"lang"` // sql, plpgsql
 	Body      string    `json:"body"`
 	Procedure bool      `json:"proc,omitempty"`
+	RetPG     string    `json:"retpg,omitempty"`
+	Vol       string    `json:"vol,omitempty"`    // provolatile: i, s ("" is volatile)
+	Strict    bool      `json:"strict,omitempty"` // STRICT / RETURNS NULL ON NULL INPUT
 }
 
 // ---- parsing ----
@@ -113,7 +120,7 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 		if err != nil {
 			return nil, true, err
 		}
-		a.Type = ty
+		a.Type, a.PG = ty, p.pgSpec
 		if p.isKw("default") || p.isOp("=") {
 			return nil, true, errf(codeFeature, "default values of function arguments are not supported")
 		}
@@ -135,6 +142,7 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 				if c.Def.Ret, err = p.typeName(); err != nil {
 					return nil, true, err
 				}
+				c.Def.RetPG = p.pgSpec
 			}
 		case p.acceptKw("language"):
 			t := p.next()
@@ -160,6 +168,14 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 			}
 		case p.acceptKw("security"):
 			p.next()
+		case p.acceptKw("immutable"):
+			c.Def.Vol = "i"
+		case p.acceptKw("stable"):
+			c.Def.Vol = "s"
+		case p.acceptKw("volatile"):
+			c.Def.Vol = ""
+		case p.acceptKw("strict"):
+			c.Def.Strict = true
 		case p.acceptKw("external"):
 		case p.acceptKw("called"), p.acceptKw("returns", "null"):
 			for p.acceptKw("on") || p.acceptKw("null") || p.acceptKw("input") {
@@ -183,10 +199,14 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 }
 
 func (p *parser) dropFunction() (Stmt, bool, error) {
-	if !p.acceptKw("function") && !p.acceptKw("procedure") {
+	proc := false
+	if p.acceptKw("function") {
+	} else if p.acceptKw("procedure") {
+		proc = true
+	} else {
 		return nil, false, nil
 	}
-	d := &DropFunc{IfExists: p.acceptKw("if", "exists")}
+	d := &DropFunc{Procedure: proc, IfExists: p.acceptKw("if", "exists")}
 	names, err := p.dottedName()
 	if err != nil {
 		return nil, true, err
@@ -197,7 +217,9 @@ func (p *parser) dropFunction() (Stmt, bool, error) {
 			return nil, true, err
 		}
 	}
-	if !p.acceptKw("cascade") {
+	if p.acceptKw("cascade") {
+		d.Cascade = true
+	} else {
 		p.acceptKw("restrict")
 	}
 	return d, true, nil
@@ -307,10 +329,24 @@ func (s *Session) dropFunc(d *DropFunc) (*Result, error) {
 		}
 		return nil, errf(codeUndefinedFunction, "function %s does not exist", d.Name)
 	}
+	for _, tg := range s.E.AllTriggers() { // trigger definitions name their function
+		if tg.Func != d.Name {
+			continue
+		}
+		if !d.Cascade {
+			return nil, errf("2BP01", "cannot drop function %s because other objects depend on it (trigger %s on table %s)", d.Name, tg.Name, tg.Table)
+		}
+		if err := s.E.DropTrigger(tg.Table, tg.Name); err != nil {
+			return nil, AsError(err)
+		}
+	}
 	if err := s.E.WriteObjs([]core.ObjOp{{O: core.Obj{Kind: "func", Name: d.Name}, Delete: true}}); err != nil {
 		return nil, AsError(err)
 	}
 	userFuncKinds.Delete(d.Name)
+	if d.Procedure {
+		return &Result{Tag: "DROP PROCEDURE"}, nil
+	}
 	return &Result{Tag: "DROP FUNCTION"}, nil
 }
 
@@ -421,8 +457,33 @@ func sqlWithVars(src string, vars map[string]Datum) (string, []Datum, error) {
 			if i > 0 && toks[i-1].k == tOp && toks[i-1].s == "." {
 				continue
 			}
-			if i+1 < len(toks) && toks[i+1].k == tOp && (toks[i+1].s == "(" || toks[i+1].s == ".") {
+			if i+1 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == "(" {
 				continue
+			}
+			if i+1 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == "." {
+				// a record field: NEW.col, OLD.col, rec.col (variables named "new.col")
+				if i+2 < len(toks) && (toks[i+2].k == tIdent || toks[i+2].k == tQuoted) {
+					if _, ok := vars[t.s+"."+toks[i+2].s]; ok {
+						name = t.s + "." + toks[i+2].s
+						width = toks[i+2].pos + len(toks[i+2].s) - t.pos
+						if toks[i+2].k == tQuoted {
+							width += 2
+						}
+					}
+				}
+				if name == "" {
+					continue
+				}
+				break
+			}
+			if t.s == "tg_argv" && i+3 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == "[" && toks[i+2].k == tNumber &&
+				toks[i+3].k == tOp && toks[i+3].s == "]" {
+				name = "tg_argv[" + toks[i+2].s + "]"
+				width = toks[i+3].pos + 1 - t.pos
+				if _, ok := vars[name]; !ok {
+					vars[name] = Null // out of range: NULL
+				}
+				break
 			}
 			name, width = t.s, len(t.s)
 		case tParam:

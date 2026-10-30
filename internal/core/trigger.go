@@ -39,6 +39,16 @@ type Trigger struct {
 	When   string   // SQL text of the WHEN condition, "" if none
 	Body   string   // SQL text of the statements between BEGIN and END
 
+	// Function triggers (CREATE TRIGGER .. EXECUTE FUNCTION f(args), PL/pgSQL
+	// trigger functions). Func is "" for a trigger with an SQL body. These
+	// fields, UpdateOf and Level are kept in the body column behind a
+	// metadata prefix (trigMeta), so that the hidden table keeps its
+	// columns and old definitions read as before.
+	Func     string
+	Args     []string
+	Level    string   // "row" (also when empty) or "statement"
+	UpdateOf []string // UPDATE OF col, ...: fire only if the statement assigns one of them
+
 	// Prog is the body compiled by the SQL layer. It lives as long as this
 	// cached definition: a replaced or dropped trigger gets a new one.
 	Prog atomic.Value
@@ -57,6 +67,9 @@ func (t *Trigger) Fires(timing, event string) bool {
 	return false
 }
 
+// Statement tells whether the trigger fires once per statement.
+func (t *Trigger) Statement() bool { return t.Level == "statement" }
+
 // TriggerEvents renders the events for messages: "INSERT OR UPDATE".
 func (t *Trigger) TriggerEvents() string {
 	return strings.ToUpper(strings.Join(t.Events, " OR "))
@@ -71,15 +84,40 @@ func triggerSchema() schema.Table {
 		{Name: "cond", Type: "text"}, {Name: "body", Type: "text"}}}
 }
 
+// trigMeta is the prefix of a body that carries the extra fields of Trigger:
+// "\x00meta:" + JSON + "\x00" + body.
+const trigMeta = "\x00meta:"
+
+type trigMetaJSON struct {
+	Func     string   `json:"f,omitempty"`
+	Args     []string `json:"a,omitempty"`
+	Level    string   `json:"l,omitempty"`
+	UpdateOf []string `json:"o,omitempty"`
+}
+
 func triggerRow(t *Trigger) schema.Row {
 	ev, _ := json.Marshal(t.Events)
+	body := t.Body
+	if t.Func != "" || t.Level == "statement" || len(t.UpdateOf) > 0 {
+		m, _ := json.Marshal(trigMetaJSON{t.Func, t.Args, t.Level, t.UpdateOf})
+		body = trigMeta + string(m) + "\x00" + body
+	}
 	return schema.Row{{S: triggerKey(t.Table, t.Name)}, {S: t.Table}, {S: t.Name}, {S: t.Timing},
-		{S: string(ev)}, {S: t.When}, {S: t.Body}}
+		{S: string(ev)}, {S: t.When}, {S: body}}
 }
 
 func triggerOfRow(r schema.Row) *Trigger {
 	t := &Trigger{Table: r[1].S, Name: r[2].S, Timing: r[3].S, When: r[5].S, Body: r[6].S}
 	_ = json.Unmarshal([]byte(r[4].S), &t.Events)
+	if rest, ok := strings.CutPrefix(t.Body, trigMeta); ok {
+		if js, body, ok := strings.Cut(rest, "\x00"); ok {
+			var m trigMetaJSON
+			if json.Unmarshal([]byte(js), &m) == nil {
+				t.Func, t.Args, t.Level, t.UpdateOf = m.Func, m.Args, m.Level, m.UpdateOf
+				t.Body = body
+			}
+		}
+	}
 	return t
 }
 

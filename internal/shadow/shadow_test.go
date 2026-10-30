@@ -18,6 +18,8 @@ func TestNormalize(t *testing.T) {
 		{KUUID, "550E8400-E29B-41D4-A716-446655440000", "550e8400-e29b-41d4-a716-446655440000"},
 		{KBytea, `\xDEADBEEF`, `\xdeadbeef`},
 		{KTimestamptz, "2026-10-29 12:34:56.123456+07", "2026-10-29 05:34:56.123456+00"},
+		{KTime, "12:34:56.5", "12:34:56.500000"},
+		{KTime, "12:34:56", "12:34:56.000000"},
 		{KTimestamp, "2026-10-29 12:34:56.5", "2026-10-29 12:34:56.500000"},
 		{KJSON, `{"b": 1, "a": [1, 2]}`, `{"a":[1,2],"b":1}`},
 		{KFloat8, "1.50", "1.5"}, {KFloat4, "0.1", "0.10000000149"}, {KBpchar, "ab ", "ab"},
@@ -243,5 +245,16 @@ func TestDedupeRule(t *testing.T) {
 	skip := func(final uint64) bool { return final < applied }
 	if !skip(0x0FF8) || skip(0x1000) || skip(0x2000) {
 		t.Error("gate")
+	}
+}
+
+func TestFKOrder(t *testing.T) {
+	order, cyc := fkOrder([]string{"a", "b", "c", "d"}, [][2]string{{"a", "b"}, {"b", "c"}, {"c", "c"}, {"a", "zz"}})
+	if got := strings.Join(order, ","); got != "c,b,a,d" || len(cyc) != 0 {
+		t.Fatalf("order %s cyclic %v", got, cyc)
+	}
+	order, cyc = fkOrder([]string{"x", "y", "z"}, [][2]string{{"x", "y"}, {"y", "x"}})
+	if got := strings.Join(order, ","); got != "z,x,y" || len(cyc) != 2 {
+		t.Fatalf("cycle: order %s cyclic %v", got, cyc)
 	}
 }

@@ -29,6 +29,7 @@ const (
 	KDate
 	KJSON
 	KBpchar
+	KTime
 )
 
 // kindOfOID maps a PostgreSQL type OID to a Kind (KUnsupported if the type is
@@ -59,6 +60,8 @@ func kindOfOID(oid uint32) Kind {
 		return KTimestamptz
 	case 1082:
 		return KDate
+	case 1083:
+		return KTime
 	case 114, 3802:
 		return KJSON
 	}
@@ -100,6 +103,8 @@ func Normalize(k Kind, v string) string {
 		return normTime(v, true)
 	case KDate:
 		return strings.TrimSpace(v)
+	case KTime:
+		return normTimeOfDay(v)
 	case KJSON:
 		return normJSON(v)
 	case KBpchar:
@@ -175,6 +180,18 @@ func normTime(v string, tz bool) string {
 	return v
 }
 
+// normTimeOfDay canonicalises a `time` value: HH:MM:SS with the fraction
+// padded to 6 digits, so "12:00:00" and "12:00:00.000000" compare equal.
+func normTimeOfDay(v string) string {
+	s := strings.TrimSpace(v)
+	for _, l := range []string{"15:04:05.999999999", "15:04:05", "15:04"} {
+		if t, err := time.Parse(l, s); err == nil {
+			return t.Format("15:04:05.000000")
+		}
+	}
+	return v
+}
+
 func normJSON(v string) string {
 	dec := json.NewDecoder(strings.NewReader(v))
 	dec.UseNumber()
@@ -232,6 +249,8 @@ func ddlType(k Kind, formatType string) string {
 		return "timestamptz"
 	case KDate:
 		return "date"
+	case KTime:
+		return "time"
 	case KJSON:
 		if formatType == "json" {
 			return "json"

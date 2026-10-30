@@ -248,6 +248,7 @@ func (r *runner) initialize(ctx context.Context, st, src *pgconn.PgConn, tables 
 	}
 
 	// STASK tables
+	var toTruncate []string
 	for _, t := range tables {
 		if cfg.CreateTables {
 			if err := exec(ctx, st, "DROP TABLE IF EXISTS "+qi(t.Name)); err != nil {
@@ -273,9 +274,15 @@ func (r *runner) initialize(ctx context.Context, st, src *pgconn.PgConn, tables 
 					return fatalf("STASK table %s lacks column %s; run: ALTER TABLE %s ADD COLUMN %s %s", t.Name, c.Name, qi(t.Name), qi(c.Name), ddlType(c.Kind, c.Type))
 				}
 			}
-			if err := exec(ctx, st, "TRUNCATE TABLE "+qi(t.Name)); err != nil {
-				return fatalf("truncate STASK table %s: %v", t.Name, err)
-			}
+			toTruncate = append(toTruncate, qi(t.Name))
+		}
+	}
+	// One statement for all tables: PostgreSQL (and STASK) refuse to truncate a
+	// table that another table references by foreign key unless that table is
+	// truncated in the same statement.
+	if len(toTruncate) > 0 {
+		if err := exec(ctx, st, "TRUNCATE TABLE "+strings.Join(toTruncate, ", ")); err != nil {
+			return fatalf("truncate STASK tables: %v", err)
 		}
 	}
 
@@ -318,7 +325,14 @@ func (r *runner) initialize(ctx context.Context, st, src *pgconn.PgConn, tables 
 	}
 	t0 := time.Now()
 	var total int64
-	for _, t := range tables {
+	ordered, cyclic, err := copyOrder(ctx, src, tables)
+	if err != nil {
+		return fatalf("read source foreign keys: %v", err)
+	}
+	if len(cyclic) > 0 {
+		cfg.Logf("warning: foreign key cycle between %v: loaded last, in listed order", cyclic)
+	}
+	for _, t := range ordered {
 		n, err := copyTable(ctx, src, st, t)
 		if err != nil {
 			exec(context.Background(), src, "ROLLBACK")

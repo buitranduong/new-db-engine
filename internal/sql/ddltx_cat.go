@@ -1,6 +1,9 @@
 package sql
 
-import "stask/internal/core"
+import (
+	"stask/internal/core"
+	"stask/internal/schema"
+)
 
 // Transactional GRANT / REVOKE / CREATE, ALTER, DROP ROLE and the CDC
 // catalog (publications, REPLICA IDENTITY): applied at once, undone from a
@@ -99,4 +102,18 @@ func (s *Session) djCascade(st *ObjDDL, kinds []string, run func() (*Result, err
 	defer func() { s.inCascade = false }()
 	res, err := run()
 	return res, true, err
+}
+
+// setMatUnpopulated sets the "has no data" flag of a materialized view; in
+// a transaction block the previous value is journaled first.
+func (s *Session) setMatUnpopulated(t *schema.Table, v bool) error {
+	if t.MatUnpopulated == v {
+		return nil
+	}
+	if s.explicit && !s.djBypass {
+		if _, err := s.djUndo(ddlStep{Op: "mat_unpopulated", Table: t.Name, Flag: t.MatUnpopulated}); err != nil {
+			return AsError(err)
+		}
+	}
+	return asErr(s.E.AlterTable(t.Name, func(d *schema.Table) error { d.MatUnpopulated = v; return nil }))
 }

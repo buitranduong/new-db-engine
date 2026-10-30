@@ -513,13 +513,24 @@ func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Resu
 		if st.Concurrently {
 			return nil, errf(codeSyntax, "CONCURRENTLY and WITH NO DATA options cannot be used together")
 		}
+		if s.explicit {
+			// inside a transaction: the rows are deleted by the transaction and
+			// the flag change is journaled, so ROLLBACK brings both back
+			var keys []string
+			if err := tx.ScanAll(t.Name, func(k string, _ schema.Row) bool { keys = append(keys, k); return true }); err != nil {
+				return nil, AsError(err)
+			}
+			for _, k := range keys {
+				if err := tx.Delete(t.Name, k); err != nil {
+					return nil, AsError(err)
+				}
+			}
+			return &Result{Tag: "REFRESH MATERIALIZED VIEW"}, s.setMatUnpopulated(t, true)
+		}
 		if err := s.E.TruncateTable(t.Name); err != nil {
 			return nil, AsError(err)
 		}
-		return &Result{Tag: "REFRESH MATERIALIZED VIEW"}, asErr(s.E.AlterTable(t.Name, func(d *schema.Table) error {
-			d.MatUnpopulated = true
-			return nil
-		}))
+		return &Result{Tag: "REFRESH MATERIALIZED VIEW"}, s.setMatUnpopulated(t, true)
 	}
 	if st.Concurrently {
 		if t.MatUnpopulated {
@@ -596,7 +607,7 @@ func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Resu
 		}
 	}
 	if t.MatUnpopulated {
-		if err := s.E.AlterTable(t.Name, func(d *schema.Table) error { d.MatUnpopulated = false; return nil }); err != nil {
+		if err := s.setMatUnpopulated(t, false); err != nil {
 			return nil, AsError(err)
 		}
 	}

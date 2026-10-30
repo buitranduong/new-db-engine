@@ -75,6 +75,7 @@ type ddlStep struct {
 	KeyCols  []string             `json:"key_cols,omitempty"`
 	Substr   []schema.SubstrIndex `json:"substr,omitempty"`
 	Gin      []schema.GinIndex    `json:"gin,omitempty"`
+	Flag     bool                 `json:"flag,omitempty"`
 	RoleSnap *roleSnap            `json:"role_snap,omitempty"`
 	CDC      *cdcSnap             `json:"cdc,omitempty"`
 }
@@ -250,6 +251,17 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		return s.djDropIndex(st.Names)
 	case *DropTable:
 		return s.djDropTable(st)
+	case *DropMat:
+		for _, n := range st.Names {
+			if _, err := s.matTable(n); err != nil {
+				return nil, false, nil // missing or not a materialized view: the normal path reports it
+			}
+		}
+		res, handled, err := s.djDropTable(&DropTable{Names: st.Names, IfExists: st.IfExists, Cascade: st.Cascade, Mat: true})
+		if res != nil {
+			res.Tag = "DROP MATERIALIZED VIEW"
+		}
+		return res, handled, err
 	case *Truncate:
 		return s.djTruncate(st, run)
 	case *CreateView, *DropView:
@@ -600,7 +612,7 @@ func (s *Session) djHideable(n string, set map[string]bool) bool {
 }
 
 func (s *Session) djDropTable(st *DropTable) (*Result, bool, error) {
-	if st.Mat || len(st.Names) == 0 {
+	if len(st.Names) == 0 {
 		return nil, false, nil
 	}
 	set := map[string]bool{}
@@ -618,8 +630,8 @@ func (s *Session) djDropTable(st *DropTable) (*Result, bool, error) {
 			res.Notice = fmt.Sprintf("table %q does not exist, skipping", n)
 			continue
 		}
-		if ts.Schema().MatView != "" {
-			return nil, false, nil
+		if (ts.Schema().MatView != "") != st.Mat {
+			return nil, false, nil // the normal path reports the wrong kind
 		}
 		if !set[n] {
 			set[n] = true
@@ -650,7 +662,7 @@ func (s *Session) djDropTable(st *DropTable) (*Result, bool, error) {
 		deferred = append(deferred, n)
 	}
 	if len(deferred) > 0 {
-		if err := s.djRedo(ddlStep{Op: "drop_tables", Names: deferred, Cascade: true}); err != nil {
+		if err := s.djRedo(ddlStep{Op: "drop_tables", Names: deferred, Cascade: true, Flag: st.Mat}); err != nil {
 			return s.djFail(err)
 		}
 	}
@@ -748,7 +760,7 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 		}
 		stmt = &DropTable{Names: []string{st.Table}, IfExists: true, Cascade: true, Mat: ts.Schema().MatView != ""}
 	case "drop_tables":
-		stmt = &DropTable{Names: st.Names, IfExists: true, Cascade: st.Cascade}
+		stmt = &DropTable{Names: st.Names, IfExists: true, Cascade: st.Cascade, Mat: st.Flag}
 	case "unhide_table":
 		if _, err := s.E.Table(st.Table); err == nil {
 			if err := s.stepExec(&AlterTable{Name: st.Table, Actions: []AlterAction{{Kind: "rename_table", NewName: st.Names[0]}}}); err != nil {
@@ -888,6 +900,11 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 			})
 			return nil
 		}))
+	case "mat_unpopulated":
+		if _, err := s.E.Table(st.Table); err != nil {
+			return "", nil
+		}
+		return "", asErr(s.E.AlterTable(st.Table, func(d *schema.Table) error { d.MatUnpopulated = st.Flag; return nil }))
 	case "restore_substr":
 		if _, err := s.E.Table(st.Table); err != nil {
 			return "", nil

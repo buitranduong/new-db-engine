@@ -62,7 +62,7 @@ type Tx struct {
 	uniq     map[string]string
 	implicit bool
 	scans    []*TableState // serializable: tables scanned, validated at commit (serscan.go)
-	rc       bool // READ COMMITTED: Refresh moves the snapshot, writes remember theirs (readcommitted.go)
+	rc       bool          // READ COMMITTED: Refresh moves the snapshot, writes remember theirs (readcommitted.go)
 }
 
 // SetImplicit marks the transaction as one statement that commits at once:

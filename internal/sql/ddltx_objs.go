@@ -328,9 +328,6 @@ func (s *Session) djObjs(st Stmt, run func() (*Result, error)) (*Result, bool, e
 func (s *Session) djTruncate(st *Truncate, run func() (*Result, error)) (*Result, bool, error) {
 	names := s.mapTemps(st.Names)
 	for _, n := range names {
-		if isTempName(n) {
-			return nil, false, nil
-		}
 		ts, err := s.userTable(n)
 		if err != nil || ts.Schema().MatView != "" {
 			return nil, false, nil // the normal path reports it

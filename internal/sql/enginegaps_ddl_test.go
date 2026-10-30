@@ -154,3 +154,106 @@ func TestGapsTxDDLSavepoint(t *testing.T) {
 		t.Fatalf("after ROLLBACK TO\n--- want\n%s\n--- got\n%s", before, got)
 	}
 }
+
+func TestGapsTempTablesTx(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TEMP TABLE tt (id INT PRIMARY KEY, v TEXT)`)
+	run(t, s, `INSERT INTO tt VALUES (1,'a')`)
+	// DROP in a rolled back transaction
+	run(t, s, `BEGIN`)
+	run(t, s, `DROP TABLE tt`)
+	run(t, s, `CREATE TEMP TABLE tt (id INT PRIMARY KEY, w INT)`) // the name is free again
+	run(t, s, `ROLLBACK`)
+	if got := one(t, s, `SELECT v FROM tt`); got != "a" {
+		t.Fatalf("after ROLLBACK: %q", got)
+	}
+	// ... committed
+	run(t, s, `BEGIN`)
+	run(t, s, `DROP TABLE tt`)
+	run(t, s, `COMMIT`)
+	if _, err := tryRun(s, `SELECT * FROM tt`); err == nil {
+		t.Fatal("dropped temp table back after COMMIT")
+	}
+	// CREATE after a savepoint, ROLLBACK TO
+	run(t, s, `BEGIN`)
+	run(t, s, `SAVEPOINT sp`)
+	run(t, s, `CREATE TEMP TABLE t2 (id INT PRIMARY KEY)`)
+	run(t, s, `ROLLBACK TO sp`)
+	run(t, s, `CREATE TEMP TABLE t2 (id INT PRIMARY KEY, other INT)`) // the first one is gone
+	run(t, s, `COMMIT`)
+	if got := one(t, s, `SELECT count(*) FROM information_schema.columns WHERE table_name = 't2'`); got != "2" {
+		t.Fatalf("temp table survived ROLLBACK TO: %s", got)
+	}
+	// TRUNCATE in a rolled back transaction
+	run(t, s, `CREATE TEMP TABLE t3 (id INT PRIMARY KEY)`)
+	run(t, s, `INSERT INTO t3 VALUES (1),(2)`)
+	run(t, s, `BEGIN`)
+	run(t, s, `TRUNCATE t3`)
+	if got := one(t, s, `SELECT count(*) FROM t3`); got != "0" {
+		t.Fatal(got)
+	}
+	run(t, s, `ROLLBACK`)
+	if got := one(t, s, `SELECT count(*) FROM t3`); got != "2" {
+		t.Fatalf("TRUNCATE of a temp table was not undone: %s", got)
+	}
+	// ON COMMIT DROP still works
+	run(t, s, `BEGIN`)
+	run(t, s, `CREATE TEMP TABLE t4 (id INT PRIMARY KEY) ON COMMIT DROP`)
+	run(t, s, `COMMIT`)
+	if _, err := tryRun(s, `SELECT * FROM t4`); err == nil {
+		t.Fatal("ON COMMIT DROP")
+	}
+}
+
+func TestGapsMatViewTx(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE src (id INT PRIMARY KEY, v INT)`)
+	run(t, s, `INSERT INTO src VALUES (1,10),(2,20)`)
+	run(t, s, `CREATE MATERIALIZED VIEW mv AS SELECT sum(v) AS total FROM src`)
+	run(t, s, `CREATE MATERIALIZED VIEW mvn AS SELECT id FROM src WITH NO DATA`)
+	run(t, s, `INSERT INTO src VALUES (3,30)`)
+	// rolled back: refresh, refresh with no data, populate
+	run(t, s, `BEGIN`)
+	run(t, s, `REFRESH MATERIALIZED VIEW mv`)
+	run(t, s, `REFRESH MATERIALIZED VIEW mvn`)
+	if got := one(t, s, `SELECT total FROM mv`); got != "60" {
+		t.Fatal(got)
+	}
+	run(t, s, `ROLLBACK`)
+	if got := one(t, s, `SELECT total FROM mv`); got != "30" {
+		t.Fatalf("REFRESH was not undone: %s", got)
+	}
+	if _, err := tryRun(s, `SELECT * FROM mvn`); err == nil || AsError(err).Code != "55000" {
+		t.Fatalf("populate was not undone: %v", err)
+	}
+	run(t, s, `BEGIN`)
+	run(t, s, `REFRESH MATERIALIZED VIEW mv WITH NO DATA`)
+	run(t, s, `ROLLBACK`)
+	if got := one(t, s, `SELECT total FROM mv`); got != "30" {
+		t.Fatalf("REFRESH WITH NO DATA was not undone: %s", got)
+	}
+	// create and drop
+	run(t, s, `BEGIN`)
+	run(t, s, `CREATE MATERIALIZED VIEW mv2 AS SELECT id FROM src`)
+	run(t, s, `DROP MATERIALIZED VIEW mv`)
+	run(t, s, `ROLLBACK`)
+	if got := one(t, s, `SELECT total FROM mv`); got != "30" {
+		t.Fatalf("DROP MATERIALIZED VIEW was not undone: %s", got)
+	}
+	if _, err := tryRun(s, `SELECT * FROM mv2`); err == nil {
+		t.Fatal("CREATE MATERIALIZED VIEW was not undone")
+	}
+	run(t, s, `BEGIN`)
+	run(t, s, `REFRESH MATERIALIZED VIEW mv`)
+	run(t, s, `REFRESH MATERIALIZED VIEW mvn`)
+	run(t, s, `COMMIT`)
+	if one(t, s, `SELECT total FROM mv`) != "60" || one(t, s, `SELECT count(*) FROM mvn`) != "3" {
+		t.Fatal("committed refresh")
+	}
+	run(t, s, `BEGIN`)
+	run(t, s, `DROP MATERIALIZED VIEW mv`)
+	run(t, s, `COMMIT`)
+	if _, err := tryRun(s, `SELECT * FROM mv`); err == nil {
+		t.Fatal("DROP MATERIALIZED VIEW did not take effect at COMMIT")
+	}
+}

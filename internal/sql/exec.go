@@ -235,6 +235,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		lsn, err := tx.Commit()
 		if err != nil {
 			s.ddlUndo()
+			s.afterTxEnd(false)
 			return nil, AsError(err)
 		}
 		warn := s.ddlAfterCommit()
@@ -2329,6 +2330,25 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 // table must exist (or IF EXISTS skips it) before any is changed; the
 // tables are then changed one at a time.
 func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
+	if d, ok := st.(*DropTable); ok && s.explicit && s.tmp != nil {
+		// a temporary table dropped in a transaction is hidden until COMMIT
+		var rest []string
+		for _, n := range d.Names {
+			if _, ok := s.tmp.rels[n]; ok {
+				s.tempDeferDrop(n)
+			} else {
+				rest = append(rest, n)
+			}
+		}
+		if len(rest) != len(d.Names) {
+			if len(rest) == 0 {
+				return &Result{Tag: "DROP TABLE"}, nil
+			}
+			d2 := *d
+			d2.Names = rest
+			st = &d2
+		}
+	}
 	var names []string
 	ifExists, tag, restart, cascade := false, "TRUNCATE TABLE", false, false
 	switch st := st.(type) {

@@ -108,6 +108,7 @@ type savepointState struct {
 	name string
 	sp   *core.Savepoint
 	dj   djMark // DDL journal position (ddltx.go)
+	tmp  int    // position in the temporary table log (temptable.go)
 }
 
 // execCompat runs the statements above.
@@ -117,7 +118,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 		if !s.explicit {
 			return nil, errf("25P01", "SAVEPOINT can only be used in transaction blocks")
 		}
-		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark()})
+		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark(), s.tempMark()})
 		return &Result{Tag: "SAVEPOINT"}, nil
 	case *ReleaseStmt:
 		i, err := s.findSavepoint(st.Name)
@@ -132,6 +133,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 			return nil, err
 		}
 		s.tx.RollbackTo(s.savepoints[i].sp)
+		s.tempRollbackTo(s.savepoints[i].tmp)
 		s.savepoints = s.savepoints[:i+1]
 		s.failed = false // the transaction is usable again
 		if err := s.djRollbackTo(s.savepoints[i].dj); err != nil {

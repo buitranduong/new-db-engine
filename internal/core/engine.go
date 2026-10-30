@@ -269,9 +269,9 @@ type Engine struct {
 
 	reqCh        chan *commitReq
 	tabLast      map[*TableState]uint64 // committer only: LSN of the last commit that wrote each table (serializable scans, serscan.go)
-	commitExited chan struct{} // closed when the committer stops taking requests
-	syncEWMA     atomic.Int64  // smoothed fdatasync duration (ns)
-	installSeq   atomic.Uint64 // number of commit batches installed in the index
+	commitExited chan struct{}          // closed when the committer stops taking requests
+	syncEWMA     atomic.Int64           // smoothed fdatasync duration (ns)
+	installSeq   atomic.Uint64          // number of commit batches installed in the index
 	gate         atomic.Pointer[WriteGate]
 	repairers    atomic.Int32   // occ_repair.go: open repairable transactions
 	rlogBase     atomic.Uint64  // batches with a greater seq are all in rlog (or not installed)
@@ -1244,7 +1244,7 @@ type commitReq struct {
 	ops         []pendingOp
 	reads       []readKey
 	scans       []*TableState // tables a serializable transaction scanned (serscan.go)
-	seenSeq     uint64 // installSeq read before the seen heads were looked up
+	seenSeq     uint64        // installSeq read before the seen heads were looked up
 	hasSeen     bool
 	snap        uint64
 	checkWrites bool

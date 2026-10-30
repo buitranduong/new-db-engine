@@ -297,8 +297,23 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreatePartition:
+		res, err := s.createPartition(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *PartAlter:
+		res, err := s.partAlter(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *CreateTable:
 		res, err := s.createTable(st)
+		if err == nil {
+			err = s.partAfterCreate(st)
+		}
 		if err != nil {
 			s.markFailed()
 		}
@@ -2253,6 +2268,12 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 		names, restart = st.Names, st.Restart
 	}
 	names = s.mapTemps(names)
+	if _, drop := st.(*DropTable); drop {
+		var err error
+		if names, err = s.partDrop(names); err != nil {
+			return nil, err
+		}
+	}
 	res := &Result{Tag: tag}
 	if tr, ok := st.(*Truncate); ok && tr.Cascade {
 		var added []string

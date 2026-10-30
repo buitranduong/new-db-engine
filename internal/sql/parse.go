@@ -482,6 +482,9 @@ func (p *parser) createStmt() (Stmt, error) {
 	if c.Name, err = p.qualifiedNameNew(); err != nil {
 		return nil, err
 	}
+	if p.isKw("partition") {
+		return p.createPartitionOf(c.Name, c.IfNotExists)
+	}
 	if err := p.expectOp("("); err != nil {
 		return nil, err
 	}
@@ -556,6 +559,9 @@ func (p *parser) createStmt() (Stmt, error) {
 		if err := p.expectOp(","); err != nil {
 			return nil, err
 		}
+	}
+	if c.Part, err = p.partitionBy(); err != nil {
+		return nil, err
 	}
 	if p.acceptKw("with") {
 		if err := p.expectOp("("); err != nil {
@@ -2108,6 +2114,9 @@ func (p *parser) checkDef(name string) (CheckDef, error) {
 // alterTable parses the actions of ALTER TABLE name.
 func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 	a := &AlterTable{Name: name, IfExists: ifExists}
+	if st, ok, err := p.alterPartition(name); ok {
+		return st, err
+	}
 	for {
 		var act AlterAction
 		var err error

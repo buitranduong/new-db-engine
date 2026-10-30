@@ -276,7 +276,7 @@ func init() {
 				if p := c.tableNamed(fk.RefTable); p != nil {
 					uc = TextD(pkeyName(p))
 					for _, ix := range p.Indexes {
-						if ix.Unique && ix.Constraint != "" && slices.Equal(ix.Columns, fk.RefCols) {
+						if ix.Unique && ix.Constraint != "" && !ix.HasExpr() && slices.Equal(ix.Columns, fk.RefCols) {
 							uc = TextD(ix.Constraint)
 						}
 					}

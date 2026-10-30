@@ -109,7 +109,18 @@ func init() {
 		secIndexRows(c, func(t *schema.Table, ix schema.IndexDef) {
 			for i, name := range ix.Columns {
 				j, _ := t.Col(name)
-				att(secIndexOID(ix.Name), name, colTypeOID(t.Columns[j]), i+1, false, false, "", false, false)
+				col := t.Columns[j]
+				if fn := ix.ElemExpr(i); fn != "" { // PostgreSQL names the attribute after the function
+					name = fn
+					switch fn {
+					case "abs": // the column's own type
+					case "length":
+						col = schema.Column{Name: fn, Type: "int", T: schema.TInt}
+					default:
+						col = schema.Column{Name: fn, Type: "text", T: schema.TText}
+					}
+				}
+				att(secIndexOID(ix.Name), name, colTypeOID(col), i+1, false, false, "", false, false)
 			}
 		})
 		for _, q := range c.seqs {
@@ -169,7 +180,7 @@ func init() {
 				rows = append(rows, []Datum{IntD(secIndexOID(ix.Name)), IntD(tableOID(t)), IntD(int64(len(ix.Columns))),
 					IntD(int64(len(ix.Columns))), BoolD(ix.Unique), BoolD(false), BoolD(false), BoolD(false), BoolD(true),
 					BoolD(false), BoolD(true), BoolD(false), BoolD(true), BoolD(true), BoolD(false),
-					vecText(attnums(t, ix.Columns)...), vecText(zeros...), vecText(zeros...), vecText(zeros...), Null, Null})
+					vecText(attnumsIx(t, ix)...), vecText(zeros...), vecText(zeros...), vecText(zeros...), Null, Null})
 			})
 			return rows
 		})

@@ -120,15 +120,34 @@ type colBounds struct {
 // boundsOf collects, for each column of t, what the conjuncts of where fix.
 func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[string]*colBounds {
 	out := map[string]*colBounds{}
+	types := map[string]schema.ColType{} // bound key -> type of the indexed value
 	colOf := func(x Expr) (string, bool) {
+		fn := ""
+		if f, ok := x.(*Func); ok && len(f.Args) == 1 && !f.Star && !f.Distinct && f.Filter == nil && len(f.Order) == 0 && len(f.Within) == 0 {
+			if fn, ok = schema.CanonExprFunc(f.Name); !ok {
+				return "", false
+			}
+			x = f.Args[0]
+		}
 		c, ok := x.(*ColRef)
 		if !ok || c.Table == "excluded" || c.Table != "" && c.Table != t.Name && c.Table != alias {
 			return "", false
 		}
-		if _, ok := t.Col(c.Name); !ok || isEnumCol(t, c.Name) { // an index orders labels as text
+		i, ok := t.Col(c.Name)
+		if !ok || isEnumCol(t, c.Name) { // an index orders labels as text
 			return "", false
 		}
-		return c.Name, true
+		if fn == "" {
+			types[c.Name] = t.Columns[i].T
+			return c.Name, true
+		}
+		ct, ok := schema.ExprResultType(fn, t.Columns[i].T)
+		if !ok {
+			return "", false
+		}
+		key := fn + "(" + c.Name + ")"
+		types[key] = ct
+		return key, true
 	}
 	get := func(c string) *colBounds {
 		b := out[c]
@@ -151,8 +170,7 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 		if d.IsNull() {
 			return v, true, true
 		}
-		i, _ := t.Col(col)
-		v, ok = indexValue(t.Columns[i].T, d)
+		v, ok = indexValue(types[col], d)
 		return
 	}
 	flip := map[string]string{"<": ">", "<=": ">=", ">": "<", ">=": "<="}
@@ -173,11 +191,11 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 			}
 			b.eq = &v
 		case ">", ">=":
-			if b.lo == nil || cmpValue(t, col, v, *b.lo) > 0 {
+			if b.lo == nil || cmpValue(types[col], v, *b.lo) > 0 {
 				b.lo, b.loIncl = &v, op == ">="
 			}
 		case "<", "<=":
-			if b.hi == nil || cmpValue(t, col, v, *b.hi) < 0 {
+			if b.hi == nil || cmpValue(types[col], v, *b.hi) < 0 {
 				b.hi, b.hiIncl = &v, op == "<="
 			}
 		}
@@ -233,10 +251,9 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 	return out
 }
 
-func cmpValue(t *schema.Table, col string, a, b schema.Value) int {
-	i, _ := t.Col(col)
-	ea := schema.AppendKeyValue(nil, t.Columns[i].T, a)
-	eb := schema.AppendKeyValue(nil, t.Columns[i].T, b)
+func cmpValue(ct schema.ColType, a, b schema.Value) int {
+	ea := schema.AppendKeyValue(nil, ct, a)
+	eb := schema.AppendKeyValue(nil, ct, b)
 	return compareBytes(ea, eb)
 }
 
@@ -265,9 +282,10 @@ func chooseIndex(t *schema.Table, alias string, where Expr, ctx *evalCtx, need [
 	var best *indexChoice
 	for _, ix := range t.Indexes {
 		c := &indexChoice{ix: ix}
+		keys := ix.ElemKeys()
 		k := 0
-		for ; k < len(ix.Columns); k++ {
-			b := bounds[ix.Columns[k]]
+		for ; k < len(keys); k++ {
+			b := bounds[keys[k]]
 			if b != nil && b.nothing {
 				c.nothing = true
 			}
@@ -276,8 +294,8 @@ func chooseIndex(t *schema.Table, alias string, where Expr, ctx *evalCtx, need [
 			}
 			c.eq = append(c.eq, *b.eq)
 		}
-		if k < len(ix.Columns) {
-			if b := bounds[ix.Columns[k]]; b != nil && !c.nothing {
+		if k < len(keys) {
+			if b := bounds[keys[k]]; b != nil && !c.nothing {
 				switch {
 				case b.hasIn && need == nil:
 					c.in = b.in
@@ -298,7 +316,7 @@ func chooseIndex(t *schema.Table, alias string, where Expr, ctx *evalCtx, need [
 		if need != nil {
 			// rows come out ordered by the columns after the equality prefix;
 			// a range may only be on the first of them
-			rest := ix.Columns[len(c.eq):]
+			rest := keys[len(c.eq):]
 			if len(rest) < len(need) || !slices.Equal(rest[:len(need)], need) || c.in != nil {
 				continue
 			}
@@ -320,12 +338,12 @@ func (c *indexChoice) ranges(t *schema.Table) [][2]string {
 	}
 	var prefix []byte
 	for i, v := range c.eq {
-		j, _ := t.Col(c.ix.Columns[i])
-		prefix = schema.AppendKeyValue(prefix, t.Columns[j].T, v)
+		ct, _ := t.ElemType(c.ix, i)
+		prefix = schema.AppendKeyValue(prefix, ct, v)
 	}
 	next := func() (int, schema.ColType) {
-		j, _ := t.Col(c.ix.Columns[len(c.eq)])
-		return j, t.Columns[j].T
+		ct, _ := t.ElemType(c.ix, len(c.eq))
+		return 0, ct
 	}
 	switch {
 	case c.in != nil:

@@ -146,7 +146,7 @@ func secKeysOf(sch *schema.Table, r schema.Row) []secKey {
 	var buf []byte
 	for i := range sch.Indexes {
 		var null bool
-		buf, null = sch.IndexKey(buf[:0], sch.IndexColsAt(i), r)
+		buf, null = sch.IndexKeyAt(buf[:0], i, r)
 		out[i] = secKey{string(buf), null}
 	}
 	return out
@@ -369,13 +369,9 @@ type builtKey struct {
 // hold the same value.
 func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIndex, error) {
 	sch := t.Schema()
-	var cols []int
-	for _, c := range def.Columns {
-		i, ok := sch.Col(c)
-		if !ok {
-			return nil, fmt.Errorf("column %q does not exist", c)
-		}
-		cols = append(cols, i)
+	ixr, err := sch.NewIndexer(def)
+	if err != nil {
+		return nil, err
 	}
 	var ks []builtKey
 	var ierr error
@@ -391,7 +387,7 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 			return false
 		}
 		var null bool
-		buf, null = sch.IndexKey(buf[:0], cols, r)
+		buf, null = ixr.Key(buf[:0], r)
 		ks = append(ks, builtKey{key: string(buf) + src.keyOf(en), plen: len(buf), lsn: v.LSN, null: null})
 		return true
 	})
@@ -416,10 +412,10 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 
 // uniqueError describes a violation of unique index def by the row at pk.
 func (e *Engine) uniqueError(t *TableState, sch *schema.Table, def schema.IndexDef, pk string) error {
-	ue := &UniqueViolationError{Table: sch.Name, Index: def.Name, Constraint: cmp(def.Constraint, def.Name), Columns: def.Columns}
+	ue := &UniqueViolationError{Table: sch.Name, Index: def.Name, Constraint: cmp(def.Constraint, def.Name), Columns: def.ElemKeys()}
 	if v := t.head(pk); v != nil && !v.Deleted {
 		if r, err := e.rowOf(t, v); err == nil {
-			ue.Values = formatValues(sch, def.Columns, r)
+			ue.Values = formatValues(sch, def, r)
 		}
 	}
 	return ue
@@ -432,25 +428,25 @@ func cmp(a, b string) string {
 	return b
 }
 
-func formatValues(sch *schema.Table, cols []string, r schema.Row) []string {
-	out := make([]string, len(cols))
-	for i, c := range cols {
-		j, _ := sch.Col(c)
-		v := r[j]
+func formatValues(sch *schema.Table, ix schema.IndexDef, r schema.Row) []string {
+	out := make([]string, len(ix.Columns))
+	for i := range ix.Columns {
+		v := sch.ElemValue(ix, i, r)
+		ct, _ := sch.ElemType(ix, i)
 		switch {
 		case v.Null:
 			out[i] = "null"
-		case sch.Columns[j].T == schema.TFloat:
+		case ct == schema.TFloat:
 			out[i] = fmt.Sprint(v.F)
-		case sch.Columns[j].T == schema.TString || sch.Columns[j].T == schema.TText:
+		case ct == schema.TString || ct == schema.TText:
 			out[i] = v.S
-		case sch.Columns[j].T == schema.TBytea:
+		case ct == schema.TBytea:
 			out[i] = fmt.Sprintf("\\x%x", v.S)
-		case sch.Columns[j].T == schema.TTimestamp:
+		case ct == schema.TTimestamp:
 			out[i] = time.UnixMicro(v.I).UTC().Format("2006-01-02 15:04:05.999999")
-		case sch.Columns[j].T == schema.TTimestamptz:
+		case ct == schema.TTimestamptz:
 			out[i] = time.UnixMicro(v.I).UTC().Format("2006-01-02 15:04:05.999999") + "+00"
-		case !sch.Columns[j].T.IsInt() && sch.Columns[j].T != schema.TFloat:
+		case !ct.IsInt() && ct != schema.TFloat:
 			out[i] = v.S // uuid, numeric
 		default:
 			out[i] = fmt.Sprint(v.I)
@@ -719,7 +715,7 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 	if si == nil || snap < si.minSnap.Load() {
 		return false, nil
 	}
-	cols, pos := si.cols(sch)
+	_, pos := si.cols(sch)
 	if pos < 0 {
 		return false, nil
 	}
@@ -739,7 +735,7 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 		} else if hi != "" && k >= hi {
 			return false
 		}
-		n := sch.IndexKeyLen(cols, unsafe.Slice(unsafe.StringData(k), len(k)))
+		n := sch.IndexKeyLenAt(pos, unsafe.Slice(unsafe.StringData(k), len(k)))
 		if n < 0 {
 			err = errors.New("corrupt index entry")
 			return false
@@ -753,7 +749,7 @@ func (e *Engine) IndexScan(t *TableState, name string, snap uint64, lo, hi strin
 		if row == nil {
 			return true
 		}
-		buf, _ = sch.IndexKey(buf[:0], cols, row)
+		buf, _ = sch.IndexKeyAt(buf[:0], pos, row)
 		if string(buf) != k[:n] {
 			return true // a stale entry: the visible row has another value
 		}
@@ -862,9 +858,9 @@ func (e *Engine) buildOwn(r *commitReq) error {
 }
 
 func (e *Engine) uniqueViolation(op *pendingOp, ix *schema.IndexDef) error {
-	ue := &UniqueViolationError{Table: op.sch.Name, Index: ix.Name, Constraint: cmp(ix.Constraint, ix.Name), Columns: ix.Columns}
+	ue := &UniqueViolationError{Table: op.sch.Name, Index: ix.Name, Constraint: cmp(ix.Constraint, ix.Name), Columns: ix.ElemKeys()}
 	if row, err := op.sch.Decode(op.val); err == nil {
-		ue.Values = formatValues(op.sch, ix.Columns, row)
+		ue.Values = formatValues(op.sch, *ix, row)
 	}
 	return ue
 }
@@ -944,7 +940,7 @@ func (e *Engine) holds(b *commitBatch, inflight []*commitBatch, r *commitReq, t 
 	if err != nil {
 		return true // cannot tell: refuse rather than risk a duplicate
 	}
-	cur, _ := sch.IndexKey(nil, sch.IndexColsAt(ix), row)
+	cur, _ := sch.IndexKeyAt(nil, ix, row)
 	return string(cur) == enc
 }
 

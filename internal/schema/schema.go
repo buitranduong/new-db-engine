@@ -257,7 +257,8 @@ type Table struct {
 	lastDrop uint64
 	layouts  []layout
 	ixCols   [][]int // column positions of each index (initIndexes)
-	keyPos   []int   // column positions of KeyCols (initKeyCols)
+	ixr      []*Indexer
+	keyPos   []int // column positions of KeyCols (initKeyCols)
 }
 
 // layout is how rows stored from LSN from on are encoded, until the next

@@ -1,10 +1,17 @@
 package sql
 
+import (
+	"slices"
+
+	"stask/internal/schema"
+)
+
 // CREATE INDEX, DROP INDEX, and the UNIQUE and REFERENCES constraints
 // (docs/05 §18). The syntax follows PostgreSQL's; what STASK does not do is
-// refused with 0A000 rather than ignored: partial and expression indexes,
+// refused with 0A000 rather than ignored: partial indexes, expressions other than f(column),
 // access methods other than btree, INCLUDE, deferrable constraints, MATCH
-// FULL, and ON UPDATE / ON DELETE SET DEFAULT.
+// FULL, and ON UPDATE / ON DELETE SET DEFAULT. An index element may be an
+// immutable function of one column (schema/indexexpr.go).
 
 // ConstraintDef is a UNIQUE or FOREIGN KEY constraint, from a column or a
 // table constraint.
@@ -21,7 +28,8 @@ type ConstraintDef struct {
 type CreateIndex struct {
 	Name        string // empty: generated
 	Table       string
-	Cols        []string
+	Cols        []string // the column of each element
+	Exprs       []string // the function applied to it (canonical name), "" for none; nil if no element has one
 	Unique      bool
 	IfNotExists bool
 }
@@ -72,17 +80,34 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 		return nil, true, err
 	}
 	for {
-		if p.isOp("(") {
-			return nil, true, errf(codeFeature, "indexes on expressions are not supported")
-		}
+		paren := p.acceptOp("(") // CREATE INDEX ON t ((lower(x))) is PostgreSQL's spelling
 		col, err := p.ident()
 		if err != nil {
 			return nil, true, err
 		}
-		if p.isOp("(") || p.isOp(".") {
+		fn := ""
+		if p.acceptOp("(") {
+			f, ok := schema.CanonExprFunc(col)
+			if !ok {
+				return nil, true, errf(codeFeature, "function %s cannot be used in an index expression (lower, upper, trim, btrim, ltrim, rtrim, length, char_length, abs on one column)", col)
+			}
+			fn = f
+			if col, err = p.ident(); err != nil || p.isOp(".") {
+				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+			}
+			if err = p.expectOp(")"); err != nil {
+				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+			}
+		} else if p.isOp(".") {
 			return nil, true, errf(codeFeature, "indexes on expressions are not supported")
 		}
+		if paren {
+			if err = p.expectOp(")"); err != nil {
+				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+			}
+		}
 		c.Cols = append(c.Cols, col)
+		c.Exprs = append(c.Exprs, fn)
 		// the order is accepted: an index is read forwards or backwards
 		if !p.acceptKw("asc") {
 			p.acceptKw("desc")
@@ -98,6 +123,9 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 	}
 	if err = p.expectOp(")"); err != nil {
 		return nil, true, err
+	}
+	if !slices.ContainsFunc(c.Exprs, func(e string) bool { return e != "" }) {
+		c.Exprs = nil
 	}
 	switch {
 	case p.isKw("where"):

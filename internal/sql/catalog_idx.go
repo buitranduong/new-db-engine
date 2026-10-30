@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"fmt"
 	"hash/fnv"
 	"slices"
 	"strings"
@@ -60,14 +61,55 @@ func quoteList(cols []string) string {
 	return strings.Join(q, ", ")
 }
 
+// attnumsIx are the indkey entries of ix: 0 for an expression.
+func attnumsIx(t *schema.Table, ix schema.IndexDef) []int {
+	out := attnums(t, ix.Columns)
+	for k := range out {
+		if ix.ElemExpr(k) != "" {
+			out[k] = 0
+		}
+	}
+	return out
+}
+
+// elemDef is element k of ix as pg_get_indexdef writes it: lower(email), or
+// lower((email)::text) for a varchar column.
+func elemDef(t *schema.Table, ix schema.IndexDef, k int) string {
+	col := quoteIdent(ix.Columns[k])
+	fn := ix.ElemExpr(k)
+	if fn == "" {
+		return col
+	}
+	if fn == "btrim" {
+		fn = "TRIM(BOTH FROM %s)"
+	} else if fn == "length" {
+		fn = "length(%s)"
+	} else {
+		fn += "(%s)"
+	}
+	if j, ok := t.Col(ix.Columns[k]); ok && ctypeOf(t, j) == schema.TString {
+		col = "(" + col + ")::text"
+	}
+	return fmt.Sprintf(fn, col)
+}
+
+func ctypeOf(t *schema.Table, i int) schema.ColType {
+	ct, _ := schema.ParseType(t.Columns[i].Type)
+	return ct
+}
+
 // secIndexDef is pg_get_indexdef of a secondary index.
 func secIndexDef(t *schema.Table, ix schema.IndexDef) string {
+	elems := make([]string, len(ix.Columns))
+	for k := range elems {
+		elems[k] = elemDef(t, ix, k)
+	}
 	u := ""
 	if ix.Unique {
 		u = "UNIQUE "
 	}
 	return "CREATE " + u + "INDEX " + quoteIdent(ix.Name) + " ON public." + quoteIdent(t.Name) +
-		" USING btree (" + quoteList(ix.Columns) + ")"
+		" USING btree (" + strings.Join(elems, ", ") + ")"
 }
 
 func fkActionChar(a string) string {
@@ -104,7 +146,7 @@ func (c *catSnap) referencedIndexOID(fk schema.ForeignKey) int64 {
 			continue
 		}
 		for _, ix := range p.Indexes {
-			if ix.Unique && slices.Equal(ix.Columns, fk.RefCols) {
+			if ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, fk.RefCols) {
 				return secIndexOID(ix.Name)
 			}
 		}

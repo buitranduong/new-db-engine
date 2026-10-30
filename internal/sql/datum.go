@@ -582,6 +582,16 @@ func compare(a, b Datum) (int, error) {
 	return 0, nil
 }
 
+// compareOrd is compare for ORDER BY-like uses: two texts are ordered by
+// the collation c (nil: the database default). Equality uses compare, which
+// is bytewise.
+func compareOrd(a, b Datum, c *Collation) (int, error) {
+	if a.K == KText && b.K == KText && (a.I|b.I) == 0 {
+		return CollateCompare(c, a.S, b.S), nil
+	}
+	return compare(a, b)
+}
+
 // groupKey is a map key for GROUP BY / DISTINCT.
 func groupKey(ds []Datum) string { return string(appendGroupKey(nil, ds)) }
 

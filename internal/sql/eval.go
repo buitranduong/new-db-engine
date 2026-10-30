@@ -242,11 +242,11 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if v.IsNull() || lo.IsNull() || hi.IsNull() {
 			return Null, nil
 		}
-		a, err := compare(v, lo)
+		a, err := compareOrd(v, lo, e.Coll)
 		if err != nil {
 			return Null, err
 		}
-		b, err := compare(v, hi)
+		b, err := compareOrd(v, hi, e.Coll)
 		if err != nil {
 			return Null, err
 		}
@@ -449,7 +449,13 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	}
 	switch e.Op {
 	case "=", "<>", "<", "<=", ">", ">=":
-		cmp, err := compare(l, r)
+		var cmp int
+		var err error
+		if e.Op == "=" || e.Op == "<>" {
+			cmp, err = compare(l, r)
+		} else {
+			cmp, err = compareOrd(l, r, e.Coll)
+		}
 		if err != nil {
 			return Null, err
 		}

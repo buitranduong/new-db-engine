@@ -298,8 +298,20 @@ func init() {
 
 	defCat("pg_collation", "oid:i collname:t collnamespace:i collowner:i collprovider:t collisdeterministic:b "+
 		"collencoding:i collcollate:t collctype:t", func(c *catSnap) [][]Datum {
-		return [][]Datum{{IntD(100), TextD("default"), IntD(nsPgCatalog), IntD(ownerOID), TextD("d"), BoolD(true),
-			IntD(-1), Null, Null}}
+		row := func(oid int64, name, prov string, enc int64) []Datum {
+			if enc == -1 { // the database default
+				return []Datum{IntD(oid), TextD(name), IntD(nsPgCatalog), IntD(ownerOID), TextD(prov), BoolD(true), IntD(-1), Null, Null}
+			}
+			if enc == -2 { // ICU: usable with any encoding
+				enc = -1
+			}
+			return []Datum{IntD(oid), TextD(name), IntD(nsPgCatalog), IntD(ownerOID), TextD(prov), BoolD(true), IntD(enc),
+				TextD(name), TextD(name)}
+		}
+		// default is the database collation (SHOW lc_collate); the others are the names COLLATE accepts
+		return [][]Datum{row(100, "default", "d", -1), row(950, "C", "c", 6), row(951, "POSIX", "c", 6),
+			row(12000, "ucs_basic", "c", 6), row(12001, "C.utf8", "c", 6), row(12002, "en_US.utf8", "c", 6),
+			row(12003, "vi_VN.utf8", "c", 6), row(12004, "und-x-icu", "i", -2)}
 	})
 
 	defCat("pg_tablespace", "oid:i spcname:t spcowner:i spcacl:a spcoptions:a", func(c *catSnap) [][]Datum {
@@ -310,7 +322,7 @@ func init() {
 		"datconnlimit:i datfrozenxid:i datminmxid:i dattablespace:i datcollate:t datctype:t daticulocale:t "+
 		"daticurules:t datcollversion:t datacl:a", func(c *catSnap) [][]Datum {
 		return [][]Datum{{IntD(databaseOID), TextD("stask"), IntD(ownerOID), IntD(6), TextD("c"), BoolD(false), BoolD(true),
-			IntD(-1), IntD(0), IntD(0), IntD(1663), TextD("C.UTF-8"), TextD("C.UTF-8"), Null, Null, Null, Null}}
+			IntD(-1), IntD(0), IntD(0), IntD(1663), TextD(DefaultCollation().Name), TextD(DefaultCollation().Name), Null, Null, Null, Null}}
 	})
 
 	roleCols := "rolname:t rolsuper:b rolinherit:b rolcreaterole:b rolcreatedb:b rolcanlogin:b rolreplication:b " +
@@ -351,7 +363,7 @@ func init() {
 		"source:t min_val:t max_val:t enumvals:a boot_val:t reset_val:t sourcefile:t sourceline:i "+
 		"pending_restart:b", func(c *catSnap) [][]Datum {
 		set := map[string]string{"max_index_keys": "32", "max_identifier_length": "63", "block_size": "8192",
-			"max_connections": "100000", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8"}
+			"max_connections": "100000", "lc_collate": DefaultCollation().Name, "lc_ctype": DefaultCollation().Name}
 		for k, v := range c.s.vars {
 			set[k] = v
 		}

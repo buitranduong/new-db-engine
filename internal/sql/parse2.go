@@ -607,6 +607,9 @@ func (p *parser) orderList() ([]OrderItem, error) {
 			return nil, err
 		}
 		o := OrderItem{X: x}
+		if o.Coll, err = p.lastColl(); err != nil {
+			return nil, err
+		}
 		if p.acceptKw("desc") {
 			o.Desc = true
 		} else {

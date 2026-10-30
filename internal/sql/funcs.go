@@ -92,7 +92,7 @@ func (c *evalCtx) callPre(f *Func, args []Datum) (Datum, bool, error) {
 				best = a
 				continue
 			}
-			c, err := compare(a, best)
+			c, err := compareOrd(a, best, nil)
 			if err != nil {
 				return Null, true, err
 			}

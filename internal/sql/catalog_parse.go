@@ -15,6 +15,16 @@ package sql
 //
 // Statements without these words come back unchanged, without copying.
 func catalogTokens(toks []token) []token {
+	out, _ := catalogTokensColl(toks)
+	return out
+}
+
+// catalogTokensColl is catalogTokens that also reports, by index into the
+// result, the COLLATE name that followed that token ("x COLLATE "C"": the
+// name hangs on x's last token). The parser applies it where it affects
+// ordering (ORDER BY items, comparisons, BETWEEN); elsewhere it is ignored.
+func catalogTokensColl(toks []token) ([]token, map[int]string) {
+	var colls map[int]string
 	hit := false
 	for _, t := range toks {
 		if t.k == tIdent {
@@ -28,7 +38,7 @@ func catalogTokens(toks []token) []token {
 		}
 	}
 	if !hit {
-		return toks
+		return toks, nil
 	}
 	out := make([]token, 0, len(toks))
 	is := func(i int, k tokKind, s string) bool { return i < len(toks) && toks[i].k == k && toks[i].s == s }
@@ -53,6 +63,12 @@ func catalogTokens(toks []token) []token {
 				if is(j+1, tOp, ".") && j+2 < len(toks) && (toks[j+2].k == tIdent || toks[j+2].k == tQuoted) {
 					j += 2
 				}
+				if len(out) > 0 {
+					if colls == nil {
+						colls = map[int]string{}
+					}
+					colls[len(out)-1] = toks[j].s
+				}
 				i = j
 				continue
 			}
@@ -73,5 +89,5 @@ func catalogTokens(toks []token) []token {
 		}
 		out = append(out, t)
 	}
-	return out
+	return out, colls
 }

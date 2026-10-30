@@ -217,7 +217,7 @@ func (a *basicAgg) add(args, _ []Datum) error {
 		if a.n == 0 {
 			a.best = v
 		} else {
-			c, err := compare(v, a.best)
+			c, err := compareOrd(v, a.best, nil)
 			if err != nil {
 				return err
 			}
@@ -460,7 +460,7 @@ func (a *orderedSetAgg) result() (Datum, error) {
 	vals := append([]Datum(nil), a.vals...)
 	var serr error
 	sort.SliceStable(vals, func(i, j int) bool {
-		c, err := compare(vals[i], vals[j])
+		c, err := compareOrd(vals[i], vals[j], nil)
 		if err != nil && serr == nil {
 			serr = err
 		}

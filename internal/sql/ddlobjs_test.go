@@ -102,6 +102,22 @@ func TestDDLObjsEnum(t *testing.T) {
 	wantErr(t, s, `CREATE TABLE u (a nosuchtype)`, "42704")
 }
 
+// an index on an enum column orders labels as text: the planner must not use
+// it for ranges or ORDER BY
+func TestDDLObjsEnumIndex(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE TYPE mo AS ENUM ('sad', 'ok', 'happy')`)
+	mustq(t, s, `CREATE TABLE t (id INT PRIMARY KEY, m mo UNIQUE)`)
+	mustq(t, s, `INSERT INTO t VALUES (1,'ok'),(2,'sad'),(3,'happy')`)
+	mustq(t, s, `CREATE INDEX ix ON t (m)`)
+	wantRows(t, s, `SELECT id FROM t WHERE m > 'sad' ORDER BY id`, "1;3")
+	wantRows(t, s, `SELECT id FROM t WHERE m >= 'ok' ORDER BY m`, "1;3")
+	wantRows(t, s, `SELECT id FROM t ORDER BY m`, "2;1;3")
+	wantRows(t, s, `SELECT id FROM t WHERE m IN ('sad', 'happy') ORDER BY id`, "2;3")
+	wantRows(t, s, `SELECT id FROM t WHERE m = 'ok'`, "1")
+	wantErr(t, s, `INSERT INTO t VALUES (4, 'ok')`, "23505")
+}
+
 func TestDDLObjsDomain(t *testing.T) {
 	s := NewSession(newEngine(t))
 	mustq(t, s, `CREATE DOMAIN pos AS int CHECK (VALUE > 0)`)

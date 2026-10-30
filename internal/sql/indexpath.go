@@ -125,7 +125,7 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 		if !ok || c.Table == "excluded" || c.Table != "" && c.Table != t.Name && c.Table != alias {
 			return "", false
 		}
-		if _, ok := t.Col(c.Name); !ok {
+		if _, ok := t.Col(c.Name); !ok || isEnumCol(t, c.Name) { // an index orders labels as text
 			return "", false
 		}
 		return c.Name, true
@@ -451,7 +451,7 @@ func orderColumns(st *Select, items []SelItem, orderOut []int, t *schema.Table, 
 		if !ok || c.Table != "" && c.Table != t.Name && c.Table != alias {
 			return nil, false
 		}
-		if _, ok := t.Col(c.Name); !ok || slices.Contains(cols, c.Name) {
+		if _, ok := t.Col(c.Name); !ok || slices.Contains(cols, c.Name) || isEnumCol(t, c.Name) {
 			return nil, false
 		}
 		if i == 0 {

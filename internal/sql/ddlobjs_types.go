@@ -567,3 +567,10 @@ func columnDefaultText(c *schema.Column) string {
 	}
 	return ""
 }
+
+// isEnumCol: a column of an enum type. Its index entries sort by label text,
+// not by declaration order, so the planner does not use an index for it.
+func isEnumCol(t *schema.Table, name string) bool {
+	i, ok := t.Col(name)
+	return ok && strings.HasPrefix(t.Columns[i].PG, "enum:")
+}

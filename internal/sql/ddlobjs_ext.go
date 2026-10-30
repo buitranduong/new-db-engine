@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -271,12 +270,7 @@ func (c *evalCtx) extCall(f *Func, args []Datum) (Datum, bool, error) {
 		binary.BigEndian.PutUint16(b[6:], uint16(t>>48)&0x0fff|0x1000)
 		rand.Read(b[8:])
 		b[8] = b[8]&0x3f | 0x80
-		b[10] |= 0x01 // multicast bit: a random node, not a MAC address
-		if f.Name == "uuid_generate_v1mc" {
-			b[10] |= 0x01
-		} else {
-			b[10] |= 0x01
-		}
+		b[10] |= 0x01 // multicast bit: a random node, not a MAC address (v1 and v1mc alike)
 		return uuidD(b), true, nil
 	case "uuid_generate_v3", "uuid_generate_v5":
 		if len(args) != 2 {
@@ -319,14 +313,4 @@ func (c *evalCtx) extCall(f *Func, args []Datum) (Datum, bool, error) {
 		return r, true, nil
 	}
 	return Null, false, nil
-}
-
-// extNames lists the extension functions, for tests.
-func extNames() []string {
-	var out []string
-	for n := range extFuncKinds {
-		out = append(out, n)
-	}
-	sort.Strings(out)
-	return out
 }

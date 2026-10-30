@@ -986,7 +986,7 @@ Trước nhánh này `CREATE TYPE`, `CREATE DOMAIN`, `CREATE SCHEMA`, `CREATE EX
 **Giới hạn đã biết (trung thực).**
 - Tên được giải quyết **lúc parse**: trong một câu `simple query` nhiều lệnh (`SET search_path ..; SELECT ..`) cả lô parse trước khi chạy nên `SELECT` không thấy `SET` cùng lô; câu đã `Parse` (extended protocol) giữ nguyên tên đã giải quyết khi `search_path` đổi sau đó. Thân view/trigger lưu dạng chữ, parse lại không theo phiên: phải dùng tên có schema hoặc `public`.
 - Cột ba phần `s.t.c` trong biểu thức chưa nhận (dùng `t.c`). Tên index chung một không gian (như trước); `DROP INDEX s.i` bỏ tiền tố.
-- Chỉ mục phụ/khoá chính trên cột enum sắp theo chữ của nhãn, không theo thứ tự khai báo (chưa chặn). Mảng enum/domain (`mood[]`) thành `text[]`. Domain trên domain/enum bị từ chối.
+- Chỉ mục phụ trên cột enum sắp theo chữ của nhãn; planner **không dùng** chúng cho cột enum (điều kiện, `IN`, `ORDER BY` quét tuần tự rồi sắp đúng thứ tự khai báo, kiểm bởi `TestDDLObjsEnumIndex`), nên chậm hơn PG ở đó nhưng đúng. Khoá chính là cột enum: tra bằng `=` đúng, nhưng thứ tự khoá vẫn theo chữ (chưa xử lý). Mảng enum/domain (`mood[]`) thành `text[]`. Domain trên domain/enum bị từ chối.
 - `pg_typeof(cột_domain)` trả tên kiểu nền (PG trả tên domain). `ALTER TABLE ADD COLUMN c dom` không điền DEFAULT của domain cho dòng cũ.
 - Registry kiểu (`ddlobjs_types.go`) là toàn tiến trình, nạp lại từ engine mỗi lần câu đụng bảng có cột enum/domain; hai engine trong một tiến trình dùng chung tên kiểu khác nhãn sẽ giẫm nhau (chỉ có thể xảy ra trong test).
 - `ALTER SCHEMA .. RENAME TO`, `ALTER EXTENSION`, `CREATE SCHEMA` kèm phần tử, `ALTER COLUMN TYPE` sang enum/domain: `0A000`.

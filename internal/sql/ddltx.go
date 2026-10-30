@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"stask/internal/core"
+	"stask/internal/schema"
 )
 
 // Transactional DDL for the common schema changes (docs/05, docs/14 TXDDL).
@@ -50,6 +51,9 @@ type ddlStep struct {
 	Before  []string `json:"before,omitempty"`
 	ID      uint32   `json:"id,omitempty"`
 	Cascade bool     `json:"cascade,omitempty"`
+	// Def is the index create_index rebuilds (undo of a DROP INDEX that was
+	// applied early because the transaction created an index of that name)
+	Def json.RawMessage `json:"def,omitempty"`
 }
 
 type ddlJournal struct {
@@ -147,6 +151,9 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		if err != nil {
 			return nil, false, nil
 		}
+		if err := s.djDropBeforeCreate(st.Name); err != nil {
+			return fail(err)
+		}
 		if _, err := s.djUndo(ddlStep{Op: "drop_indexes", Table: ts.Schema().Name, Before: indexNames(ts)}); err != nil {
 			return fail(err)
 		}
@@ -177,6 +184,38 @@ func (s *Session) djDropIndex(names []string) (*Result, bool, error) {
 		}
 	}
 	return &Result{Tag: "DROP INDEX"}, true, nil
+}
+
+// djDropBeforeCreate handles DROP INDEX x; CREATE INDEX x in one transaction
+// (Liquibase and Jmix changelogs do this to change an index): the deferred
+// drop is applied now, so the name is free, and its undo step rebuilds the
+// old index on ROLLBACK. The pending redo step is removed, or COMMIT would
+// drop the new index.
+func (s *Session) djDropBeforeCreate(name string) error {
+	if s.dj == nil || name == "" {
+		return nil
+	}
+	at := slices.IndexFunc(s.dj.redo, func(r ddlStep) bool { return r.Op == "drop_index" && slices.Contains(r.Names, name) })
+	if at < 0 {
+		return nil
+	}
+	for _, ts := range s.E.UserTables() {
+		ix := ts.Schema().Index(name)
+		if ix == nil {
+			continue
+		}
+		def, err := json.Marshal(ix)
+		if err != nil {
+			return err
+		}
+		if _, err := s.djUndo(ddlStep{Op: "create_index", Table: ts.Schema().Name, Def: def}); err != nil {
+			return err
+		}
+		s.dj.redo = slices.Delete(s.dj.redo, at, at+1)
+		return s.E.DropIndex(ts.Schema().Name, name)
+	}
+	s.dj.redo = slices.Delete(s.dj.redo, at, at+1)
+	return nil
 }
 
 func (s *Session) indexDroppable(name string) bool {
@@ -345,6 +384,16 @@ func (s *Session) ddlStepRun(st ddlStep) error {
 		stmt = &DropIndex{Names: names, IfExists: true}
 	case "drop_index":
 		stmt = &DropIndex{Names: st.Names, IfExists: true}
+	case "create_index":
+		var def schema.IndexDef
+		if err := json.Unmarshal(st.Def, &def); err != nil {
+			return err
+		}
+		ts, err := s.E.Table(st.Table)
+		if err != nil || ts.Schema().Index(def.Name) != nil {
+			return nil
+		}
+		return s.E.CreateIndex(st.Table, def)
 	case "drop_columns", "drop_column":
 		ts, err := s.E.Table(st.Table)
 		if err != nil {

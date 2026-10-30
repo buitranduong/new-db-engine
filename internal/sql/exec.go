@@ -289,6 +289,20 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *CreateFunction:
+		res, err := s.createFunction(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *DropFunction:
+		res, err := s.dropFunction(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
+	case *RenameIndex:
+		return s.renameIndex(st)
 	case *AlterTable:
 		// applied at once, like CREATE TABLE
 		res, err := s.alterTable(st)

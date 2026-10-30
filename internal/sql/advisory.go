@@ -85,6 +85,9 @@ func advisoryKey(name string, args []Datum) (lockKey, error) {
 
 // extraSessionFunc runs the session functions of this file; ok=false for any other.
 func (s *Session) extraSessionFunc(name string, args []Datum) ([][]Datum, bool, error) {
+	if name == "pg_get_keywords" {
+		return keywordRows(), true, nil
+	}
 	if name == "pg_advisory_unlock_all" {
 		if s.lk != nil {
 			locksOf(s.E).releaseAll(s.lk.sess)

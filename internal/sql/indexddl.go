@@ -122,7 +122,14 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 		_ = tbl
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
-	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Unique: c.Unique}); err != nil {
+	def := schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Unique: c.Unique}
+	def.Pred = c.Pred
+	if c.Where != nil {
+		if def.Pred, err = predTerms(t, c.Where); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.E.CreateIndex(t.Name, def); err != nil {
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", c.Name)
@@ -222,7 +229,7 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	// the referenced columns must be the primary key or a unique constraint
 	ok := parent.IsPK(refCols)
 	for _, ix := range parent.Indexes {
-		ok = ok || ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, refCols)
+		ok = ok || ix.Unique && !ix.Partial() && !ix.HasExpr() && slices.Equal(ix.Columns, refCols)
 	}
 	if parent == child {
 		for _, u := range selfUnique {
@@ -426,6 +433,11 @@ func (s *Session) alterConstraints(st *AlterTable) (*Result, error) {
 		switch a.Kind {
 		case "add_constraint":
 			if err := s.addConstraint(name, a.Constraint); err != nil {
+				return nil, AsError(err)
+			}
+			continue
+		case "rename_constraint":
+			if err := s.renameConstraint(name, a.Column, a.NewName); err != nil {
 				return nil, AsError(err)
 			}
 			continue

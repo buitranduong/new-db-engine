@@ -433,7 +433,7 @@ func (s *Session) likeIndexes(c *CreateTable, likes []likeDef) []*CreateIndex {
 			if ix.Internal || ix.Constraint != "" {
 				continue
 			}
-			out = append(out, &CreateIndex{Cols: slices.Clone(ix.Columns), Exprs: slices.Clone(ix.Exprs), Unique: ix.Unique})
+			out = append(out, &CreateIndex{Cols: slices.Clone(ix.Columns), Exprs: slices.Clone(ix.Exprs), Unique: ix.Unique, Pred: slices.Clone(ix.Pred)})
 		}
 	}
 	return out
@@ -521,7 +521,7 @@ func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Resu
 		}
 		uniq := false
 		for _, ix := range t.Indexes {
-			if ix.Unique && !ix.Internal {
+			if ix.Unique && !ix.Partial() && !ix.Internal {
 				uniq = true
 			}
 		}

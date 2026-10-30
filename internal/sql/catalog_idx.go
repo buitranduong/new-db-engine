@@ -108,8 +108,12 @@ func secIndexDef(t *schema.Table, ix schema.IndexDef) string {
 	if ix.Unique {
 		u = "UNIQUE "
 	}
+	w := ""
+	if ix.Partial() {
+		w = " WHERE " + predText(t, ix.Pred)
+	}
 	return "CREATE " + u + "INDEX " + quoteIdent(ix.Name) + " ON public." + quoteIdent(t.Name) +
-		" USING btree (" + strings.Join(elems, ", ") + ")"
+		" USING btree (" + strings.Join(elems, ", ") + ")" + w
 }
 
 func fkActionChar(a string) string {
@@ -146,7 +150,7 @@ func (c *catSnap) referencedIndexOID(fk schema.ForeignKey) int64 {
 			continue
 		}
 		for _, ix := range p.Indexes {
-			if ix.Unique && !ix.HasExpr() && slices.Equal(ix.Columns, fk.RefCols) {
+			if ix.Unique && !ix.Partial() && !ix.HasExpr() && slices.Equal(ix.Columns, fk.RefCols) {
 				return secIndexOID(ix.Name)
 			}
 		}

@@ -39,7 +39,9 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 	after := s.beforeAlterComments(st)
 	var res *Result
 	var err error
-	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool { return a.Kind == "add_constraint" || a.Kind == "drop_constraint" }) {
+	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool {
+		return a.Kind == "add_constraint" || a.Kind == "drop_constraint" || a.Kind == "rename_constraint"
+	}) {
 		res, err = s.alterConstraints(st)
 	} else {
 		res, err = s.alterTableActions(st)
@@ -176,7 +178,9 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 						return errf(codeDependentObjects, "cannot drop column %s of table %s because constraint %s on table %s depends on it", a.Column, d.Name, r.FK.Name, r.Child)
 					}
 				}
-				d.Indexes = slices.DeleteFunc(d.Indexes, func(ix schema.IndexDef) bool { return slices.Contains(ix.Columns, a.Column) })
+				d.Indexes = slices.DeleteFunc(d.Indexes, func(ix schema.IndexDef) bool {
+					return slices.Contains(ix.Columns, a.Column) || slices.ContainsFunc(ix.Pred, func(p schema.PredTerm) bool { return p.Col == a.Column })
+				})
 				d.ForeignKeys = slices.DeleteFunc(d.ForeignKeys, func(f schema.ForeignKey) bool {
 					return slices.Contains(f.Columns, a.Column) || f.RefTable == d.Name && slices.Contains(f.RefCols, a.Column)
 				})
@@ -222,6 +226,11 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 				}
 				for j := range d.Indexes {
 					d.Indexes[j].Columns = renameIn(d.Indexes[j].Columns, a.Column, a.NewName)
+					for k := range d.Indexes[j].Pred {
+						if d.Indexes[j].Pred[k].Col == a.Column {
+							d.Indexes[j].Pred[k].Col = a.NewName
+						}
+					}
 				}
 				for j := range d.ForeignKeys {
 					d.ForeignKeys[j].Columns = renameIn(d.ForeignKeys[j].Columns, a.Column, a.NewName)

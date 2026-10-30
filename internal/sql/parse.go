@@ -63,6 +63,11 @@ type parser struct {
 	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
 	// when the schema type says it all.
 	pgSpec string
+	// funcDepth, subst: the parser of a user SQL function body (sqlfunc.go), whose $n are
+	// replaced by the argument expressions subst
+	funcDepth int
+	subst     []Expr
+	substOn   bool
 }
 
 func (p *parser) peek() token { return p.toks[p.i] }
@@ -203,6 +208,9 @@ func (p *parser) statement() (Stmt, error) {
 	case "drop":
 		p.next()
 		if st, ok, err := p.dropObj(); ok {
+			return st, err
+		}
+		if st, ok, err := p.dropFunction(); ok {
 			return st, err
 		}
 		if st, ok, err := p.dropSubstrIndex(); ok {
@@ -383,6 +391,9 @@ func (p *parser) statement() (Stmt, error) {
 			}
 			return a, nil
 		}
+		if p.acceptKw("index") {
+			return p.alterIndex()
+		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err
 		}
@@ -443,6 +454,9 @@ func (p *parser) createStmt() (Stmt, error) {
 	}
 	if p.acceptKw("user") {
 		return p.createRole(true)
+	}
+	if st, ok, err := p.createFunction(); ok {
+		return st, err
 	}
 	if st, ok, err := p.createView(); ok {
 		return st, err
@@ -1559,6 +1573,9 @@ func (p *parser) primary() (Expr, error) {
 		if err != nil || n < 1 || n > 65535 {
 			return nil, syntaxErr(t.pos, "bad parameter $"+t.s)
 		}
+		if p.substOn && n <= len(p.subst) {
+			return p.subst[n-1], nil
+		}
 		return &Param{n}, nil
 	case tOp:
 		if t.s == "(" {
@@ -1917,6 +1934,9 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			f.Over = &WindowSpec{Ref: n}
 		}
 	}
+	if x, ok, err := p.expandUserFunc(f); ok {
+		return x, err
+	}
 	return f, nil
 }
 
@@ -2170,7 +2190,17 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				break
 			}
 			if p.acceptKw("constraint") {
-				return nil, errf(codeFeature, "RENAME CONSTRAINT is not supported")
+				act.Kind = "rename_constraint"
+				if act.Column, err = p.ident(); err != nil {
+					return nil, err
+				}
+				if err = p.expectKw("to"); err != nil {
+					return nil, err
+				}
+				if act.NewName, err = p.ident(); err != nil {
+					return nil, err
+				}
+				break
 			}
 			p.acceptKw("column")
 			act.Kind = "rename_column"

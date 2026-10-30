@@ -145,6 +145,7 @@ type Indexer struct {
 	cols  []int
 	fns   []string
 	types []ColType
+	pred  []predTerm
 }
 
 // NewIndexer resolves def against t.
@@ -166,6 +167,10 @@ func (t *Table) NewIndexer(def IndexDef) (*Indexer, error) {
 		x.fns = append(x.fns, def.ElemExpr(k))
 		x.types = append(x.types, ct)
 	}
+	var err error
+	if x.pred, err = t.compilePred(def); err != nil {
+		return nil, err
+	}
 	return x, nil
 }
 
@@ -181,6 +186,9 @@ func (x *Indexer) Key(dst []byte, r Row) (out []byte, hasNull bool) {
 			hasNull = true
 		}
 		dst = AppendKeyValue(dst, x.types[k], v)
+	}
+	if len(x.pred) > 0 && !hasNull && !predMatch(x.pred, r) {
+		hasNull = true // outside a partial index: never conflicts
 	}
 	return dst, hasNull
 }

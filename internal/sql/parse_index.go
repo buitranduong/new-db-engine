@@ -32,6 +32,8 @@ type CreateIndex struct {
 	Exprs       []string // the function applied to it (canonical name), "" for none; nil if no element has one
 	Unique      bool
 	IfNotExists bool
+	Pred        []schema.PredTerm // a copied partial index (LIKE ... INCLUDING INDEXES)
+	Where       Expr              // partial index predicate (partialidx.go), nil for none
 }
 
 // DropIndex is DROP INDEX.
@@ -92,8 +94,20 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 				return nil, true, errf(codeFeature, "function %s cannot be used in an index expression (lower, upper, trim, btrim, ltrim, rtrim, length, char_length, abs on one column)", col)
 			}
 			fn = f
+			inner := p.acceptOp("(") // lower((name)::text): the cast PostgreSQL writes
 			if col, err = p.ident(); err != nil || p.isOp(".") {
 				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+			}
+			if inner {
+				if err = p.expectOp(")"); err != nil {
+					return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+				}
+			}
+			for p.acceptOp("::") { // the argument cast is ignored: lower and friends take text
+				if _, err = p.ident(); err != nil {
+					return nil, true, err
+				}
+				p.acceptKw("varying")
 			}
 			if err = p.expectOp(")"); err != nil {
 				return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
@@ -128,12 +142,15 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 		c.Exprs = nil
 	}
 	switch {
-	case p.isKw("where"):
-		return nil, true, errf(codeFeature, "partial indexes are not supported")
 	case p.isKw("include"):
 		return nil, true, errf(codeFeature, "INCLUDE columns are not supported")
 	case p.isKw("with"):
 		return nil, true, errf(codeFeature, "index storage parameters are not supported")
+	}
+	if p.acceptKw("where") {
+		if c.Where, err = p.expr(); err != nil {
+			return nil, true, err
+		}
 	}
 	return c, true, nil
 }

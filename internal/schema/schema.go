@@ -282,6 +282,10 @@ func convertible(from, to ColType) bool {
 		return true
 	}
 	switch from {
+	case TTimestamp:
+		return to == TTimestamptz // the session time zone is UTC: same microseconds
+	case TTimestamptz:
+		return to == TTimestamp
 	case TTime:
 		return to == TTimestamp || to == TTimestamptz
 	case TInt, TFloat:

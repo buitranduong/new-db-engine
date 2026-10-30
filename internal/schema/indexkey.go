@@ -37,7 +37,16 @@ type IndexDef struct {
 	// Internal: created for a foreign key (the referencing columns), so
 	// that deleting a parent finds its children; it goes with the table.
 	Internal bool `json:"internal,omitempty"`
+	// Pred is the WHERE predicate of a partial index: a conjunction of terms
+	// on columns of the table (indexpred.go). Additive: old checkpoints lack it.
+	// Every row is still indexed; a row that fails Pred counts as NULL-keyed
+	// for uniqueness, so only matching rows must be unique. The planner does
+	// not use a partial unique index to find rows or as a foreign-key target.
+	Pred []PredTerm `json:"pred,omitempty"`
 }
+
+// Partial reports whether the index has a WHERE predicate.
+func (ix IndexDef) Partial() bool { return len(ix.Pred) > 0 }
 
 // ForeignKey is a REFERENCES constraint of the table that holds it.
 type ForeignKey struct {

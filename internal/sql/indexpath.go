@@ -321,7 +321,7 @@ func chooseIndex(t *schema.Table, alias string, where Expr, ctx *evalCtx, need [
 				continue
 			}
 		}
-		if ix.Unique && len(c.eq) == len(ix.Columns) {
+		if ix.Unique && !ix.Partial() && len(c.eq) == len(ix.Columns) {
 			c.score += 2
 		}
 		if best == nil || c.score > best.score {

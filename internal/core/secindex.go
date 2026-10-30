@@ -79,9 +79,17 @@ type secIndex struct {
 	hi      atomic.Uint64
 	adopted atomic.Bool
 
+	// cancel stops a running conversion (the index goes away); want is the
+	// storage an asynchronous conversion should end at (convertAsync)
+	cancel    atomic.Bool
+	want      atomic.Pointer[string]
+	asyncBusy atomic.Bool
+
 	// mutations replayed into a new store by conversions: while it was being
 	// built, and under the lock at the swap
 	ConvCatchUp, ConvFinal atomic.Int64
+	// ConvSpilled: ops of the conversion log that went to a temp file
+	ConvSpilled atomic.Int64
 
 	Adds, Dead, Swept, Scans atomic.Int64
 }
@@ -575,9 +583,9 @@ func (e *Engine) reconcileSec(t *TableState, sch *schema.Table, src *tree) error
 			// a storage change that arrives by replay or on a replica (the
 			// leader converted online before logging it)
 			if want := cmp(def.Storage, "memory"); si.storageOf() != want && (want == "memory" || e.opts.DiskIndexes) {
-				if err := e.convertSec(t, si, want); err != nil {
-					e.logf("index %s: cannot change storage to %s: %v", def.Name, want, err)
-				}
+				// online: the replaying goroutine (start-up, a replica
+				// applying the leader's ALTER) does not wait for the build
+				e.convertAsync(t, si, want)
 			}
 			continue
 		}
@@ -902,6 +910,8 @@ type SecStats struct {
 	Storage     string // "memory" or "disk"
 	ConvCatchUp int64  // mutations replayed into a new store while it was built (conversions)
 	ConvFinal   int64  // mutations replayed under the index lock at the swap
+	ConvSpilled int64  // conversion log ops that were spilled to a temp file (bounded RAM)
+	Adopted     bool   // the disk file was reused from the previous run (secpersist.go)
 	Failed      string // why a disk index is unusable, if it is
 }
 
@@ -920,7 +930,8 @@ func (e *Engine) SecIndexStats() []SecStats {
 			}
 			st := SecStats{Table: t.Schema().Name, Name: si.name, Entries: n, Storage: si.storageOf(),
 				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load(),
-				ConvCatchUp: si.ConvCatchUp.Load(), ConvFinal: si.ConvFinal.Load()}
+				ConvCatchUp: si.ConvCatchUp.Load(), ConvFinal: si.ConvFinal.Load(),
+				ConvSpilled: si.ConvSpilled.Load(), Adopted: si.adopted.Load()}
 			if err := si.unusable(); err != nil {
 				st.Failed = err.Error()
 			}

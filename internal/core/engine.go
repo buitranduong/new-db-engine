@@ -52,6 +52,10 @@ type Options struct {
 	// SidxHook is called at the steps of an index storage conversion (tests
 	// copy the data directory in it to capture a crash image).
 	SidxHook func(step string)
+	// SidxMigMemOps: mutations of an index kept in RAM while it is converted
+	// before the rest of the conversion log goes to a temp file (default
+	// 65536).
+	SidxMigMemOps int
 	// ArchiveDir: copy each sealed log segment there (archive.go).
 	// RestoreArchive: before recovery, take the segments the log lacks
 	// from this archive, and stop replay at RecoveryTargetLSN or at the
@@ -235,7 +239,7 @@ func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
 	// disk secondary index persistence counters (secpersist.go)
-	SidxCkpts, SidxAdopted, SidxRebuilt atomic.Int64
+	SidxCkpts, SidxAdopted, SidxRebuilt, SidxAsync atomic.Int64
 
 	trig trigCache // row triggers (trigger.go)
 	// histTail supplies versions older than the log still holds (histtail.go); nil = none

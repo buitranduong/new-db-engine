@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -344,16 +347,161 @@ type migOp struct {
 	del         bool
 }
 
+// migMemOps is how many recorded mutations an index keeps in RAM during a
+// conversion before spilling them to a temp file (Options.SidxMigMemOps):
+// the log of a conversion of a big table under a heavy write load is bounded
+// in memory, not by write rate times build time.
+const migMemOps = 1 << 16
+
+var (
+	errConvAborted = errors.New("index conversion aborted (shutdown or the index was dropped)")
+	errIndexGone   = errors.New("the index was dropped during its conversion")
+)
+
 // migLog records the mutations made to an index while it is being converted.
-// Guarded by the index's mu.
-type migLog struct{ ops []migOp }
+// Guarded by the index's mu. At most limit ops stay in RAM; older ones are
+// appended to a temp file in sidx.
+type migLog struct {
+	mem     []migOp
+	limit   int
+	dir     string
+	f       *os.File
+	nsp     int // ops in the file
+	spilled *atomic.Int64
+	err     error
+}
 
-func (m *migLog) add(o migOp) { m.ops = append(m.ops, o) }
+func (m *migLog) add(o migOp) {
+	m.mem = append(m.mem, o)
+	if len(m.mem) >= m.limit {
+		m.spill()
+	}
+}
 
-func (m *migLog) take() []migOp {
-	o := m.ops
-	m.ops = nil
-	return o
+func appendMigOp(b []byte, o migOp) []byte {
+	if o.del {
+		b = append(b, 1)
+	} else {
+		b = append(b, 0)
+	}
+	b = binary.AppendUvarint(b, uint64(len(o.key)))
+	b = append(b, o.key...)
+	if !o.del {
+		b = binary.LittleEndian.AppendUint64(b, o.added)
+		b = binary.LittleEndian.AppendUint64(b, o.dead)
+	}
+	return b
+}
+
+func (m *migLog) spill() {
+	if m.err != nil {
+		return // keep the ops in RAM; the conversion fails at its next round
+	}
+	if m.f == nil {
+		if err := os.MkdirAll(m.dir, 0o755); err != nil {
+			m.err = err
+			return
+		}
+		f, err := os.CreateTemp(m.dir, "mig-*.tmp")
+		if err != nil {
+			m.err = err
+			return
+		}
+		m.f = f
+	}
+	var buf []byte
+	for _, o := range m.mem {
+		buf = appendMigOp(buf, o)
+	}
+	if _, err := m.f.Write(buf); err != nil {
+		m.err = err
+		return
+	}
+	m.nsp += len(m.mem)
+	if m.spilled != nil {
+		m.spilled.Add(int64(len(m.mem)))
+	}
+	m.mem = nil
+}
+
+// migChunk is a detached part of the log, applied without holding the index
+// lock.
+type migChunk struct {
+	mem []migOp
+	f   *os.File
+	n   int
+}
+
+func (m *migLog) take() migChunk {
+	c := migChunk{mem: m.mem, f: m.f, n: m.nsp}
+	m.mem, m.f, m.nsp = nil, nil, 0
+	return c
+}
+
+func (c migChunk) count() int { return c.n + len(c.mem) }
+
+// each calls fn for the ops in order, spilled ones first.
+func (c migChunk) each(fn func(o migOp) error) error {
+	if c.f != nil {
+		if _, err := c.f.Seek(0, 0); err != nil {
+			return err
+		}
+		r := bufio.NewReaderSize(c.f, 1<<20)
+		for i := 0; i < c.n; i++ {
+			flag, err := r.ReadByte()
+			if err != nil {
+				return err
+			}
+			kl, err := binary.ReadUvarint(r)
+			if err != nil {
+				return err
+			}
+			kb := make([]byte, kl)
+			if _, err := io.ReadFull(r, kb); err != nil {
+				return err
+			}
+			o := migOp{key: string(kb), del: flag == 1}
+			if !o.del {
+				var v [16]byte
+				if _, err := io.ReadFull(r, v[:]); err != nil {
+					return err
+				}
+				o.added, o.dead = decSecVal(v[:])
+			}
+			if err := fn(o); err != nil {
+				return err
+			}
+		}
+	}
+	for _, o := range c.mem {
+		if err := fn(o); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c migChunk) close() {
+	if c.f != nil {
+		c.f.Close()
+		os.Remove(c.f.Name())
+	}
+}
+
+// discard drops the log of an aborted conversion. si.mu is held.
+func (si *secIndex) discardMig() {
+	if m := si.mig; m != nil {
+		m.take().close()
+		si.mig = nil
+	}
+}
+
+func (e *Engine) newMig(si *secIndex) *migLog {
+	n := e.opts.SidxMigMemOps
+	if n <= 0 {
+		n = migMemOps
+	}
+	return &migLog{limit: n, dir: e.sidxDir(), spilled: &si.ConvSpilled}
 }
 
 // storageOf is "disk" or "memory".
@@ -364,8 +512,8 @@ func (si *secIndex) storageOf() string {
 	return "memory"
 }
 
-// sidxDir is where disk indexes live. It is emptied at start-up: the files
-// are rebuilt from the primary index.
+// sidxDir is where disk indexes live (secpersist.go for what happens to
+// the files at start-up).
 func (e *Engine) sidxDir() string { return filepath.Join(e.opts.Dir, "sidx") }
 
 func (e *Engine) sidxPath(t *TableState, name string) string {
@@ -388,8 +536,23 @@ func (e *Engine) sidxStep(step string) {
 	}
 }
 
+// convAborted reports whether a conversion of si must stop: the engine is
+// closing or the index was dropped.
+func (e *Engine) convAborted(si *secIndex) bool {
+	if si.cancel.Load() {
+		return true
+	}
+	select {
+	case <-e.stop:
+		return true
+	default:
+		return false
+	}
+}
+
 // treeFeed streams the entries of a RAM tree, in key order, as a pindex.Feed.
-func treeFeed(src *tree) (pindex.Feed, func()) {
+// aborted is polled once per batch; the feed then fails with errConvAborted.
+func treeFeed(src *tree, aborted func() bool) (pindex.Feed, func()) {
 	type item struct {
 		k []byte
 		v [secValLen]byte
@@ -426,6 +589,9 @@ func treeFeed(src *tree) (pindex.Feed, func()) {
 	i := 0
 	feed := func() ([]byte, []byte, bool, error) {
 		for i >= len(cur) {
+			if aborted != nil && aborted() {
+				return nil, nil, false, errConvAborted
+			}
 			b, ok := <-ch
 			if !ok {
 				return nil, nil, false, nil
@@ -447,6 +613,9 @@ const convertBacklog = 128
 func (e *Engine) convertSec(t *TableState, si *secIndex, to string) error {
 	si.conv.Lock()
 	defer si.conv.Unlock()
+	if si.retired.Load() {
+		return errIndexGone
+	}
 	if si.storageOf() == to {
 		return nil
 	}
@@ -462,21 +631,62 @@ func (e *Engine) convertSec(t *TableState, si *secIndex, to string) error {
 	return fmt.Errorf("index_storage must be 'disk' or 'memory', not %q", to)
 }
 
+// convertAsync makes si go to storage "to" in the background and returns at
+// once: used where the engine must not stop (log replay at start-up, a
+// replica applying the leader's ALTER). The latest request wins; the
+// conversions of one index run one at a time.
+func (e *Engine) convertAsync(t *TableState, si *secIndex, to string) {
+	si.want.Store(&to)
+	if !si.asyncBusy.CompareAndSwap(false, true) {
+		return
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		for {
+			for {
+				w := si.want.Load()
+				if w == nil || si.retired.Load() || e.convAborted(si) || si.storageOf() == *w {
+					break
+				}
+				if err := e.convertSec(t, si, *w); err != nil {
+					if !errors.Is(err, errConvAborted) && !errors.Is(err, errIndexGone) {
+						e.logf("index %s: cannot change storage to %s: %v", si.name, *w, err)
+					}
+					break
+				}
+				e.SidxAsync.Add(1)
+			}
+			si.asyncBusy.Store(false)
+			// a request that arrived after the last look but before the flag
+			// was cleared would otherwise be lost
+			w := si.want.Load()
+			if w == nil || si.retired.Load() || e.convAborted(si) || si.storageOf() == *w || !si.asyncBusy.CompareAndSwap(false, true) {
+				return
+			}
+		}
+	}()
+}
+
 func (e *Engine) toDisk(t *TableState, si *secIndex) error {
 	path := e.sidxPath(t, si.name)
 	if err := os.MkdirAll(e.sidxDir(), 0o755); err != nil {
 		return err
 	}
 	si.mu.Lock()
+	if si.retired.Load() {
+		si.mu.Unlock()
+		return errIndexGone
+	}
 	src := si.tr.Load()
-	si.mig = &migLog{}
+	si.mig = e.newMig(si)
 	si.mu.Unlock()
 	abort := func() {
 		si.mu.Lock()
-		si.mig = nil
+		si.discardMig()
 		si.mu.Unlock()
 	}
-	feed, stop := treeFeed(src)
+	feed, stop := treeFeed(src, func() bool { return e.convAborted(si) })
 	defer stop()
 	bo := pindex.BulkOptions{
 		Fill:         85,
@@ -490,33 +700,50 @@ func (e *Engine) toDisk(t *TableState, si *secIndex) error {
 	}
 	e.sidxStep("bulk-loaded")
 	d := newDiskStore(nt, path)
-	applyOps := func(ops []migOp) error {
-		if len(ops) == 0 {
+	applyChunk := func(ch migChunk) error {
+		defer ch.close()
+		if ch.count() == 0 {
 			return nil
 		}
 		var buf [secValLen]byte
 		return nt.Batch(func(b pindex.Batch) error {
-			for _, o := range ops {
+			return ch.each(func(o migOp) error {
 				if o.del {
-					if _, err := b.Delete(bytesOf(o.key)); err != nil {
-						return err
-					}
-					continue
-				}
-				encSecVal(buf[:], o.added, o.dead)
-				if err := b.Put(bytesOf(o.key), buf[:]); err != nil {
+					_, err := b.Delete(bytesOf(o.key))
 					return err
 				}
-			}
-			return nil
+				encSecVal(buf[:], o.added, o.dead)
+				return b.Put(bytesOf(o.key), buf[:])
+			})
 		})
 	}
+	fail := func(err error) error {
+		abort()
+		d.retire(true)
+		return err
+	}
 	for round := 0; ; round++ {
+		if e.convAborted(si) {
+			return fail(errConvAborted)
+		}
 		si.mu.Lock()
-		ops := si.mig.take()
-		if len(ops) <= convertBacklog || round >= 64 {
-			si.ConvFinal.Add(int64(len(ops)))
-			err := applyOps(ops)
+		if si.retired.Load() {
+			si.discardMig()
+			si.mu.Unlock()
+			d.retire(true)
+			return errIndexGone
+		}
+		if si.mig.err != nil {
+			err := si.mig.err
+			si.discardMig()
+			si.mu.Unlock()
+			d.retire(true)
+			return fmt.Errorf("conversion log: %w", err)
+		}
+		ch := si.mig.take()
+		if n := ch.count(); n <= convertBacklog || round >= 64 {
+			si.ConvFinal.Add(int64(n))
+			err := applyChunk(ch)
 			if err == nil {
 				si.swaps.Add(1)
 				si.dk.Store(d)
@@ -533,13 +760,12 @@ func (e *Engine) toDisk(t *TableState, si *secIndex) error {
 				return err
 			}
 			return nil
+		} else {
+			si.mu.Unlock()
+			si.ConvCatchUp.Add(int64(n))
 		}
-		si.mu.Unlock()
-		si.ConvCatchUp.Add(int64(len(ops)))
-		if err := applyOps(ops); err != nil {
-			abort()
-			d.retire(true)
-			return err
+		if err := applyChunk(ch); err != nil {
+			return fail(err)
 		}
 	}
 }
@@ -547,22 +773,34 @@ func (e *Engine) toDisk(t *TableState, si *secIndex) error {
 func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 	si.mu.Lock()
 	d := si.dk.Load()
+	if d == nil || si.retired.Load() || !d.tryRef() {
+		si.mu.Unlock()
+		return errIndexGone
+	}
+	defer d.unref()
 	snap, err := d.tree.Snapshot()
 	if err != nil {
 		si.mu.Unlock()
 		return err
 	}
-	si.mig = &migLog{}
+	si.mig = e.newMig(si)
 	si.mu.Unlock()
 	abort := func() {
 		si.mu.Lock()
-		si.mig = nil
+		si.discardMig()
 		si.mu.Unlock()
 	}
 	ar := &keyArena{}
 	b := newTreeBuilder(ar)
 	it := snap.Scan(nil, nil)
+	n := 0
 	for it.Next() {
+		if n++; n&0x3fff == 0 && e.convAborted(si) {
+			it.Close()
+			snap.Close()
+			abort()
+			return errConvAborted
+		}
 		added, dead := decSecVal(it.Value())
 		var en entry
 		en.ikey = ar.ikeyOf(string(it.Key()))
@@ -578,48 +816,88 @@ func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 	}
 	nt := b.finish()
 	e.sidxStep("memory-built")
-	apply := func(ops []migOp) {
-		if len(ops) == 0 {
-			return
+	apply := func(ch migChunk) error {
+		defer ch.close()
+		if ch.count() == 0 {
+			return nil
 		}
 		c := nt.clone()
-		for _, o := range ops {
+		err := ch.each(func(o migOp) error {
 			if o.del {
 				c.del(o.key)
 			} else {
 				c.put(o.key, secVersion(o.added, o.dead))
 			}
+			return nil
+		})
+		if err == nil {
+			nt = c
 		}
-		nt = c
+		return err
 	}
 	for round := 0; ; round++ {
+		if e.convAborted(si) {
+			abort()
+			return errConvAborted
+		}
 		si.mu.Lock()
-		ops := si.mig.take()
-		apply(ops)
-		if len(ops) <= convertBacklog || round >= 64 {
-			si.ConvFinal.Add(int64(len(ops)))
+		if si.retired.Load() {
+			si.discardMig()
+			si.mu.Unlock()
+			return errIndexGone
+		}
+		if si.mig.err != nil {
+			err := si.mig.err
+			si.discardMig()
+			si.mu.Unlock()
+			return fmt.Errorf("conversion log: %w", err)
+		}
+		ch := si.mig.take()
+		if n := ch.count(); n <= convertBacklog || round >= 64 {
+			si.ConvFinal.Add(int64(n))
+			if err := apply(ch); err != nil {
+				si.discardMig()
+				si.mu.Unlock()
+				return err
+			}
 			si.swaps.Add(1)
 			si.tr.Store(nt)
 			si.ar = ar
-			si.dk.Store(nil)
+			old := si.dk.Swap(nil)
 			si.mig = nil
 			si.swaps.Add(1)
 			si.mu.Unlock()
 			e.sidxStep("swapped-to-memory")
-			d.retire(true)
+			if old != nil {
+				old.retire(true)
+			}
 			return nil
+		} else {
+			si.mu.Unlock()
+			si.ConvCatchUp.Add(int64(n))
 		}
-		si.mu.Unlock()
-		si.ConvCatchUp.Add(int64(len(ops)))
+		if err := apply(ch); err != nil {
+			abort()
+			return err
+		}
 	}
 }
 
-// retireDisk releases the disk store of an index that goes away.
+// retireDisk releases the disk store of an index that goes away, and stops
+// a conversion of it that is running (it notices at its next step and
+// removes what it built). It returns once no conversion is running, so a new
+// index of the same name can use the file path.
 func (si *secIndex) retireDisk(rm bool) {
+	si.cancel.Store(true)
+	si.mu.Lock()
 	si.retired.Store(true)
-	if d := si.dk.Swap(nil); d != nil {
+	d := si.dk.Swap(nil)
+	si.mu.Unlock()
+	if d != nil {
 		d.retire(rm)
 	}
+	si.conv.Lock()
+	si.conv.Unlock()
 }
 
 // ---- DDL ----

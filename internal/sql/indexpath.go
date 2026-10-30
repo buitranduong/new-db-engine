@@ -206,7 +206,38 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 	}
 	for _, c := range conjuncts(where) {
 		switch e := c.(type) {
+		case *Like:
+			if e.Not || e.ICase {
+				continue
+			}
+			col, ok := colOf(e.X)
+			if !ok || kindOf(types[col]) != KText {
+				continue
+			}
+			pv, ok, null := val(col, e.Pat)
+			if !ok || null {
+				continue
+			}
+			pre, ok := likePrefix(pv.S)
+			if !ok || pre == pv.S {
+				continue // no wildcard: equality, left to the rechecked WHERE
+			}
+			b := get(col)
+			lv := schema.Value{S: pre}
+			if b.lo == nil || cmpValue(types[col], lv, *b.lo) > 0 {
+				b.lo, b.loIncl = &lv, true
+			}
+			if end := core.PrefixEnd(pre); end != "" {
+				hv := schema.Value{S: end}
+				if b.hi == nil || cmpValue(types[col], hv, *b.hi) < 0 {
+					b.hi, b.hiIncl = &hv, false
+				}
+			}
 		case *Binary:
+			if e.Op == "or" {
+				orBounds(t, alias, e, ctx, out)
+				continue
+			}
 			if e.Op != "=" && flip[e.Op] == "" {
 				continue
 			}

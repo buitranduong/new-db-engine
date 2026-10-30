@@ -193,6 +193,19 @@ func (p *Platform) ViewAggregate(q *proj.AggQuery, lsn uint64, staleness time.Du
 	return res, err == nil
 }
 
+// ViewInfo describes the columnar view of a table to the SQL planner (lane
+// classification, EXPLAIN): the live rows it holds, how far it lags the core
+// now and whether a strong read would have to wait for it. ok=false when the
+// table has no usable columnar view.
+func (p *Platform) ViewInfo(table string) (rows int64, lag time.Duration, ok bool) {
+	t, err := p.E.UserTable(table)
+	if err != nil || !p.Col.Has(t.Schema().ID) || !p.ColF.Ready() {
+		return 0, 0, false
+	}
+	_, live := p.Col.Stats(t.Schema().ID)
+	return int64(live), p.ColF.Lag(), true
+}
+
 // A view read waits the way a TiFlash learner read does: until the view
 // has applied the read's snapshot, for as long as the view keeps advancing.
 // After a burst (a bulk load, a replica catching up) the answer is delayed

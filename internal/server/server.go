@@ -620,6 +620,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			"wal_disk":    e.Log().DiskBytes(),
 		},
 		"admission": sql.AdmissionReport(),
+		"lanes":     sql.LaneReport(),
 		"views":     s.P.Views(),
 		"tables":    tables,
 		"heap_mb":   ms.HeapAlloc >> 20,

@@ -60,10 +60,10 @@ func (qx *qexec) runPlan(p qplan) (*relation, error) {
 	sm := spill.NewManager(SpillDir, SpillMaxBytes, qx.s.checkInterrupt)
 	defer sm.Close()
 	op := SpillOpMem
-	if op <= 0 {
+	if lim := qx.limit(); op <= 0 || lim > 0 && op > lim/6 {
 		op = 64 << 20
-		if QueryMemLimit > 0 {
-			op = QueryMemLimit / 6
+		if lim > 0 {
+			op = max(lim/6, 64<<10)
 		}
 	}
 	qx.sp = &spillState{m: sm, opMem: op}

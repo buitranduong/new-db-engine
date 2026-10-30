@@ -193,6 +193,7 @@ func sessionDefaults() map[string]string {
 		"max_identifier_length": "63", "default_transaction_read_only": "off", "transaction_read_only": "off",
 		"extra_float_digits": "1", "lc_collate": DefaultCollation().Name, "lc_ctype": DefaultCollation().Name,
 		SearchConsistencyVar: DefaultConsistency, SearchMaxLagVar: "1000", LastPlanVar: "",
+		WorkMemVar: "0", // 0 = only the node budget (-query-mem-mb); see membudget.go
 	}
 }
 

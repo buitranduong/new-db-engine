@@ -436,6 +436,9 @@ func (s *Session) substrPrepare(tx *core.Tx, t *schema.Table, sc *scope, ctx *ev
 	if len(t.Substr) == 0 || where == nil || s.explicit {
 		return nil
 	}
+	if prefixRangeServed(t, sc.alias, where, ctx) {
+		return nil // 'abc%' on a B-tree column is an exact range, narrower than trigram candidates
+	}
 	sv, _ := s.Views.(SubstrViews)
 	var cs []Expr
 	substrConjuncts(where, &cs)

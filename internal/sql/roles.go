@@ -544,8 +544,13 @@ func collectNeeds(st Stmt) (needs []need, ddl string) {
 			w.add(st.Table, core.PrivSelect)
 		}
 		w.walkFields(reflect.ValueOf(st), nil)
-	case *CreateTable:
+	case *CreateTable, *CreateAs:
 		return nil, "CREATE TABLE"
+	case *RefreshMat, *DropMat:
+		return nil, "materialized view DDL"
+	case *Merge:
+		w.add(st.Table, core.PrivSelect|core.PrivInsert|core.PrivUpdate|core.PrivDelete)
+		w.walkFields(reflect.ValueOf(st), nil)
 	case *AlterTable, *AlterReplicaIdentity:
 		return nil, "ALTER TABLE"
 	case *DropTable:

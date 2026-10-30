@@ -81,9 +81,11 @@ type Session struct {
 	localUndo  []localVar // SET LOCAL values to restore at the end of the transaction
 
 	// cursor.go, locks.go, setrole.go
-	curs *cursorSet
-	lk   *sessLocks
-	rc   roleCtx
+	curs       *cursorSet
+	lk         *sessLocks
+	rc         roleCtx
+	tmp        *tempState // temporary tables (temptable.go)
+	refreshing string     // materialized view being refreshed (ctas_exec.go)
 }
 
 // clickHouse reports whether the session uses ClickHouse's rules where
@@ -118,6 +120,7 @@ func (s *Session) Close() {
 	s.releaseAllLocks()
 	s.discardPending()
 	s.closeListener()
+	s.dropAllTemps()
 	s.untrack()
 }
 
@@ -181,6 +184,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			tx.Abort()
 			s.cursorsOnAbort()
 			s.discardPending()
+			s.afterTxEnd(false)
 			return &Result{Tag: "ROLLBACK"}, nil
 		}
 		if err := s.cursorsOnCommit(tx); err != nil {
@@ -197,6 +201,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		for _, op := range ops {
 			s.applyListen(op)
 		}
+		s.afterTxEnd(true)
 		return &Result{Tag: "COMMIT"}, nil
 	case *Rollback:
 		if !s.explicit {
@@ -208,6 +213,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		s.endTx()
 		s.cursorsOnAbort()
 		s.discardPending()
+		s.afterTxEnd(false)
 		return &Result{Tag: "ROLLBACK"}, nil
 	case *SetVar:
 		return s.set(st)
@@ -384,6 +390,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return nil, AsError(err)
 		}
 		s.noteCommit(lsn)
+		s.afterTxEnd(true)
 		return res, nil
 	}
 }
@@ -476,6 +483,9 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 }
 
 func (s *Session) createTable(c *CreateTable) (*Result, error) {
+	if c.Ext != nil && !c.Ext.done {
+		return s.createTableExt(c, false)
+	}
 	if _, err := s.E.UserTable(c.Name); err == nil || s.isView(c.Name) {
 		if c.IfNotExists {
 			return &Result{Tag: "CREATE TABLE", Notice: fmt.Sprintf("relation %q already exists, skipping", c.Name)}, nil
@@ -483,6 +493,7 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
 	t := schema.Table{Name: c.Name, Key: c.Key, KeyCols: c.KeyCols}
+	s.extTable(c, &t)
 	seen := map[string]bool{}
 	for _, cd := range c.Cols {
 		if cd.Name == schema.RowIDCol || cd.Name == schema.KeyCol {
@@ -561,7 +572,12 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 }
 
 func (s *Session) table(name string) (*schema.Table, error) {
-	ts, err := s.E.UserTable(name)
+	ts, err := s.userTable(name)
+	if err == nil && ts.Schema().MatUnpopulated {
+		if err := s.matGuard(ts.Schema()); err != nil {
+			return nil, err
+		}
+	}
 	if err != nil {
 		if s.isView(name) {
 			return nil, errf(codeObjectNotInState, "cannot change view %q", name)
@@ -604,13 +620,22 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 	case *SetOp:
 		return s.runQuery(tx, st, params)
 	case *Insert:
+		if err := s.rejectMatWrite(st.Table); err != nil {
+			return nil, err
+		}
 		return s.insert(tx, st, params)
 	case *Update:
+		if err := s.rejectMatWrite(st.Table); err != nil {
+			return nil, err
+		}
 		return s.update(tx, st, params)
 	case *Delete:
+		if err := s.rejectMatWrite(st.Table); err != nil {
+			return nil, err
+		}
 		return s.delete(tx, st, params)
 	}
-	return nil, errf(codeFeature, "unsupported statement %T", st)
+	return s.runExt(tx, st, params)
 }
 
 // ---- access paths ----
@@ -2133,10 +2158,20 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 	case *Truncate:
 		names, restart = st.Names, st.Restart
 	}
+	names = s.mapTemps(names)
 	res := &Result{Tag: tag}
+	if tr, ok := st.(*Truncate); ok && tr.Cascade {
+		var added []string
+		if names, added = s.truncateClosure(names); len(added) > 0 {
+			res.Notice = "truncate cascades to table " + strings.Join(added, ", ")
+		}
+	}
 	var todo []string
 	for _, n := range names {
-		if _, err := s.E.UserTable(n); err != nil {
+		if ts, err := s.userTable(n); err == nil && ts.Schema().MatView != "" && !s.dropsMat(st) {
+			return nil, errf(codeWrongObject, "%q is not a table", n)
+		}
+		if _, err := s.userTable(n); err != nil {
 			if s.isView(n) {
 				return nil, errf(codeWrongObjectType, "%q is not a table", n)
 			}
@@ -2202,5 +2237,6 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 			}
 		}
 	}
+	s.forgetDropped()
 	return res, nil
 }

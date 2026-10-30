@@ -13,7 +13,7 @@ var aliasStop = map[string]bool{
 	"natural": true, "full": true, "intersect": true, "except": true, "window": true, "prewhere": true,
 	"settings": true, "format": true, "fetch": true, "lateral": true, "global": true, "any": true,
 	"final": true, "qualify": true, "sample": true, "array": true, "semi": true, "anti": true,
-	"paste": true, "asof": true,
+	"paste": true, "asof": true, "with": true,
 }
 
 func (p *parser) canAlias() bool {
@@ -396,6 +396,11 @@ func (p *parser) selectCore() (*Select, error) {
 	}
 	if s.Items, err = p.selectItems(); err != nil {
 		return nil, err
+	}
+	if p.acceptKw("into") {
+		if s.Into, err = p.parseInto(); err != nil {
+			return nil, err
+		}
 	}
 	if p.acceptKw("from") {
 		n, err := p.fromList()

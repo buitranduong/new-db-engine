@@ -62,7 +62,7 @@ func maxParamAny(st Stmt) int {
 	case *Explain:
 		return maxParamAny(q.Stmt)
 	}
-	return 0
+	return maxParamExt(st)
 }
 
 // insertSelectKinds infers $n kinds for INSERT .. SELECT: a parameter that

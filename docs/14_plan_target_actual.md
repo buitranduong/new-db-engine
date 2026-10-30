@@ -211,6 +211,18 @@ Hạn chế trung thực: (1) quy mô thử: 200k SIM + 550k thay đổi mỗi l
 
 Phát hiện ngoài phạm vi: không có sửa đổi nào ở `internal/sql|core|proj`; hiệu năng truy vấn `EXISTS` tương quan của STASK (mục 3 ở trên) lộ ra khi so sánh bằng bộ truy vấn.
 
+### CT Lệnh tạo bảng và nạp dữ liệu cơ bản (nhánh `ctas`, 2026-10-30; docs/05 §25)
+
+| Task | Kế hoạch | Mục tiêu (xong khi) | Thực tế | Trạng thái |
+|---|---|---|---|---|
+| CT1 | `CREATE TABLE AS`, `SELECT .. INTO`, `WITH [NO] DATA`, danh sách tên cột; kiểu suy từ truy vấn | cùng OID/typmod như PG16 | `ctas_exec.go` (`colDefFor`, `sourceCols`): OID/typmod `integer`, `smallint`, `varchar(n)`, `numeric(p,s)` (khi cột ra là bản sao trần của cột gốc) khớp PG16 (so `atttypid/atttypmod`); pgdiff nhóm `h` 0 DIFF | Xong-có-bằng-chứng |
+| CT2 | `CREATE TABLE (LIKE .. INCLUDING DEFAULTS\|CONSTRAINTS\|INDEXES\|IDENTITY\|ALL)` | hành vi như PG16 (PK/UNIQUE/CHECK/default chỉ khi INCLUDING; NOT NULL luôn sao) | `likeElem` + `expandLikes`/`likeIndexes`; test + 20 câu pgdiff (phiên like), chỉ khác thông điệp (tên ràng buộc CHECK, 23505) | Xong-có-bằng-chứng |
+| CT3 | Bảng tạm (`TEMP`, `ON COMMIT`), `UNLOGGED` | riêng theo phiên, che bảng public, mất khi đóng phiên, không vào CDC, không ghi log nhân bản | Riêng/che/mất/ON COMMIT/rollback/CDC: đạt (test + 3 phiên pgdiff). **Chưa đạt: "không ghi log"**: các dòng của bảng tạm vẫn vào log (engine chưa có bảng không log; làm là đổi đường commit, nên dừng và báo). `UNLOGGED` coi như bảng thường. `public.x` đi qua bảng tạm `x` | Một phần |
+| CT4 | `CREATE/REFRESH [CONCURRENTLY]/DROP MATERIALIZED VIEW`, `pg_matviews`, relkind `m` | qua restart/checkpoint/replica | `Table.MatView` (JSON `omitempty`); REFRESH ghi phần chênh lệch trong một giao dịch; test restart/ckpt/replica, 37 câu pgdiff, 0 DIFF | Xong-có-bằng-chứng |
+| CT5 | `MERGE` (PG15+) | tag `MERGE n`; property test so mô hình; 200k dòng staging vào bảng 1M không chậm hơn `INSERT .. ON CONFLICT` nhiều lần | `merge.go`; property test 25 seed + test đồng thời; **MERGE 3,3 s so với ON CONFLICT 2,3 s (1,43×)** (trước khi đọc theo khoá: 5,6 s, 2,5×). Không `RETURNING`, không `NOT MATCHED BY SOURCE` | Xong-có-bằng-chứng (chưa đo trên máy riêng) |
+| CT6 | `TRUNCATE .. CASCADE`, `INSERT .. OVERRIDING`, `DEFAULT VALUES`, `ALTER .. SET/DROP DEFAULT/NOT NULL` | khớp PG16 | `TRUNCATE CASCADE` mới; `OVERRIDING USER VALUE` trên `GENERATED ALWAYS` sửa; phần còn lại đã đúng, có test | Xong-có-bằng-chứng |
+| CT7 | pgdiff nhóm `h` + probe `ct_*` | đối chiếu PG16 thật | `h_ctas.sql` 206 câu: **197 PASS, 9 PASS-MSG, 0 DIFF**; 45 probe `ct_*` đạt trên cả PG16 và STASK; chạy toàn bộ `scripts/pgdiff`: xem Phụ lục F | Xong-có-bằng-chứng |
+
 ### 2.1 Công cụ đo tự kiểm (P0.9)
 
 **Thành phần.**
@@ -814,3 +826,37 @@ Qua và giống PG: ORM (insert cha-con có cascade, `get` theo khoá uuid, upda
 Điểm tốt đáng ghi nhận: Liquibase `update` idempotent, `rollback --tag` và `rollback-count` đúng; `loadData` CSV (uuid, boolean, timestamp, NULL, trích dẫn có dấu phẩy) giống PG; ORM CRUD của SQLAlchemy và 36 truy vấn kiểu Superset chạy, 35/36 cùng kết quả với PG; JDBC batch/RETURNING/savepoint/con trỏ/COPY chạy.
 
 **E.6 Hạn chế, chưa chứng minh.** Chưa chạy Jmix/Hibernate thật (chỉ Liquibase, pgjdbc, SQLAlchemy); Superset thật chưa chạy (chỉ truy vấn kiểu Superset và đường reflection của SQLAlchemy). Chữ ký PGP của Liquibase chưa kiểm (chỉ SHA-1/MD5 công bố cùng bản phát hành và SHA-256 tự tính). Không rõ Liquibase dùng pgjdbc 42.7.4 đi kèm hay 42.7.14 trên `--classpath` (log TRACE của pgjdbc không ghi file khi chạy trong Liquibase); JDBC và SQLAlchemy dùng 42.7.14 và 2.0.55. Số liệu một lần chạy, VM dùng chung, không có đo thời gian. Phiên bản kiểm chứng trên `main` @ bcb74f9: các nhánh `superq`, `sqlgaps`, `pgfix` chưa gộp có thể đã sửa một phần (ví dụ `pg_catalog.pg_class.relname` được nhánh `superq` báo 42601); chạy lại bằng `accept/clients/*/run.sh` sau khi gộp.
+
+
+## Phụ lục H. Nhánh `ctas`: CTAS, LIKE, bảng tạm, view vật chất hoá, MERGE, TRUNCATE (2026-10-30, gốc `main` @ 12e7f0e)
+
+**Tái lập** (dữ liệu và biên dịch đặt trong `/dev/shm` vì đĩa VM còn < 3 GB lúc đo):
+```sh
+cd ~/wt/ctas
+export GOCACHE=/dev/shm/ctas-gocache GOTMPDIR=/dev/shm/ctas-tmp TMPDIR=/dev/shm/ctas-tmp
+D=/dev/shm/ctas-pgdiff PGP=28630 HP=28631 SP=28632 NAME=ctas-pg bash scripts/pgdiff-run.sh   # toàn bộ, báo cáo $D/report.md
+CTAS_PERF=1 go test -run TestMergePerf -v -count=1 ./internal/sql                           # MERGE 200k vào 1M
+go test -count=1 -p 2 ./internal/sql ./internal/schema ./internal/pgwire ./internal/repl ./internal/server
+go test -count=1 -race -run 'TestCTAS|TestLikeAndTemp|TestTemp|TestMatView|TestTruncateCascade|TestMerge' ./internal/sql
+```
+
+**F.1 pgdiff** (toàn bộ `scripts/pgdiff`, 1547 câu, PG16 `timezone=UTC`): PASS 1272, PASS-MSG 87, DIFF 118, ERR-ONLY-ONE-SIDE 70.
+
+| Nhóm | Số câu | PASS | PASS-MSG | DIFF | ERR-ONLY-ONE-SIDE |
+|---|---|---|---|---|---|
+| a | 166 | 157 | 7 | 2 | 0 |
+| b | 287 | 244 | 8 | 14 | 21 |
+| c | 266 | 162 (trước 152) | 53 | 20 | 31 (trước 44) |
+| d | 140 | 138 | 2 | 0 | 0 |
+| e | 74 | 59 | 6 | 9 | 0 |
+| f | 67 | 59 | 0 | 8 | 0 |
+| g | 341 | 256 (trước 251) | 2 | 65 | 18 (trước 23) |
+| **h (mới)** | **206** | **197** | **9** | **0** | **0** |
+
+Nhóm c và g tốt lên vì các câu `CREATE TEMP TABLE` / CTAS / `TRUNCATE` / `MATERIALIZED` trong đó giờ chạy. Số "trước" lấy từ docs/STATUS §3 và Phụ lục E (không chạy lại `main`).
+
+**F.2 claimcheck**: 318 probe (45 mới `ct_*`), **300 đạt**; 18 trượt, đều là probe đã trượt trước đó (`serializable_scan`, `create_trigger`, `pd_update_alias`, `pd_collation_order`, `pd_default_isolation`, `pd_jsonb_arrow`, `sess_show_transaction_isolation`, `ext_param_any_array` và 10 probe `sq_*`/`ext_sq_*`); `pd_ctas`, `pd_create_temp_table` và `ext_param_limit_subquery` chuyển sang đạt. Kỳ vọng của 45 probe mới đã chạy trên PG16 thật: 45/45. Không sửa `docs/claimcheck_baseline.txt` (việc của người điều phối).
+
+**F.3 Đo MERGE** (`TestMergePerf`, bảng đích 1M dòng PK `text`, staging 200k dòng, một nửa trùng khoá, `TMPDIR` trên RAM disk, VM 8 core dùng chung, một lần đo): MERGE **3,3 s** (60k dòng/s), `INSERT .. SELECT .. ON CONFLICT DO UPDATE` **2,3 s** (86k dòng/s), tỉ lệ **1,43×**. Bản đầu (join quét cả bảng đích): 5,6 s và 2,5×; riêng truy vấn join 3,9 s. So với PG16: chưa đo (bản này đo trong tiến trình, không qua mạng).
+
+**F.4 Hạn chế và việc chưa làm.** (1) Dòng của bảng tạm vẫn ghi vào log. (2) `public.x` đi qua bảng tạm `x`; `pg_temp.x` bằng `x`. (3) Bảng tạm sót sau `kill -9` chỉ bị quét khi phiên đầu tiên của tiến trình mới tạo bảng tạm. (4) `UNLOGGED` = bảng thường. (5) Ràng buộc/sequence của bảng tạm lộ tên engine `pg_temp_<n>#<tên>` trong thông điệp lỗi. (6) MERGE: không `RETURNING`, không `NOT MATCHED BY SOURCE`; `ON` không dạng `pk = X` quét cả bảng đích; không có cơ chế sửa xung đột theo dòng (`occ_repair` chưa vào `main`), nên MERGE xung đột phải làm lại cả lệnh. (7) View vật chất hoá: không `CREATE INDEX` khi chưa populate, `REFRESH` ghi chênh lệch nên tốn bộ nhớ cho tập đa tuyến của cả view. (8) DDL của nhóm này áp dụng ngay, không hoàn tác theo giao dịch (như `CREATE TABLE`), trừ việc bảng tạm tạo trong giao dịch bị xoá khi `ROLLBACK`. (9) CTAS giữ kiểu như PG chỉ cho `int2/4/8`, `float4/8`, `varchar(n)`, `bpchar(n)`, `numeric(p,s)` của cột trần, `date`, `time`, `timestamp(tz)`, `uuid`, `bytea`, `json(b)`, mảng; `interval` bị từ chối. (10) Cổng pgdiff chạy một lần; không đo trên máy riêng.

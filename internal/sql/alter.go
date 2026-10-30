@@ -29,6 +29,10 @@ func colIndex(t *schema.Table, name string) int {
 }
 
 func (s *Session) alterTable(st *AlterTable) (*Result, error) {
+	if r, ok := s.tempReal(st.Name); ok {
+		cp := *st
+		cp.Name, st = r, &cp
+	}
 	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool { return a.Kind == "add_constraint" || a.Kind == "drop_constraint" }) {
 		return s.alterConstraints(st)
 	}
@@ -37,7 +41,7 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 
 func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 	res := &Result{Tag: "ALTER TABLE"}
-	if _, err := s.E.UserTable(st.Name); err != nil {
+	if _, err := s.userTable(st.Name); err != nil {
 		if st.IfExists {
 			res.Notice = fmt.Sprintf("relation %q does not exist, skipping", st.Name)
 			return res, nil

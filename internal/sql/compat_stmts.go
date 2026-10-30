@@ -243,8 +243,14 @@ func writesStatement(st Stmt) (bool, string) {
 		return true, "UPDATE"
 	case *Delete:
 		return true, "DELETE"
-	case *CreateTable, *CreateView, *CreateSequence, *CreateTrigger:
+	case *CreateTable, *CreateView, *CreateSequence, *CreateTrigger, *CreateAs:
 		return true, "CREATE"
+	case *Merge:
+		return true, "MERGE"
+	case *RefreshMat:
+		return true, "REFRESH"
+	case *DropMat:
+		return true, "DROP"
 	case *DropTable, *DropView, *DropSequence, *DropTrigger:
 		return true, "DROP"
 	case *AlterTable, *AlterSequence:

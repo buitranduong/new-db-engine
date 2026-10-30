@@ -1948,6 +1948,8 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			tp.c = append(tp.c, rc)
 		}
 		return tp, nil
+	case *FromKeyed:
+		return c.compileKeyed(f)
 	case *FromSubquery:
 		outer := sc
 		if f.Lateral && lat != nil {

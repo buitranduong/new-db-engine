@@ -479,6 +479,9 @@ func (e *Engine) Trim(before uint32) (int, error) {
 	return len(del), nil
 }
 
+// QueueDepth is the number of commit requests waiting for the committer.
+func (e *Engine) QueueDepth() int { return len(e.reqCh) }
+
 // ReplicaLag is how long ago the newest applied commit was made on the
 // leader (by the leader's clock).
 func (e *Engine) ReplicaLag() time.Duration {

@@ -77,6 +77,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	p("stask_go_heap_alloc_bytes", "gauge", "Go heap in use.", ms.HeapAlloc)
 	p("stask_go_goroutines", "gauge", "Goroutines.", runtime.NumGoroutine())
 	sql.WriteMetrics(w, e)
+	s.opsMetrics(w)
 }
 
 func (s *Server) scrub(w http.ResponseWriter, r *http.Request) {

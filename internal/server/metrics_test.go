@@ -35,7 +35,9 @@ func TestMetricsAndScrubEndpoints(t *testing.T) {
 	}
 	b := r.body
 	for _, want := range []string{"# TYPE stask_commits_total counter", "stask_up 1", "stask_sql_statement_duration_seconds_bucket{le=\"+Inf\"}",
-		"stask_scrub_running 0", "stask_pg_auth_failures_total"} {
+		"stask_scrub_running 0", "stask_pg_auth_failures_total",
+		"# TYPE stask_commit_latency_seconds histogram", "stask_commit_latency_seconds_bucket{le=\"+Inf\"}", "stask_commit_queue_depth 0",
+		"stask_read_only 0", "stask_view_lag_seconds{view=\"columnar\"}", "stask_view_ready{view=\"columnar\"}"} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("missing %q in\n%s", want, b)
 		}
@@ -76,4 +78,19 @@ type resp struct {
 	StatusCode int
 	Header     http.Header
 	body       []byte
+}
+
+// /v1/ready is public like /v1/health, answers 200 on a node that can work,
+// and with ?write=1 fails on a read-only node.
+func TestReadyEndpoint(t *testing.T) {
+	srv, _ := authServer(t, SecurityConfig{Tokens: "full-tok"})
+	r, err := srv.Client().Get(srv.URL + "/v1/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	if r.StatusCode != 200 || !strings.Contains(string(b), `"ready":true`) {
+		t.Fatalf("/v1/ready: %d %s", r.StatusCode, b)
+	}
 }

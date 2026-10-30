@@ -164,7 +164,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return nil, err
 		}
 	}
-	if w, what := writesStatement(st); w && s.isReadOnly() {
+	if w, what := writesStatement(st); w && (s.isReadOnly() || s.E != nil && s.E.ReadOnly()) {
 		s.markFailed()
 		return nil, errf("25006", "cannot execute %s in a read-only transaction", what)
 	}
@@ -263,7 +263,10 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if !ok {
 			v, ok = settingDefaults[name]
 		}
-		if name == "transaction_read_only" && s.explicit && s.readOnly {
+		if name == "transaction_read_only" && (s.explicit && s.readOnly || s.E != nil && s.E.ReadOnly()) {
+			v = "on"
+		}
+		if name == "default_transaction_read_only" && s.E != nil && s.E.ReadOnly() {
 			v = "on"
 		}
 		if name == "transaction_isolation" && s.explicit && s.tx.Iso() == core.Serializable {

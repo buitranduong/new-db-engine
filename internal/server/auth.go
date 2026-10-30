@@ -232,7 +232,7 @@ func readOnlyRequest(r *http.Request) bool {
 // the engine accepts writes; /v1/status (table names, row counts, views)
 // needs a credential.
 func publicPath(r *http.Request) bool {
-	return r.URL.Path == "/v1/health" && (r.Method == http.MethodGet || r.Method == http.MethodHead)
+	return (r.URL.Path == "/v1/health" || r.URL.Path == "/v1/ready") && (r.Method == http.MethodGet || r.Method == http.MethodHead)
 }
 
 // Wrap puts authentication in front of h. A nil *Auth returns h unchanged.

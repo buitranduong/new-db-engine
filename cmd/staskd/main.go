@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
@@ -151,11 +152,18 @@ func main() {
 	faults := flag.Bool("enable-faults", false, "enable the fault-injection admin endpoint (tests only)")
 	collation := flag.String("collation", "C", "database default text collation: C (byte order, the default), POSIX, en_US.utf8, vi_VN.utf8, und-x-icu, or another CLDR locale (x_Y.utf8, x-x-icu). Orders ORDER BY, < <= > >=, BETWEEN, min/max; equality, GROUP BY, DISTINCT and unique keys stay bytewise. Indexes are byte-ordered, so ORDER BY and text ranges on a non-C collation do not use them (docs/14 Appendix W). COLLATE \"name\" overrides per expression")
 	confPath := flag.String("config", os.Getenv("STASK_CONFIG"), "settings file: one \"name = value\" per line, names as these flags; flags on the command line win (default $STASK_CONFIG)")
+	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error (lines are leveled by their prefix or, without one, by keywords; docs/21 section 6)")
+	logFormat := flag.String("log-format", "text", "log format: text or json (one object per line with time, level, msg)")
 	flag.Parse()
 	if *confPath != "" {
 		if err := conf.Load(flag.CommandLine, *confPath); err != nil {
 			log.Fatalf("config: %v", err)
 		}
+	}
+	if err := setupLogging(*logLevel, *logFormat); err != nil {
+		log.Fatal(err)
+	}
+	if *confPath != "" {
 		log.Printf("config: loaded %s", *confPath)
 	}
 	if err := sql.SetDefaultCollation(*collation); err != nil {
@@ -382,6 +390,28 @@ func main() {
 	hsrv := server.New(p, fault)
 	if cl != nil {
 		hsrv.Cluster = func() any { return cl.Status() }
+		hsrv.ClusterMetrics = func() map[string]float64 {
+			st := cl.Status()
+			b := func(v bool) float64 {
+				if v {
+					return 1
+				}
+				return 0
+			}
+			return map[string]float64{"raft_term": float64(st.Term), "raft_is_leader": b(st.Role == "leader"),
+				"raft_writable": b(st.Writable), "raft_leader_known": b(st.Leader != 0), "raft_lease": b(st.Lease),
+				"raft_commit_index": float64(st.Commit), "raft_applied_index": float64(st.Applied),
+				"raft_apply_lag_entries":         float64(st.Commit - min(st.Commit, st.Applied)),
+				"raft_snapshots_installed_total": float64(cl.Stats.Snapshots.Load())}
+		}
+	}
+	if rs != nil {
+		hsrv.ReplicaInfo = rs.Replicas
+	}
+	if histSt != nil {
+		hsrv.ExtraMetrics = append(hsrv.ExtraMetrics, func(w io.Writer) {
+			fmt.Fprintf(w, "# HELP stask_history_store_bytes Size of the history store.\n# TYPE stask_history_store_bytes gauge\nstask_history_store_bytes{kind=\"disk\"} %d\nstask_history_store_bytes{kind=\"memory\"} %d\n", histSt.DiskBytes(), histSt.MemBytes())
+		})
 	}
 	srv := &http.Server{Addr: *addr, Handler: httpAuth.Wrap(hsrv.Handler()), TLSConfig: httpTLS}
 	if *pprofAddr != "" {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"stask/internal/core"
 	"stask/internal/planner"
 	"stask/internal/proj"
+	"stask/internal/repl"
 	"stask/internal/schema"
 	"stask/internal/sql"
 )
@@ -28,6 +30,14 @@ type Server struct {
 	// Raft cluster (internal/cluster); clients and the router find the
 	// leader with it.
 	Cluster func() any
+	// ClusterMetrics, if set, adds the node's Raft state to /metrics (name
+	// without the stask_ prefix -> value).
+	ClusterMetrics func() map[string]float64
+	// ExtraMetrics write more Prometheus text (history store, replication
+	// leader); each is called on every scrape.
+	ExtraMetrics []func(io.Writer)
+	// ReplicaInfo, if set (a replication leader), lists its replicas.
+	ReplicaInfo func() []repl.ReplicaInfo
 
 	txMu  sync.Mutex
 	txs   map[uint64]*txEntry
@@ -59,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/tx/{id}/{op}", s.txOp)
 	m.HandleFunc("GET /v1/status", s.status)
 	m.HandleFunc("GET /v1/health", s.health)
+	m.HandleFunc("GET /v1/ready", s.ready)
 	m.HandleFunc("GET /v1/cluster", s.cluster)
 	m.HandleFunc("POST /v1/admin/checkpoint", s.checkpoint)
 	m.HandleFunc("POST /v1/admin/gc", s.gcRound)

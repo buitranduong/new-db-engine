@@ -568,6 +568,7 @@ func (c *conn) startup() error {
 			{"DateStyle", "ISO, MDY"}, {"TimeZone", "UTC"}, {"integer_datetimes", "on"},
 			{"standard_conforming_strings", "on"}, {"application_name", params["application_name"]},
 			{"is_superuser", isSuper}, {"session_authorization", params["user"]}, {"IntervalStyle", "postgres"},
+			{"in_hot_standby", onOff(c.s.E.ReadOnly())}, {"default_transaction_read_only", onOff(c.s.E.ReadOnly())},
 		} {
 			c.send(newMsg('S').str(kv[0]).str(kv[1]))
 		}
@@ -1323,4 +1324,12 @@ func trimTimeFrac(s string) string {
 		return s
 	}
 	return strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
+}
+
+// onOff is the text of a boolean GUC.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }

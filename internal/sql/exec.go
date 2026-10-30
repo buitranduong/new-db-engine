@@ -2044,6 +2044,13 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if st, err = s.valuesSubqueries(tx, st, params); err != nil {
 		return nil, err
 	}
+	if len(st.Returning) > 0 {
+		ins := *st
+		if ins.Returning, err = s.returningSubqueries(tx, st.Returning, params); err != nil {
+			return nil, err
+		}
+		st = &ins
+	}
 	sc := &scope{t: t}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
@@ -2242,10 +2249,17 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(st.Returning) > 0 {
+		upd := *st
+		if upd.Returning, err = s.returningSubqueries(tx, st.Returning, params); err != nil {
+			return nil, err
+		}
+		st = &upd
+	}
 	if st.From != nil || hasSubquery(st.Where) || setHasSubquery(st.Set) {
 		return s.updateGeneral(tx, t, st, params)
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	rows, err := s.matching(tx, t, ctx, st.Where)
 	if err != nil {
@@ -2277,10 +2291,17 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(st.Returning) > 0 {
+		del := *st
+		if del.Returning, err = s.returningSubqueries(tx, st.Returning, params); err != nil {
+			return nil, err
+		}
+		st = &del
+	}
 	if st.Using != nil || hasSubquery(st.Where) {
 		return s.deleteGeneral(tx, t, st, params)
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	rows, err := s.matching(tx, t, ctx, st.Where)
 	if err != nil {

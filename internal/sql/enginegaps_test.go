@@ -147,3 +147,50 @@ func TestGapsReadCommitted(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestGapsDMLAliasAndValuesSubquery(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE a (id INT PRIMARY KEY, v TEXT)`)
+	run(t, s, `CREATE TABLE b (id INT PRIMARY KEY, v TEXT, w INT)`)
+	run(t, s, `INSERT INTO a VALUES (1,'a'),(2,'b')`)
+	run(t, s, `UPDATE a x SET v = 'z' WHERE x.id = 1`)
+	run(t, s, `UPDATE a AS x SET v = x.v || '!' WHERE x.id = 1 RETURNING x.id`)
+	run(t, s, `DELETE FROM a y WHERE y.id = 2`)
+	if got := one(t, s, `SELECT string_agg(id::text || v, ',') FROM a`); got != "1z!" {
+		t.Fatal(got)
+	}
+	run(t, s, `INSERT INTO b VALUES (1, (SELECT v FROM a WHERE id = 1), (SELECT count(*) FROM a))`)
+	run(t, s, `INSERT INTO b VALUES (2, (SELECT v FROM a WHERE id = 99), 1 + (SELECT max(id) FROM a)), (3, 'k', 5)`)
+	if got := one(t, s, `SELECT string_agg(id::text || ':' || coalesce(v,'~') || ':' || w, ',' ORDER BY id) FROM b`); got != "1:z!:1,2:~:2,3:k:5" {
+		t.Fatal(got)
+	}
+	if _, err := tryRun(s, `INSERT INTO b VALUES (4, (SELECT v FROM a UNION ALL SELECT v FROM a), 1)`); err == nil {
+		t.Fatal("expected 21000")
+	} else if e := AsError(err); e.Code != "21000" {
+		t.Fatal(e.Code, e.Msg)
+	}
+	// ON CONFLICT DO UPDATE SET with a subquery: a proper error or a value, never XX000
+	_, err := tryRun(s, `INSERT INTO b VALUES (1,'q',1) ON CONFLICT (id) DO UPDATE SET w = (SELECT count(*) FROM a)`)
+	if err != nil && AsError(err).Code == "XX000" {
+		t.Fatal(err)
+	}
+}
+
+func TestGapsReturningSubquery(t *testing.T) {
+	s := NewSession(newEngine(t))
+	run(t, s, `CREATE TABLE a (id INT PRIMARY KEY, n INT)`)
+	run(t, s, `INSERT INTO a VALUES (1,10),(2,20)`)
+	if got := one(t, s, `INSERT INTO a VALUES (3,30) RETURNING id, (SELECT count(*) FROM a) AS c`); got != "3,2" {
+		t.Fatal(got)
+	}
+	if got := one(t, s, `UPDATE a SET n = 0 WHERE id = 1 RETURNING (SELECT max(n) FROM a)`); got != "30" {
+		t.Fatal(got)
+	}
+	if got := one(t, s, `DELETE FROM a WHERE id = 3 RETURNING id, (SELECT 7)`); got != "3,7" {
+		t.Fatal(got)
+	}
+	_, err := tryRun(s, `UPDATE a SET n = 1 WHERE id = 2 RETURNING (SELECT x.n FROM a x WHERE x.id = a.id)`)
+	if err != nil && AsError(err).Code == "XX000" {
+		t.Fatal(err)
+	}
+}

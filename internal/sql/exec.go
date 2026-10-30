@@ -52,19 +52,20 @@ type Result struct {
 
 // Session holds per-connection state: the open transaction and settings.
 type Session struct {
-	E        *core.Engine
-	prng     pgPRNG // random() / setseed()
-	tx       *core.Tx
-	txid     pgTxid     // txid_current() of the current transaction (pgcmds.go)
-	plDepth  int        // nesting of user functions being run (plsql.go)
-	plNotice string     // the last RAISE NOTICE message of the running DO / CALL
-	explicit bool       // inside BEGIN ... COMMIT
-	txLevel  string     // isolation level of the explicit transaction (readcommitted.go)
-	spilled  bool       // the last query ran in spill mode (EXPLAIN ANALYZE)
-	rep      *repairRec // occ_repair.go: the autocommit statement being run
-	failed   bool       // an error occurred inside the explicit transaction
-	vars     map[string]string
-	Views    Views // nil: aggregates always scan rows
+	E         *core.Engine
+	prng      pgPRNG // random() / setseed()
+	tx        *core.Tx
+	txid      pgTxid     // txid_current() of the current transaction (pgcmds.go)
+	plDepth   int        // nesting of user functions being run (plsql.go)
+	plNotice  string     // the last RAISE NOTICE message of the running DO / CALL
+	explicit  bool       // inside BEGIN ... COMMIT
+	inCascade bool       // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
+	txLevel   string     // isolation level of the explicit transaction (readcommitted.go)
+	spilled   bool       // the last query ran in spill mode (EXPLAIN ANALYZE)
+	rep       *repairRec // occ_repair.go: the autocommit statement being run
+	failed    bool       // an error occurred inside the explicit transaction
+	vars      map[string]string
+	Views     Views // nil: aggregates always scan rows
 
 	// PID identifies the session to listeners (the wire protocol's
 	// backend process id).

@@ -57,19 +57,26 @@ import (
 const ddlKind = "ddltx"
 
 type ddlStep struct {
-	Op      string            `json:"op"`
-	Table   string            `json:"table,omitempty"`
-	Names   []string          `json:"names,omitempty"`
-	Before  []string          `json:"before,omitempty"`
-	ID      uint32            `json:"id,omitempty"`
-	Rel     uint32            `json:"rel,omitempty"` // CREATE TABLE: the RelID given to the table before it exists
-	Cascade bool              `json:"cascade,omitempty"`
-	Col     *schema.Column    `json:"col,omitempty"`
-	Idx     []schema.IndexDef `json:"idx,omitempty"`
-	Views   []viewSnap        `json:"views,omitempty"`
-	Seqs    []seqSnap         `json:"seqs,omitempty"`
-	Objs    []objSnap         `json:"objs,omitempty"`
-	Trigs   []trigSnap        `json:"trigs,omitempty"`
+	Op       string               `json:"op"`
+	Table    string               `json:"table,omitempty"`
+	Names    []string             `json:"names,omitempty"`
+	Before   []string             `json:"before,omitempty"`
+	ID       uint32               `json:"id,omitempty"`
+	Rel      uint32               `json:"rel,omitempty"` // CREATE TABLE: the RelID given to the table before it exists
+	Cascade  bool                 `json:"cascade,omitempty"`
+	Col      *schema.Column       `json:"col,omitempty"`
+	Idx      []schema.IndexDef    `json:"idx,omitempty"`
+	Views    []viewSnap           `json:"views,omitempty"`
+	Seqs     []seqSnap            `json:"seqs,omitempty"`
+	Objs     []objSnap            `json:"objs,omitempty"`
+	Trigs    []trigSnap           `json:"trigs,omitempty"`
+	Cols     []schema.Column      `json:"cols,omitempty"`
+	Key      string               `json:"key,omitempty"`
+	KeyCols  []string             `json:"key_cols,omitempty"`
+	Substr   []schema.SubstrIndex `json:"substr,omitempty"`
+	Gin      []schema.GinIndex    `json:"gin,omitempty"`
+	RoleSnap *roleSnap            `json:"role_snap,omitempty"`
+	CDC      *cdcSnap             `json:"cdc,omitempty"`
 }
 
 type ddlJournal struct {
@@ -227,6 +234,16 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		return res, true, err
 	case *AlterTable:
 		return s.djAlter(st)
+	case *CreateSubstrIndex:
+		if _, temp := s.tempReal(st.Table); temp {
+			return nil, false, nil
+		}
+		ts, err := s.E.UserTable(st.Table)
+		if err != nil {
+			return nil, false, nil
+		}
+		d := ts.Schema()
+		return s.djRun(ddlStep{Op: "restore_substr", Table: d.Name, Substr: slices.Clone(d.Substr), Gin: slices.Clone(d.Gin)}, run)
 	case *DropIndex:
 		return s.djDropIndex(st.Names)
 	case *DropSubstrIndex:
@@ -243,18 +260,44 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		return s.djObjs(st, run)
 	case *CreateTrigger, *DropTrigger:
 		return s.djTriggers(st, run)
+	case *CreateRole, *AlterRole, *DropRole, *Grant:
+		return s.djRoles(run)
+	case *CreatePublication, *DropPublication, *AlterReplicaIdentity:
+		return s.djCDC(run)
 	}
 	return nil, false, nil
 }
 
+// substrNamed reports whether name is a trigram or GIN index.
+func (s *Session) substrNamed(name string) bool {
+	for _, ts := range s.E.UserTables() {
+		t := ts.Schema()
+		for _, x := range t.Substr {
+			if x.Name == name {
+				return true
+			}
+		}
+		for _, x := range t.Gin {
+			if x.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Session) djDropIndex(names []string) (*Result, bool, error) {
 	for _, n := range names {
-		if !s.indexDroppable(n) {
-			return nil, false, nil // missing, trigram or constraint-backed: the normal path handles it
+		if !s.indexDroppable(n) && !s.substrNamed(n) {
+			return nil, false, nil // missing or constraint-backed: the normal path handles it
 		}
 	}
 	for _, n := range names {
-		if err := s.djRedo(ddlStep{Op: "drop_index", Names: []string{n}}); err != nil {
+		op := "drop_index"
+		if s.substrNamed(n) {
+			op = "drop_substr"
+		}
+		if err := s.djRedo(ddlStep{Op: op, Names: []string{n}}); err != nil {
 			s.markFailed()
 			return nil, true, AsError(err)
 		}
@@ -372,7 +415,12 @@ func (s *Session) djAlter(st *AlterTable) (*Result, bool, error) {
 			journaled = journaled || a.Constraint != nil && (a.Constraint.Kind == "unique" || a.Constraint.Kind == "foreign")
 		}
 		if a.Kind == "add_pk" {
-			return nil, false, nil // rebuilds the key: applied at once, not undone (docs/05)
+			// the table has no rows (ADD PRIMARY KEY refuses otherwise); the
+			// rows this transaction wrote were encoded with the old key
+			if ts, err := s.E.UserTable(st.Name); err == nil && s.tx != nil && s.tx.HasWrites(ts.Schema().Name) {
+				return s.djFail(errf(codeFeature, "ADD PRIMARY KEY on table %q after writing rows to it in the same transaction is not supported", st.Name))
+			}
+			journaled = true
 		}
 		if a.Kind == "add_constraint" && (a.Constraint == nil || a.Constraint.Kind != "unique" && a.Constraint.Kind != "foreign") {
 			return nil, false, nil
@@ -414,6 +462,13 @@ func (s *Session) djAlter(st *AlterTable) (*Result, bool, error) {
 				c := t.Columns[i]
 				undo = &ddlStep{Op: "restore_col", Table: t.Name, Col: &c}
 			}
+		case "add_pk":
+			var owned []string
+			for _, q := range s.tableSequences(t.Name) {
+				owned = append(owned, q.Name)
+			}
+			undo = &ddlStep{Op: "restore_key", Table: t.Name, Cols: slices.Clone(t.Columns), Key: t.Key, KeyCols: slices.Clone(t.KeyCols),
+				Seqs: s.seqSnaps(owned)} // the hidden row id column is dropped with its sequence
 		case "add_check", "add_constraint":
 			undo = &ddlStep{Op: "drop_constraints", Table: t.Name, Before: constraintNames(t)}
 		case "drop_column":
@@ -817,6 +872,42 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 		return "", s.restoreObjs(st.Objs)
 	case "restore_trigs":
 		return "", s.restoreTrigs(st.Trigs)
+	case "restore_key":
+		ts, err := s.E.Table(st.Table)
+		if err != nil || len(st.Cols) == 0 || ts.Schema().Key == st.Key && slices.Equal(ts.Schema().KeyCols, st.KeyCols) {
+			return "", nil
+		}
+		if err := s.restoreSeqs(st.Seqs); err != nil { // before: the columns default to them
+			return "", err
+		}
+		return "", asErr(s.E.AlterTable(st.Table, func(d *schema.Table) error {
+			d.Columns = slices.Clone(st.Cols)
+			d.Key, d.KeyCols = st.Key, slices.Clone(st.KeyCols)
+			d.Dropped = slices.DeleteFunc(d.Dropped, func(c schema.Column) bool {
+				return slices.ContainsFunc(st.Cols, func(x schema.Column) bool { return x.Num == c.Num })
+			})
+			return nil
+		}))
+	case "restore_substr":
+		if _, err := s.E.Table(st.Table); err != nil {
+			return "", nil
+		}
+		return "", asErr(s.E.AlterTable(st.Table, func(d *schema.Table) error {
+			d.Substr, d.Gin = slices.Clone(st.Substr), slices.Clone(st.Gin)
+			return nil
+		}))
+	case "drop_substr":
+		stmt = &DropSubstrIndex{Names: st.Names, IfExists: true}
+	case "restore_roles":
+		if st.RoleSnap == nil {
+			return "", nil
+		}
+		return "", s.E.RestoreRoles(st.RoleSnap.Roles)
+	case "restore_cdc":
+		if st.CDC == nil {
+			return "", nil
+		}
+		return "", s.E.CDCRestore(st.CDC.Pubs, st.CDC.Ident)
 	default:
 		return "", fmt.Errorf("unknown ddl journal step %q", st.Op)
 	}

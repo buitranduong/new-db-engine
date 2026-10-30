@@ -209,7 +209,7 @@ func (s *Session) createSubstrIndex(c *CreateSubstrIndex) (*Result, error) {
 	if s.indexNameTaken(name) {
 		return nil, errf(codeDuplicateTable, "relation %q already exists", name)
 	}
-	if s.explicit {
+	if s.explicit && !s.djBypass { // inside the DDL journal it is undone with the transaction (ddltx.go)
 		return nil, errf("25001", "CREATE INDEX cannot run inside a transaction block")
 	}
 	err = s.E.AlterTable(c.Table, func(d *schema.Table) error {

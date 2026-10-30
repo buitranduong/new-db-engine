@@ -268,12 +268,20 @@ func (s *Session) djObjs(st Stmt, run func() (*Result, error)) (*Result, bool, e
 		undo = ddlStep{Op: "restore_objs", Objs: s.objSnaps("comment", commentKey(st.Class, name, st.Col), commentKey(st.Class, st.Name, st.Col))}
 	case *ObjDDL:
 		kinds := objKinds(st.Class)
-		if kinds == nil || st.Cascade {
+		if kinds == nil {
+			return nil, false, nil
+		}
+		if st.Cascade {
+			if st.Op == "drop" && (st.Class == "type" || st.Class == "domain" || st.Class == "schema") {
+				return s.djCascade(st, kinds, run)
+			}
 			return nil, false, nil
 		}
 		switch st.Class + " " + st.Op {
 		case "type alter":
-			return nil, false, nil // rewrites the stored rows or the columns
+			if st.Action != "add_value" && st.Action != "owner" {
+				return nil, false, nil // RENAME and RENAME VALUE rewrite the columns
+			}
 		case "domain alter":
 			if st.Action == "rename" {
 				return nil, false, nil

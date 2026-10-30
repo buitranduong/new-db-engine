@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
+	"time"
 
 	"stask/internal/schema"
 )
@@ -53,11 +55,20 @@ func (e *Engine) objsTable() error {
 		return nil
 	}
 	_, err := e.CreateTable(objSchema())
+	if err != nil && strings.Contains(err.Error(), "already exists") {
+		// created concurrently: wait until it is installed
+		for i := 0; i < 1000 && !e.tableExists(objTableName); i++ {
+			time.Sleep(time.Millisecond)
+		}
+	}
 	if err != nil && e.tableExists(objTableName) {
-		return nil // created concurrently
+		return nil
 	}
 	return err
 }
+
+// EnsureObjs creates the object catalog table if it does not exist.
+func (e *Engine) EnsureObjs() error { return e.objsTable() }
 
 // WriteObjs applies the changes in one atomic write. A name must not occur
 // twice in a batch.
@@ -115,3 +126,15 @@ func (e *Engine) Objs(kind string) []Obj {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// PutObj stores o as part of the transaction (replacing), so it commits
+// atomically with the transaction's other writes (SQL DDL journal).
+func (tx *Tx) PutObj(o Obj) error {
+	if err := tx.e.objsTable(); err != nil {
+		return err
+	}
+	return tx.Put(objTableName, objRow(o))
+}
+
+// Logf logs through the engine's log function.
+func (e *Engine) Logf(format string, a ...any) { e.logf(format, a...) }

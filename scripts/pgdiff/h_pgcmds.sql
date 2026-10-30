@@ -1,5 +1,5 @@
 -- Group h: basic PostgreSQL commands an ORM / BI tool / app commonly sends (branch pgcmds).
--- Each statement is a small probe; see docs/14 appendix O.
+-- Each statement is a small probe; see docs/14 appendix P.
 
 -- ### h/maint-cmds
 CHECKPOINT;
@@ -277,7 +277,7 @@ CREATE INDEX h_pc_ix_ops ON h_pc_ix (x text_pattern_ops);
 CREATE INDEX h_pc_ix_ops2 ON h_pc_ix (x varchar_pattern_ops DESC);
 
 -- ### h/not-done
--- Known gaps kept as probes (docs/14 appendix O, "skipped"). Each one differs from PostgreSQL on purpose.
+-- Known gaps kept as probes (docs/14 appendix P, "skipped"). Each one differs from PostgreSQL on purpose.
 -- drop: h_pc_nd
 CREATE TABLE h_pc_nd (id int PRIMARY KEY, a text, b text, n int, ts timestamp);
 INSERT INTO h_pc_nd VALUES (1, 'x', 'y', 1, '2026-01-01 10:00');

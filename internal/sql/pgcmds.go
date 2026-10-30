@@ -8,7 +8,7 @@ import (
 )
 
 // Small commands and functions that ORMs, pool health checks and admin tools send
-// (docs/14 appendix O): txid_current, pg_size_pretty, pg_database_size,
+// (docs/14 appendix P): txid_current, pg_size_pretty, pg_database_size,
 // inet_client_addr and inet_client_port.
 
 func init() {

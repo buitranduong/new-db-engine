@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Network address types, minimal (docs/14 appendix O): inet, cidr and macaddr are text
+// Network address types, minimal (docs/14 appendix P): inet, cidr and macaddr are text
 // columns (pg spec "inet", "cidr", "macaddr") whose input is validated and written in
 // PostgreSQL's canonical form, so equality, DISTINCT, GROUP BY, UNIQUE and text output agree
 // with PostgreSQL. Functions host, family, masklen, netmask, network, text and the operators

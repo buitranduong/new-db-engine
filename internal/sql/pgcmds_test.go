@@ -58,7 +58,7 @@ func TestPgcmdsPartialIndex(t *testing.T) {
 		t.Fatalf("duplicate among live rows accepted: %v", err)
 	}
 	run(t, s, `UPDATE sim SET delete_ts = '2026-01-01 00:00:00' WHERE id = 1`) // soft delete
-	run(t, s, `INSERT INTO sim VALUES (2, '0901', NULL, 'a', 1, true)`)         // reuse of the number
+	run(t, s, `INSERT INTO sim VALUES (2, '0901', NULL, 'a', 1, true)`)        // reuse of the number
 	run(t, s, `INSERT INTO sim VALUES (3, '0901', '2026-02-02 00:00:00', 'a', 1, true)`)
 	run(t, s, `INSERT INTO sim VALUES (4, '0901', '2026-02-03 00:00:00', 'a', 1, true)`) // deleted rows may repeat
 	if got := ids(t, s, `SELECT id FROM sim WHERE msisdn = '0901' ORDER BY id`); got != "1,2,3,4" {

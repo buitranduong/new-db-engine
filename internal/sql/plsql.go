@@ -11,7 +11,7 @@ import (
 )
 
 // CREATE FUNCTION / CREATE PROCEDURE / DO / CALL with a small subset of PL/pgSQL (docs/14
-// appendix O). What runs: DECLARE of scalar variables, assignment (:=), IF / ELSIF / ELSE,
+// appendix P). What runs: DECLARE of scalar variables, assignment (:=), IF / ELSIF / ELSE,
 // PERFORM, RETURN, RAISE (NOTICE / WARNING / EXCEPTION with %), NULL, EXECUTE 'sql'
 // [INTO v] [USING ...], any SQL statement (with SELECT/RETURNING ... INTO v), nested
 // BEGIN .. END blocks and EXCEPTION WHEN <condition> THEN handlers (a savepoint per block

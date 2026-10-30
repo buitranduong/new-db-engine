@@ -1091,3 +1091,54 @@ Tái lập: `cd ~/wt/pgres && D=/tmp/pgdiff-pgres PGP=28442 HP=28190 SP=28443 NA
 - **Chưa đạt:** các phép gộp nhóm (es_facet_carrier 35 → 1505 ms, es_prefix_count 38 → 1277 ms, crm_count 0,7 → 1,6 s) chậm đi vì làn nặng bị bỏ đói khi CPU bão hòa. Cần: bảo đảm phần CPU tối thiểu cho làn nặng (cgroup, `-cpu-groups`/`-heavy-cap`: chưa kiểm trên máy này) hoặc trả facet/đếm từ view cột. Chưa đo pha import cùng cấu hình này. `-heavy-workers` vẫn tắt mặc định cho tới khi đo xong cả hai.
 - **Bổ sung (cùng nhánh):** (a) tách một luồng nặng chuyên cho ghi lô (`heavyWQ`): với một hàng đợi chung, import batch_upsert quá hạn 10 phút vì lệnh xếp sau các phép quét 1–2 s; sau khi tách, 3 kiểu import xong 55 s / 63 s / 65 s (RESULT VALID, `-heavy-workers 2`; mặc định 71/81/83 s; PG 112/181 s/deadlock), độ trễ order_reserve/inv_sync khi import ×0,8–1,6. (b) đo thời gian chạy thật ở cả làn nặng để dạng truy vấn nhanh được trả về làn thường (trước đó kẹt vĩnh viễn, truy vấn web bị hủy sau 130 s). (c) khoá dạng truy vấn theo kiểu mẫu tham số văn bản (ký tự đại diện đầu/cuối) + trễ ngưỡng (hạ > 150 ms, trả về < 37 ms): trước đó một dạng `LIKE $1` đổi làn 9 lần trong một lần chạy, web_prefix p99 tới 7,7 s (docs/simrun/lanes-imp-3workers.txt, `-heavy-workers 3`).
 - **Chưa đo:** phiên bản cuối (khoá theo kiểu mẫu + trễ ngưỡng) chưa chạy lại end-to-end; chỉ có unit test. Theo quyết định của người dùng (2026-10-30) đo hiệu năng dồn về cuối, sau khi phủ tính năng; mục này vào danh sách đo cuối cùng cùng: facet/đếm bị chậm khi làn nặng bão hòa, `-heavy-workers` mặc định, memmap.
+
+## Phụ lục P. Nhánh `pgcmds`: lệnh PostgreSQL cơ bản mà ORM/BI/ứng dụng hay gửi (2026-10-30, gốc `main` @ 85aad76)
+
+**Plan.** Tìm và sửa các lệnh/tính năng PostgreSQL cơ bản mà Jmix/Hibernate, Superset, dịch vụ Go/Java thường dùng mà STASK còn thiếu (D17: chỉ phạm vi kho SIM + CRM + web, không chạy theo tính năng lạ). Cách làm: grep các danh sách "không hỗ trợ" ở Phụ lục L/M và docs/14b/14c; viết 40+ probe nhỏ, chạy cạnh PostgreSQL 16 thật (`scripts/pgdiff/h_pgcmds.sql`, 259 câu SQL trong 13 phiên); sửa theo xác suất ứng dụng dùng. **Target.** Mỗi sửa có test; `go vet`, `go test -p 2` sạch; `claimcheck` không tụt (baseline 471/477). Không đo hiệu năng (D32).
+
+**Thực tế.** Probe `h_pgcmds` (lệnh: `SCRIPTS=<thư mục chỉ có h_pgcmds.sql> D=/tmp/pgcmds-run PGP=28552 HP=28290 SP=28553 NAME=pgcmds-pg scripts/pgdiff-run.sh`; biến `SCRIPTS` là phần thêm vào `scripts/pgdiff-run.sh`):
+
+| | Câu | PASS | PASS-MSG | DIFF | ERR một phía |
+|---|---|---|---|---|---|
+| Trước (bản nháp đầu, 235 câu, chưa sửa gì) | 235 | 155 | 8 | 17 | 55 |
+| Sau (259 câu, gồm 15 câu "not-done" cố ý) | 259 | 237 | 6 | 1 | 15 |
+
+Trong 15+1 câu còn lại, tất cả nằm ở phiên `h/not-done` và `h/not-done-partition` (khoảng trống biết trước, ghi dưới đây); các phiên còn lại khớp PG 100% (PASS hoặc cùng SQLSTATE khác chữ). Hơn một nửa "trước" là probe chưa chỉnh của chính mình (PG cũng báo lỗi), đã sửa probe chứ không sửa STASK.
+
+### P.1 Đã thêm (xếp theo khả năng ứng dụng dùng)
+
+| Mục | Hành vi | Test |
+|---|---|---|
+| **Index từng phần** `CREATE [UNIQUE] INDEX .. WHERE <vị từ>` | Jmix sinh `UNIQUE ... WHERE DELETE_TS IS NULL` cho xoá mềm. Vị từ dạng đóng: AND của `col IS [NOT] NULL`, `col <op> literal` (`= <> < <= > >=` trên bigint/text/bool), `col`, `NOT col` (`schema/indexpred.go`, `IndexDef.Where` thêm, `omitempty`, không đổi định dạng log). Dòng ngoài vị từ có khoá "như NULL": không bao giờ xung đột UNIQUE và không giữ chỗ (sửa 4 chỗ kiểm giữ chỗ trong `core/secindex.go`, `core/fk.go` và vòng dựng index kiểm trùng). Mọi dòng vẫn có entry nên planner dùng index như thường. Không làm đích khoá ngoại. `pg_indexes`/`pg_get_indexdef`/`pg_index.indpred` hiện `WHERE (...)`. RENAME/DROP COLUMN cập nhật vị từ. | `TestPgcmdsPartialIndex`, `TestPgcmdsPartialIndexRecovery` (crash replay + checkpoint), `TestPgcmdsPartialCompareAndRestart` |
+| `CREATE INDEX` thêm `INCLUDE (..)`, `WITH (..)`, `TABLESPACE`, `USING hash/brin` (chạy như btree), toán tử lớp `text_pattern_ops`... (nhận, bỏ qua; kết quả không đổi) | trước là 0A000 | `TestPgcmdsPartialIndex` |
+| **`DO $$ .. $$` và `CREATE [OR REPLACE] FUNCTION/PROCEDURE`, `DROP FUNCTION`, `CALL`** (`plsql.go`, `plsql_run.go`) | Tập con PL/pgSQL: `DECLARE`, `:=`, `IF/ELSIF/ELSE`, `PERFORM`, `RETURN`, `RAISE [NOTICE/WARNING/EXCEPTION] 'fmt %' USING ERRCODE`, `EXECUTE 'sql' INTO .. USING ..`, mọi câu SQL kể cả `SELECT/RETURNING .. INTO v`, khối lồng, `EXCEPTION WHEN unique_violation/duplicate_object/others/SQLSTATE '..' THEN` (savepoint cho mỗi khối có handler), `FOUND`, `SQLSTATE`, `SQLERRM`. `LANGUAGE sql` chạy danh sách câu, lấy cột đầu của dòng đầu của câu cuối trả dòng. `DO`/`CALL` nguyên tử (tự mở giao dịch nếu chưa có). Hàm lưu trong catalog đối tượng (`__stask_objs`, loại `func`), bền qua replay. Kiểu trả về khai báo quyết định kiểu cột (nhưng `integer` hiện ra bigint). Biến vào SQL qua tham số `$n`. Idiom `DO $$ BEGIN CREATE TYPE ..; EXCEPTION WHEN duplicate_object THEN NULL; END $$` chạy được. | `TestPlsqlDoBlocks`, `TestPlsqlFunctions`, `TestPlsqlFunctionsRecovery` |
+| **Bảng phân vùng** `PARTITION BY RANGE/LIST (col)`, `CREATE TABLE c PARTITION OF p FOR VALUES FROM..TO / IN (..)`, `ATTACH/DETACH PARTITION`, `DROP TABLE` phân vùng | Giả lập (`partition.go`): bảng cha là một bảng thường chứa mọi dòng; mỗi phân vùng là view cập nhật được `SELECT cols FROM cha WHERE <ranh giới>`. Định tuyến miễn phí (ghi vào cha hoặc vào phân vùng đều được), cắt tỉa thay bằng index khoá/PK của bảng đơn. `DROP TABLE phân_vùng` xoá dòng của nó; `DETACH` tạo bảng thật chứa dòng; `ATTACH` chuyển dòng về cha. Thông tin ở catalog đối tượng loại `part`. | `TestPartitionEmulation` (kể cả replay) |
+| **inet / cidr / macaddr** tối thiểu (`inet.go`) | Cột văn bản có spec `inet`/`cidr`/`macaddr`: đầu vào kiểm tra và chuẩn hoá như PG (`'10.0.0.1/32'` in `10.0.0.1`; cidr bit lẻ bị `22P02`; IPv6 nén chữ thường; MAC `08002b010203`). OID 869/650/829, nhị phân cho kết quả inet/cidr, `host family masklen netmask network`, toán tử `<<` `>>` (chứa), UNIQUE/GROUP BY/`=` đúng. | `TestInetCidrMacaddr` |
+| `ALTER TABLE t ALTER COLUMN c RESTART [WITH n]` (cột identity/serial) | Liquibase/dump dùng; trước là lỗi cú pháp | `TestPgcmdsPartialCompareAndRestart` |
+| `CHECKPOINT`, `REINDEX`, `CLUSTER` | nhận như `VACUUM/ANALYZE` (không việc; chỉ mục STASK luôn nhất quán, không có heap để gom) | `TestPgcmdsMaintAndFuncs` |
+| `START TRANSACTION` | command tag đúng `START TRANSACTION` (trước `BEGIN`) | cùng test |
+| `txid_current()`, `pg_size_pretty()`, `pg_database_size()`, `pg_total_relation_size('pg_class')`, `inet_client_addr()/port` (NULL) | | cùng test |
+| `current_timestamp(n)`, `localtimestamp(n)` | nhận độ chính xác (giữ micro giây) | probe `h/small-fns` |
+| `ORDER BY lower(col) [DESC] LIMIT n` | đọc theo thứ tự index biểu thức, không sắp xếp (trước chỉ `WHERE`) | `TestPgcmdsOrderByExpressionIndex` (so với bảng không index, mọi hướng/NULLS) |
+| **Tham số mảng nhị phân `interval[]`, `time[]`** và `interval` nhị phân (vô hướng) | trước 0A000 | `TestBinaryIntervalTimeParams` |
+| Đã có sẵn, probe xác nhận khớp PG | `VACUUM/ANALYZE` mọi dạng, `COLLATE "C"/"POSIX"/"default"` (bị bỏ ở mức token; mọi collation khác cũng bị bỏ, so sánh vẫn theo byte: ghi ở Phụ lục M), `UNIQUE (lower(x))` trong CREATE TABLE (PG cũng báo lỗi, cùng SQLSTATE), `SET/SHOW/RESET`, advisory lock, `LISTEN/NOTIFY`, savepoint, `LOCK TABLE`, `FOR UPDATE SKIP LOCKED/NOWAIT`, `PREPARE/EXECUTE`, `ON CONFLICT`, `DISTINCT ON`, `ROLLUP/GROUPING SETS`, `LATERAL`, đệ quy CTE, identity/serial/sequence | probe |
+
+### P.2 Không làm (và lý do)
+
+| Mục | Lý do |
+|---|---|
+| `money`, `bit/varbit`, `int4range`.. kiểu range, `macaddr8`, `tsvector` | không ứng dụng nào trong phạm vi (kho SIM/CRM/web) cần; Hibernate không sinh; D17 |
+| `crypt()/gen_salt()` (pgcrypto) | `golang.org/x/crypto` (BSD) đã có trong `go.mod` dưới dạng gián tiếp nhưng thêm bcrypt vào code STASK là thêm phụ thuộc trực tiếp: cần người điều phối duyệt (AGENT_PROTOCOL 4b); ứng dụng Jmix/Spring băm mật khẩu ở tầng ứng dụng. Giữ `0A000 crypt is not implemented` |
+| `ctid`, `tableoid`, `TABLESAMPLE` | chỉ công cụ quản trị/dedupe dùng; STASK không có heap/ctid |
+| Index biểu thức tổng quát (`date_trunc`, `a \|\| b`, `n::text`, `substr`, `coalesce`) | cần lưu văn bản biểu thức hoặc mở rộng tập hàm đóng của `schema/indexexpr.go` (thiết kế đã chốt ở Phụ lục "exprindex": chỉ tên hàm, tránh lệch với evaluator); giá trị thấp so với công sức, giữ `0A000` |
+| Vị từ index từng phần ngoài dạng đóng (`IN`, `LIKE`, `OR`, hàm) | dạng đóng đủ cho xoá mềm của Jmix và cờ trạng thái; còn lại `0A000` có thông báo rõ |
+| Phân vùng `HASH`, `DEFAULT`, khoá nhiều cột/biểu thức, phân vùng con | `0A000` rõ ràng. Giả lập không từ chối dòng ngoài mọi ranh giới (PG: `23514`) và phân vùng không có index/ràng buộc riêng |
+| PL/pgSQL: vòng lặp (`FOR/WHILE/LOOP`), `CASE`, con trỏ, `GET DIAGNOSTICS`, `RETURN NEXT/QUERY`, hàm trả tập, hàm trigger (`NEW/OLD`; tạo được nhưng `CREATE TRIGGER .. EXECUTE FUNCTION` vẫn không có), tham số `OUT`/`DEFAULT`, nạp chồng theo kiểu | `0A000` lúc `CREATE`/`DO`. Trigger của STASK dùng thân SQL riêng (docs/05 §20) |
+| `inet`: sắp thứ tự theo địa chỉ, `<<=`, `>>=`, `&&`, `+`/`-` địa chỉ, `abbrev`; `ip::text` của host trả `10.0.0.1` thay vì `10.0.0.1/32` | thứ tự/so sánh là theo byte của văn bản chuẩn hoá; lưu dạng văn bản nên mất phân biệt "có /32" |
+| Hàm của người dùng có kiểu trả `integer` hiện bigint (OID 20), `RETURNS void` hiện chuỗi rỗng; `pg_sleep`/`pg_notify` OID 25 thay vì `void` | mọi số nguyên của STASK là bigint (đã ghi); không ảnh hưởng JDBC `getInt` |
+| Hàm gọi ghi dữ liệu từ `SELECT f()` ở chế độ autocommit | câu con chạy giao dịch riêng; dùng `CALL`/`DO` hoặc `BEGIN` (ghi chú ở `plsql.go`) |
+| `array_length/cardinality` trên mảng `interval[]` trả NULL/0 (sẵn có, không do nhánh này) | phát hiện ngoài phạm vi; mảng `interval[]` đi qua `::text` và `unnest` đúng |
+
+### P.3 Kiểm tra
+
+`gofmt`, `go vet ./...`, `go test -p 2 -count=1 ./internal/schema ./internal/core ./internal/sql ./internal/pgwire ./internal/proj ./internal/planner ./internal/repl`, `claimcheck` (xem báo cáo cuối của agent). Phụ thuộc mới: không. Định dạng đĩa: không đổi (chỉ thêm trường JSON `where` cho `IndexDef` với `omitempty`, thêm hai loại đối tượng `func` và `part` vào catalog đối tượng sẵn có).

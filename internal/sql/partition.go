@@ -8,7 +8,7 @@ import (
 	"stask/internal/core"
 )
 
-// Declarative partitioning, by emulation (docs/14 appendix O). A partitioned table is one
+// Declarative partitioning, by emulation (docs/14 appendix P). A partitioned table is one
 // ordinary table that holds all rows; each partition is an updatable view over it with the
 // partition's bound as WHERE:
 //

@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// interval and time of day, scalar and array, as binary parameters (appendix O of docs/14).
+// interval and time of day, scalar and array, as binary parameters (appendix P of docs/14).
 func TestBinaryIntervalTimeParams(t *testing.T) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, startServer(t, ""))

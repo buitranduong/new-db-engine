@@ -338,7 +338,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 	case KDate:
 		switch d.K {
 		case KText:
-			us, err := parseTime(d.S)
+			us, err := parseTimeKind(d.S, KTimestamp) // a date ignores any zone
 			if err != nil {
 				return badTime(d, "date")
 			}
@@ -388,6 +388,9 @@ func coerce(d Datum, k Kind) (Datum, error) {
 		if d.K == KText {
 			t := strings.TrimSpace(d.S)
 			if len(t) < 2 || t[0] != '{' || t[len(t)-1] != '}' {
+				if isVectorText(t) { // int2vector / oidvector ("1 2", pg_index.indkey): read by vecElems
+					return d, nil
+				}
 				return Null, errf(codeInvalidText, "malformed array literal: %q", d.S)
 			}
 			return Datum{K: KArray, S: t, I: int64(KText)}, nil
@@ -633,4 +636,15 @@ func badTime(d Datum, typ string) (Datum, error) {
 		return Null, errf("22008", "date/time field value out of range: %q", d.S)
 	}
 	return Null, errf("22007", "invalid input syntax for type %s: %q", typ, d.S)
+}
+
+// isVectorText reports whether t is an int2vector/oidvector value: integers
+// separated by spaces (possibly none).
+func isVectorText(t string) bool {
+	for _, f := range strings.Fields(t) {
+		if _, err := strconv.ParseInt(f, 10, 64); err != nil {
+			return false
+		}
+	}
+	return !strings.ContainsAny(t, "{}\"',")
 }

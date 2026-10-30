@@ -262,6 +262,9 @@ func (s *Session) currentUser() string {
 	if s.role != "" {
 		return s.role
 	}
+	if s.act != nil && s.act.user != "" {
+		return s.act.user // the name the client logged in with
+	}
 	return roleName
 }
 

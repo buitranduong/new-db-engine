@@ -48,7 +48,7 @@ type ForeignKey struct {
 // IndexableType reports whether columns of type ct can be indexed.
 func IndexableType(ct ColType) bool {
 	switch ct {
-	case TInt, TFloat, TString, TText, TTime, TBool:
+	case TInt, TFloat, TString, TText, TTime, TBool, TTimestamp, TTimestamptz, TBytea, TUUID, TNumeric:
 		return true
 	}
 	return false
@@ -122,7 +122,7 @@ func AppendKeyValue(dst []byte, ct ColType, v Value) []byte {
 	}
 	dst = append(dst, keyPresent)
 	switch ct {
-	case TInt, TTime, TBool:
+	case TInt, TTime, TBool, TTimestamp, TTimestamptz:
 		return binary.BigEndian.AppendUint64(dst, uint64(v.I)^1<<63)
 	case TFloat:
 		f := v.F
@@ -142,7 +142,7 @@ func AppendKeyValue(dst []byte, ct ColType, v Value) []byte {
 			u--
 		}
 		return binary.BigEndian.AppendUint64(dst, u)
-	case TString, TText:
+	case TString, TText, TBytea:
 		for i := 0; i < len(v.S); i++ {
 			c := v.S[i]
 			if c == 0 {
@@ -152,6 +152,9 @@ func AppendKeyValue(dst []byte, ct ColType, v Value) []byte {
 			}
 		}
 		return append(dst, 0, 1)
+	}
+	if out, ok := appendKeyExt(dst, ct, v); ok {
+		return out
 	}
 	panic(fmt.Sprintf("schema: column type %d cannot be indexed", ct))
 }
@@ -166,12 +169,12 @@ func KeyValueLen(b []byte, ct ColType) int {
 		return 1
 	}
 	switch ct {
-	case TInt, TTime, TBool, TFloat:
+	case TInt, TTime, TBool, TFloat, TTimestamp, TTimestamptz:
 		if len(b) < 9 {
 			return -1
 		}
 		return 9
-	case TString, TText:
+	case TString, TText, TBytea:
 		for i := 1; i < len(b); i++ {
 			if b[i] == 0 {
 				if i+1 < len(b) && b[i+1] == 1 {
@@ -179,6 +182,10 @@ func KeyValueLen(b []byte, ct ColType) int {
 				}
 				i++ // 0 0xff: an escaped zero
 			}
+		}
+	default:
+		if n, ok := keyValueLenExt(b, ct); ok {
+			return n
 		}
 	}
 	return -1

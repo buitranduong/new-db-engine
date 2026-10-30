@@ -23,6 +23,9 @@ type relCol struct {
 	ty         pgTy // PostgreSQL type when finer than kind (pgtype.go)
 	hidden     bool // the right-hand copy of a USING column: not visible unqualified or in *
 	sys        bool // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
+	// table OID and attribute number of a column read straight from a table (RowDescription)
+	src uint32
+	an  int16
 }
 
 type relation struct {
@@ -111,7 +114,7 @@ func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error
 	}
 	res := &Result{HasRows: true, Tag: fmt.Sprintf("SELECT %d", len(rel.rows)), Rows: rel.rows}
 	for _, c := range rel.cols {
-		res.Cols = append(res.Cols, Column{Name: c.name, Kind: c.kind}.withTy(c.ty))
+		res.Cols = append(res.Cols, Column{Name: c.name, Kind: c.kind}.withTy(c.ty).withSrc(c))
 	}
 	for _, r := range res.Rows {
 		conform(r, res.Cols)
@@ -924,7 +927,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			return nil, srfErr
 		}
 		bx, _ = rebuildDeep(bx, func(e Expr) (Expr, bool) {
-			if f, ok := e.(*Func); ok && (f.Name == "generate_series" || f.Name == "unnest" || f.Name == "stask_srf") {
+			if f, ok := e.(*Func); ok && (isSelectSRF(f.Name) || f.Name == "stask_srf") {
 				p.srfs = append(p.srfs, f)
 				k, t := KNull, pgTy{}
 				if f.Name == "stask_srf" {
@@ -940,6 +943,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 							k = KTimestamp
 						}
 					}
+				}
+				if f.Name == "generate_subscripts" {
+					k = KInt
 				}
 				sk = append(sk, k)
 				st2 = append(st2, t)
@@ -962,7 +968,11 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		ik := staticKind(bx, sk)
 		ity := inferTy(bx, slotTy).forKind(ik)
 		ik, ity = jsonarrCol(bx, ik, ity, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
-		p.cols = append(p.cols, relCol{name: itemName(it), kind: ik, ty: ity})
+		orc := relCol{name: itemName(it), kind: ik, ty: ity}
+		if sl, ok := bx.(*Slot); ok && sl.I < len(fs.cols) {
+			orc.src, orc.an = fs.cols[sl.I].src, fs.cols[sl.I].an
+		}
+		p.cols = append(p.cols, orc)
 	}
 	// ORDER BY: output columns by position or name, else expressions
 	for _, o := range st.OrderBy {
@@ -1942,6 +1952,7 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		}
 		for i, col := range t.Columns {
 			rc := relCol{qual: qual, name: col.Name, kind: colKind(&t.Columns[i]), ty: colTy(&t.Columns[i]), sys: col.Hidden}
+			rc.src, rc.an = srcOf(t, i)
 			if i < len(f.ColAliases) {
 				rc.name = f.ColAliases[i]
 			}
@@ -2539,6 +2550,9 @@ func tableFuncRows(name string, args []Datum, tick funcTick) ([][]Datum, error) 
 		}
 		return nil
 	}
+	if rows, ok := extraSRF(name, args); ok {
+		return rows, nil
+	}
 	switch name {
 	case "generate_series":
 		if len(args) < 2 || len(args) > 3 {
@@ -2800,7 +2814,7 @@ func (s *Session) describeQuery(st Stmt) (*Description, error) {
 		if k == KNull {
 			k = KText
 		}
-		d.Cols = append(d.Cols, Column{Name: c.name, Kind: k}.withTy(c.ty))
+		d.Cols = append(d.Cols, Column{Name: c.name, Kind: k}.withTy(c.ty).withSrc(c))
 	}
 	n := maxParamDeep(st)
 	pk := s.deepKinds(st)

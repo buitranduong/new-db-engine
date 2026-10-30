@@ -86,9 +86,9 @@ func TestCatalogPsql(t *testing.T) {
 	// \d items
 	expectRows(t, s, qs[5], tbl+",public,items")
 	expectRows(t, s, qs[6], "1,r,true,false,false,false,false,false,false,,0,,p,d,heap") // PostgreSQL: NULL || array is the array (array_cat), so an empty string
-	expectRows(t, s, qs[7], "id,integer,nextval('items_id_seq'::regclass),true,NULL,,;name,text,'x',true,NULL,,;qty,bigint,0,false,NULL,,;"+
+	expectRows(t, s, qs[7], "id,integer,nextval('items_id_seq'::regclass),true,NULL,,;name,text,'x'::text,true,NULL,,;qty,bigint,0,false,NULL,,;"+
 		"created,timestamp with time zone,now(),false,NULL,,;price,double precision,NULL,false,NULL,,;extra,integer,NULL,false,NULL,,;"+
-		"note,text,'n',false,NULL,,")
+		"note,text,'n'::text,false,NULL,,")
 	expectRows(t, s, qs[8], "items_pkey,true,true,false,true,CREATE UNIQUE INDEX items_pkey ON public.items USING btree (id),PRIMARY KEY (id),p,false,false,false,0")
 	expectRows(t, s, qs[9], "items_qty_check,CHECK (qty >= 0)")
 	for _, i := range []int{10, 11, 12, 13, 14, 15, 16} { // foreign keys, statistics, publications, triggers, inheritance
@@ -125,12 +125,12 @@ func TestCatalogJDBC(t *testing.T) {
 		"NULL,public,s1,SEQUENCE,NULL,,,,,;NULL,public,ev,TABLE,NULL,,,,,;NULL,public,ident,TABLE,NULL,,,,,;NULL,public,items,TABLE,NULL,,,,,")
 	// getColumns: the dropped column is skipped and attnum is the row number
 	expectRows(t, s, qs[23], "public,items,id,23,true,-1,4,-1,1,NULL,NULL,nextval('items_id_seq'::regclass),NULL,0,b;"+
-		"public,items,name,25,true,-1,-1,-1,2,NULL,NULL,'x',NULL,0,b;"+
+		"public,items,name,25,true,-1,-1,-1,2,NULL,NULL,'x'::text,NULL,0,b;"+
 		"public,items,qty,20,false,-1,8,-1,3,NULL,NULL,0,NULL,0,b;"+
 		"public,items,created,1184,false,-1,8,-1,4,NULL,NULL,now(),NULL,0,b;"+
 		"public,items,price,701,false,-1,8,-1,5,NULL,NULL,NULL,NULL,0,b;"+
 		"public,items,extra,23,false,-1,4,-1,6,NULL,NULL,NULL,NULL,0,b;"+
-		"public,items,note,25,false,-1,-1,-1,7,NULL,NULL,'n',NULL,0,b")
+		"public,items,note,25,false,-1,-1,-1,7,NULL,NULL,'n'::text,NULL,0,b")
 	expectRows(t, s, qs[24], "NULL,public,items,id,1,items_pkey")
 	expectRows(t, s, qs[25], "NULL,public,items,false,NULL,items_pkey,3,1,id,A,-1,0,NULL")
 	expectRows(t, s, qs[26], "information_schema,NULL;pg_catalog,NULL;public,NULL")
@@ -202,7 +202,7 @@ func TestCatalogRelations(t *testing.T) {
 	expectRows(t, s, `SELECT conname, contype, conkey, conindid <> 0, condeferrable, convalidated, conbin FROM pg_constraint WHERE conrelid = 'items'::regclass ORDER BY contype`,
 		"items_qty_check,c,{3},false,false,true,qty >= 0;items_pkey,p,{1},true,false,true,NULL")
 	expectRows(t, s, `SELECT adnum, adbin FROM pg_attrdef WHERE adrelid = 'items'::regclass ORDER BY adnum`,
-		"1,nextval('items_id_seq'::regclass);2,'x';3,0;4,now();8,'n'")
+		"1,nextval('items_id_seq'::regclass);2,'x'::text;3,0;4,now();8,'n'::text")
 	expectRows(t, s, `SELECT count(*) FROM pg_attrdef WHERE adrelid = 'ident'::regclass`, "0") // identity has no default row
 	expectRows(t, s, `SELECT seqtypid, seqstart, seqincrement, seqmax, seqmin, seqcycle FROM pg_sequence WHERE seqrelid = 's1'::regclass`,
 		"20,10,5,9223372036854775807,1,false")
@@ -244,12 +244,12 @@ func TestCatalogInformationSchema(t *testing.T) {
 	expectRows(t, s, `SELECT column_name, ordinal_position, column_default, is_nullable, data_type, udt_name, numeric_precision, is_identity, identity_generation
 		FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position`,
 		"id,1,nextval('items_id_seq'::regclass),NO,integer,int4,32,NO,NULL;"+
-			"name,2,'x',NO,text,text,NULL,NO,NULL;"+
+			"name,2,'x'::text,NO,text,text,NULL,NO,NULL;"+
 			"qty,3,0,YES,bigint,int8,64,NO,NULL;"+
 			"created,4,now(),YES,timestamp with time zone,timestamptz,NULL,NO,NULL;"+
 			"price,6,NULL,YES,double precision,float8,53,NO,NULL;"+
 			"extra,7,NULL,YES,integer,int4,32,NO,NULL;"+
-			"note,8,'n',YES,text,text,NULL,NO,NULL")
+			"note,8,'n'::text,YES,text,text,NULL,NO,NULL")
 	expectRows(t, s, `SELECT column_name, column_default, is_identity, identity_generation, identity_start, identity_increment
 		FROM information_schema.columns WHERE table_name = 'ident' ORDER BY ordinal_position`,
 		"id,NULL,YES,ALWAYS,1,1;label,NULL,NO,NULL,NULL,NULL")

@@ -62,6 +62,8 @@ func specTy(spec string) pgTy {
 		n, _ = strconv.Atoi(spec[i+1 : len(spec)-1])
 	}
 	switch name {
+	case "oid":
+		return pgTy{oid: 26, mod: -1}
 	case "int2":
 		return pgTy{oid: tyInt2, mod: -1}
 	case "int4":
@@ -116,7 +118,7 @@ func (t pgTy) family() Kind {
 		return KArray
 	}
 	switch t.oid {
-	case tyInt2, tyInt4, tyInt8:
+	case tyInt2, tyInt4, tyInt8, 26:
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
@@ -321,6 +323,8 @@ func pgTyName(t pgTy) string {
 		return "bytea"
 	case tyName:
 		return "name"
+	case 26:
+		return "oid"
 	case tyInt8:
 		return "bigint"
 	case tyInt2:
@@ -387,7 +391,7 @@ func castName(c *Cast) string {
 		case tyTime:
 			return "time"
 		}
-		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyFloat4: "float4", tyName: "name", tyDate: "date"}[t.oid]
+		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyFloat4: "float4", tyName: "name", tyDate: "date", 26: "oid"}[t.oid]
 	}
 	if _, _, ok := schema.NumericMod(c.Type); ok {
 		return "numeric"
@@ -426,7 +430,7 @@ func tableCol(c *schema.Column) Column {
 
 // itemCol is the result column of a select item over a single table.
 func itemCol(it SelItem, sc *scope, pk map[int]Kind) Column {
-	c := Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}.withTy(inferTy(it.X, sc.leafTy))
+	c := Column{Name: itemName(it), Kind: typeOf(it.X, sc, pk)}.withTy(inferTy(it.X, sc.leafTy)).withItemSrc(it, sc)
 	if k, t := jsonarrCol(it.X, c.Kind, pgTy{}, func(x Expr) Kind { return typeOf(x, sc, pk) }, sc.leafTy); t.oid != 0 {
 		c.Kind, c.OID, c.Mod = k, t.oid, t.mod
 	}

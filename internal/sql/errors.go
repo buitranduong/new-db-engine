@@ -74,7 +74,11 @@ func AsError(err error) *Error {
 	case errors.As(err, new(*core.KeyExistsError)):
 		var ke *core.KeyExistsError
 		errors.As(err, &ke)
-		return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s_pkey\": Key (%s)=(%s) already exists", ke.Table, ke.Column, ke.Key)
+		con := ke.Table + "_pkey"
+		if ke.Constraint != "" {
+			con = ke.Constraint
+		}
+		return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s\": Key (%s)=(%s) already exists", con, ke.Column, ke.Key)
 	case errors.Is(err, core.ErrExists):
 		return errf(codeUniqueViolation, "duplicate key value violates unique constraint: %v", err)
 	case errors.Is(err, core.ErrNoSequence):

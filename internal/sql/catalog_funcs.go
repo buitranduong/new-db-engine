@@ -22,7 +22,7 @@ var catalogFuncKinds = map[string]Kind{
 	"current_schemas": KArray, "current_user": KText, "session_user": KText, "current_role": KText,
 	"current_catalog": KText, "pg_get_viewdef": KText, "pg_relation_size": KInt, "pg_total_relation_size": KInt,
 	"pg_table_size": KInt, "pg_indexes_size": KInt, "array_lower": KInt, "array_upper": KInt,
-	"stask_subscript": KNull, "stask_field": KInt, "_pg_expandarray": KText, "stask_anyarr": KBool,
+	"stask_subscript": KNull, "stask_like_escape": KText, "stask_field": KInt, "_pg_expandarray": KText, "stask_anyarr": KBool,
 	"current_setting": KText, "set_config": KText, "to_regclass": KInt, "to_regtype": KInt, "pg_relation_is_publishable": KBool,
 	"pg_get_statisticsobjdef_columns": KText, "pg_get_triggerdef": KText, "pg_get_ruledef": KText,
 	"pg_get_partkeydef": KText, "pg_backend_pid": KInt, "pg_database_size": KInt, "pg_my_temp_schema": KInt,
@@ -33,7 +33,7 @@ var catalogFuncKinds = map[string]Kind{
 // oidvector, which pg_index prints as text ("1 2") and which PostgreSQL
 // subscripts from 0 (zero is true for those).
 func vecElems(d Datum) (el []Datum, zero bool) {
-	if d.K == KArray {
+	if d.K == KArray && strings.HasPrefix(strings.TrimSpace(d.S), "{") {
 		return parseArrayText(d), false
 	}
 	if t := strings.TrimSpace(d.String()); strings.HasPrefix(t, "{") { // an array literal or parameter in text form
@@ -97,6 +97,11 @@ func (s *Session) regclass(name string) (Datum, error) {
 			return IntD(indexOID(ts.Schema())), nil
 		}
 	}
+	for _, ts := range s.E.UserTables() { // a PRIMARY KEY the user named
+		if sch := ts.Schema(); sch.PKName == n {
+			return IntD(indexOID(sch)), nil
+		}
+	}
 	if _, taken := s.E.IndexNameTaken(n); taken {
 		return IntD(secIndexOID(n)), nil
 	}
@@ -140,6 +145,10 @@ func (c *evalCtx) castCatalog(v Datum, typ string) (Datum, bool, error) {
 		}
 		d, err := s.regclass(v.S)
 		return d, true, err
+	case "regproc":
+		// a function name stays its name (pg_type.typinput is text here):
+		// typinput = 'pg_catalog.array_in'::regproc
+		return TextD(strings.TrimPrefix(strings.Trim(v.S, `"`), "pg_catalog.")), true, nil
 	case "regtype":
 		d, err := regtype(v.S)
 		return d, true, err
@@ -443,6 +452,11 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			return TextD("(" + el[0].String() + ",1)"), nil
 		}
 		return Null, errf(codeFeature, "_pg_expandarray over more than one element is not supported")
+	case "stask_like_escape": // LIKE pattern ESCAPE c with a computed pattern
+		if arg(0).IsNull() || arg(1).IsNull() {
+			return Null, nil
+		}
+		return TextD(likeEscape(arg(0).String(), arg(1).String())), nil
 	case "stask_field": // (record).field of an _pg_expandarray record
 		rec := strings.Trim(arg(0).String(), "()")
 		x, n, _ := strings.Cut(rec, ",")

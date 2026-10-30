@@ -189,7 +189,12 @@ func viewOID(name string) int64 {
 	h.Write([]byte(name))
 	return viewOIDBase + int64(h.Sum32()&0x0fffffff)
 }
-func pkeyName(t *schema.Table) string { return t.Name + "_pkey" }
+func pkeyName(t *schema.Table) string {
+	if t.PKName != "" {
+		return t.PKName
+	}
+	return t.Name + "_pkey"
+}
 
 // colTypeOID is the type of a column, as pgwire describes it.
 func colTypeOID(c schema.Column) int64 { return int64(PgTypeOID(c)) }
@@ -215,7 +220,7 @@ func defaultText(c schema.Column) string {
 	if strings.HasPrefix(d, "nextval('") && strings.HasSuffix(d, "')") {
 		return d[:len(d)-1] + "::regclass)"
 	}
-	return d
+	return castDefault(d, c)
 }
 
 // hasDef: identity columns have no pg_attrdef row in PostgreSQL.

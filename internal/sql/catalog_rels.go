@@ -141,7 +141,7 @@ func init() {
 				}
 				rows = append(rows, []Datum{IntD(t.oid), TextD(t.name), IntD(nsPgCatalog), IntD(ownerOID), IntD(t.len),
 					BoolD(t.len > 0 && t.len <= 8), TextD("b"), TextD(t.cat), BoolD(false), BoolD(true), TextD(","), IntD(0),
-					IntD(0), IntD(t.elem), IntD(t.array), TextD(t.name + "in"), TextD(t.name + "out"), TextD(t.name + "recv"),
+					IntD(0), IntD(t.elem), IntD(t.array), TextD(typInput(t)), TextD(t.name + "out"), TextD(t.name + "recv"),
 					TextD(t.name + "send"), TextD("-"), TextD("-"), TextD("-"), TextD(align), TextD("p"), BoolD(false),
 					IntD(0), IntD(-1), IntD(0), IntD(coll), Null, Null, Null})
 			}

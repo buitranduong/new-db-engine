@@ -444,6 +444,14 @@ func formatValues(sch *schema.Table, cols []string, r schema.Row) []string {
 			out[i] = fmt.Sprint(v.F)
 		case sch.Columns[j].T == schema.TString || sch.Columns[j].T == schema.TText:
 			out[i] = v.S
+		case sch.Columns[j].T == schema.TBytea:
+			out[i] = fmt.Sprintf("\\x%x", v.S)
+		case sch.Columns[j].T == schema.TTimestamp:
+			out[i] = time.UnixMicro(v.I).UTC().Format("2006-01-02 15:04:05.999999")
+		case sch.Columns[j].T == schema.TTimestamptz:
+			out[i] = time.UnixMicro(v.I).UTC().Format("2006-01-02 15:04:05.999999") + "+00"
+		case !sch.Columns[j].T.IsInt() && sch.Columns[j].T != schema.TFloat:
+			out[i] = v.S // uuid, numeric
 		default:
 			out[i] = fmt.Sprint(v.I)
 		}

@@ -414,7 +414,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 				}
 				for _, c := range sc.t.Columns {
 					if !c.Hidden {
-						d.Cols = append(d.Cols, tableCol(&c))
+						d.Cols = append(d.Cols, tableCol(&c).withTable(sc.t))
 					}
 				}
 				continue

@@ -754,6 +754,17 @@ func srfRows(name string, args []Datum, ord bool) ([][]Datum, error) {
 				continue
 			}
 			allNull = false
+			if t := strings.TrimSpace(a.String()); t != "" && !strings.HasPrefix(t, "{") && isVectorText(t) {
+				// int2vector / oidvector ("1 2", pg_index.indkey): a datum of kind array holding vector text
+				var el []Datum
+				for _, f := range strings.Fields(t) {
+					v, _ := coerce(TextD(f), KInt)
+					el = append(el, v)
+				}
+				lists = append(lists, el)
+				n = max(n, len(el))
+				continue
+			}
 			x, err := arrOf(a, KText)
 			if err != nil {
 				return nil, err
@@ -782,6 +793,12 @@ func srfRows(name string, args []Datum, ord bool) ([][]Datum, error) {
 		return jsonPathQuery(args)
 	}
 	if name == "generate_subscripts" {
+		if t := strings.TrimSpace(args[0].String()); t != "" && !strings.HasPrefix(t, "{") && isVectorText(t) {
+			// int2vector / oidvector count from 0, as in PostgreSQL (expandarray.go)
+			if rows, ok := extraSRF(name, args); ok {
+				return rows, nil
+			}
+		}
 		a, err := arrOf(args[0], KText)
 		if err != nil || len(args) < 2 || args[1].IsNull() {
 			return nil, err

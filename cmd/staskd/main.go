@@ -149,6 +149,7 @@ func main() {
 	memLimit := flag.Int64("mem-limit-mb", 0, "soft Go heap limit unless GOMEMLIMIT is set (0 = half of the usable memory: RAM or the container's limit)")
 	procs := flag.Int("procs", 0, "GOMAXPROCS (0 = Go default, the number of CPUs)")
 	faults := flag.Bool("enable-faults", false, "enable the fault-injection admin endpoint (tests only)")
+	collation := flag.String("collation", "C", "database default text collation: C (byte order, the default), POSIX, en_US.utf8, vi_VN.utf8, und-x-icu, or another CLDR locale (x_Y.utf8, x-x-icu). Orders ORDER BY, < <= > >=, BETWEEN, min/max; equality, GROUP BY, DISTINCT and unique keys stay bytewise. Indexes are byte-ordered, so ORDER BY and text ranges on a non-C collation do not use them (docs/14 Appendix W). COLLATE \"name\" overrides per expression")
 	confPath := flag.String("config", os.Getenv("STASK_CONFIG"), "settings file: one \"name = value\" per line, names as these flags; flags on the command line win (default $STASK_CONFIG)")
 	flag.Parse()
 	if *confPath != "" {
@@ -156,6 +157,9 @@ func main() {
 			log.Fatalf("config: %v", err)
 		}
 		log.Printf("config: loaded %s", *confPath)
+	}
+	if err := sql.SetDefaultCollation(*collation); err != nil {
+		log.Fatalf("-collation: %v", err)
 	}
 	hs.BasicPass = *pgPassword
 	httpAuth, httpTLS := httpSecurity(hs, *addr, *pprofAddr, *pprofInsecure, *faults)

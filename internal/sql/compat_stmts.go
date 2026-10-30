@@ -191,7 +191,7 @@ func sessionDefaults() map[string]string {
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
 		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0", "lock_timeout": "0",
 		"max_identifier_length": "63", "default_transaction_read_only": "off", "transaction_read_only": "off",
-		"extra_float_digits": "1", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8",
+		"extra_float_digits": "1", "lc_collate": DefaultCollation().Name, "lc_ctype": DefaultCollation().Name,
 		SearchConsistencyVar: DefaultConsistency, SearchMaxLagVar: "1000", LastPlanVar: "",
 	}
 }

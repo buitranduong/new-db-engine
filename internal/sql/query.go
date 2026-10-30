@@ -503,7 +503,7 @@ func rebuild(x Expr, f func(Expr) (Expr, error)) (Expr, error) {
 	case *Unary:
 		out = &Unary{e.Op, m(e.X)}
 	case *Binary:
-		out = &Binary{Op: e.Op, L: m(e.L), R: m(e.R), W: e.W}
+		out = &Binary{Op: e.Op, L: m(e.L), R: m(e.R), W: e.W, Coll: e.Coll}
 	case *Func:
 		nf := *e
 		nf.Args, nf.Params = ms(e.Args), ms(e.Params)
@@ -514,7 +514,7 @@ func rebuild(x Expr, f func(Expr) (Expr, error)) (Expr, error) {
 	case *InList:
 		out = &InList{m(e.X), ms(e.List), e.Not}
 	case *Between:
-		out = &Between{m(e.X), m(e.Lo), m(e.Hi), e.Not}
+		out = &Between{m(e.X), m(e.Lo), m(e.Hi), e.Not, e.Coll}
 	case *Like:
 		out = &Like{m(e.X), m(e.Pat), e.Not, e.ICase}
 	case *Cast:
@@ -540,6 +540,7 @@ type sortSpec struct {
 	x     Expr // bound over the working row
 	desc  bool
 	nulls int
+	coll  *Collation // COLLATE on the item (or its column); nil: the default
 }
 
 type aggCall struct {
@@ -832,7 +833,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				if err != nil {
 					return nil, err
 				}
-				a.order = append(a.order, sortSpec{out: -1, x: bx, desc: o.Desc, nulls: o.Nulls})
+				a.order = append(a.order, sortSpec{out: -1, x: bx, desc: o.Desc, nulls: o.Nulls, coll: o.Coll})
 			}
 			for _, x := range f.Params {
 				bx, err := pre.bind(x)
@@ -902,7 +903,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				if err != nil {
 					return nil, err
 				}
-				w.order = append(w.order, sortSpec{out: -1, x: bx, desc: o.Desc, nulls: o.Nulls})
+				w.order = append(w.order, sortSpec{out: -1, x: bx, desc: o.Desc, nulls: o.Nulls, coll: o.Coll})
 			}
 			if f.Filter != nil {
 				return nil, errf(codeFeature, "FILTER on window functions is not supported")
@@ -998,7 +999,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	}
 	// ORDER BY: output columns by position or name, else expressions
 	for _, o := range st.OrderBy {
-		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls}
+		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls, coll: o.Coll}
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(items) {
 				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)
@@ -1402,7 +1403,7 @@ func cmpSort(a, b []Datum, specs []sortSpec) (int, error) {
 			continue
 		default:
 			var err error
-			if c, err = compare(x, y); err != nil {
+			if c, err = compareOrd(x, y, s.coll); err != nil {
 				return 0, err
 			}
 		}
@@ -1736,7 +1737,7 @@ func (c *compiler) compileSetOp(so *SetOp, outer *qscope) (qplan, error) {
 	p.sc = &qscope{cols: p.cols, outer: sc, row: true, lvl: lvl}
 	b := &binder{c: c, sc: p.sc}
 	for _, o := range so.OrderBy {
-		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls}
+		s := sortSpec{out: -1, desc: o.Desc, nulls: o.Nulls, coll: o.Coll}
 		if l, ok := o.X.(*Lit); ok && l.V.K == KInt {
 			if l.V.I < 1 || int(l.V.I) > len(p.cols) {
 				return nil, errf("42P10", "ORDER BY position %d is not in select list", l.V.I)

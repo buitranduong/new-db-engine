@@ -1066,7 +1066,7 @@ func (a *aggState) add(v Datum) error {
 			a.best = v
 			return nil
 		}
-		cmp, err := compare(v, a.best)
+		cmp, err := compareOrd(v, a.best, nil)
 		if err != nil {
 			return err
 		}
@@ -1123,7 +1123,7 @@ func (a *aggState) merge(b *aggState) error {
 		a.best = b.best
 		return nil
 	}
-	cmp, err := compare(b.best, a.best)
+	cmp, err := compareOrd(b.best, a.best, nil)
 	if err != nil {
 		return err
 	}
@@ -1643,7 +1643,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 					c = -1
 				default:
 					var err error
-					if c, err = compare(a, b); err != nil && serr == nil {
+					if c, err = compareOrd(a, b, st.OrderBy[k].Coll); err != nil && serr == nil {
 						serr = err
 					}
 				}
@@ -1917,6 +1917,9 @@ func stripPtrs(x Expr) any {
 	case *Unary:
 		return []any{e.Op, stripPtrs(e.X)}
 	case *Binary:
+		if e.Coll != nil {
+			return []any{e.Op, stripPtrs(e.L), stripPtrs(e.R), e.Coll.Name}
+		}
 		return []any{e.Op, stripPtrs(e.L), stripPtrs(e.R)}
 	case *Func:
 		args := []any{e.Name, e.Star, e.Distinct}

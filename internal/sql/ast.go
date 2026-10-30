@@ -144,7 +144,8 @@ type SelItem struct {
 type OrderItem struct {
 	X     Expr
 	Desc  bool
-	Nulls int // 0 default (last ascending, first descending), 1 first, 2 last
+	Nulls int        // 0 default (last ascending, first descending), 1 first, 2 last
+	Coll  *Collation // ORDER BY x COLLATE "name"; nil: the default (or the column's)
 }
 
 type Select struct {
@@ -263,7 +264,8 @@ type Unary struct {
 type Binary struct {
 	Op   string // = <> < <= > >= + - * / % || and or
 	L, R Expr
-	W    uint8 // 2 or 4: an int2/int4 result that must fit (22003), see markWidths
+	W    uint8      // 2 or 4: an int2/int4 result that must fit (22003), see markWidths
+	Coll *Collation // < <= > >= with COLLATE "name" on an operand; nil: the default
 }
 type Func struct {
 	Name     string
@@ -289,6 +291,7 @@ type InList struct {
 type Between struct {
 	X, Lo, Hi Expr
 	Not       bool
+	Coll      *Collation // COLLATE "name" on an operand; nil: the default
 }
 type Like struct {
 	X, Pat Expr

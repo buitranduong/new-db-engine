@@ -19,7 +19,8 @@ func parseWith(src string, sess *Session) ([]Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &parser{toks: catalogTokens(toks), src: src, sess: sess}
+	ctoks, colls := catalogTokensColl(toks)
+	p := &parser{toks: ctoks, colls: colls, src: src, sess: sess}
 	var out []Stmt
 	for {
 		for p.isOp(";") {
@@ -59,6 +60,8 @@ type parser struct {
 	i    int
 	src  string
 	sess *Session // resolves relation names along the search path; nil: none
+	// colls: the COLLATE name that followed a token, by token index (catalogTokensColl)
+	colls map[int]string
 	// pgSpec is the PostgreSQL spelling of the type typeName parsed last
 	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
 	// when the schema type says it all.
@@ -1259,8 +1262,25 @@ func (p *parser) notExpr() (Expr, error) {
 	return p.predicate()
 }
 
+// lastColl is the collation named by COLLATE right after the operand the
+// parser just consumed, or nil.
+func (p *parser) lastColl() (*Collation, error) {
+	if p.colls == nil || p.i == 0 {
+		return nil, nil
+	}
+	name, ok := p.colls[p.i-1]
+	if !ok {
+		return nil, nil
+	}
+	return LookupCollation(name)
+}
+
 func (p *parser) predicate() (Expr, error) {
 	l, err := p.bitExpr()
+	if err != nil {
+		return nil, err
+	}
+	lcoll, err := p.lastColl()
 	if err != nil {
 		return nil, err
 	}
@@ -1305,11 +1325,22 @@ func (p *parser) predicate() (Expr, error) {
 			if err != nil {
 				return nil, err
 			}
+			rcoll, err := p.lastColl()
+			if err != nil {
+				return nil, err
+			}
 			if rc, ok := rowCompare(op, l, r); ok {
 				l = rc
 				continue
 			}
-			l = &Binary{Op: op, L: l, R: r}
+			bin := &Binary{Op: op, L: l, R: r}
+			if op != "=" && op != "<>" { // equality is bytewise whatever the collation
+				if bin.Coll = rcoll; bin.Coll == nil {
+					bin.Coll = lcoll
+				}
+			}
+			l = bin
+			lcoll = nil
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
 			r, err := p.bitExpr()
@@ -1385,6 +1416,10 @@ func (p *parser) predicate() (Expr, error) {
 				if err != nil {
 					return nil, err
 				}
+				locoll, err := p.lastColl()
+				if err != nil {
+					return nil, err
+				}
 				if err := p.expectKw("and"); err != nil {
 					return nil, err
 				}
@@ -1392,13 +1427,22 @@ func (p *parser) predicate() (Expr, error) {
 				if err != nil {
 					return nil, err
 				}
+				bcoll, err := p.lastColl()
+				if err != nil {
+					return nil, err
+				}
+				if bcoll == nil {
+					if bcoll = locoll; bcoll == nil {
+						bcoll = lcoll
+					}
+				}
 				if sym { // either order of the bounds
-					l = &Binary{Op: "or", L: &Between{l, lo, hi, false}, R: &Between{l, hi, lo, false}}
+					l = &Binary{Op: "or", L: &Between{l, lo, hi, false, bcoll}, R: &Between{l, hi, lo, false, bcoll}}
 					if not {
 						l = &Unary{"not", l}
 					}
 				} else {
-					l = &Between{l, lo, hi, not}
+					l = &Between{l, lo, hi, not, bcoll}
 				}
 			case p.acceptKw("similar", "to"):
 				pat, err := p.bitExpr()

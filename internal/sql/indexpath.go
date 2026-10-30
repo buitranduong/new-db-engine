@@ -174,7 +174,11 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 		return
 	}
 	flip := map[string]string{"<": ">", "<=": ">=", ">": "<", ">=": "<="}
-	bound := func(col string, op string, x Expr) {
+	bound := func(col string, op string, x Expr, coll *Collation) {
+		// a byte-ordered index cannot answer a text range under another collation
+		if op != "=" && kindOf(types[col]) == KText && !coll.Bytewise() {
+			return
+		}
 		v, ok, null := val(col, x)
 		if !ok {
 			return
@@ -207,13 +211,13 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 				continue
 			}
 			if col, ok := colOf(e.L); ok {
-				bound(col, e.Op, e.R)
+				bound(col, e.Op, e.R, e.Coll)
 			} else if col, ok := colOf(e.R); ok {
 				op := e.Op
 				if f := flip[op]; f != "" {
 					op = f
 				}
-				bound(col, op, e.L)
+				bound(col, op, e.L, e.Coll)
 			}
 		case *InList:
 			col, ok := colOf(e.X)
@@ -244,8 +248,8 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 			if e.Not || !ok {
 				continue
 			}
-			bound(col, ">=", e.Lo)
-			bound(col, "<=", e.Hi)
+			bound(col, ">=", e.Lo, e.Coll)
+			bound(col, "<=", e.Hi, e.Coll)
 		}
 	}
 	return out
@@ -481,8 +485,18 @@ func orderColumns(st *Select, items []SelItem, orderOut []int, t *schema.Table, 
 		if fn != "" {
 			key = fn + "(" + c.Name + ")"
 		}
-		if _, ok := t.Col(c.Name); !ok || slices.Contains(cols, key) || isEnumCol(t, c.Name) {
+		ci, ok := t.Col(c.Name)
+		if !ok || slices.Contains(cols, key) || isEnumCol(t, c.Name) {
 			return nil, false
+		}
+		// an index is byte-ordered: it gives text in ORDER BY order only under a bytewise collation
+		if fn == "" && kindOf(t.Columns[ci].T) == KText && !o.Coll.Bytewise() {
+			return nil, false
+		}
+		if fn != "" && !o.Coll.Bytewise() {
+			if ct, ok := schema.ExprResultType(fn, t.Columns[ci].T); ok && kindOf(ct) == KText {
+				return nil, false
+			}
 		}
 		if i == 0 {
 			desc = o.Desc

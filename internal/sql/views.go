@@ -130,7 +130,10 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 				q.OrderBy = names[i]
 			}
 		} else if ci, ok := col(x); ok && slices.Contains(gcols, ci) {
-			q.OrderBy = t.Columns[ci].Name
+			// the view sorts text by bytes
+			if kindOf(t.Columns[ci].T) != KText || st.OrderBy[0].Coll.Bytewise() {
+				q.OrderBy = t.Columns[ci].Name
+			}
 		}
 		if q.OrderBy != "" {
 			q.Desc, q.Limit = st.OrderBy[0].Desc, int(offset+limit)
@@ -333,6 +336,9 @@ func conjFilters(where Expr, t *schema.Table, ctx *evalCtx, col func(Expr) (int,
 		if !ok {
 			return false
 		}
+		if op != "=" && op != "!=" && kindOf(t.Columns[ci].T) == KText && !e.Coll.Bytewise() {
+			return false // the view compares text by bytes
+		}
 		v, ok := constant(ci, k)
 		return ok && add(ci, op, v)
 	case *IsNull:
@@ -369,7 +375,7 @@ func conjFilters(where Expr, t *schema.Table, ctx *evalCtx, col func(Expr) (int,
 		return add(ci, "in", list)
 	case *Between:
 		ci, ok := col(e.X)
-		if !ok || e.Not {
+		if !ok || e.Not || kindOf(t.Columns[ci].T) == KText && !e.Coll.Bytewise() {
 			return false
 		}
 		lo, ok1 := constant(ci, e.Lo)

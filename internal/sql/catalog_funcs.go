@@ -52,7 +52,7 @@ func vecElems(d Datum) (el []Datum, zero bool) {
 // settingDefaults are the settings current_setting answers that a session
 // does not hold as variables.
 var settingDefaults = map[string]string{"server_version_num": "160000", "max_index_keys": "32",
-	"max_identifier_length": "63", "block_size": "8192", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8",
+	"max_identifier_length": "63", "block_size": "8192", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8", // SetDefaultCollation replaces the two
 	"is_superuser": "on", "session_authorization": roleName, "in_hot_standby": "off", "wal_level": "logical",
 	"default_with_oids": "off", "transaction_read_only": "off", "extra_float_digits": "1"}
 

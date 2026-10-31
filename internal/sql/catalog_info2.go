@@ -35,6 +35,7 @@ type conRow struct {
 	deferr   bool
 	deferred bool
 	notNull  bool
+	notValid bool
 }
 
 // constraintRows lists every constraint of every table.
@@ -80,7 +81,7 @@ func (c *catSnap) constraintRows() []conRow {
 					}
 				}
 			}
-			out = append(out, conRow{t: t, sch: sch, tbl: b, name: strip(ck.Name), typ: "CHECK", cols: cols, check: "(" + ck.Expr + ")"})
+			out = append(out, conRow{t: t, sch: sch, tbl: b, name: strip(ck.Name), typ: "CHECK", cols: cols, check: "(" + ck.Expr + ")", notValid: ck.NotValid})
 		}
 	}
 	return out
@@ -118,6 +119,9 @@ func init() {
 					clause := r.check
 					if !r.notNull {
 						clause = "(" + clause + ")"
+					}
+					if r.notValid {
+						clause += " NOT VALID"
 					}
 					rows = append(rows, []Datum{cat, TextD(r.sch), TextD(r.name), TextD(clause)})
 				}

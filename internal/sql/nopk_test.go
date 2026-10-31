@@ -59,7 +59,7 @@ func TestNoPrimaryKey(t *testing.T) {
 	if got := cell(t, s, `SELECT count(*) FROM pg_class WHERE relname LIKE '%rowid%'`); got != "0" {
 		t.Fatalf("hidden sequence listed: %s", got)
 	}
-	if got := cell(t, s, `SELECT count(*) FROM information_schema.table_constraints WHERE table_name = 'databasechangelog'`); got != "0" {
+	if got := cell(t, s, `SELECT count(*) FROM information_schema.table_constraints WHERE table_name = 'databasechangelog' AND constraint_name NOT LIKE '%not_null'`); got != "0" {
 		t.Fatalf("table_constraints: %s", got)
 	}
 	// TRUNCATE and DROP

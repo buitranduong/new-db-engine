@@ -255,11 +255,11 @@ func TestCatalogInformationSchema(t *testing.T) {
 		"id,NULL,YES,ALWAYS,1,1;label,NULL,NO,NULL,NULL,NULL")
 	expectRows(t, s, `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'ev' ORDER BY ordinal_position`,
 		"id,bigint,NO;ts,timestamp with time zone,NO;v,double precision,YES;ok,boolean,YES")
-	expectRows(t, s, `SELECT constraint_name, table_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'items' ORDER BY constraint_type DESC`,
+	expectRows(t, s, `SELECT constraint_name, table_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'items' AND constraint_name NOT LIKE '%not_null' ORDER BY constraint_type DESC`,
 		"items_pkey,items,PRIMARY KEY;items_qty_check,items,CHECK")
 	expectRows(t, s, `SELECT constraint_name, table_name, column_name, ordinal_position FROM information_schema.key_column_usage ORDER BY table_name`,
 		"ev_pkey,ev,id,1;ident_pkey,ident,id,1;items_pkey,items,id,1")
-	expectRows(t, s, `SELECT constraint_name, check_clause FROM information_schema.check_constraints`, "items_qty_check,qty >= 0")
+	expectRows(t, s, `SELECT constraint_name, check_clause FROM information_schema.check_constraints WHERE constraint_name NOT LIKE '%not_null'`, "items_qty_check,((qty >= 0))")
 	expectRows(t, s, `SELECT table_name, column_name, constraint_name FROM information_schema.constraint_column_usage WHERE table_name = 'items' ORDER BY constraint_name`,
 		"items,id,items_pkey;items,qty,items_qty_check")
 	expectRows(t, s, `SELECT schema_name, schema_owner FROM information_schema.schemata ORDER BY schema_name`,

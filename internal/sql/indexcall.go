@@ -126,6 +126,11 @@ func (p *parser) indexCallConst(fn string) (string, string, error) {
 	if fn == "substring" {
 		fn = "substr"
 	}
+	if fn == "date_trunc" && len(consts) == 1 && schema.TruncHook != nil {
+		if _, err := schema.TruncHook(consts[0], 0); err != nil {
+			return "", "", errf("22023", "unit %q not recognized for type timestamp without time zone", consts[0])
+		}
+	}
 	canon, ok := schema.CanonExprCall(fn, consts)
 	if !ok {
 		return "", "", errf(codeFeature, "function %s cannot be used in an index expression with these arguments", fn)

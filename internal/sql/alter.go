@@ -454,7 +454,7 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 	}
 	for _, c := range identDropped {
 		for _, q := range s.tableSequences(s.currentName(oldName, st)) {
-			if _, qc, _ := strings.Cut(q.Owner, "."); qc == c {
+			if qc := q.Owner[strings.LastIndex(q.Owner, ".")+1:]; qc == c {
 				if err := s.E.DropSequence(q.Name); err != nil {
 					return nil, AsError(err)
 				}
@@ -474,7 +474,7 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 	// the sequences of SERIAL/IDENTITY columns are dropped with them, or
 	// follow their owner's name
 	for _, q := range s.tableSequences(oldName) {
-		_, c, _ := strings.Cut(q.Owner, ".")
+		c := q.Owner[strings.LastIndex(q.Owner, ".")+1:]
 		if dropped[c] {
 			if err := s.E.DropSequence(q.Name); err != nil {
 				return nil, AsError(err)

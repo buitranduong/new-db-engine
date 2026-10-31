@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"stask/internal/schema"
 )
@@ -81,33 +82,39 @@ func (tx *Tx) SetConstraints(names []string, deferred bool) error {
 		v := deferred
 		x.all, x.named = &v, nil
 	} else {
+		// names of constraints derived from a table in a schema carry its prefix ("s.t_fkey")
+		is := func(stored, n string) bool { return stored == n || strings.HasSuffix(stored, "."+n) }
 		for _, n := range names {
 			found, deferrable := false, false
+			var fks []string
 			for _, t := range tx.e.UserTables() {
 				sch := t.Schema()
 				for _, fk := range sch.ForeignKeys {
-					if fk.Name == n {
+					if is(fk.Name, n) {
 						found, deferrable = true, deferrable || fk.Deferrable
+						fks = append(fks, fk.Name)
 					}
 				}
 				for _, ix := range sch.Indexes {
-					found = found || ix.Constraint == n
+					found = found || ix.Constraint != "" && is(ix.Constraint, n)
 				}
 				for _, c := range sch.Checks {
-					found = found || c.Name == n
+					found = found || is(c.Name, n)
 				}
-				found = found || sch.PKCols() != nil && (sch.PKName == n || sch.Name+"_pkey" == n)
+				found = found || sch.PKCols() != nil && (sch.PKName != "" && is(sch.PKName, n) || is(sch.Name+"_pkey", n))
 			}
 			if !found {
 				return coded("42704", "constraint %q does not exist", n)
 			}
 			if !deferrable {
-				return coded("55000", "constraint %q is not deferrable", n)
+				return coded("42809", "constraint %q is not deferrable", n)
 			}
 			if x.named == nil {
 				x.named = map[string]bool{}
 			}
-			x.named[n] = deferred
+			for _, f := range fks {
+				x.named[f] = deferred
+			}
 		}
 	}
 	if deferred {

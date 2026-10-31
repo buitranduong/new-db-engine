@@ -178,6 +178,9 @@ func (s *Session) hyContractDry(tx *core.Tx, rep *hyReport) (*proj.SegState, str
 			rep.contract = "strong (session)"
 		}
 		st := h.Seg.StateAt(S)
+		if s.explicit && s.hy.pinState != nil && s.hy.pinSnap == S {
+			st = s.hy.pinState
+		}
 		if st == nil {
 			return nil, fmt.Sprintf("snapshot lsn %d is older than the retained segment states", S)
 		}

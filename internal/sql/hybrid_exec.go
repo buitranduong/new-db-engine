@@ -39,6 +39,9 @@ func NewHybrid(e *core.Engine) *Hybrid {
 	if v, err := strconv.Atoi(os.Getenv("STASK_SEG_MERGE_MIN_TAIL")); err == nil && v > 0 {
 		proj.SegMergeMinTail = v
 	}
+	if v, err := strconv.Atoi(os.Getenv("STASK_SEG_MERGE_FRAC")); err == nil && v > 0 {
+		proj.SegMergeFrac = v
+	}
 	c := proj.NewSegColumnar()
 	c.Logf = logf
 	c.Start(e)

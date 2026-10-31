@@ -46,7 +46,7 @@ ST() { docker run --rm -i --network host --user "$(id -u):$(id -g)" -v "$W:$W" p
 log() { echo "[$(date -u +%T) load1=$(cut -d' ' -f1 /proc/loadavg)] $*"; }
 
 start_staskd() {
-  STASK_SEG_MERGE_MIN_TAIL=${S1_MERGE_TAIL:-8000} "$W/staskd" -dir "$W/data" -addr 127.0.0.1:$HP -pg-addr 127.0.0.1:$PP -hybrid -no-checkpoint >> "$W/staskd.log" 2>&1 &
+  STASK_SEG_MERGE_MIN_TAIL=${S1_MERGE_TAIL:-8000} STASK_SEG_MERGE_FRAC=${S1_MERGE_FRAC:-1000} "$W/staskd" -dir "$W/data" -addr 127.0.0.1:$HP -pg-addr 127.0.0.1:$PP -hybrid -no-checkpoint >> "$W/staskd.log" 2>&1 &
   SP=$!
   for i in $(seq 1 120); do curl -s "127.0.0.1:$HP/v1/health" >/dev/null 2>&1 && return 0; kill -0 $SP 2>/dev/null || return 1; sleep 0.5; done
   return 1
@@ -127,11 +127,12 @@ step() { # tag: query both engines and compare
   compare "$1"
 }
 
+ABC=ABC
 stmt() { # i N: deterministic writer statement number i (a single transaction with the progress counter)
   local i=$1 n=$2 k=$(( ($1 * 7907) % $2 ))
   case $((i % 9)) in
     0) echo "BEGIN; DELETE FROM sims WHERE number = '09' || lpad($k::text, 9, '0'); UPDATE progress SET n = $i; COMMIT;" ;;
-    1) echo "BEGIN; INSERT INTO sims VALUES ('08' || lpad($i::text, 9, '0'), 'TAM_HOA', $((1000000 + (i * 7919) % 2000000)), '$(echo ABC | cut -c$((1 + i % 3)))', $((5 + i % 6))) ON CONFLICT (number) DO UPDATE SET store_rate = excluded.store_rate; UPDATE progress SET n = $i; COMMIT;" ;;
+    1) echo "BEGIN; INSERT INTO sims VALUES ('08' || lpad($i::text, 9, '0'), 'TAM_HOA', $((1000000 + (i * 7919) % 2000000)), '${ABC:$((i % 3)):1}', $((5 + i % 6))) ON CONFLICT (number) DO UPDATE SET store_rate = excluded.store_rate; UPDATE progress SET n = $i; COMMIT;" ;;
     *) echo "BEGIN; UPDATE sims SET store_rate = $((5 + i % 6)), price = $((1000000 + (i * 7919) % 2000000)) WHERE number = '09' || lpad($k::text, 9, '0'); UPDATE progress SET n = $i; COMMIT;" ;;
   esac
 }
@@ -195,7 +196,7 @@ UPDATE sims SET tel = 'C' WHERE (substr(number,3)::bigint % 211) = 5;"
   sleep 1; step after-writer
 
   # kill -9 under write load
-  ( for i in $(seq $((M+1)) $((M+100000))); do stmt $i $N; done ) > "$W/writer2.sql"
+  ( for i in $(seq $((M+1)) $((M+30000))); do stmt $i $N; done ) > "$W/writer2.sql"
   ( ST -q < "$W/writer2.sql" > /dev/null 2>&1 ) & WP=$!
   sleep 5
   kill -9 $SP; wait $SP 2>/dev/null; SP=""

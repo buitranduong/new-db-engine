@@ -134,7 +134,7 @@ func (t pgTy) family() Kind {
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
-	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249:
+	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249, tyRegtype:
 		return KText
 	case tyDate:
 		return KDate
@@ -256,6 +256,9 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			return t
 		}
 		if t, ok := supfixFuncTy(e); ok {
+			return t
+		}
+		if t, ok := fnInferTy(e, leaf); ok {
 			return t
 		}
 		if e.Over != nil && !tySameAsArg[e.Name] && e.Name != "ntile" {

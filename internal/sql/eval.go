@@ -730,6 +730,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 	if v, ok, err := c.callUser(f, args); ok {
 		return v, err
 	}
+	if v, ok, err := c.fnCall(f, args); ok {
+		return v, err
+	}
 	if v, ok, err := c.callPre(f, args); ok {
 		return v, err
 	}

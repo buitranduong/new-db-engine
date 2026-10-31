@@ -96,6 +96,14 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			}
 			return typeOf(e.Args[0], sc, pk)
 		}
+		if _, reg := fnReg[e.Name]; reg {
+			kinds := make([]Kind, len(e.Args))
+			for i, a := range e.Args {
+				kinds[i] = typeOf(a, sc, pk)
+			}
+			k, _ := fnKindOf(e.Name, kinds)
+			return k
+		}
 		switch e.Name {
 		case "count", "length", "char_length":
 			return KInt

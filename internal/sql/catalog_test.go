@@ -89,7 +89,7 @@ func TestCatalogPsql(t *testing.T) {
 	expectRows(t, s, qs[7], "id,integer,nextval('items_id_seq'::regclass),true,NULL,,;name,text,'x'::text,true,NULL,,;qty,bigint,0,false,NULL,,;"+
 		"created,timestamp with time zone,now(),false,NULL,,;price,double precision,NULL,false,NULL,,;extra,integer,NULL,false,NULL,,;"+
 		"note,text,'n'::text,false,NULL,,")
-	expectRows(t, s, qs[8], "items_pkey,true,true,false,true,CREATE UNIQUE INDEX items_pkey ON public.items USING btree (id),PRIMARY KEY (id),p,false,false,false,0")
+	expectRows(t, s, qs[8], "items_pkey,true,true,false,true,CREATE UNIQUE INDEX items_pkey ON items USING btree (id),PRIMARY KEY (id),p,false,false,false,0")
 	expectRows(t, s, qs[9], "items_qty_check,CHECK (qty >= 0)")
 	for _, i := range []int{10, 11, 12, 13, 14, 15, 16} { // foreign keys, statistics, publications, triggers, inheritance
 		expectRows(t, s, qs[i], "")
@@ -300,7 +300,7 @@ func TestCatalogFunctions(t *testing.T) {
 		{`SELECT to_regtype('int8'), to_regtype('bigint'), to_regtype('nope') IS NULL, 'text'::regtype::oid`, "20,20,true,25"},
 		{`SELECT 'public'::regnamespace::oid, 'pg_catalog'::regnamespace::oid`, "2200,11"},
 		{`SELECT pg_get_indexdef('items_pkey'::regclass), pg_get_indexdef('items_pkey'::regclass, 1, true), pg_get_indexdef('items_pkey'::regclass, 0, true)`,
-			"CREATE UNIQUE INDEX items_pkey ON public.items USING btree (id),id,CREATE UNIQUE INDEX items_pkey ON public.items USING btree (id)"},
+			"CREATE UNIQUE INDEX items_pkey ON public.items USING btree (id),id,CREATE UNIQUE INDEX items_pkey ON items USING btree (id)"},
 		{`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'items_pkey'`, "PRIMARY KEY (id)"},
 		{`SELECT pg_get_constraintdef(oid, true) FROM pg_constraint WHERE conname = 'items_qty_check'`, "CHECK (qty >= 0)"},
 		{`SELECT pg_get_serial_sequence('items', 'id'), pg_get_serial_sequence('items', 'name') IS NULL, pg_get_serial_sequence('public.ident', 'id')`,

@@ -956,9 +956,11 @@ func (p *parser) insertStmt() (Stmt, error) {
 		return nil, err
 	}
 	if p.acceptKw("as") {
-		if _, err := p.ident(); err != nil {
+		if ins.Alias, err = p.ident(); err != nil {
 			return nil, err
 		}
+	} else if sch, b, ok := splitSchema(ins.Table); ok && sch != "" {
+		ins.Alias = b // INSERT INTO s.t ... ON CONFLICT ... t.col
 	}
 	if p.acceptOp("(") {
 		for {
@@ -1160,6 +1162,9 @@ func (p *parser) tableAlias() (string, string, error) {
 		}
 	} else if t := p.peek(); t.k == tIdent && !reserved[t.s] || t.k == tQuoted {
 		alias = p.next().s
+	}
+	if sch, b, ok := splitSchema(name); ok && alias == "" && sch != "" {
+		alias = b // UPDATE s.t ... t.col: the table is referred to as t, as in FROM
 	}
 	return name, alias, nil
 }

@@ -284,7 +284,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			return TextD(t.sqlName), nil
 		}
 		if n, ok := userTypeFormat(oid.I); ok {
-			return TextD(n), nil
+			return TextD(s.relDisplay(n)), nil
 		}
 		return TextD("???"), nil
 	case "to_regclass", "to_regtype":
@@ -414,7 +414,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 					}
 					return TextD(""), nil
 				}
-				return TextD(indexDef(t)), nil
+				return TextD(s.prettyIndexDef(indexDef(t), t, len(args) > 2 && args[2].Bool())), nil
 			}
 		}
 		if t, ix := s.catSnap().secIndexByOID(oid); ix != nil {
@@ -424,7 +424,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 				}
 				return TextD(""), nil
 			}
-			return TextD(secIndexDef(t, *ix)), nil
+			return TextD(s.prettyIndexDef(secIndexDef(t, *ix), t, len(args) > 2 && args[2].Bool())), nil
 		}
 		return Null, nil
 	case "pg_get_constraintdef":
@@ -451,7 +451,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		cn := arg(1).String()
 		for _, q := range s.E.Sequences() {
 			if q.Owner == tn+"."+cn {
-				return TextD("public." + quoteIdent(q.Name)), nil
+				return TextD(qualified(q.Name)), nil
 			}
 		}
 		return Null, nil

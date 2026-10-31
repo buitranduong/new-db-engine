@@ -105,6 +105,13 @@ func (s *Session) Exec(st Stmt, params []Datum) (*Result, error) {
 	t0 := s.beginStmt(st)
 	s.notices = s.notices[:0]
 	res, err := s.exec(st, params)
+	if err != nil && s.explicit && !s.failed {
+		// PostgreSQL: any ERROR inside a transaction block aborts it (only ROLLBACK, ROLLBACK TO
+		// and COMMIT, which then reports ROLLBACK, are accepted afterwards). The statement paths
+		// mark it one by one; this is the net for the ones that forgot (e.g. ROLLBACK TO a
+		// savepoint that was released).
+		s.markFailed()
+	}
 	if s.fnTx {
 		err = s.endFnTx(err)
 	}

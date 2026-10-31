@@ -228,11 +228,12 @@ func (a *basicAgg) add(args, _ []Datum) error {
 	default:
 		switch v.K {
 		case KInt, KBool:
-			a.isum += v.I
+			addInt64Sum(&a.isum, &a.nsum, &a.numer, v.I)
 			a.fsum += float64(v.I)
 		case KNumeric:
 			a.numer = true
 			a.nsum = pgnum.Add(a.nsum, numOf(v))
+			a.fsum += numOf(v).Float64()
 		case KInterval:
 			if a.kind == KNull {
 				a.best = IntervalD(0, 0)
@@ -614,4 +615,19 @@ func (a *quantileAgg) result() (Datum, error) {
 		}
 	}
 	return vals[min(max(i, 0), n-1)], nil
+}
+
+// addInt64Sum adds v to the int64 accumulator acc. PostgreSQL's sum(bigint) returns numeric and
+// never wraps: when the int64 sum would overflow, the partial sum moves into the numeric
+// accumulator n (and *isNum is set so the result is numeric). Precedent: PostgreSQL's int8
+// transition functions (int8_avg_accum, numeric_poly_sum) keep a 128-bit/numeric state.
+func addInt64Sum(acc *int64, n *pgnum.Dec, isNum *bool, v int64) {
+	s := *acc + v
+	if (v > 0 && s < *acc) || (v < 0 && s > *acc) {
+		*n = pgnum.Add(*n, pgnum.FromInt64(*acc))
+		*acc = v
+		*isNum = true
+		return
+	}
+	*acc = s
 }

@@ -239,6 +239,8 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 				return pgTy{oid: tyInt4, mod: -1}
 			}
 		}
+	case *groupingFn:
+		return pgTy{oid: tyInt4, mod: -1} // GROUPING() is an integer
 	case *Case:
 		var ts []pgTy
 		var as []Expr
@@ -261,6 +263,12 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		}
 		if jsonarrNames[e.Name] || e.Name == "array_agg" {
 			if t := arrTyFor(e, func(Expr) Kind { return KNull }, leaf); t.oid != 0 {
+				return t
+			}
+		}
+		if (e.Name == "mode" || e.Name == "percentile_disc") && len(e.Within) == 1 {
+			// ordered-set aggregates return the type of the sorted expression
+			if t := inferTy(e.Within[0].X, leaf); t.isInt() || t.oid == tyFloat4 || t.oid == tyDate {
 				return t
 			}
 		}

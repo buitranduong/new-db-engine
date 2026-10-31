@@ -57,23 +57,23 @@ Tổng 2196 câu lệnh (N=100).
 
 Lệnh: `go build -o /tmp/suite-stask/bin/ ./cmd/staskd ./cmd/pgdiff`, chạy `staskd -dir <tạm> -addr 127.0.0.1:<cổng> -pg-addr 127.0.0.1:<cổng> -segment-mb 16 -prezero=false`, rồi `PGDIFF_BIN=... scripts/suite/run.sh 'postgres://app@127.0.0.1:<cổng>/stask?sslmode=disable'` (chuẩn: `postgres:16.15` tự dựng). Kiểm tra bộ test bằng PostgreSQL với PostgreSQL (hai database của một cụm): 2188/2196 câu PASS, 8 câu còn lại đều ở phiên 2PC và chỉ lệch vì hai database dùng chung một cụm (xem mục 1).
 
-| Nhóm | Câu | PASS | DIFF | ERR | Kết quả |
-|---|---|---|---|---|---|
-| 01_ddl_types | 332 | 196 | 38 | 98 | DIFF+ERR |
-| 02_indexes | 99 | 72 | 5 | 22 | DIFF+ERR |
-| 03_views | 95 | 43 | 12 | 40 | DIFF+ERR |
-| 04_dml | 145 | 101 | 20 | 24 | DIFF+ERR |
-| 05_transactions | 272 | 247 | 12 | 13 | DIFF+ERR |
-| 06_select_basics | 192 | 159 | 9 | 24 | DIFF+ERR |
-| 07_joins | 103 | 99 | 2 | 2 | DIFF+ERR |
-| 08_aggregates | 101 | 81 | 13 | 7 | DIFF+ERR |
-| 09_window | 61 | 50 | 5 | 6 | DIFF+ERR |
-| 10_cte_subquery | 115 | 95 | 13 | 7 | DIFF+ERR |
-| 11_analytics | 96 | 83 | 6 | 7 | DIFF+ERR |
-| 12_text_search | 68 | 29 | 2 | 37 | DIFF+ERR |
-| 13_catalog | 123 | 86 | 31 | 6 | DIFF+ERR |
-| 14_errors | 394 | 309 | 35 | 50 | DIFF+ERR |
-| **Tổng** | **2196** | **1650** | **203** | **343** | |
+| Nhóm | Câu | PASS | DIFF | ERR | Kết quả | PASS sau `suitefix` |
+|---|---|---|---|---|---|---|
+| 01_ddl_types | 332 | 196 | 38 | 98 | DIFF+ERR | 198 |
+| 02_indexes | 99 | 72 | 5 | 22 | DIFF+ERR | 72 |
+| 03_views | 95 | 43 | 12 | 40 | DIFF+ERR | 43 |
+| 04_dml | 145 | 101 | 20 | 24 | DIFF+ERR | 115 |
+| 05_transactions | 272 | 247 | 12 | 13 | DIFF+ERR | 253 |
+| 06_select_basics | 192 | 159 | 9 | 24 | DIFF+ERR | 159 |
+| 07_joins | 103 | 99 | 2 | 2 | DIFF+ERR | 99 |
+| 08_aggregates | 101 | 81 | 13 | 7 | DIFF+ERR | 87 |
+| 09_window | 61 | 50 | 5 | 6 | DIFF+ERR | 50 |
+| 10_cte_subquery | 115 | 95 | 13 | 7 | DIFF+ERR | 99 |
+| 11_analytics | 96 | 83 | 6 | 7 | DIFF+ERR | 89 |
+| 12_text_search | 68 | 29 | 2 | 37 | DIFF+ERR | 29 |
+| 13_catalog | 123 | 86 | 31 | 6 | DIFF+ERR | 95 |
+| 14_errors | 394 | 309 | 35 | 50 | DIFF+ERR | 310 |
+| **Tổng** | **2196** | **1650** | **203** | **343** | | **1698** (DIFF 164, ERR 334) |
 
 (PASS gồm cả PASS-MSG.) Danh sách đầy đủ 546 câu sai: `docs/25_first_run_failures.txt` (nhóm/phiên:dòng và lớp lỗi). **Con số ERR bị thổi phồng bởi lỗi dây chuyền**: một `CREATE TABLE` không hỗ trợ làm hỏng mọi câu dùng bảng đó (`relation ... does not exist`, SQLSTATE 42P01). Đếm theo nguyên nhân gốc ở mục 6.
 
@@ -84,14 +84,14 @@ Lệnh: `go build -o /tmp/suite-stask/bin/ ./cmd/staskd ./cmd/pgdiff`, chạy `s
 Mỗi mục có SQL tối thiểu tái hiện (lấy từ chính bộ test, đã thử trên `staskd`) và tệp:dòng trong `scripts/suite`. Mức: S = sai kết quả/lỗi dữ liệu (nghiêm trọng), F = thiếu tính năng (báo `0A000`/`42601`/`42883`), T = khác kiểu/định dạng/SQLSTATE.
 
 **S — sai kết quả hoặc hành vi nguy hiểm**
-1. `sum(bigint)` tràn số thì quay vòng thay vì trả `numeric`: `SELECT sum(x) FROM (VALUES (9223372036854775807::bigint),(1)) t(x);` PG `9223372036854775808`, STASK `-9223372036854775808` (08_aggregates/statistical:102).
-2. `VALUES` trộn float8 và numeric cho tổng sai: `SELECT sum(x), avg(x) FROM (VALUES (0.1::float8),(0.2),(0.3)) t(x);` PG `0.6000000000000001 | 0.2`, STASK `0.1 | 0.0333...` (08_aggregates/statistical:101). `VALUES (1),(2.5),(3)` trả cột bigint thay vì numeric (04_dml/truncate-misc:167).
-3. Giao dịch đã lỗi vẫn được `COMMIT` sau `ROLLBACK TO` một savepoint đã `RELEASE`: `BEGIN; SAVEPOINT s; RELEASE s; ROLLBACK TO s; COMMIT;` PG báo lỗi 3B001 rồi `COMMIT` trả tag `ROLLBACK` và bỏ mọi thay đổi; STASK trả `COMMIT` và giữ thay đổi (05_transactions/savepoints:153-161, row-locks:231).
-4. `SELECT * FROM generate_series(1, 1000000000000) LIMIT 0;` PG trả ngay; STASK nén toàn bộ rồi hết thời gian, kết nối bị đóng (14_errors/limit-pushdown).
-5. Bảng/tham chiếu trong schema khác `public` mất tên: với bảng `s04.t`, `UPDATE t SET ... FROM (VALUES ...) AS s(...) WHERE t.id = s.id RETURNING t.id` và `INSERT ... ON CONFLICT (id) DO UPDATE SET hits = u.hits + 1` và `MERGE INTO tgt ... tgt.n` đều lỗi `missing FROM-clause entry for table "t"` (04_dml/update-delete:41, upsert:67, merge:84; cùng nguyên nhân với `LATERAL generate_series(1, e.id)` ở 07_joins/lateral-semi-anti:86). Các lệnh này chạy đúng trên bảng ở `public`. Đây là nguyên nhân gốc của khoảng 20 lỗi dây chuyền ở nhóm 04.
-6. Tên đối tượng trong catalog lộ tiền tố schema: `'s13.parent'::regclass::text` trả `"s13.parent"` (PG: `parent`), `pg_get_indexdef` trả `CREATE UNIQUE INDEX "s13.parent_pkey" ON public."s13.parent"...`, tên ràng buộc `s13.child_pid_fkey`, `pg_get_serial_sequence` trả `public."s13.child_id_seq"`, `format_type` của enum trả `s13.color`. Hibernate/Liquibase/SQLAlchemy dùng các hàm này (13_catalog, ~12 câu).
-7. `DROP SCHEMA ... CASCADE` còn sót schema khi trong đó có bảng phân vùng: lỗi `view "s01.pr_2024q1" does not exist`, schema `s01` vẫn còn trong `information_schema.schemata` (01_ddl_types/teardown).
-8. Phép trừ `timestamp - timestamp` trong hàm cửa sổ trả `float8` thay vì `interval`: `SELECT ts - lag(ts) OVER (ORDER BY ts) FROM t` (11_analytics/sessionization:21, 23; running-metrics:119). Nếu cột `interval` thì bảng không tạo được (mục F1).
+1. **[ĐÃ SỬA, suitefix]** `sum(bigint)` tràn số thì quay vòng thay vì trả `numeric`: `SELECT sum(x) FROM (VALUES (9223372036854775807::bigint),(1)) t(x);` PG `9223372036854775808`, STASK `-9223372036854775808` (08_aggregates/statistical:102).
+2. **[ĐÃ SỬA, suitefix]** `VALUES` trộn float8 và numeric cho tổng sai: `SELECT sum(x), avg(x) FROM (VALUES (0.1::float8),(0.2),(0.3)) t(x);` PG `0.6000000000000001 | 0.2`, STASK `0.1 | 0.0333...` (08_aggregates/statistical:101). `VALUES (1),(2.5),(3)` trả cột bigint thay vì numeric (04_dml/truncate-misc:167).
+3. **[ĐÃ SỬA, suitefix]** Giao dịch đã lỗi vẫn được `COMMIT` sau `ROLLBACK TO` một savepoint đã `RELEASE`: `BEGIN; SAVEPOINT s; RELEASE s; ROLLBACK TO s; COMMIT;` PG báo lỗi 3B001 rồi `COMMIT` trả tag `ROLLBACK` và bỏ mọi thay đổi; STASK trả `COMMIT` và giữ thay đổi (05_transactions/savepoints:153-161, row-locks:231).
+4. **[ĐÃ SỬA, suitefix]** `SELECT * FROM generate_series(1, 1000000000000) LIMIT 0;` PG trả ngay; STASK nén toàn bộ rồi hết thời gian, kết nối bị đóng (14_errors/limit-pushdown).
+5. **[ĐÃ SỬA, suitefix]** Bảng/tham chiếu trong schema khác `public` mất tên: với bảng `s04.t`, `UPDATE t SET ... FROM (VALUES ...) AS s(...) WHERE t.id = s.id RETURNING t.id` và `INSERT ... ON CONFLICT (id) DO UPDATE SET hits = u.hits + 1` và `MERGE INTO tgt ... tgt.n` đều lỗi `missing FROM-clause entry for table "t"` (04_dml/update-delete:41, upsert:67, merge:84; cùng nguyên nhân với `LATERAL generate_series(1, e.id)` ở 07_joins/lateral-semi-anti:86). Các lệnh này chạy đúng trên bảng ở `public`. Đây là nguyên nhân gốc của khoảng 20 lỗi dây chuyền ở nhóm 04.
+6. **[ĐÃ SỬA, suitefix]** Tên đối tượng trong catalog lộ tiền tố schema: `'s13.parent'::regclass::text` trả `"s13.parent"` (PG: `parent`), `pg_get_indexdef` trả `CREATE UNIQUE INDEX "s13.parent_pkey" ON public."s13.parent"...`, tên ràng buộc `s13.child_pid_fkey`, `pg_get_serial_sequence` trả `public."s13.child_id_seq"`, `format_type` của enum trả `s13.color`. Hibernate/Liquibase/SQLAlchemy dùng các hàm này (13_catalog, ~12 câu).
+7. **[ĐÃ SỬA, suitefix]** `DROP SCHEMA ... CASCADE` còn sót schema khi trong đó có bảng phân vùng: lỗi `view "s01.pr_2024q1" does not exist`, schema `s01` vẫn còn trong `information_schema.schemata` (01_ddl_types/teardown).
+8. **[ĐÃ SỬA, suitefix]** Phép trừ `timestamp - timestamp` trong hàm cửa sổ trả `float8` thay vì `interval`: `SELECT ts - lag(ts) OVER (ORDER BY ts) FROM t` (11_analytics/sessionization:21, 23; running-metrics:119). Nếu cột `interval` thì bảng không tạo được (mục F1).
 9. `ON DELETE CASCADE`/FK: 01_ddl_types/constraints:238 (`casc` còn 1 dòng ở PG, 0 ở STASK) do khác hành vi khi cha bị xoá lúc còn con (PG báo 23503 vì cột con khác không CASCADE); cần xác minh riêng.
 
 **F — thiếu tính năng (nhóm theo thứ tự ưu tiên ứng dụng thật)**
@@ -104,7 +104,7 @@ Mỗi mục có SQL tối thiểu tái hiện (lấy từ chính bộ test, đã
 7. Catalog: `information_schema.table_constraints/key_column_usage/constraint_column_usage/referential_constraints/check_constraints/table_privileges` trả 0 dòng, `pg_matviews`, `pg_sequences`, `pg_proc`, `pg_am` (1/5 dòng), `pg_settings` thiếu 2 tên, `information_schema.columns` không có `pg_catalog`.
 
 **T — khác kiểu, định dạng, SQLSTATE**
-1. Kiểu OID: số nguyên trong `VALUES`/tập hợp là int8 (PG: int4) cho `UNION`, `INTERSECT`, `NULL UNION ALL SELECT 1`; `grouping()`, `mode()`, `percentile_disc` trả int8; `sum(real)` trả double; `avg(interval)` trả double; `min/max(array)` OID mảng khác; `round(x)` trên `numeric` trả double; `bytea || bytea` và `substring(bytea)` trả text; `current_schemas` OID; `SELECT '1' UNION ALL SELECT 2` trả text.
+1. **[ĐÃ SỬA một phần, suitefix: VALUES, tập hợp, `grouping()`, `mode()`, `percentile_disc`]** Kiểu OID: số nguyên trong `VALUES`/tập hợp là int8 (PG: int4) cho `UNION`, `INTERSECT`, `NULL UNION ALL SELECT 1`; `grouping()`, `mode()`, `percentile_disc` trả int8; `sum(real)` trả double; `avg(interval)` trả double; `min/max(array)` OID mảng khác; `round(x)` trên `numeric` trả double; `bytea || bytea` và `substring(bytea)` trả text; `current_schemas` OID; `SELECT '1' UNION ALL SELECT 2` trả text.
 2. Giá trị/định dạng: `'a' < 'B'` (PG `en_US.utf8`: true; STASK so sánh theo byte: false) và `min(text)` (nhóm collation đã có `cmd/collfid`); `NaN = NaN` phải true và NaN lớn hơn mọi số; `char(n)` bỏ khoảng trắng đệm khi in; `timestamptz` in theo múi giờ phiên (`SET TimeZone` không được áp dụng khi in); `IntervalStyle`; `regexp_replace(..., 'i')` không nhận cờ; `'"s"'::jsonb ->> 0` (PG `s`, STASK NULL) và `'{"a": 1.0}'::jsonb = '{"a": 1}'::jsonb` (PG true); `0.0 ^ 0` in `1` thay vì `1.0000000000000000`; `to_char(1,'bogus')`; `power(10, 400::numeric)` bị chặn ở 10^N-1; `SHOW transaction_isolation` sau `BEGIN ISOLATION LEVEL READ UNCOMMITTED` (PG16 hiển thị `read uncommitted`, STASK `read committed`); `SHOW server_version_num` 160000 so với 160015; `version()` chuỗi khác (chấp nhận được).
 3. SQLSTATE khác (79 câu, danh sách trong tệp): ví dụ `'\xzz'::bytea` 22023 so với 22P02; `'25:00'::time` 22008 so với 22007; `ntile(0)` 22014 so với 22023; `nth_value(x,0)` 22016; `CREATE TABLE t (a int PRIMARY KEY, b int PRIMARY KEY)` 42P16 so với 42601; `FROM p a, p a` 42712 so với 42702; `lag(id)` không OVER 42809 so với 42883; hàm cửa sổ trong WHERE 42P20 so với 42803; `COPY p TO '/file'` 58P01; `COMMIT PREPARED` 42704; `'x'::regnamespace` 3F000; `SELECT count(*) FROM p FOR UPDATE` 0A000.
 4. `EXPLAIN (FORMAT JSON)` trả cột `text` thay vì `json` (OID 114).
@@ -118,3 +118,22 @@ Mỗi mục có SQL tối thiểu tái hiện (lấy từ chính bộ test, đã
 ## 7. Máy khách mẫu
 
 `scripts/suite/clients/` có chuỗi kết nối (DSN) và chương trình thử nhỏ cho psql, Go pgx, pgjdbc (kể cả `targetServerType=primary` và nhiều host), psycopg2/psycopg3, SQLAlchemy, Node pg, Npgsql. Mỗi chương trình: kết nối, `SELECT 1`, một câu lệnh chuẩn bị sẵn, một vòng COPY. Đã chạy thật với **cả STASK và PostgreSQL 16**: psql, pgx, psycopg2, psycopg3, SQLAlchemy, pgjdbc (Docker `eclipse-temurin:17`), đều in `OK`. Node pg và Npgsql chỉ viết đúng cú pháp (không chạy .NET/Node trên máy chủ). Xem `scripts/suite/clients/README.md`.
+
+## 8. Sửa nhóm S (nhánh `suitefix`, từ `suite` 222186c)
+
+Chỉ sửa các lỗi "sai kết quả hoặc hành vi nguy hiểm" (mục 6, S1-S8) và T1; không đụng kiểu, DDL, hàm còn thiếu. Mỗi mục có kiểm thử hồi quy trong `internal/sql/suitefix_test.go`; tiền lệ PostgreSQL nằm ở dòng docs/14 Phụ lục Y. Chạy lại cả bộ trên `staskd` của nhánh với PostgreSQL 16.15: **1698 / 2196 PASS** (trước 1650), DIFF 164, ERR 334. Không câu nào từng PASS mà nay lỗi. Một câu mới lộ (04_dml/merge:93): PostgreSQL từ chối `MERGE` có mệnh đề `WHEN` không bao giờ tới (42601), STASK chấp nhận; trước đây câu này lỗi sớm hơn vì S5.
+
+| Mục | Trạng thái | Nguyên nhân gốc và cách sửa |
+|---|---|---|
+| S1 `sum(bigint)` | đã sửa | tích luỹ `int64` quay vòng; nay `addInt64Sum` chuyển phần tổng sang bộ tích luỹ numeric khi sắp tràn (cả `aggState` song song và `basicAgg`, cả `merge`), kết quả numeric như PG; `avg` cũng hết sai theo |
+| S2 `VALUES` trộn float8/numeric | đã sửa | kiểu cột VALUES lấy từ dòng đầu, các dòng khác bị bỏ qua khi cộng float; nay hợp nhất kiểu trên mọi dòng (nguyên < numeric < float8, ép từng ô), và `basicAgg` cộng cả numeric vào tổng float |
+| S3 `COMMIT` sau lỗi | đã sửa | `ROLLBACK TO`/`RELEASE` savepoint không tồn tại trả 3B001 nhưng không đánh dấu giao dịch hỏng; nay lưới an toàn ở `Session.Exec`: mọi lỗi trong khối giao dịch đều chuyển trạng thái `E`, `COMMIT` báo tag `ROLLBACK` |
+| S4 `generate_series(..) LIMIT 0` | đã sửa | `LIMIT 0` không chạy FROM; `LIMIT n [OFFSET m]` trên một hàm bảng trần chỉ xin `n+m` dòng. Giới hạn còn lại: có `WHERE`/`ORDER BY`/nhóm thì vẫn nạp cả chuỗi tới ngân sách bộ nhớ (lỗi 53200, không sai kết quả) |
+| S5 bí danh có schema | đã sửa | `UPDATE/DELETE/MERGE/INSERT` vào `s.t` dùng tên đầy đủ `s.t` làm bí danh, người dùng viết `t.col`; nay bí danh mặc định là tên trần như với `FROM s.t`; `INSERT .. AS u` trước đây bỏ mất bí danh, nay lưu (`Insert.Alias`) |
+| S6 tên trong catalog | đã sửa | `regclass::text`, `regtype::text`, `format_type`, `pg_get_constraintdef`, `column_default` nextval in tương đối theo `search_path`; `pg_get_indexdef` và `pg_get_serial_sequence` luôn có schema; tên chỉ mục/ràng buộc suy ra từ bảng bỏ tiền tố; `pg_constraint.connamespace` đúng schema. Chưa sửa: `pg_typeof` của kiểu người dùng ở schema khác và tên ràng buộc trong thông báo lỗi unique/FK |
+| S7 `DROP SCHEMA CASCADE` có bảng phân vùng | đã sửa | phân vùng là view, bị xoá hai lần (một lần như view của schema, một lần cùng bảng cha); nay bỏ khỏi danh sách view nếu cha cùng schema bị xoá, hoặc xoá như bảng nếu cha ở schema khác |
+| S8 `timestamp - timestamp` cạnh hàm cửa sổ | đã sửa | `staticKind` của phép trừ chỉ biết `KTime`/`KDate`, `KTimestamp` rơi xuống float; nay là interval (và `timestamp ± interval` là timestamp) |
+| S9 FK `ON DELETE CASCADE` (01_ddl_types/constraints:238) | chưa xác minh | không thuộc nhóm này, giữ nguyên backlog |
+| T1 int4 so với int8 | đã sửa phần ảnh hưởng driver | `VALUES` và `UNION/INTERSECT/EXCEPT` với số nguyên/NULL, `grouping()`, `mode()`, `percentile_disc()` nay trả int4 như PG (pgjdbc `getObject` trả `Integer`); các mục T1 còn lại (sum(real), avg(interval), min/max mảng, bytea) chưa đụng tới |
+
+PASS theo nhóm sau sửa: 01 198, 02 72, 03 43, 04 115, 05 253, 06 159, 07 99, 08 87, 09 50, 10 99, 11 89 (hết DIFF), 12 29, 13 95, 14 310.

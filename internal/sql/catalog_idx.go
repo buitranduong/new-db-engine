@@ -112,7 +112,7 @@ func secIndexDef(t *schema.Table, ix schema.IndexDef) string {
 	if ix.Unique {
 		u = "UNIQUE "
 	}
-	return "CREATE " + u + "INDEX " + quoteIdent(ix.Name) + " ON public." + quoteIdent(t.Name) +
+	return "CREATE " + u + "INDEX " + quoteIdent(stripOwnSchema(ix.Name, schemaOfName(t.Name))) + " ON " + qualified(t.Name) +
 		" USING btree (" + strings.Join(elems, ", ") + ")" + wherePart(t, ix)
 }
 
@@ -136,8 +136,8 @@ func fkActionChar(a string) string {
 }
 
 // fkDef is pg_get_constraintdef of a foreign key.
-func fkDef(fk schema.ForeignKey) string {
-	d := "FOREIGN KEY (" + quoteList(fk.Columns) + ") REFERENCES " + quoteIdent(fk.RefTable) + "(" + quoteList(fk.RefCols) + ")"
+func (s *Session) fkDef(fk schema.ForeignKey) string {
+	d := "FOREIGN KEY (" + quoteList(fk.Columns) + ") REFERENCES " + s.relDisplay(fk.RefTable) + "(" + quoteList(fk.RefCols) + ")"
 	switch fk.OnDelete {
 	case "restrict":
 		d += " ON DELETE RESTRICT"
@@ -231,7 +231,7 @@ func (c *catSnap) secConstraintDef(oid int64) (string, bool) {
 		}
 		for _, fk := range t.ForeignKeys {
 			if fkConOID(t, fk.Name) == oid {
-				return fkDef(fk), true
+				return c.s.fkDef(fk), true
 			}
 		}
 	}

@@ -87,30 +87,31 @@ func (s *Session) supfixRelSize(arg Datum, total bool) Datum {
 func (s *Session) relNameByOID(oid int64) (string, bool) {
 	for n, o := range catalogRels {
 		if o == oid {
-			return n, true
+			return quoteIdent(n), true
 		}
 	}
 	c := s.catSnap()
 	for _, t := range c.tables {
 		if tableOID(t) == oid {
-			return t.Name, true
+			return s.relDisplay(t.Name), true
 		}
 		if t.HasPK() && indexOID(t) == oid {
-			return pkeyName(t), true
+			return s.qualDisplay(schemaOfName(t.Name), stripOwnSchema(pkeyName(t), schemaOfName(t.Name))), true
 		}
 	}
 	for _, q := range c.seqs {
 		if seqOID(q.Name) == oid {
-			return q.Name, true
+			return s.relDisplay(q.Name), true
 		}
 	}
 	for _, v := range c.views {
 		if viewOID(v.Name) == oid {
-			return v.Name, true
+			return s.relDisplay(v.Name), true
 		}
 	}
-	if _, ix := c.secIndexByOID(oid); ix != nil {
-		return ix.Name, true
+	if t, ix := c.secIndexByOID(oid); ix != nil {
+		sch := schemaOfName(t.Name)
+		return s.qualDisplay(sch, stripOwnSchema(ix.Name, sch)), true
 	}
 	return "", false
 }
@@ -151,7 +152,7 @@ func (c *evalCtx) supfixRegclassText(e *Cast) (Datum, bool, error) {
 		return TextD("-"), true, nil
 	}
 	if n, ok := s.relNameByOID(v.I); ok {
-		return TextD(quoteIdent(n)), true, nil
+		return TextD(n), true, nil
 	}
 	return TextD(strconv.FormatInt(v.I, 10)), true, nil
 }

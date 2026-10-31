@@ -189,7 +189,7 @@ Khởi động lại khi page cache nguội (`results/storage/stask-off-v4.txt`,
 **Cái giá phải trả:**
 - Đọc snapshot cũ hơn head giờ phải đọc thêm bản ghi WAL của head để lấy `Prev`, vì không còn con trỏ `prev` trong RAM. Tx p99 vẫn tốt hơn.
 - Mỗi batch sửa leaf nào thì copy leaf đó (2,7 KB) theo cơ chế COW, cộng một lần copy leaf kề khi phải chia lại.
-- Arena của khoá dài chỉ lớn thêm. Khoá dài bị xoá khỏi index (tombstone đã dọn) chỉ được thu hồi khi khởi động lại; `key_arena_dead_bytes` đếm phần này. Sau 2 lượt tải, arena là 18,9 MB (id bulk 13 chữ số).
+- Arena của khoá dài chỉ lớn thêm. Khoá dài bị xoá khỏi index (tombstone đã dọn) chỉ được thu hồi khi khởi động lại; `key_arena_dead_bytes` đếm phần này. Sau 2 lượt tải, arena là 18,9 MB (id bulk 13 chữ số). **Đã sửa (nhánh `diskidx`, docs/18 §15):** `Engine.CompactKeyArena` / bộ nền dựng lại index của bảng vào arena mới không dừng người ghi (ghi lại put/del rồi phát lại), tự chạy khi byte chết ≥ 64 MiB và ≥ nửa số byte khoá dài đã thêm; đỉnh RAM tạm thời = thêm một bản index của bảng.
 - `get` mất 469 ns ở 1 triệu khoá và không cấp phát (`BenchmarkIndexGet`). Chưa đo đối chứng với google/btree.
 
 ## 6. View cột gọn hơn (`proj/colvec.go`, `results/mem/v5-*`, `v6-*`, `results/aggab/pack-*`)

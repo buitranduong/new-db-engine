@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,6 +172,31 @@ func stress(t *testing.T, opt bool) {
 		wg.Wait()
 	}
 	defer shutdown()
+	// Watchdog: if no operation completes for 60 s the tree is hung (a lock
+	// held forever), not slow. Dump every goroutine so the HOLDER of the lock
+	// (the one not blocked in a lock call; look at Checkpoint/pool/I/O frames)
+	// is visible, then abort instead of waiting for the 600 s package timeout.
+	wdDone := make(chan struct{})
+	defer close(wdDone)
+	go func() {
+		last, stalled := completed.Load(), 0
+		for {
+			select {
+			case <-wdDone:
+				return
+			case <-time.After(5 * time.Second):
+			}
+			if c := completed.Load(); c != last {
+				last, stalled = c, 0
+				continue
+			}
+			if stalled++; stalled >= 12 {
+				fmt.Fprintf(os.Stderr, "stress watchdog: no progress for 60s at op %d; all goroutines:\n", last)
+				pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+				panic("pindex stress hung: see goroutine dump above")
+			}
+		}
+	}()
 	var failures atomic.Int64
 	fail := func(format string, a ...any) {
 		if failures.Add(1) <= 5 {

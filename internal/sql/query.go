@@ -1177,6 +1177,7 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	// not pull a row either); a bare set-returning function with LIMIT n is asked for OFFSET+n
 	// rows only, so generate_series(1, 1e12) LIMIT 5 does not materialise the series.
 	rowCap := int64(-1)
+	pushedWhere := false // the scan helpers already applied p.where
 	if p.limit != nil && p.lock == nil {
 		lim, off, err := limitValues(qx.ctx(outer), p.limit, p.offset)
 		if err != nil {
@@ -1195,14 +1196,26 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 			return nil, err
 		}
 	} else if p.from != nil {
-		if rows, err = p.from.run(qx, outer); err != nil {
-			return nil, err
+		pushed := false
+		if tp, ok := p.from.(*tablePlan); ok && p.where != nil && p.lock == nil && tp.asOf == nil && pushableWhere(p.where) {
+			var pok bool
+			if rows, pok, err = tp.runParallelWhere(qx, qx.ctx(outer), p.where); err != nil {
+				return nil, err
+			} else if pok {
+				pushed = true
+			}
 		}
+		if !pushed {
+			if rows, err = p.from.run(qx, outer); err != nil {
+				return nil, err
+			}
+		}
+		pushedWhere = pushed
 	} else {
 		rows = [][]Datum{{}}
 	}
 	ctx := qx.ctx(outer)
-	if p.where != nil {
+	if p.where != nil && !pushedWhere {
 		kept := rows[:0:0]
 		for i, r := range rows {
 			if i&4095 == 4095 && qx.s.interrupted() {

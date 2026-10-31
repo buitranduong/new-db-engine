@@ -347,3 +347,37 @@ func TestParallelScanOverBudgetIsAnError(t *testing.T) {
 	QueryMemLimit = 64 << 20
 	expectRows(t, s, q, "60000")
 }
+
+// The parallel window executor (key evaluation and sort on the scan helpers) and the WHERE pushed into the
+// parallel scan must give the sequential answer, ties included (row_number is stable on ties).
+func TestParallelWindowAndPushdownMatchSequential(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE wp (id BIGINT PRIMARY KEY, g TEXT, v INT, price INT)`)
+	run(t, s, `INSERT INTO wp SELECT i, CASE WHEN i % 3 = 0 THEN 'A' WHEN i % 3 = 1 THEN 'B' ELSE 'C' END, i % 7, 100 + i % 1000 FROM generate_series(1, 90000) i`)
+	for i := 0; i < 300; i++ {
+		if ts, err := e.UserTable("wp"); err == nil && ts.LiveRows() == 90000 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	const q = `SELECT id, g, rn FROM (SELECT id, g, price, row_number() OVER (PARTITION BY g ORDER BY v DESC, md5(id::text || '42'), id) AS rn
+		FROM wp WHERE price BETWEEN 200 AND 900 AND g IN ('A','B') AND id <> 77) t
+		WHERE (g = 'A' AND rn BETWEEN 100 AND 130) OR (g = 'B' AND rn <= 20) ORDER BY g, rn`
+	const q2 = `SELECT id, rank() OVER (PARTITION BY g ORDER BY v) r, row_number() OVER (ORDER BY v, id DESC) n FROM wp WHERE id % 1000 = 5 ORDER BY id`
+	const q3 = `SELECT count(*), sum(rn) FROM (SELECT row_number() OVER (PARTITION BY v ORDER BY price, id) rn FROM wp WHERE g = 'C') t`
+	seq := func(q string) string {
+		old := ScanWorkers
+		ScanWorkers = 1
+		defer func() { ScanWorkers = old }()
+		return render(run(t, s, q))
+	}
+	for _, query := range []string{q, q2, q3} {
+		want := seq(query)
+		for i := 0; i < 3; i++ {
+			if got := render(run(t, s, query)); got != want {
+				t.Fatalf("parallel answer differs from the sequential one for %s\nwant %.300s\ngot  %.300s", query, want, got)
+			}
+		}
+	}
+}

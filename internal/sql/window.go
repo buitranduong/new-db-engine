@@ -1,7 +1,8 @@
 package sql
 
 import (
-	"sort"
+	"slices"
+	"sync"
 )
 
 // Window functions of the general executor: each call's value is appended
@@ -32,44 +33,89 @@ func windowValues(ctx *evalCtx, rows [][]Datum, w *winCall) ([]Datum, error) {
 	n := len(rows)
 	okeys := make([][]Datum, n)
 	args := make([][]Datum, n)
-	parts := map[string][]int{}
-	var porder []string
-	for i, r := range rows {
-		ctx.drow = r
-		key, err := evalKey(ctx, w.part)
+	keys := make([]string, n)
+	rowKeys := func(c *evalCtx, i int) error {
+		c.drow = rows[i]
+		key, err := evalKey(c, w.part)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if _, ok := parts[key]; !ok {
-			porder = append(porder, key)
+		keys[i] = key
+		if len(w.order) > 0 {
+			okeys[i] = make([]Datum, 0, len(w.order))
 		}
-		parts[key] = append(parts[key], i)
 		for _, s := range w.order {
-			v, err := ctx.eval(s.x)
+			v, err := c.eval(s.x)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			okeys[i] = append(okeys[i], v)
 		}
 		for _, a := range w.args {
-			v, err := ctx.eval(a)
+			v, err := c.eval(a)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			args[i] = append(args[i], v)
 		}
+		return nil
+	}
+	// PARTITION BY / ORDER BY / argument expressions of plain scalar kind are evaluated by the
+	// scan helpers in chunks (a wide window over millions of rows spent seconds here on one core)
+	par := n >= parallelWindowMinRows && windowExprsPushable(w)
+	if par {
+		err := parallelRange(n, func(lo, hi int, c *evalCtx) error {
+			for i := lo; i < hi; i++ {
+				if err := rowKeys(c, i); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, ctx)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		for i := range rows {
+			if err := rowKeys(ctx, i); err != nil {
+				return nil, err
+			}
+		}
+	}
+	parts := map[string][]int{}
+	var porder []string
+	for i, key := range keys {
+		if _, ok := parts[key]; !ok {
+			porder = append(porder, key)
+		}
+		parts[key] = append(parts[key], i)
 	}
 	out := make([]Datum, n)
 	for _, pk := range porder {
 		idx := parts[pk]
+		// idx holds the rows in input order, so comparing the position on a tie makes an unstable
+		// sort (pdqsort, much faster than SliceStable's symmerge) give the stable order.
+		var emu sync.Mutex
 		var serr error
-		sort.SliceStable(idx, func(a, b int) bool {
-			c, err := cmpSort(okeys[idx[a]], okeys[idx[b]], w.order)
-			if err != nil && serr == nil {
-				serr = err
+		cmp := func(a, b int) int {
+			c, err := cmpSort(okeys[a], okeys[b], w.order)
+			if err != nil {
+				emu.Lock()
+				if serr == nil {
+					serr = err
+				}
+				emu.Unlock()
 			}
-			return c < 0
-		})
+			if c == 0 {
+				return a - b
+			}
+			return c
+		}
+		if par && len(idx) >= parallelWindowMinRows {
+			parallelSort(idx, cmp)
+		} else {
+			slices.SortFunc(idx, cmp)
+		}
 		if serr != nil {
 			return nil, serr
 		}
@@ -86,7 +132,7 @@ func windowPartition(ctx *evalCtx, w *winCall, idx []int, okeys, args [][]Datum,
 	peer := make([]int, n) // peer group number
 	first := make([]int, n)
 	last := make([]int, n)
-	for i := 0; i < n; i++ {
+	for i := 0; i < n && w.f.Name != "row_number"; i++ { // row_number does not look at peers
 		if i > 0 {
 			c, err := cmpSort(okeys[idx[i-1]], okeys[idx[i]], w.order)
 			if err != nil {
@@ -100,7 +146,7 @@ func windowPartition(ctx *evalCtx, w *winCall, idx []int, okeys, args [][]Datum,
 		}
 		first[i] = i
 	}
-	for i := n - 1; i >= 0; i-- {
+	for i := n - 1; i >= 0 && w.f.Name != "row_number"; i-- {
 		if i < n-1 && peer[i+1] == peer[i] {
 			last[i] = last[i+1]
 		} else {

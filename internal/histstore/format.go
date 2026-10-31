@@ -39,6 +39,7 @@ type Entry struct {
 	LSN   uint64
 	TS    int64 // commit time, unix ns
 	Del   bool
+	First bool   // the first version of the key (the log record had no previous version): lets AS OF tell "did not exist" from "older than the store"; unset in data written before the flag existed
 	Val   []byte // the row exactly as the log stores it (schema.DecodeAt(val, LSN) reads it); nil for a delete
 }
 
@@ -66,6 +67,7 @@ const (
 	flDel    = 1
 	flSame   = 2 // same (table,key) as the previous entry in the block
 	flDelta  = 4 // value is a delta against the previous entry's value
+	flFirst  = 8 // first version of its key (Entry.First)
 	codecRaw = 0
 	codecZst = 1
 	segMagic = "HSEG1\n"
@@ -112,6 +114,9 @@ func (b *blockEnc) add(e *Entry) {
 	same := b.havePrv && b.prev.Table == e.Table && b.prev.Key == e.Key
 	if e.Del {
 		fl |= flDel
+	}
+	if e.First {
+		fl |= flFirst
 	}
 	if same {
 		fl |= flSame
@@ -174,6 +179,7 @@ type blockReader struct {
 	lsn    uint64
 	ts     int64
 	del    bool
+	first  bool
 	have   bool
 	bufV   [2][]byte
 	flip   int
@@ -211,6 +217,7 @@ func (b *blockReader) next() (ok bool) {
 	fl := b.r[0]
 	b.r = b.r[1:]
 	b.del = fl&flDel != 0
+	b.first = fl&flFirst != 0
 	if fl&flSame != 0 {
 		if !b.have {
 			b.failed = true
@@ -277,7 +284,7 @@ func (b *blockReader) next() (ok bool) {
 }
 
 func (b *blockReader) entry() Entry {
-	e := Entry{Table: b.table, Key: string(b.key), LSN: b.lsn, TS: b.ts, Del: b.del}
+	e := Entry{Table: b.table, Key: string(b.key), LSN: b.lsn, TS: b.ts, Del: b.del, First: b.first}
 	if !b.del {
 		e.Val = append([]byte(nil), b.val...)
 	}
@@ -657,6 +664,9 @@ func appendFrame(dst []byte, es []Entry) []byte {
 		if e.Del {
 			fl = flDel
 		}
+		if e.First {
+			fl |= flFirst
+		}
 		dst = append(dst, fl)
 		dst = binary.AppendUvarint(dst, uint64(e.Table))
 		dst = binary.AppendUvarint(dst, e.LSN)
@@ -726,7 +736,7 @@ func decodeFrame(p []byte) ([]Entry, bool) {
 			v = make([]byte, vl)
 			r.Read(v)
 		}
-		es = append(es, Entry{Table: uint32(tb), Key: string(kb), LSN: lsn, TS: ts, Del: fl&flDel != 0, Val: v})
+		es = append(es, Entry{Table: uint32(tb), Key: string(kb), LSN: lsn, TS: ts, Del: fl&flDel != 0, First: fl&flFirst != 0, Val: v})
 	}
 	return es, r.Len() == 0
 }

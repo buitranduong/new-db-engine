@@ -58,6 +58,9 @@ func main() {
 	histStore := flag.Bool("hist-store", false, "keep the update history of -hist-store-tables in the history store <dir>/histstore (compact, time-bucketed, expired by whole segment; docs/19). Default off. With it, set the tables' history_retention to hours: the log then needs no deep chains and GC stays cheap")
 	histStoreTables := flag.String("hist-store-tables", "", "comma list of tables whose history goes to the history store (needs -hist-store)")
 	histStoreRetentionS := flag.String("hist-store-retention", "60d", "how long the history store keeps versions (36h, 60d, ...)")
+	histStoreMinFreeMB := flag.Int64("hist-store-min-free-mb", 512, "history store: stop writing (and alert) when the disk has less free space than this; the log follower is held back, then after -hist-store-stall a gap is recorded and entries dropped. -1 = never check")
+	histStoreStall := flag.Duration("hist-store-stall", 10*time.Minute, "history store: how long a full or failing disk may hold back the log follower before history is dropped and a gap recorded")
+	histStoreBackfill := flag.String("hist-store-backfill-dir", "", "history store: before following the log, add history from the wal/ of this COPY of a data directory (base backup, archived segments)")
 	histStoreBucket := flag.Duration("hist-store-bucket", time.Hour, "time span of one base segment of the history store; 24 of them are merged into one daily segment")
 	gcInterval := flag.Duration("gc-interval", 10*time.Second, "time between log reclamation rounds")
 	gcRate := flag.Int64("gc-rate-mb", 64, "cap for relocation writes (MB/s)")
@@ -374,14 +377,14 @@ func main() {
 		log.Printf("replicas connect to %s", rs.Addr())
 	}
 	p := planner.Start(e)
-	var histSt *histstore.Store
-	if *histStore {
-		histSt = startHistStore(e, *dir, *histStoreTables, *histStoreRetentionS, *histStoreBucket, *replicaOf != "" || cl != nil)
-	}
 	go memoryStats(e, 10*time.Second)
 	hsrv := server.New(p, fault)
 	if cl != nil {
 		hsrv.Cluster = func() any { return cl.Status() }
+	}
+	var histSt *histstore.Store
+	if *histStore {
+		histSt = startHistStore(e, *dir, *histStoreTables, *histStoreRetentionS, *histStoreBucket, *histStoreMinFreeMB, *histStoreStall, *histStoreBackfill, hsrv, cl != nil)
 	}
 	srv := &http.Server{Addr: *addr, Handler: httpAuth.Wrap(hsrv.Handler()), TLSConfig: httpTLS}
 	if *pprofAddr != "" {
@@ -462,9 +465,9 @@ func main() {
 // startHistStore opens the history store and follows the log with it. It is
 // only reached with -hist-store; any error is fatal (a silently missing
 // history would be worse than not starting).
-func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.Duration, replicaOrCluster bool) *histstore.Store {
-	if replicaOrCluster {
-		log.Fatal("-hist-store: not supported on a replica or a cluster node (the position it saves is a leader log position)")
+func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.Duration, minFreeMB int64, stall time.Duration, backfillDir string, hsrv *server.Server, clusterNode bool) *histstore.Store {
+	if clusterNode {
+		log.Fatal("-hist-store: not supported on a Raft cluster node (a follower's log can be truncated by a new leader, and the store would keep versions that never committed); use a primary or a replica of it (docs/19)")
 	}
 	var names []string
 	for _, t := range strings.Split(tables, ",") {
@@ -479,14 +482,31 @@ func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.D
 	if err != nil || ret <= 0 {
 		log.Fatalf("-hist-store-retention: %q: %v", retention, err)
 	}
-	hs, err := histstore.Open(histstore.Options{Dir: filepath.Join(dir, "histstore"), Retention: ret, Bucket: bucket, Logf: log.Printf})
+	minFree := minFreeMB << 20
+	if minFreeMB < 0 {
+		minFree = -1
+	}
+	hs, err := histstore.Open(histstore.Options{Dir: filepath.Join(dir, "histstore"), Retention: ret, Bucket: bucket, Logf: log.Printf,
+		MinFreeBytes: minFree, StallMax: stall})
 	if err != nil {
 		log.Fatalf("history store: %v", err)
 	}
 	c := histstore.NewConsumer(hs, names...)
+	if backfillDir != "" {
+		res, err := c.BackfillDir(e, backfillDir)
+		if err != nil {
+			log.Fatalf("history store: backfill from %s: %v", backfillDir, err)
+		}
+		log.Printf("history store: backfill from %s: %s", backfillDir, res)
+	}
 	e.Follow(c)
 	c.Attach(e)
-	log.Printf("history store on for %v, retention %v, dir %s", names, ret, filepath.Join(dir, "histstore"))
+	hsrv.ExtraMetrics = c.Metrics
+	role := "primary"
+	if e.IsReplica() {
+		role = "replica (follows its own copy of the leader log)"
+	}
+	log.Printf("history store on for %v, retention %v, dir %s, %s", names, ret, filepath.Join(dir, "histstore"), role)
 	return hs
 }
 

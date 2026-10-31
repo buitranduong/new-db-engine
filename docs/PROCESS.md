@@ -100,3 +100,23 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 - Chấp nhận phụ thuộc excelize v2.11.0 (BSD-3) và việc nâng x/crypto, x/net, x/sync, x/text, go 1.25.0.
 - Chấp nhận thay đổi định dạng cộng thêm (omitempty/có phiên bản): IndexDef.Storage, Column.Collation, IndexDef.Colls, meta trigger/hàm nạp chồng, loại danh mục `collation`, cờ First của histstore. Bản cũ đọc dữ liệu mới không hỏng nhưng không thấy tính năng mới.
 - Mặc định `-collation` = C. Bật `en_US.utf8` khớp 100% PG16 glibc trên 5 tập thử; chọn theo `datcollate` của PG production (chờ người dùng).
+
+## D34 — Tiêu chí sẵn sàng cho prod, và các quyết định sau đợt phủ mã thứ hai (2026-10-31)
+
+Engine được coi là sẵn sàng cho prod khi đạt CẢ BẢY tiêu chí (mỗi tiêu chí kiểm tra được bằng một phép thử):
+1. Đúng: CRM Jmix thật chạy trọn quy trình qua React UI và pgjdbc/Hibernate thật; pgdiff không còn khác biệt ngoài thông điệp lỗi.
+2. Không mất dữ liệu: kill -9 ngẫu nhiên khi đang ghi, mất nút Raft, mọi ghi đã xác nhận còn nguyên; lặp lại dài ngày.
+3. Khôi phục được: restore và PITR diễn tập trên bản sao dữ liệu prod, đúng số dòng, trong thời gian chấp nhận được.
+4. Đạt tốc độ: ở 30-50M dòng, p99 tra cứu, thông lượng nhập Excel hằng ngày, truy vấn đếm/tìm kiếm đạt chỉ tiêu docs/ (đợt đo cuối, D32).
+5. Chạy ổn định: tải thật liên tục tối thiểu 7 ngày, không rò bộ nhớ, không tăng độ trễ, không crash.
+6. Vận hành được: giám sát, cảnh báo, nâng cấp không mất dữ liệu, tài liệu vận hành, đường lùi về PostgreSQL đã diễn tập.
+7. Bảo mật: TLS/SCRAM/mTLS, audit log có chuỗi băm, backup mã hoá, volume dữ liệu mã hoá (LUKS2 là nền); `accept/security.sh` xanh.
+
+Đường tới prod: chế độ bóng (2-4 tuần, prod vẫn là PostgreSQL) -> chuyển phần đọc có công tắc quay lại -> chuyển hẳn, giữ PostgreSQL làm đường lùi.
+
+Quyết định kèm theo:
+- Gate chạy một lần một phiên (flock); agent không chạy gate đầy đủ, orchestrator chạy một gate cho mỗi lần tích hợp. Bước `-race` có `internal/cluster`, timeout 40 phút.
+- Mã hoá cấp engine (log, segment, chỉ mục) KHÔNG làm cho tới khi đo xong (đổi định dạng đĩa và đường mmap); nền là LUKS2 + backup AES-256-GCM.
+- Superset để cuối cùng (người dùng, 2026-10-31).
+- Java không phải rào cản: CRM và pgjdbc thật chạy trong Docker (eclipse-temurin:17) trên VM.
+

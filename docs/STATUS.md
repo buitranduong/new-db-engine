@@ -2,13 +2,17 @@
 
 Mọi dòng có bằng chứng tái lập được. Chi tiết từng task: `14_plan_target_actual.md`. Các tỉ lệ phần trăm "hoàn thành" là **ước lượng của người điều phối**, không phải số đo; số đo thật là `claimcheck`, `pgdiff` và test.
 
-## 0. Cập nhật 2026-10-31
+## 0. Cập nhật 2026-10-31 (sau integ17)
 
-**Giai đoạn mã đã đóng** ở `main` `52dc99d` (gate `RACE=1` xanh, claimcheck 603/604). Đã gộp thêm: txddl, exprindex, pgres, lanefix, pgparity, pgcmds, histmem, gatefix, crmcompat, collation, trigplsql, pindexpre, crmdata, histimport, opsha, aggfacet, enginegaps, plsqlfull, diskidx. CRM Jmix thật chạy được (473/473 changeset, 91 bảng, 768.241 dòng, 0 sai checksum). Các số ở §1-§7 bên dưới là bản cũ, chi tiết theo nhiệm vụ nằm trong `docs/14_plan_target_actual.md`.
+**Mã gần đầy đủ** ở `main` `eb41f46` (gate `RACE=1` xanh, claimcheck 603/604). Đã gộp thêm so với bản trước: kiểu composite, `UPDATE SET (a,b)=(SELECT…)`, event trigger, hoàn tác DDL, khoá dòng (UPDATE/DELETE chờ, 40P01, `NOWAIT`), cursor snapshot, thêm/bớt nút Raft và PITR trong cụm, COPY nhị phân cho `staskimport`, nén arena chỉ mục RAM, audit log, backup mã hoá AES-256-GCM, mTLS trên đường thêm nút, sửa lỗi cạn pool của `pindex`. CRM Jmix thật chạy được (473/473 changeset, 91 bảng, 768.241 dòng, 0 sai checksum).
 
-**Còn lại (mã):** thay đổi thành viên Raft, PITR trong cụm, pgjdbc thật (VM không có Java), COPY nhị phân cho `staskimport`, kiểu trả về composite, event trigger, hoàn tác DDL lồng nhau, `UPDATE SET (a,b)=(SELECT…)`, khoá dòng (hiện trả 40001 thay vì chờ), làm mới snapshot của cursor, nén arena của chỉ mục thứ cấp trên đĩa.
+**Đang làm:** `jdbcreal` chạy CRM Jmix và pgjdbc/Hibernate thật trong Docker (Java không phải rào cản).
 
-**Bước kế tiếp:** một đợt đo hiệu năng duy nhất (D32) qua `scripts/perf-run.sh`, kích thước vừa với VM (khoảng 17 GB trống).
+**Còn lại (mã):** mã hoá cấp engine (quyết định: không, dùng LUKS2), row-level security (`CREATE POLICY` hiện báo lỗi rõ), nén posting trigram (chỉ có thiết kế), learner/chuyển leader của Raft, khoá dòng cho INSERT/MERGE/COPY, file chỉ mục đĩa chưa tự co.
+
+**Tiêu chí sẵn sàng prod:** bảy tiêu chí ở PROCESS D34. Hiện: chưa đạt tiêu chí 4 (chưa đo), 5 (chưa chạy dài), 6 (chưa diễn tập đường lùi), và 1 chưa đủ bằng chứng driver thật.
+
+**Bước kế tiếp:** `jdbcreal`, rồi một đợt đo hiệu năng duy nhất (D32) qua `scripts/perf-run.sh`, vừa với VM (đĩa còn 9,4 GB: dọn trước).
 
 ## 1. Tóm tắt
 

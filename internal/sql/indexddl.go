@@ -443,6 +443,11 @@ func (s *Session) alterConstraints(st *AlterTable) (*Result, error) {
 				return nil, AsError(err)
 			}
 			continue
+		case "validate_constraint":
+			if err := s.validateConstraint(name, a.Column); err != nil {
+				return nil, AsError(err)
+			}
+			continue
 		case "drop_constraint":
 			handled, err := s.dropConstraint(name, a.Column)
 			if err != nil {

@@ -1,6 +1,8 @@
 package sql
 
 import (
+	"slices"
+
 	"stask/internal/core"
 	"stask/internal/schema"
 )
@@ -112,4 +114,56 @@ func init() {
 		}
 		return (*Session)(nil).valCol(&sch.Columns[i], d)
 	}
+}
+
+// validateConstraint is ALTER TABLE .. VALIDATE CONSTRAINT for a foreign key or CHECK added NOT VALID.
+func (s *Session) validateConstraint(table, name string) error {
+	ts, err := s.userTable(table)
+	if err != nil {
+		return errf(codeUndefinedTable, "relation %q does not exist", table)
+	}
+	t := ts.Schema()
+	for _, fk := range t.ForeignKeys {
+		if fk.Name == name {
+			return s.E.ValidateForeignKey(t.Name, name)
+		}
+	}
+	for _, ck := range t.Checks {
+		if ck.Name != name {
+			continue
+		}
+		if !ck.NotValid {
+			return nil
+		}
+		one := *t
+		one.Checks = []schema.Check{{Name: ck.Name, Expr: ck.Expr}}
+		var verr error
+		if err := s.E.ScanSnapshot(t.Name, s.E.DurableLSN(), func(_ string, r schema.Row, _ *core.Version) bool {
+			if err := checkConstraints(&one, r); err != nil {
+				verr = errf("23514", "check constraint %q of relation %q is violated by some row", name, table)
+				return false
+			}
+			return true
+		}); err != nil {
+			return err
+		}
+		if verr != nil {
+			return verr
+		}
+		return s.E.AlterTable(t.Name, func(d *schema.Table) error {
+			d.Checks = slices.Clone(d.Checks)
+			for i := range d.Checks {
+				if d.Checks[i].Name == name {
+					d.Checks[i].NotValid = false
+				}
+			}
+			return nil
+		})
+	}
+	for _, ix := range t.Indexes {
+		if ix.Constraint == name {
+			return nil // a unique constraint is always valid
+		}
+	}
+	return errf("42704", "constraint %q of relation %q does not exist", name, table)
 }

@@ -93,7 +93,10 @@ type AlterAction struct {
 type DefaultExpr struct{}
 
 // CheckDef is a CHECK constraint: Expr is its SQL text, Name may be empty.
-type CheckDef struct{ Name, Expr string }
+type CheckDef struct {
+	Name, Expr string
+	NotValid   bool // ADD CONSTRAINT .. CHECK .. NOT VALID
+}
 
 type CreateTable struct {
 	Name        string

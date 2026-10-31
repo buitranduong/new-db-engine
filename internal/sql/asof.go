@@ -96,6 +96,9 @@ func setTableOptions(d *schema.Table, opts map[string]string) error {
 			}
 			d.HistoryRetention = int64(r)
 		default:
+			if pgStorageParams(map[string]string{k: v}) {
+				continue // PostgreSQL storage parameters (fillfactor, autovacuum_*, ...): accepted, no effect
+			}
 			return errf(codeFeature, "table option %q is not supported (history_retention)", k)
 		}
 	}

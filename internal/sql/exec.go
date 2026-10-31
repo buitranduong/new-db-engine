@@ -401,6 +401,12 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		return res, err
 	case *SetConstraints:
 		return s.setConstraints(st)
+	case *AlterView:
+		res, err := s.alterView(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *AlterTable:
 		// applied at once, like CREATE TABLE
 		res, err := s.alterTable(st)

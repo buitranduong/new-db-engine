@@ -56,8 +56,9 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 	if p.acceptKw("materialized", "view") {
 		return nil, true, errf(codeFeature, "materialized views are not supported")
 	}
+	recursive := p.acceptKw("recursive")
 	if !p.acceptKw("view") {
-		if replace {
+		if replace || recursive {
 			return nil, true, errf(codeFeature, "only CREATE OR REPLACE VIEW is supported")
 		}
 		p.i = save
@@ -90,6 +91,20 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 		return nil, true, err
 	}
 	c.Text = strings.TrimSpace(p.src[start:p.peek().pos])
+	if recursive { // CREATE RECURSIVE VIEW v (cols) AS q  =  CREATE VIEW v AS WITH RECURSIVE v (cols) AS (q) SELECT cols FROM v
+		if len(c.Cols) == 0 {
+			return nil, true, errf("42P16", "recursive view %q must specify a column name list", c.Name)
+		}
+		// the CTE gets a private name: the view's own name would be read as the view (a cycle)
+		cte := quoteIdent("rec_" + bareName(c.Name))
+		list := quoteList(c.Cols)
+		c.Text = fmt.Sprintf("WITH RECURSIVE %s (%s) AS (%s) SELECT %s FROM %s", cte, list,
+			renameRelInQuery(c.Text, bareName(c.Name), "rec_"+bareName(c.Name)), list, cte)
+		if c.Query, err = ParseOne(c.Text); err != nil {
+			return nil, true, err
+		}
+		c.Cols = nil
+	}
 	if p.acceptKw("with") {
 		c.CheckOpt = "cascaded"
 		if p.acceptKw("local") {
@@ -417,7 +432,7 @@ func asErr(err error) error {
 func (s *Session) alterTableViews(st *AlterTable) error {
 	for _, a := range st.Actions {
 		switch a.Kind {
-		case "drop_column", "set_type", "rename_table", "rename_column":
+		case "drop_column", "set_type", "rename_column": // a table RENAME rewrites the views (viewalter.go)
 		default:
 			continue
 		}

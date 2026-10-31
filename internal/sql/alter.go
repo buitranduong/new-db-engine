@@ -43,7 +43,7 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 	var res *Result
 	var err error
 	if slices.ContainsFunc(st.Actions, func(a AlterAction) bool {
-		return a.Kind == "add_constraint" || a.Kind == "drop_constraint" || a.Kind == "rename_constraint"
+		return a.Kind == "add_constraint" || a.Kind == "drop_constraint" || a.Kind == "rename_constraint" || a.Kind == "validate_constraint"
 	}) {
 		res, err = s.alterConstraints(st)
 	} else {
@@ -78,8 +78,10 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 	var renamed map[string]string // old column name -> new
 	var dropped map[string]bool
 	var genAdded []string // ADD COLUMN ... GENERATED: rows are rewritten after the ALTER
+	var newSeqs []core.Sequence
+	var identDropped []string
 	err := s.E.AlterTable(st.Name, func(d *schema.Table) error {
-		genAdded = nil
+		genAdded, newSeqs, identDropped = nil, nil, nil
 		res.Notice, oldName, renamed, dropped = "", d.Name, map[string]string{}, map[string]bool{}
 		var notNull []int
 		var newChecks []schema.Check
@@ -106,14 +108,18 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 			if slices.ContainsFunc(d.Checks, func(c schema.Check) bool { return c.Name == name }) {
 				return errf("42710", "constraint %q for relation %q already exists", name, d.Name)
 			}
-			c := schema.Check{Name: name, Expr: ck.Expr}
+			c := schema.Check{Name: name, Expr: ck.Expr, NotValid: ck.NotValid}
 			d.Checks = append(d.Checks, c)
-			newChecks = append(newChecks, c)
+			if !ck.NotValid { // NOT VALID: the rows that exist are not checked until VALIDATE CONSTRAINT
+				newChecks = append(newChecks, c)
+			}
 			return nil
 		}
 		for _, a := range st.Actions {
 			switch a.Kind {
-			case "owner":
+			case "owner", "noop":
+			case "set_logged", "set_unlogged":
+				d.Unlogged = a.Kind == "set_unlogged"
 			case "set_options":
 				if err := setTableOptions(d, a.Opts); err != nil {
 					return err
@@ -230,6 +236,70 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 				if err := s.alterColumnType(oldName, d, i, a); err != nil {
 					return err
 				}
+			case "set_identity":
+				i, err := col(a.Column)
+				if err != nil {
+					return err
+				}
+				if d.Columns[i].Identity == "" {
+					return errf("55000", "column %q of relation %q is not an identity column", a.Column, d.Name)
+				}
+				d.Columns[i].Identity = a.Expr
+			case "drop_identity":
+				i, err := col(a.Column)
+				if err != nil {
+					return err
+				}
+				if d.Columns[i].Identity == "" {
+					if a.IfExists {
+						res.Notice = fmt.Sprintf("column %q of relation %q is not an identity column, skipping", a.Column, d.Name)
+						continue
+					}
+					return errf("55000", "column %q of relation %q is not an identity column", a.Column, d.Name)
+				}
+				d.Columns[i].Identity, d.Columns[i].Default = "", ""
+				identDropped = append(identDropped, a.Column)
+			case "add_identity":
+				i, err := col(a.Column)
+				if err != nil {
+					return err
+				}
+				c := &d.Columns[i]
+				switch {
+				case c.Identity != "":
+					return errf("55000", "column %q of relation %q is already an identity column", a.Column, d.Name)
+				case c.Default != "":
+					return errf(codeSyntax, "column %q of relation %q already has a default value", a.Column, d.Name)
+				case !c.NotNull:
+					return errf("55000", "column %q of relation %q must be declared NOT NULL before identity can be added", a.Column, d.Name)
+				}
+				it := "bigint"
+				switch c.PG {
+				case "int2":
+					it = "smallint"
+				case "int4":
+					it = "integer"
+				}
+				if c.Type != "int" {
+					return errf("22023", "identity column type must be smallint, integer, or bigint")
+				}
+				sname := d.Name + "_" + a.Column + "_seq"
+				if s.relationExists(sname) {
+					return errf(codeDuplicateTable, "relation %q already exists", sname)
+				}
+				q := core.Sequence{Name: sname, Owner: d.Name + "." + a.Column}
+				o := SeqOpts{}
+				if a.Col.SeqOpts != nil {
+					o = *a.Col.SeqOpts
+				}
+				if o.Type == "" {
+					o.Type = it
+				}
+				if err := applySeqOpts(&q, &o, true); err != nil {
+					return err
+				}
+				newSeqs = append(newSeqs, q)
+				c.Default, c.Identity = fmt.Sprintf("nextval('%s')", sname), a.Expr
 			case "drop_expression":
 				i, err := col(a.Column)
 				if err != nil {
@@ -371,6 +441,25 @@ func (s *Session) alterTableActions(st *AlterTable) (*Result, error) {
 	})
 	if err != nil {
 		return nil, AsError(err)
+	}
+	if nn := s.currentName(oldName, st); nn != oldName {
+		if err := s.renameInViews(oldName, nn); err != nil {
+			return nil, err
+		}
+	}
+	for _, q := range newSeqs {
+		if err := s.E.CreateSequence(q); err != nil {
+			return nil, AsError(err)
+		}
+	}
+	for _, c := range identDropped {
+		for _, q := range s.tableSequences(s.currentName(oldName, st)) {
+			if _, qc, _ := strings.Cut(q.Owner, "."); qc == c {
+				if err := s.E.DropSequence(q.Name); err != nil {
+					return nil, AsError(err)
+				}
+			}
+		}
 	}
 	if len(genAdded) > 0 {
 		if err := s.rewriteGenerated(s.currentName(oldName, st), genAdded); err != nil {

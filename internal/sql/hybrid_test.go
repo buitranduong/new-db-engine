@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"stask/internal/core"
 	"stask/internal/proj"
 )
 
@@ -192,11 +193,22 @@ func TestHybridFallbacksSayWhy(t *testing.T) {
 	if v.hy.hyLast != nil {
 		t.Fatal("a plain statement left a hybrid report")
 	}
-	// inside an explicit transaction
+	// inside an explicit transaction: allowed while it has written nothing
 	mustq(t, v.hy, `BEGIN`)
 	mustq(t, v.hy, hyQuery(1, false))
-	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "explicit transaction") {
-		t.Fatalf("explicit transaction: %+v", r)
+	if r := v.hy.hyLast; r == nil || !r.used {
+		t.Fatalf("a read-only explicit transaction should use the path: %+v", r)
+	}
+	mustq(t, v.hy, `INSERT INTO sims VALUES ('07000000001','TAM_HOA',1500000,'A',10)`)
+	mustq(t, v.hy, hyQuery(1, false))
+	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "uncommitted writes") {
+		t.Fatalf("explicit transaction with writes: %+v", r)
+	}
+	mustq(t, v.hy, `ROLLBACK`)
+	mustq(t, v.hy, `BEGIN ISOLATION LEVEL SERIALIZABLE`)
+	mustq(t, v.hy, hyQuery(1, false))
+	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "SERIALIZABLE") {
+		t.Fatalf("serializable: %+v", r)
 	}
 	mustq(t, v.hy, `ROLLBACK`)
 	// an unsupported predicate
@@ -294,5 +306,126 @@ func TestHybridR2StaysOnNormalLane(t *testing.T) {
 	}
 	if v.hy.heavy(st, nil) {
 		t.Fatal("running through the hybrid path moved the query to the heavy lane")
+	}
+}
+
+// A writer commits while a reader re-reads at fixed snapshots: at every
+// snapshot the segment answer equals the row executor's answer at that same
+// snapshot, with merges happening in between.
+func TestHybridConcurrentWriterFixedSnapshot(t *testing.T) {
+	oldMin, oldFrac := proj.SegMergeMinTail, proj.SegMergeFrac
+	proj.SegMergeMinTail, proj.SegMergeFrac = 200, 1000
+	t.Cleanup(func() { proj.SegMergeMinTail, proj.SegMergeFrac = oldMin, oldFrac })
+	v := newHyEnv(t, 20000)
+	w := NewSession(v.h.E)
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		rng := uint32(7)
+		next := func(n uint32) uint32 { rng = rng*1664525 + 1013904223; return (rng >> 8) % n }
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			k := fmt.Sprintf("09%09d", next(20000))
+			var q string
+			switch next(5) {
+			case 0:
+				q = fmt.Sprintf("DELETE FROM sims WHERE number = '%s'", k)
+			case 1:
+				q = fmt.Sprintf("INSERT INTO sims VALUES ('08%09d','TAM_HOA',%d,'%s',%d) ON CONFLICT (number) DO UPDATE SET store_rate = excluded.store_rate",
+					next(3000), 1000000+next(2000000), []string{"A", "B", "C"}[next(3)], 5+next(6))
+			default:
+				q = fmt.Sprintf("UPDATE sims SET store_rate = %d, price = %d WHERE number = '%s'", 5+next(6), 1000000+next(2500000), k)
+			}
+			if _, err := tryRun(w, q); err != nil {
+				done <- fmt.Errorf("%s: %w", q, err)
+				return
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	st, err := ParseOne(hyQuery(1, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := st.(*Select)
+	reads := 0
+	for i := 0; i < 150; i++ {
+		page := 1 + i%3
+		sel = hyMustSel(t, hyQuery(page, i%2 == 0))
+		tx := v.h.E.Begin(core.SnapshotIsolation)
+		got, ok, err := v.hy.tryHybrid(tx, sel, nil)
+		if err != nil || !ok {
+			tx.Abort()
+			t.Fatalf("read %d: hybrid not used: %v %+v", i, err, v.hy.hyLast)
+		}
+		time.Sleep(time.Duration(i%4) * time.Millisecond) // let the writer move on: the snapshot stays fixed
+		want, err := v.hy.runQuery(tx, sel, nil)
+		tx.Abort()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if render(got) != render(want) {
+			t.Fatalf("read %d at snapshot %d: hybrid and row path differ:\n hybrid %s\n row    %s", i, v.hy.hyLast.snap, render(got), render(want))
+		}
+		reads++
+	}
+	if v.h.Seg.Merges.Load() == 0 {
+		t.Fatal("no merge happened under the writer")
+	}
+	t.Logf("%d reads equal at their fixed snapshots, %d merges, %d publishes", reads, v.h.Seg.Merges.Load(), v.h.Seg.Publishes.Load())
+}
+
+func hyMustSel(t *testing.T, q string) *Select {
+	t.Helper()
+	st, err := ParseOne(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.(*Select)
+}
+
+// The state is derived: after the engine is closed and opened again the new
+// segment state is rebuilt from the core and answers like the row executor
+// (the in-process half of the kill -9 check; scripts/slice1/oracle.sh does it
+// with a real kill -9).
+func TestHybridRebuildFromCore(t *testing.T) {
+	dir := t.TempDir()
+	open := func() *core.Engine {
+		e, err := core.Open(core.Options{Dir: dir, SegmentSize: 4 << 20, NoCheckpoint: true, Logf: func(string, ...any) {}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	e := open()
+	s := NewSession(e)
+	mustq(t, s, `CREATE TABLE sims (number TEXT PRIMARY KEY, category TEXT, price INT, tel TEXT, store_rate INT) WITH (columnar = on)`)
+	mustq(t, s, `CREATE TABLE carriers (tel TEXT PRIMARY KEY, name TEXT, active BOOLEAN)`)
+	mustq(t, s, `INSERT INTO carriers VALUES ('A','A',true),('B','B',true),('C','C',true)`)
+	mustq(t, s, fmt.Sprintf(hyGen, 0, 9999))
+	mustq(t, s, `UPDATE sims SET store_rate = 10 WHERE category = 'TAM_HOA' AND price < 1500000`)
+	mustq(t, s, `DELETE FROM sims WHERE number LIKE '0900000%'`)
+	mustq(t, s, `UPDATE carriers SET name = 'B2' WHERE tel = 'B'`)
+	want := render(mustq(t, s, hyQuery(2, true)))
+	e.Close()
+	e = open()
+	defer e.Close()
+	h := NewHybrid(e)
+	hs := NewSession(e)
+	hs.Hybrid = h
+	if !h.Seg.Follower().WaitApplied(e.DurableLSN(), 30*time.Second) {
+		t.Fatal("segment state not rebuilt")
+	}
+	got := render(mustq(t, hs, hyQuery(2, true)))
+	if hs.hyLast == nil || !hs.hyLast.used {
+		t.Fatalf("path not used after the restart: %+v", hs.hyLast)
+	}
+	if got != want {
+		t.Fatalf("after restart the segment answer differs:\n got  %s\n want %s", got, want)
 	}
 }

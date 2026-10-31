@@ -86,6 +86,9 @@ func (s *Session) tryHybrid(tx *core.Tx, st *Select, params []Datum) (*Result, b
 	}
 	rep := &hyReport{plan: p}
 	s.hyLast = rep
+	if why == "" {
+		why = s.hyTxReason(tx)
+	}
 	if why != "" {
 		rep.why = why
 		h.note(why)
@@ -105,6 +108,22 @@ func (s *Session) tryHybrid(tx *core.Tx, st *Select, params []Datum) (*Result, b
 	rep.used = true
 	h.Used.Add(1)
 	return res, true, nil
+}
+
+// hyTxReason: an explicit transaction may use the path while it has written
+// nothing (the state has no uncommitted rows) and is not SERIALIZABLE (whose
+// reads the core validates and whose range scans it refuses).
+func (s *Session) hyTxReason(tx *core.Tx) string {
+	if !s.explicit {
+		return ""
+	}
+	if tx.NumWrites() > 0 {
+		return "the explicit transaction has uncommitted writes (the segment state has none of them)"
+	}
+	if strings.EqualFold(s.txLevel, "serializable") {
+		return "SERIALIZABLE transaction (reads are validated by the core)"
+	}
+	return ""
 }
 
 func hyWaitApplied(f *core.Follower, lsn uint64, max time.Duration) bool {

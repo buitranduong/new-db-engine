@@ -141,8 +141,6 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 		return fail("inner query has DISTINCT, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET, WITH or locking")
 	case len(fs.ColAliases) > 0 || fs.Lateral:
 		return fail("derived table with column aliases or LATERAL")
-	case s.explicit:
-		return fail("inside an explicit transaction (the segment state has no uncommitted rows)")
 	}
 	p = &hyPlan{subAlias: fs.Alias}
 

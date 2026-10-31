@@ -123,14 +123,17 @@ func (x *explainer) hybrid(depth int, q *Select) (done bool, note string) {
 		return false, ""
 	}
 	rep := &hyReport{plan: p}
-	if why != "" {
-		return false, "Hybrid not used: " + why
-	}
-	// the decision without waiting
 	tx := x.tx
 	if tx == nil {
 		return false, "Hybrid not used: no snapshot"
 	}
+	if why == "" {
+		why = s.hyTxReason(tx)
+	}
+	if why != "" {
+		return false, "Hybrid not used: " + why
+	}
+	// the decision without waiting
 	state, w := s.hyContractDry(tx, rep)
 	if w != "" {
 		return false, "Hybrid not used: " + w

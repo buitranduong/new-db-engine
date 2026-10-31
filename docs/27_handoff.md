@@ -14,6 +14,7 @@ Cách làm việc:
 - Hiệu năng: đo MỘT lần ở cuối khi mã đã đóng (D32, `docs/24`); ở các chỗ khác chỉ cần chạy đúng, không lỗi. Không xin thêm tài nguyên giữa chừng. Riêng đĩa: người dùng sẽ cấp thêm ~50 GB khi tới bước đo cuối cùng.
 - ĐÍCH VỀ DUY NHẤT: ba cổng G1 Đúng, G2 An toàn, G3 Đủ nhanh (PROCESS D35). Thứ tự ưu tiên khi mâu thuẫn: đúng/không mất dữ liệu > bảo mật > tương thích > hiệu năng. Mỗi hạng mục hiệu năng tối đa hai vòng sửa rồi ghi giới hạn và đi tiếp; không thêm tiêu chí mới mà không bỏ hoặc gộp một cái cũ.
 - Lời mô tả lại hay làm rõ của người dùng KHÔNG phải đổi hướng; chỉ "đổi / bỏ / thu gọn" mới đổi phạm vi. Ghi nguyên văn vào `docs/29_requirements.md` (sổ yêu cầu + truy vết tới bài test), không viết lại nhiều tài liệu. Mỗi việc liệt kê các yêu cầu liên quan nó có thể ảnh hưởng (đừng chăm chăm một tiêu chí).
+- Số đo chỉ được báo ĐÚNG NHƯ ĐÃ ĐO (quy mô, tải máy, có sạch hay không). KHÔNG ngoại suy tuyến tính số đo nhỏ thành kết luận cho quy mô lớn hay cho hệ khác, và không dùng một lần đo nhiễu để kết luận về ClickHouse hay PostgreSQL. ClickHouse là chuẩn đối chiếu đã đáp ứng website. Ví dụ người dùng đưa ra là để minh hoạ sự cần thiết của engine, không phải để chứng minh hay bác bỏ một hệ nào. Mục tiêu của STASK ở truy vấn R2 là tiến gần mức của ClickHouse.
 - Tài liệu repo phải đủ để đổi agent; đừng lưu quy tắc chỉ ở bộ nhớ riêng.
 
 An toàn:

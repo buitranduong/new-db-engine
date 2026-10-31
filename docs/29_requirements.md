@@ -52,7 +52,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | I1 | `cmd/staskimport` tests, `scripts/suite-cdc` | đo G3 |
 | P1 | `scripts/suite` (1698/2196 sau `suitefix`), `pgdiff` | các nhóm `compat-*` đang làm |
 | O1 | `docs/21_operations.md`, `/metrics`, `/v1/ready`, `staskctl` | kiểm đếm số thành phần phải vận hành cho mỗi kịch bản (một nút, cụm 3 nút) |
-| SLO-R2 | `scripts/r2-paginated-quota` (r2big.sh); đo sạch ở G3 ở 20M và 50M | số 10M hôm nay (không sạch): PG 6,5 s, STASK 21,7 s, ClickHouse 0,9 s: CHƯA đạt |
+| SLO-R2 | `scripts/r2-paginated-quota` (r2big.sh); đo sạch ở G3 ở 20M và 50M | ClickHouse là chuẩn đối chiếu, được coi là đáp ứng website (tiền đề của người dùng). Số đo 10M hôm nay (tải 11/8 nhân, không sạch, chưa tinh chỉnh, chỉ để biết hình dạng): ClickHouse 0,9 s, PostgreSQL 6,5 s, STASK 21,7 s; STASK chưa đạt mục tiêu là tiến gần mức của ClickHouse |
 | C1 | lần chạy 10 triệu dòng (`scripts/r2-paginated-quota`, kích thước đĩa PostgreSQL / STASK / ClickHouse) | đo sạch ở G3, nhiều kiểu dữ liệu |
 | M1 | `scripts/r2-paginated-quota` (10M) | bậc 20M, 50M ở G3 |
 | S1 | `accept/security.sh`, `kill9.sh`, `pitr.sh`, `scripts/suite-cdc` | diễn tập G2 |

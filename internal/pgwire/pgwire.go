@@ -230,19 +230,21 @@ type portal struct {
 }
 
 type conn struct {
-	s       *Server
-	nc      net.Conn
-	r       *bufio.Reader
-	w       *bufio.Writer
-	sess    *sql.Session
-	pid     int32
-	secret  int32
-	stmts   map[string]*prepared
-	portals map[string]*portal
-	skip    bool // after an error in extended mode, discard until Sync
-	over    bool // accepted beyond MaxConns: refuse at startup
-	tls     bool // the connection was upgraded to TLS
-	rbuf    []byte
+	s           *Server
+	lastFatal   string // text of the last FATAL sent (the audit trail gives it as the reason)
+	auditedConn bool   // connect.ok was logged
+	nc          net.Conn
+	r           *bufio.Reader
+	w           *bufio.Writer
+	sess        *sql.Session
+	pid         int32
+	secret      int32
+	stmts       map[string]*prepared
+	portals     map[string]*portal
+	skip        bool // after an error in extended mode, discard until Sync
+	over        bool // accepted beyond MaxConns: refuse at startup
+	tls         bool // the connection was upgraded to TLS
+	rbuf        []byte
 	// a read deadline enforces an idle timeout: the SQLSTATE and message
 	// sent when it expires (code empty: no deadline set)
 	idleCode, idleMsg string
@@ -291,6 +293,7 @@ func (s *Server) handle(nc net.Conn) {
 	c.done = make(chan struct{})
 	defer close(c.done)
 	defer func() {
+		c.auditDisconnect()
 		c.wmu.Lock()
 		c.sess.Close()
 		c.dropTempSlots()
@@ -524,6 +527,7 @@ func (c *conn) startup() error {
 			host, _, _ := net.SplitHostPort(c.nc.RemoteAddr().String())
 			c.sendFatal("28000", fmt.Sprintf("no pg_hba.conf entry for host %q, user %q, database %q, no encryption", host, params["user"], c.dbname))
 			c.w.Flush()
+			c.auditConnect(params, host, false, "refused: TLS required")
 			return errors.New("TLS required")
 		}
 		host, _, _ := net.SplitHostPort(c.nc.RemoteAddr().String())
@@ -538,6 +542,7 @@ func (c *conn) startup() error {
 				c.sendFatal("28000", fmt.Sprintf("no pg_hba.conf entry for host %q, user %q, database %q, %s", host, params["user"], c.dbname, enc))
 				c.w.Flush()
 				sql.CountAuthFailure()
+				c.auditConnect(params, host, false, "refused: no pg_hba.conf entry")
 				return errors.New("refused by the allow list")
 			}
 		}
@@ -545,6 +550,7 @@ func (c *conn) startup() error {
 		role, err := c.authenticate(params["user"])
 		if err != nil {
 			c.s.fail.record(host)
+			c.auditConnect(params, host, false, c.lastFatal)
 			return err
 		}
 		c.s.fail.ok(host)
@@ -577,6 +583,7 @@ func (c *conn) startup() error {
 		}
 		c.secret = int32(binary.BigEndian.Uint32(key[:]))
 		c.send(newMsg('R').int32(0))
+		c.auditConnect(params, host, true, "")
 		// A replication connection reports 15: a PostgreSQL 16 subscriber
 		// then reads the published tables from pg_publication_tables
 		// rather than with pg_get_publication_tables() joined to pg_class,

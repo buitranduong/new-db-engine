@@ -95,7 +95,7 @@ func TestBackupVerifyRestore(t *testing.T) {
 		httpJSON(t, "POST", "http://"+addr+"/v1/write", fmt.Sprintf(`{"ops":[{"op":"put","table":"t","row":{"id":"k%d","v":%d}}]}`, i, i))
 	}
 	out := t.TempDir()
-	dir, m, err := doBackup(replAddr, out, false, repl.Settings{})
+	dir, m, err := doBackup(replAddr, out, false, repl.Settings{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestBackupVerifyRestore(t *testing.T) {
 	if m.SegMax != 8<<20 || len(m.Files) == 0 {
 		t.Fatalf("manifest: %+v", m)
 	}
-	rep := verifyBackup(dir, bin)
+	rep := verifyBackup(dir, bin, nil)
 	if !rep.OK || rep.Tables["t"] != 50 || !rep.ScrubOK || !rep.ManifestOK {
 		t.Fatalf("verify of a good backup: %+v", rep)
 	}
@@ -131,14 +131,14 @@ func TestBackupVerifyRestore(t *testing.T) {
 		}
 		b[at] ^= 0xff
 		os.WriteFile(target, b, 0o644)
-		if rep := verifyBackup(bad, bin); rep.OK || rep.ManifestOK {
+		if rep := verifyBackup(bad, bin, nil); rep.OK || rep.ManifestOK {
 			t.Fatalf("%s: a changed file passed the manifest: %+v", what, rep)
 		}
 		files, n, _ := hashTree(bad)
 		m.Files, m.Bytes = files, n
 		mb, _ := json.Marshal(m)
 		os.WriteFile(filepath.Join(bad, manifestName), mb, 0o644)
-		rep = verifyBackup(bad, bin)
+		rep = verifyBackup(bad, bin, nil)
 		if rep.OK {
 			t.Fatalf("%s: a damaged backup with a matching manifest passed the restore test: %+v", what, rep)
 		}

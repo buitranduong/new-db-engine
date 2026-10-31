@@ -69,6 +69,12 @@ type Options struct {
 	// from this archive, and stop replay at RecoveryTargetLSN or at the
 	// first commit after RecoveryTargetTS (unix ns), if set.
 	ArchiveDir string
+	// ArchiveKey (32 bytes), if set, encrypts every archived segment with
+	// AES-256-GCM (internal/seccrypt) and decrypts them on RestoreArchive;
+	// ArchiveAllowPlain lets a restore also take plaintext segments (an
+	// archive that predates encryption). The key is never stored.
+	ArchiveKey        []byte
+	ArchiveAllowPlain bool
 	// ArchiveLimit, if set, holds back the archiver: only segments below the
 	// number it returns are copied (a cluster node passes the first segment
 	// that may hold uncommitted entries).
@@ -412,7 +418,7 @@ func Open(opts Options) (*Engine, error) {
 	// whatever else a crash left in sidx is removed after the checkpoint is
 	// loaded (secpersist.go)
 	if opts.RestoreArchive != "" {
-		if err := restoreFromArchive(filepath.Join(opts.Dir, "wal"), opts.RestoreArchive, opts.SegmentSize, opts.Logf); err != nil {
+		if err := restoreFromArchive(filepath.Join(opts.Dir, "wal"), opts.RestoreArchive, opts.SegmentSize, opts.ArchiveKey, opts.ArchiveAllowPlain, opts.Logf); err != nil {
 			return nil, fmt.Errorf("restore from archive: %w", err)
 		}
 	}

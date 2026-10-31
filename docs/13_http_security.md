@@ -23,7 +23,7 @@ Hạng mục S2 và S3 của `docs/12_plan.md` §P9. Mã nguồn: `internal/serv
 - **Token lộ**: thêm token mới vào file, cho client chuyển sang, xoá token cũ; server đọc lại file trong vòng 1 giây (hoặc ngay khi `kill -HUP`). Không cần khởi động lại.
 - **Cấu hình sai** (mở `0.0.0.0` mà quên xác thực): staskd từ chối khởi động. Muốn chấp nhận rủi ro phải ghi rõ `-http-insecure`.
 - **pprof và lỗi giả lập**: pprof rò trạng thái runtime và cho phép làm chậm server; `POST /v1/admin/fault` làm mọi lần ghi thất bại. pprof chỉ được nghe loopback (trừ `-pprof-insecure`), và khi API có xác thực thì pprof đòi cùng credential (quyền đầy đủ). Endpoint lỗi giả lập nằm dưới `/v1/admin/`, cần token đầy đủ; bật `-enable-faults` luôn in cảnh báo khi khởi động.
-- **Ngoài phạm vi**: phân quyền theo bảng cho API HTTP (role chỉ áp dụng ở PG wire, docs/05 §18); chưa giới hạn số lần thử sai (S5); chưa có audit log (S7). Người có quyền đọc file token hoặc file cấu hình trên máy chủ thì có token.
+- **Ngoài phạm vi**: phân quyền theo bảng cho API HTTP (role chỉ áp dụng ở PG wire, docs/05 §18); chưa giới hạn số lần thử sai (S5); audit log: xem docs/22 (S7 đã làm). Người có quyền đọc file token hoặc file cấu hình trên máy chủ thì có token.
 
 ## 3. Cờ
 
@@ -109,3 +109,13 @@ Hai endpoint mới dùng chung cơ chế xác thực ở trên; chi tiết ở d
 | `GET /v1/admin/scrub` | token chỉ đọc đủ | Trạng thái; thông báo lỗi có tên file/offset |
 
 Test: `TestMetricsAndScrubEndpoints` (`internal/server/metrics_test.go`) kiểm 401 khi thiếu token, token chỉ đọc đọc được `/metrics` nhưng không bắt đầu được scrub (403), định dạng từng dòng mẫu.
+
+## 8. Kiểm tra lại toàn bộ bằng khách thật, đường thành viên Raft (2026-10-31, nhánh secenc)
+
+`accept/security.sh` chạy lại trên bản hiện tại: **0 lỗi, 114 kiểm tra OK** (PG wire TLS+SCRAM, HTTP TLS/token/mTLS, cổng nhân bản, từ chối bind ngoài loopback, cộng thêm các mục mới: audit trail, sao lưu mã hoá, cụm Raft 3 node + node thứ 4 vào bằng snapshot).
+
+- **Đường thành viên** `POST /v1/admin/cluster/members` (đổi tập voter, endpoint nguy hiểm nhất): `TestClusterMembersSecurity` (`internal/server`) và mục "Raft cluster" của `security.sh` với `-http-tls-client-ca` + token: không chứng chỉ, chứng chỉ CA lạ (bắt tay TLS lỗi), có chứng chỉ không token (401), token sai (401), token chỉ đọc (403) đều không đổi cụm; chứng chỉ + token đầy đủ thì thêm được; mọi lần thử đều nằm trong audit (`http.auth_fail`, `http.denied`, `cluster.member`), danh tính là `cert:CN` hoặc băm token.
+- **Cổng Raft**: mTLS + secret + `-repl-require-secure` bật; client TCP trơn không được phục vụ.
+- **Lỗi thật tìm thấy và đã sửa**: `ChangeMember("add")` chỉ kiểm tra kết nối TCP tới địa chỉ Raft của node mới, nên node dùng **secret Raft khác** vẫn được thêm làm voter mà không ai nói chuyện được với nó (làm tụt đa số, có thể chặn commit). Nay kiểm bằng `repl.Dial` với đầy đủ TLS/mTLS/secret của cụm (`internal/cluster/membership.go`); `security.sh` có ca kiểm (node 5 secret sai bị từ chối, lý do là bắt tay chứ không phải cổng đóng).
+- **staskctl**: `status` và `cluster add|remove` trước đây chỉ có `-token`, không dùng được với cụm bật mTLS HTTP; nay có `-ca -cert -key` (hoặc `$STASK_CA/CERT/KEY`).
+- Chưa làm: hết hạn/xoay chứng chỉ TLS không cần khởi động lại (mục 6 giữ nguyên); không giới hạn tốc độ thử token sai.

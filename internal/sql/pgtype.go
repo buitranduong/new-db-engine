@@ -167,6 +167,9 @@ func (t pgTy) forKind(k Kind) pgTy {
 	if t.oid != 0 && k == KText && extResultTy(t.oid) { // lower(range) is a text-kinded expression of the subtype
 		return t
 	}
+	if t.oid == 3615 { // tsquery operators (&&) whose generic function is typed bool
+		return t
+	}
 	return pgTy{}
 }
 

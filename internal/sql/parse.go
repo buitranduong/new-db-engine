@@ -1642,6 +1642,10 @@ func (p *parser) unary() (Expr, error) {
 		x, err := p.unary()
 		return &Unary{"~", x}, err
 	}
+	if p.acceptOp("!!") { // tsquery NOT
+		x, err := p.unary()
+		return &Func{Name: "stask_tsnot", Disp: "?column?", Args: []Expr{x}}, err
+	}
 	x, err := p.primary()
 	for err == nil {
 		switch {

@@ -470,5 +470,81 @@ SELECT $1::varbit;
 -- args: 10101
 SELECT $1::bit(5) & B'11000';
 
+-- ### 15_types_more/tsvector-input
+SET search_path = s15;
+SELECT 'a b'::tsvector, 'b a  a'::tsvector, 'a:1 b:2'::tsvector, $$'a b':1$$::tsvector, 'a:1A'::tsvector, 'a:3,1,2B,1C'::tsvector, 'a:1D'::tsvector, 'Foo bar'::tsvector, 'a:16384'::tsvector, ''::tsvector;
+SELECT $$'it''s':2 'x\\y' 'q:r'$$::tsvector, $$a\ b$$::tsvector, '''a'':1B,1A,1D'::tsvector, 'foo:5 foo:3'::tsvector, 'a:1,2 b:3'::tsvector, 'a:1 b:2 a:1'::tsvector, 'a:1 a:3 a:2'::tsvector;
+SELECT 'a:0'::tsvector;
+SELECT 'a:'::tsvector;
+SELECT 'a:1x'::tsvector;
+SELECT $$'a$$::tsvector;
+SELECT 'a:1 b:2'::tsvector || 'c:1 a:3'::tsvector, 'a b'::tsvector || 'c'::tsvector, 'a:1'::tsvector || ''::tsvector;
+SELECT length('a:1 b'::tsvector), 'a b'::tsvector = 'b a'::tsvector, 'a'::tsvector < 'b'::tsvector, 'a:1'::tsvector <> 'a:2'::tsvector, 'a'::tsvector::text, pg_typeof('a'::tsvector)::text;
+
+-- ### 15_types_more/tsquery-input
+SET search_path = s15;
+SELECT 'a & b'::tsquery, 'a | b & c'::tsquery, '(a | b) & c'::tsquery, '!a'::tsquery, '!(a & b)'::tsquery, 'a <-> b'::tsquery, 'a <3> b'::tsquery, 'a:*'::tsquery, 'a:AB'::tsquery, 'a:*B'::tsquery, $$'a b'$$::tsquery;
+SELECT 'a & !b | c'::tsquery, '!!a'::tsquery, 'a & (b & c)'::tsquery, '(a & b) & c'::tsquery, 'a | (b | c)'::tsquery, 'a <-> (b <-> c)'::tsquery, '(a <-> b) <-> c'::tsquery, 'a & b <-> c'::tsquery, '(a | b) <-> c'::tsquery, '!(a)'::tsquery, 'Fat & Rats'::tsquery, ''::tsquery, 'a<1>b'::tsquery, 'a<0>b'::tsquery;
+SELECT 'a'::tsquery || 'b'::tsquery, 'a'::tsquery && 'b'::tsquery, !! 'a'::tsquery, 'a'::tsquery <-> 'b'::tsquery, 'a & b'::tsquery && 'c | d'::tsquery, ('a | b'::tsquery) <-> ('c & d'::tsquery);
+SELECT ('a & b'::tsquery) @> 'a'::tsquery, 'a'::tsquery <@ 'a & b'::tsquery, 'a & b'::tsquery @> 'c'::tsquery, numnode('a & b | c'::tsquery), querytree('a & !b'::tsquery), querytree('a | !b'::tsquery), querytree('!a'::tsquery), numnode(''::tsquery);
+SELECT pg_typeof('a'::tsquery)::text, pg_typeof('a'::tsquery && 'b'::tsquery)::text, pg_typeof(!! 'a'::tsquery)::text, pg_typeof('a'::tsquery <-> 'b'::tsquery)::text, 'a'::tsquery = 'a'::tsquery, 'a'::tsquery < 'b'::tsquery;
+SELECT 'a & '::tsquery;
+SELECT '(a'::tsquery;
+SELECT 'a b'::tsquery;
+SELECT 'a)'::tsquery;
+SELECT '& a'::tsquery;
+SELECT 'a <-> '::tsquery;
+SELECT 'a:'::tsquery;
+
+-- ### 15_types_more/tsearch-match
+SET search_path = s15;
+SELECT 'a:1 b:2'::tsvector @@ 'a & b'::tsquery, 'a:1 b:3'::tsvector @@ 'a <-> b'::tsquery, 'a:1 b:2'::tsvector @@ 'a <-> b'::tsquery, 'a:1A b:2'::tsvector @@ 'a:B'::tsquery, 'a:1A b:2'::tsvector @@ 'a:A'::tsquery, 'a:1A b:2'::tsvector @@ 'a:AB'::tsquery, 'abc'::tsvector @@ 'ab:*'::tsquery, 'a'::tsvector @@ '!a'::tsquery, 'a'::tsvector @@ 'b | a'::tsquery, 'a:1 b:3'::tsvector @@ 'a <2> b'::tsquery;
+SELECT 'a b'::tsquery @@ 'a b'::tsvector;
+SELECT 'a'::tsquery @@ 'a:1 b'::tsvector, 'b'::tsquery @@ 'a:1 b'::tsvector, 'a b'::tsvector @@ 'a <-> b'::tsquery, 'a b'::tsvector @@ ''::tsquery;
+SELECT 'a:1 b:2 c:3'::tsvector @@ '(a & b) <-> c'::tsquery, 'a:1 b:2 c:3'::tsvector @@ 'a <-> b <-> c'::tsquery, 'a:1 b:2 c:4'::tsvector @@ 'a <-> b <-> c'::tsquery, 'a:1 b:2 c:3'::tsvector @@ '!b'::tsquery, 'a:1 b:2 c:3'::tsvector @@ 'a & !d'::tsquery;
+SELECT 'a:1 b:2 c:3'::tsvector @@ '(a | b) <-> c'::tsquery, 'a:1 b:3 c:4'::tsvector @@ '(a | b) <-> c'::tsquery, 'a:1 b:2 c:3'::tsvector @@ 'c <-> (a | b)'::tsquery, 'the:1 quick:2 fox:3'::tsvector @@ 'quick <-> fox'::tsquery, 'the:1 quick:2 fox:3'::tsvector @@ 'the <2> fox'::tsquery, 'the:1 quick:2 fox:3'::tsvector @@ 'the <-> fox'::tsquery, 'foobar:1 foo:2'::tsvector @@ 'foo:*'::tsquery;
+
+-- ### 15_types_more/tsearch-column
+SET search_path = s15;
+CREATE TABLE ts (id int PRIMARY KEY, v tsvector, q tsquery);
+INSERT INTO ts VALUES (1, 'quick:1 brown:2 fox:3', 'quick & fox'), (2, 'lazy:1 dog:2', 'dog | cat'), (3, '', ''), (4, NULL, NULL), (5, 'fox:1B jumps:2', '!fox');
+SELECT * FROM ts ORDER BY id;
+SELECT id FROM ts WHERE v @@ 'fox'::tsquery ORDER BY id;
+SELECT id FROM ts WHERE v @@ 'fox:B'::tsquery ORDER BY id;
+SELECT id FROM ts WHERE v @@ q ORDER BY id;
+SELECT id FROM ts WHERE 'dog lazy'::tsvector @@ q ORDER BY id;
+SELECT id, length(v), numnode(q) FROM ts ORDER BY id;
+SELECT id, v || 'extra:1'::tsvector FROM ts WHERE id IN (1, 2) ORDER BY id;
+SELECT id FROM ts WHERE v = 'jumps:2 fox:1B' ORDER BY id;
+SELECT id FROM ts ORDER BY v, id;
+SELECT v, count(*) FROM ts GROUP BY v ORDER BY v;
+CREATE INDEX ts_gin ON ts USING gin (v);
+CREATE INDEX ts_btree ON ts (q);
+SELECT id FROM ts WHERE v @@ 'dog'::tsquery ORDER BY id;
+SELECT id FROM ts WHERE v = 'dog:2 lazy:1' ORDER BY id;
+UPDATE ts SET v = v || 'new:1'::tsvector WHERE id = 2 RETURNING v;
+SELECT pg_typeof(v)::text, pg_typeof(q)::text FROM ts LIMIT 1;
+SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'ts'::regclass AND attnum > 1 ORDER BY attnum;
+SELECT typname, typcategory::text FROM pg_type WHERE typname IN ('tsvector', 'tsquery') ORDER BY typname;
+CREATE TABLE ts2 AS SELECT id, v, q FROM ts WHERE id < 3;
+SELECT * FROM ts2 ORDER BY id;
+SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'ts2'::regclass AND attnum > 1 ORDER BY attnum;
+
+-- ### 15_types_more/tsearch-binary
+SET search_path = s15;
+CREATE TABLE tsb (id int, v tsvector, q tsquery);
+INSERT INTO tsb VALUES (1, 'a:1A,3 bb:2 ccc', 'a & b'), (2, '', 'a:*B | !c'), (3, NULL, 'a <3> (b & c)'), (4, 'x:5', '!(a | b) & c');
+COPY s15.tsb TO STDOUT;
+COPY s15.tsb TO STDOUT WITH (FORMAT binary);
+-- stdin: 5\t'q r':1,2\t'x' <-> 'y'\n
+COPY s15.tsb FROM STDIN;
+SELECT * FROM tsb ORDER BY id;
+-- args: a:1 b:2
+SELECT $1::tsvector;
+-- args: a & b
+SELECT $1::tsquery;
+-- args: a & b
+SELECT 'a:1 b:2'::tsvector @@ $1::tsquery;
+
 -- ### 15_types_more/teardown
 DROP SCHEMA s15 CASCADE;

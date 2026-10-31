@@ -21,7 +21,16 @@ func (c *evalCtx) typesCall(f *Func, args []Datum) (Datum, bool, error) {
 			}
 		}
 		switch f.Name {
-		case "stask_contains", "stask_contained", "stask_overlap":
+		case "stask_jpath_match", "stask_overlap", "stask_contains", "stask_contained", "stask_tsphrase":
+			if len(args) == 2 {
+				op := map[string]string{"stask_jpath_match": "@@", "stask_overlap": "&&", "stask_contains": "@>", "stask_contained": "<@", "stask_tsphrase": "stask_tsphrase"}[f.Name]
+				if d, ok, err := tsBinary(op, args[0], args[1]); ok {
+					return d, true, err
+				}
+			}
+			if f.Name == "stask_jpath_match" || f.Name == "stask_tsphrase" {
+				return Null, false, nil
+			}
 			return rangeBinary(f.Name, args[0], args[1])
 		case "stask_rng_overleft":
 			return rangeBinary("&<", args[0], args[1])
@@ -29,6 +38,9 @@ func (c *evalCtx) typesCall(f *Func, args []Datum) (Datum, bool, error) {
 			return rangeBinary("&>", args[0], args[1])
 		case "stask_rng_adjacent":
 			return rangeBinary("-|-", args[0], args[1])
+		}
+		if d, ok, err := tsFunc(f.Name, args); ok {
+			return d, true, err
 		}
 		if d, ok, err := bitFunc(f.Name, args); ok {
 			return d, true, err
@@ -117,7 +129,7 @@ var typesFuncNames = func() map[string]bool {
 	m := map[string]bool{"length": true, "bit_length": true, "octet_length": true, "bit_count": true, "get_bit": true, "set_bit": true,
 		"substr": true, "substring": true, "overlay": true, "strpos": true, "trunc": true, "macaddr8_set7bit": true,
 		"justify_days": true, "justify_hours": true, "justify_interval": true, "make_interval": true, "isfinite": true,
-		"stask_contains": true, "stask_contained": true, "stask_overlap": true, "stask_rng_overleft": true, "stask_rng_overright": true,
+		"stask_contains": true, "stask_jpath_match": true, "stask_tsnot": true, "stask_tsphrase": true, "numnode": true, "querytree": true, "stask_contained": true, "stask_overlap": true, "stask_rng_overleft": true, "stask_rng_overright": true,
 		"stask_rng_adjacent": true, "isempty": true, "lower": true, "upper": true, "lower_inc": true, "upper_inc": true,
 		"lower_inf": true, "upper_inf": true, "range_merge": true}
 	for _, t := range rngTypes {
@@ -135,8 +147,10 @@ func typesFuncKind(name string, args []Kind) (Kind, bool) {
 		return KBool, true
 	case "range_merge", "macaddr8_set7bit", "set_bit":
 		return KText, true
-	case "bit_count", "get_bit":
+	case "bit_count", "get_bit", "numnode":
 		return KInt, true
+	case "stask_tsnot", "stask_tsphrase", "querytree":
+		return KText, true
 	case "trunc":
 		if len(args) == 1 && args[0] == KText { // trunc(macaddr)
 			return KText, true

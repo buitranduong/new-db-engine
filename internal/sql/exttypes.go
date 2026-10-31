@@ -20,7 +20,7 @@ func extRangeName(spec string) (int32, bool) {
 // extPlain is the type name of the non-range, non-interval added types ("" if spec is not one).
 func extPlain(spec string) string {
 	switch n := specName(spec); n {
-	case "macaddr", "macaddr8", "bit", "varbit":
+	case "macaddr", "macaddr8", "bit", "varbit", "tsvector", "tsquery":
 		return n
 	}
 	return ""
@@ -54,7 +54,7 @@ func extFamily(oid uint32) (Kind, bool) {
 		return KText, true
 	}
 	switch oid {
-	case 774, 1560, 1562:
+	case 774, 1560, 1562, 3614, 3615:
 		return KText, true
 	}
 	return KNull, false
@@ -72,6 +72,10 @@ func extTyName(oid uint32) (string, bool) {
 		return "bit", true
 	case 1562:
 		return "bit varying", true
+	case 3614:
+		return "tsvector", true
+	case 3615:
+		return "tsquery", true
 	}
 	return "", false
 }
@@ -89,6 +93,10 @@ func extSpecTy(spec string) (pgTy, bool) {
 	switch extPlain(spec) {
 	case "macaddr8":
 		return pgTy{oid: 774, mod: -1}, true
+	case "tsvector":
+		return pgTy{oid: 3614, mod: -1}, true
+	case "tsquery":
+		return pgTy{oid: 3615, mod: -1}, true
 	case "bit", "varbit":
 		v, n, _ := bitSpec(spec)
 		oid := uint32(1560)
@@ -136,6 +144,14 @@ func extApply(pg string, d Datum, explicit bool) (Datum, error) {
 		return macApply(pg, d)
 	case "bit", "varbit":
 		return bitApply(pg, d, explicit)
+	case "tsvector":
+		if d.K == KText {
+			return TSVectorParse(d.S)
+		}
+	case "tsquery":
+		if d.K == KText {
+			return TSQueryParse(d.S)
+		}
 	}
 	return d, nil
 }
@@ -159,6 +175,10 @@ func extDecode(pg string, d Datum) Datum {
 		d.D = tagBit
 	case "varbit":
 		d.D = tagVarbit
+	case "tsvector":
+		d.D = tagTSVector
+	case "tsquery":
+		d.D = tagTSQuery
 	}
 	return d
 }
@@ -176,7 +196,7 @@ func extEncode(pg string, d Datum) string {
 
 // extTypeSpec is called by the type-name parser for a name it does not know: it returns the column spec.
 func (p *parser) extTypeSpec(name string) (string, bool) {
-	if rngTagOfName(name) != 0 || name == "macaddr8" {
+	if rngTagOfName(name) != 0 || name == "macaddr8" || name == "tsvector" || name == "tsquery" {
 		return name, true
 	}
 	switch name {
@@ -218,6 +238,12 @@ func extBinary(oid uint32, d Datum) ([]byte, bool) {
 		return bitBinaryOut(Datum{K: KText, S: s}), true
 	case tyMacaddr, 774:
 		return macBinaryOut(d)
+	case 3614:
+		v, err := tsvParse(d.S)
+		return tsvBinaryOut(v), err == nil
+	case 3615:
+		q, err := tsqParse(d.S)
+		return tsqBinaryOut(q), err == nil
 	}
 	return nil, false
 }
@@ -235,6 +261,18 @@ func extFromBinary(oid uint32, raw []byte) (Datum, bool, error) {
 	case tyMacaddr, 774:
 		d, err := macFromBinary(oid, raw)
 		return d, true, err
+	case 3614:
+		v, ok := tsvFromBinary(raw)
+		if !ok {
+			return Null, true, binBad(oid)
+		}
+		return Datum{K: KText, D: tagTSVector, S: v.text()}, true, nil
+	case 3615:
+		q, ok := tsqFromBinary(raw)
+		if !ok {
+			return Null, true, binBad(oid)
+		}
+		return Datum{K: KText, D: tagTSQuery, S: q.text()}, true, nil
 	}
 	return Null, false, nil
 }
@@ -253,7 +291,10 @@ func typesBinary(op string, l, r Datum) (Datum, bool, error) {
 	if d, ok, err := bitBinary(op, l, r); ok {
 		return d, ok, err
 	}
-	return macBinary(op, l, r)
+	if d, ok, err := macBinary(op, l, r); ok {
+		return d, ok, err
+	}
+	return tsBinary(op, l, r)
 }
 
 // typesUnary is ~ on bit strings and macaddr values.
@@ -286,6 +327,28 @@ func typesCompare(a, b Datum) (int, bool, error) {
 			return 0, true, err
 		}
 		return strings.Compare(x, y), true, nil
+	}
+	if (isTSV(a) || isTSV(b)) && a.K == KText && b.K == KText {
+		x, err := tsvOperand(a)
+		if err != nil {
+			return 0, true, err
+		}
+		y, err := tsvOperand(b)
+		if err != nil {
+			return 0, true, err
+		}
+		return tsvCompare(x, y), true, nil
+	}
+	if (isTSQ(a) || isTSQ(b)) && a.K == KText && b.K == KText {
+		x, err := tsqOperand(a)
+		if err != nil {
+			return 0, true, err
+		}
+		y, err := tsqOperand(b)
+		if err != nil {
+			return 0, true, err
+		}
+		return strings.Compare(x.text(), y.text()), true, nil
 	}
 	return macCompare(a, b)
 }
@@ -342,6 +405,12 @@ func extBinaryTy(e *Binary, l, r pgTy) (pgTy, bool) {
 			return pgTy{oid: 1562, mod: -1}, true
 		}
 	}
+	if l.oid == 3614 && e.Op == "||" {
+		return l, true
+	}
+	if (l.oid == 3615 || r.oid == 3615) && (e.Op == "&&" || e.Op == "||") {
+		return pgTy{oid: 3615, mod: -1}, true
+	}
 	if (l.oid == tyMacaddr || l.oid == 774) && (e.Op == "&" || e.Op == "|") {
 		if l.oid == 774 || r.oid == 774 {
 			return pgTy{oid: 774, mod: -1}, true
@@ -375,6 +444,18 @@ func extFuncTy(e *Func, argTy func(i int) pgTy) (pgTy, bool) {
 	if e.Name == "macaddr8_set7bit" {
 		return pgTy{oid: 774, mod: -1}, true
 	}
+	if len(e.Args) >= 1 {
+		switch e.Name {
+		case "stask_tsnot", "stask_tsphrase":
+			return pgTy{oid: 3615, mod: -1}, true
+		case "stask_overlap":
+			if argTy(0).oid == 3615 {
+				return pgTy{oid: 3615, mod: -1}, true
+			}
+		case "numnode":
+			return pgTy{oid: tyInt4, mod: -1}, true
+		}
+	}
 	return pgTy{}, false
 }
 
@@ -386,6 +467,10 @@ func extCtasSpec(oid uint32, mod int32) (string, bool) {
 	switch oid {
 	case 774:
 		return "macaddr8", true
+	case 3614:
+		return "tsvector", true
+	case 3615:
+		return "tsquery", true
 	case 1560:
 		if mod < 0 {
 			return "bit(1)", true
@@ -425,5 +510,9 @@ func extIndexLookup(pg string) bool {
 	if strings.HasPrefix(pg, "interval") {
 		return false
 	}
-	return specName(pg) != "numrange"
+	switch specName(pg) {
+	case "numrange", "tsvector", "tsquery": // the stored text does not order like the type
+		return false
+	}
+	return true
 }

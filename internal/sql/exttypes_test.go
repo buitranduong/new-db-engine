@@ -214,3 +214,52 @@ func TestBitAndMacaddr(t *testing.T) {
 		}
 	}
 }
+
+func TestTSVectorTSQuery(t *testing.T) {
+	for in, want := range map[string]string{
+		"b a  a": "'a' 'b'", "a:3,1,2B,1C": "'a':1C,2B,3", "a:1D": "'a':1", "Foo bar": "'Foo' 'bar'", "a:16384": "'a':16383",
+		"'a'':1B,1A,1D": "'a':1A", "foo:5 foo:3": "'foo':3,5", "": "",
+	} {
+		v, err := tsvParse(in)
+		if err != nil || v.text() != want {
+			t.Errorf("tsvector %q = %q (%v), want %q", in, v.text(), err, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"a | b & c": "'a' | 'b' & 'c'", "(a | b) & c": "( 'a' | 'b' ) & 'c'", "!(a & b)": "!( 'a' & 'b' )", "a <3> b": "'a' <3> 'b'",
+		"a:*B": "'a':*B", "a & (b & c)": "'a' & 'b' & 'c'", "a <-> (b <-> c)": "'a' <-> ( 'b' <-> 'c' )", "(a <-> b) <-> c": "'a' <-> 'b' <-> 'c'",
+		"a & b <-> c": "'a' & 'b' <-> 'c'", "!!a": "!!'a'",
+	} {
+		q, err := tsqParse(in)
+		if err != nil || q.text() != want {
+			t.Errorf("tsquery %q = %q (%v), want %q", in, q.text(), err, want)
+		}
+	}
+	for _, bad := range []string{"a & ", "(a", "a b", "a)", "& a"} {
+		if _, err := tsqParse(bad); err == nil {
+			t.Errorf("tsquery %q accepted", bad)
+		}
+	}
+	v, _ := tsvParse("a:1 b:2 c:3")
+	for q, want := range map[string]bool{"a & b": true, "a <-> b": true, "a <-> c": false, "a <2> c": true, "(a | b) <-> c": true, "(a & b) <-> c": false, "!a": false, "d | b": true, "a:B": false} {
+		pq, _ := tsqParse(q)
+		if got := v.eval(pq).ok; got != want {
+			t.Errorf("%q @@ %q = %v", v.text(), q, got)
+		}
+	}
+	// binary round trip in PostgreSQL's layout
+	v2, _ := tsvParse("a:1A,3 bb:2 ccc")
+	if back, ok := tsvFromBinary(tsvBinaryOut(v2)); !ok || back.text() != v2.text() {
+		t.Errorf("tsvector binary: %v %v", back.text(), ok)
+	}
+	q2, _ := tsqParse("a <3> (b & c) | !d:*B")
+	if back, ok := tsqFromBinary(tsqBinaryOut(q2)); !ok || back.text() != q2.text() {
+		t.Errorf("tsquery binary: %v %v", back.text(), ok)
+	}
+	// 'a & b' in PostgreSQL's wire layout: size 3, AND, then the right operand, then the left one
+	ab, _ := tsqParse("a & b")
+	want := []byte{0, 0, 0, 3, 2, 2, 1, 0, 0, 'b', 0, 1, 0, 0, 'a', 0}
+	if got := tsqBinaryOut(ab); string(got) != string(want) {
+		t.Errorf("tsquery wire layout %v, want %v", got, want)
+	}
+}

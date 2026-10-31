@@ -31,7 +31,7 @@ Direction: not "one database for everything", but a **tiered, tightly controlled
 > **Status: research prototype, code phase closed, verification phase next.**
 > The feature set for the target workload is implemented and covered by tests;
 > nothing has been measured at scale yet, and no performance parity with
-> PostgreSQL, ClickHouse, Elasticsearch or Redis is claimed. Current state, known
+> PostgreSQL, ClickHouse or Redis is claimed. Current state, known
 > gaps and the live work queue: [docs/STATUS.md](docs/STATUS.md) and
 > [docs/27_handoff.md](docs/27_handoff.md). Criteria for production use:
 > [docs/PROCESS.md](docs/PROCESS.md) D34 (seven criteria, none reached yet).

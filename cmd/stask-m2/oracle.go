@@ -223,8 +223,10 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
 		val := 11 + i%990
 		txid := r.txid.Add(1)
 		p := &Payload{Kind: "probe", TS: fmtTS(time.Now()), Nums: []string{sim.Number}, Val: val}
+		r.gate.RLock()
 		t0 := time.Now()
 		res := w.RunTx(ctx, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		r.gate.RUnlock()
 		if res.Err != nil || res.Noop {
 			if ctx.Err() == nil {
 				if res.Unknown {
@@ -359,7 +361,8 @@ func (r *Run) JournalChecks(ctx context.Context, jr []JRow, tag string, ackedBef
 			exs = fmt.Sprintf("order %d has no journal row", id)
 		} else if e != x[1] {
 			bad++
-			exs = fmt.Sprintf("order %d status %s, journal says %s", id, x[1], e)
+			sp, _ := r.suspect.Load(id)
+			exs = fmt.Sprintf("order %d status %s, journal says %s; failed attempts on it: %v", id, x[1], e, sp)
 		}
 	}
 	lost := 0

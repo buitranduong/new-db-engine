@@ -125,6 +125,8 @@ type Machine struct {
 	FreeGBEnd float64  `json:"disk_free_gb_end"`
 }
 
+var cleanup = func() {}
+
 func main() {
 	cfg := parseFlags()
 	if cfg.Exec == "extended" {
@@ -140,10 +142,12 @@ func main() {
 	// guards
 	if freeGB(cfg.DiskPath) < cfg.MinFreeGB && !cfg.Force {
 		logf("refuse: %.1f GB free on %s (< %.1f)", freeGB(cfg.DiskPath), cfg.DiskPath, cfg.MinFreeGB)
+		cleanup()
 		os.Exit(2)
 	}
 	if gateBusy(cfg.GateLog) && cfg.N > 100000 && !cfg.Force {
 		logf("refuse: %s does not end with GATE_EXIT (a merge gate is running); use n <= 100000 or -force", cfg.GateLog)
+		cleanup()
 		os.Exit(2)
 	}
 	if g.TotalRows() > 2_000_000 {
@@ -173,20 +177,28 @@ func main() {
 		exec.Command("docker", "rm", "-f", "m2h-ref").Run()
 		if out, err := exec.Command("docker", "run", "-d", "--name", "m2h-ref", "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:"+port+":5432", "postgres:16").CombinedOutput(); err != nil {
 			logf("cannot start reference: %v %s", err, out)
+			cleanup()
 			os.Exit(2)
 		}
 		if !cfg.KeepRef {
-			defer exec.Command("docker", "rm", "-f", "-v", "m2h-ref").Run()
+			cleanup = func() { exec.Command("docker", "rm", "-f", "-v", "m2h-ref").Run() }
+			defer cleanup()
 		}
 		waitUp(ctx, cfg.RefDSN, 90*time.Second)
 	}
 
+	if !waitUp(ctx, cfg.SUT, 60*time.Second) {
+		logf("SUT does not accept connections at %s", cfg.SUT)
+		cleanup()
+		os.Exit(2)
+	}
 	// load
 	if !cfg.SkipLoad {
 		t0 := time.Now()
 		logf("loading %d sims (%d rows) into the SUT", cfg.N, g.TotalRows())
 		if err := Load(ctx, cfg.SUT, g, cfg.SchemaFile, cfg.LoadMode, logf); err != nil {
 			logf("load SUT failed: %v", err)
+			cleanup()
 			os.Exit(2)
 		}
 		logf("SUT loaded in %.1fs", time.Since(t0).Seconds())
@@ -195,6 +207,7 @@ func main() {
 		t0 := time.Now()
 		if err := Load(ctx, cfg.RefDSN, g, cfg.SchemaFile, "copy", logf); err != nil {
 			logf("load reference failed: %v", err)
+			cleanup()
 			os.Exit(2)
 		}
 		logf("reference loaded in %.1fs", time.Since(t0).Seconds())
@@ -211,11 +224,13 @@ func main() {
 		c, err := Connect(ctx, cfg.SUT)
 		if err != nil {
 			logf("connect: %v", err)
+			cleanup()
 			os.Exit(2)
 		}
 		v, err := one(ctx, c, "SELECT sum(reserved) FROM stock")
 		if err != nil {
 			logf("baseline: %v", err)
+			cleanup()
 			os.Exit(2)
 		}
 		baseline, _ = strconv.ParseInt(strings.Split(v[0], ".")[0], 10, 64)
@@ -353,6 +368,7 @@ func main() {
 	}
 	if fails > 0 {
 		logf("ORACLE VIOLATIONS: %d (see %s/report.md)", fails, cfg.Out)
+		cleanup()
 		os.Exit(1)
 	}
 	logf("all oracles held")
@@ -420,6 +436,8 @@ func (r *Run) crashDrill(ctx, wctx context.Context) *CrashInfo {
 	logf("recovered=%v after %d ms", ci.Recovered, ci.RestartMs)
 	r.Check("server_recovers_after_kill9", ci.Recovered, "SUT did not accept connections within %s", r.cfg.RestartWait)
 	if ci.Recovered {
+		r.gate.Lock() // no transaction may start while the journal and the tables are compared
+		defer r.gate.Unlock()
 		jr, err := readJournal(ctx, r.sut)
 		if err != nil {
 			r.Check("journal_readable_after_crash", false, "%v", err)

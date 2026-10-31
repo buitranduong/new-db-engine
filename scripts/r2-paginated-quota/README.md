@@ -12,3 +12,4 @@ every page is stable. `ch.sql`/`chq*.sql` are ClickHouse (`cityHash64`), `pg.sql
 1-3M, store_rate non-increasing per carrier, and STASK == PostgreSQL 16 row for row.
 Run: see docs/14 row "R2 paginated quota query" (docker clickhouse/clickhouse-server:25.8, postgres:16, staskd).
 Open (needs the user): what to do when a carrier has fewer rows than its quota (fill from the others, or return short).
+At scale: r2cmp.sh N [keep] loads N rows into postgres:16 (Docker) and a staskd (BIN=dir of the binary, W=work dir), compares counts/checksums and the three pages row for row (flock /tmp/stask-bigdata.lock above 2M rows). It found the 10M divergence: a parallel scan past the query budget returned a prefix of the table (docs/14, Appendix U r2perf).

@@ -29,6 +29,8 @@ type options struct {
 	pause, progress                  time.Duration
 	crashAfter                       int // test hook: SIGKILL self after N committed batches
 	crashBeforeCkpt                  bool
+	load                             string // binary (default), text or insert; see load.go
+	testRefuse                       string // test hook: the server refuses this COPY mode
 }
 
 func main() {
@@ -43,6 +45,7 @@ func main() {
 	flag.DurationVar(&o.pause, "pause", 0, "sleep between batches (throttle)")
 	flag.DurationVar(&o.progress, "progress", 10*time.Second, "progress line interval (0 = off)")
 	flag.BoolVar(&o.asJSON, "json", false, "print the summary as JSON")
+	flag.StringVar(&o.load, "load", loadBinary, "load path: binary (COPY FORMAT binary), text (COPY text) or insert (multi-row INSERT); a server that refuses one steps down to the next")
 	flag.IntVar(&o.crashAfter, "test-crash-after", 0, "test only: SIGKILL after N committed batches")
 	flag.BoolVar(&o.crashBeforeCkpt, "test-crash-before-ckpt", false, "test only: the kill comes before the checkpoint is written")
 	flag.Parse()
@@ -73,12 +76,19 @@ type Summary struct {
 	Seconds    float64 `json:"seconds"`
 	ErrorsFile string  `json:"errors_file,omitempty"`
 	Checkpoint string  `json:"checkpoint,omitempty"`
+	Load       string  `json:"load"` // load path in use at the end (after any step down)
 }
 
 func run(ctx context.Context, o options, path string, out, errw io.Writer) (*Summary, error) {
 	sp, specHash, err := LoadSpec(o.specPath)
 	if err != nil {
 		return nil, err
+	}
+	if o.load == "" {
+		o.load = loadBinary
+	}
+	if !validLoad(o.load) {
+		return nil, fmt.Errorf("-load must be binary, text or insert")
 	}
 	if o.batch < 1 || o.batch > 20000 {
 		return nil, fmt.Errorf("-batch must be 1..20000")
@@ -111,8 +121,13 @@ func run(ctx context.Context, o options, path string, out, errw io.Writer) (*Sum
 		sum.ErrorsFile, sum.Checkpoint = o.errPath, o.ckptPath
 	}
 	t0 := time.Now()
+	var a *applier
 	finish := func() {
 		sum.Counts = ck.Counts
+		sum.Load = o.load
+		if a != nil {
+			sum.Load = a.load
+		}
 		sum.Complete = ck.Complete
 		sum.Seconds = time.Since(t0).Seconds()
 		printSummary(out, sum, o.asJSON)
@@ -136,7 +151,8 @@ func run(ctx context.Context, o options, path string, out, errw io.Writer) (*Sum
 	if err := <-ready; err != nil {
 		return nil, err
 	}
-	a := newApplier(o.url, sp, o.dry)
+	a = newApplier(o.url, sp, o.dry, o.load)
+	a.testRefuse = o.testRefuse
 	defer a.close(context.Background())
 	var ew *errWriter
 	if !o.dry {

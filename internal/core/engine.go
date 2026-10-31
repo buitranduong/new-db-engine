@@ -248,7 +248,8 @@ func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
 	// disk secondary index persistence counters (secpersist.go)
-	SidxCkpts, SidxAdopted, SidxRebuilt, SidxAsync atomic.Int64
+	SidxCkpts, SidxAdopted, SidxRebuilt, SidxAsync, SidxDeadScans atomic.Int64
+	SecArenaCompactions, SecArenaReclaimed                        atomic.Int64
 	// key arena compaction (arenacompact.go)
 	ArenaCompactions, ArenaReclaimed, ArenaCompactGaveUp atomic.Int64
 	// index memory budget (idxbudget.go)

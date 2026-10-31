@@ -10,14 +10,18 @@ import (
 
 // COPY FROM STDIN / TO STDOUT over the simple query protocol (the sql
 // package parses and executes; docs/05 section COPY). Binary format is
-// refused by the parser (0A000). The extended protocol does not carry COPY.
+// accepted for FROM STDIN only (sql/copybin.go). The extended protocol does not carry COPY.
 
 // copyFormats writes the CopyInResponse / CopyOutResponse body: overall
 // format 0 (text; csv is text on the wire) and one format code per column.
-func copyResponse(t byte, ncols int) *msg {
-	m := newMsg(t).byte1(0).int16(ncols)
+func copyResponse(t byte, ncols int, binary bool) *msg {
+	f := 0
+	if binary {
+		f = 1
+	}
+	m := newMsg(t).byte1(byte(f)).int16(ncols)
 	for i := 0; i < ncols; i++ {
-		m.int16(0)
+		m.int16(f)
 	}
 	return m
 }
@@ -32,7 +36,7 @@ func (c *conn) copyCommand(cs *sql.CopyStmt, perr error) (stop bool) {
 		return c.copyIn(cs)
 	}
 	n, err := c.sess.CopyTo(cs, func(ncols int) error {
-		return c.send(copyResponse('H', ncols))
+		return c.send(copyResponse('H', ncols, false))
 	}, func(line []byte) error {
 		return c.send(newMsg('d').bytes(line))
 	})
@@ -55,7 +59,7 @@ func (c *conn) copyIn(cs *sql.CopyStmt) (stop bool) {
 	// while the client sends the data
 	c.nc.SetReadDeadline(time.Time{})
 	c.idleCode = ""
-	c.send(copyResponse('G', ci.NCols))
+	c.send(copyResponse('G', ci.NCols, cs.Binary))
 	if err := c.w.Flush(); err != nil {
 		ci.Abort(err)
 		return true

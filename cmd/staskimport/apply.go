@@ -13,6 +13,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// testHookAfterLookup runs after a batch is classified, before it is written (tests only).
+var testHookAfterLookup func()
+
 // Counts is what a run did to the table.
 type Counts struct {
 	Rows       int64 `json:"rows"`       // data rows read
@@ -58,21 +61,25 @@ type errRec struct {
 }
 
 type applier struct {
-	sp      *Spec
-	url     string
-	conn    *pgx.Conn
-	dry     bool
-	keyType string
-	cols    []string // non-key spec columns, in spec order
-	sel     string   // SELECT .. WHERE key IN (
-	selTail string
-	ins     string // INSERT ... prefix and ON CONFLICT suffix pieces
-	retries int
-	now     func() time.Time
+	sp         *Spec
+	url        string
+	conn       *pgx.Conn
+	dry        bool
+	keyType    string
+	cols       []string // non-key spec columns, in spec order
+	sel        string   // SELECT .. WHERE key IN (
+	selTail    string
+	ins        string // INSERT ... prefix and ON CONFLICT suffix pieces
+	retries    int
+	now        func() time.Time
+	downgrades int    // times the load mode stepped down
+	load       string // loadBinary, loadText or loadInsert (load.go); steps down when the server refuses
+	// testRefuse makes the given COPY mode fail as an old server would (tests)
+	testRefuse string
 }
 
-func newApplier(url string, sp *Spec, dry bool) *applier {
-	a := &applier{sp: sp, url: url, dry: dry, now: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, retries: 8}
+func newApplier(url string, sp *Spec, dry bool, load string) *applier {
+	a := &applier{sp: sp, url: url, dry: dry, load: load, now: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, retries: 8}
 	a.keyType = sp.col(sp.Key).Type
 	names := []string{sp.Key}
 	for _, c := range sp.Columns {
@@ -165,6 +172,15 @@ func (a *applier) apply(ctx context.Context, rows []vrow) (res Counts, err error
 	for attempt := 0; ; attempt++ {
 		res, err = a.applyOnce(ctx, rows)
 		res.Retries = int64(attempt)
+		var mr *errModeRefused
+		if errors.As(err, &mr) && a.load != loadInsert {
+			// the server cannot do this COPY format: one step down, redo the batch
+			// (its transaction was rolled back)
+			a.load = nextMode(a.load)
+			a.downgrades++
+			attempt--
+			continue
+		}
 		if err == nil || !retryable(err) || attempt >= a.retries || ctx.Err() != nil {
 			return res, err
 		}
@@ -281,11 +297,14 @@ func (a *applier) applyOnce(ctx context.Context, rows []vrow) (res Counts, err e
 		res.Updated++
 		changes = append(changes, change{row: r, old: old})
 	}
+	if testHookAfterLookup != nil {
+		testHookAfterLookup()
+	}
 	if a.dry || len(changes) == 0 {
 		return res, tx.Rollback(ctx)
 	}
 	now := a.now()
-	if err = a.upsert(ctx, tx, changes, now); err != nil {
+	if err = a.write(ctx, tx, changes, now); err != nil {
 		return res, err
 	}
 	if a.sp.History != nil {
@@ -313,7 +332,50 @@ func containsFold(list []string, v any) bool {
 	return false
 }
 
+// write stores the changes: new rows with COPY (unless the mode is insert),
+// changed rows with the upsert.
+func (a *applier) write(ctx context.Context, tx pgx.Tx, ch []change, now time.Time) error {
+	if a.load == loadInsert {
+		return a.upsert(ctx, tx, ch, now)
+	}
+	var upd, ins []change
+	for _, c := range ch {
+		if c.old == nil {
+			ins = append(ins, c)
+		} else {
+			upd = append(upd, c)
+		}
+	}
+	if err := a.upsert(ctx, tx, upd, now); err != nil {
+		return err
+	}
+	if len(ins) == 0 {
+		return nil
+	}
+	names := append([]string{a.sp.Key}, a.cols...)
+	var touch []string
+	for c := range a.sp.Touch {
+		touch = append(touch, c)
+	}
+	sort.Strings(touch)
+	names = append(names, touch...)
+	rows := make([][]any, len(ins))
+	for i, c := range ins {
+		r := make([]any, 0, len(names))
+		r = append(r, c.row.key)
+		r = append(r, c.row.vals...)
+		for range touch {
+			r = append(r, now)
+		}
+		rows[i] = r
+	}
+	return a.copyRows(ctx, tx, a.sp.Table, names, rows)
+}
+
 func (a *applier) upsert(ctx context.Context, tx pgx.Tx, ch []change, now time.Time) error {
+	if len(ch) == 0 {
+		return nil
+	}
 	names := append([]string{a.sp.Key}, a.cols...)
 	var touch []string
 	for c := range a.sp.Touch {
@@ -371,6 +433,24 @@ func (a *applier) writeHistory(ctx context.Context, tx pgx.Tx, ch []change, now 
 	}
 	for _, c := range h.Columns {
 		names = append(names, h.OldPrefix+c, h.NewPrefix+c)
+	}
+	if a.load != loadInsert {
+		rows := make([][]any, len(ch))
+		for i, c := range ch {
+			r := []any{c.row.key, now}
+			for _, e := range extra {
+				r = append(r, h.Extra[e])
+			}
+			for _, col := range h.Columns {
+				var o any
+				if c.old != nil {
+					o = c.old[pos[col]]
+				}
+				r = append(r, o, c.row.vals[pos[col]])
+			}
+			rows[i] = r
+		}
+		return a.copyRows(ctx, tx, h.Table, names, rows)
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "INSERT INTO %s (%s) VALUES ", h.Table, strings.Join(names, ", "))

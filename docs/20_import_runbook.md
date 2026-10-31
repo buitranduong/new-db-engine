@@ -106,7 +106,15 @@ Checkpoint `<file>.import.json` chứa: dấu vân tay file (kích thước + b�
 - Xung đột/chết khoá (`40001`, `40P01`, ...): lô được chạy lại tự động.
 - Người đọc đồng thời thấy mỗi lô **nguyên vẹn hoặc chưa có** (test `TestConcurrentReadersSeeBatchSnapshots`: 1034 lần đọc `min(price), max(price)` trên đúng khoảng khoá của một lô trong lúc nhập, không lần nào lệch). Cả file **không** là một giao dịch (cố ý: một giao dịch triệu dòng là thứ gây khoá lâu): trong lúc nhập, người đọc có thể thấy một số lô đã mới, số khác còn cũ.
 - Tránh `ANY($1)` với mảng trong truy vấn tự viết cho bảng lớn: đo được nó quét bảng và phân tích lại mảng cho mỗi dòng (phát hiện ghi ở báo cáo; công cụ dùng `IN (..)`).
-- Đường nhanh của engine: công cụ dùng **upsert nhiều dòng theo lô** (`batch_upsert` của simbench) kết hợp so sánh phía client để **bỏ dòng không đổi**. Đường COPY + MERGE của `simbench` (`copy_merge`) vẫn có ở engine nhưng ghi lại **mọi** dòng; COPY nhị phân chưa hỗ trợ ("COPY BINARY format is not supported"). Việc chọn giữa hai đường ở quy mô triệu dòng thuộc phép đo cuối (D32).
+- Đường nhanh của engine: công cụ dùng **upsert nhiều dòng theo lô** (`batch_upsert` của simbench) kết hợp so sánh phía client để **bỏ dòng không đổi**. Đường COPY + MERGE của `simbench` (`copy_merge`) vẫn có ở engine nhưng ghi lại **mọi** dòng; COPY nhị phân `FROM STDIN` đã có từ nhánh importbin (xem dưới). Việc chọn giữa hai đường ở quy mô triệu dòng thuộc phép đo cuối (D32).
+
+## 6b. Đường nạp: COPY nhị phân (nhánh importbin)
+
+- `staskimport -load binary|text|insert` (mặc định `binary`). Dòng **mới** (chưa có trong bảng) và dòng **lịch sử** (luôn là dòng mới) đi bằng `COPY ... FROM STDIN WITH (FORMAT binary)` ngay trong giao dịch của lô; dòng **đổi** vẫn đi bằng `INSERT .. ON CONFLICT DO UPDATE` vì COPY không cập nhật được. Cách này giữ nguyên so sánh phía client, quy tắc giữ giá trị cũ, lịch sử old->new và khoá theo thứ tự.
+- Resume không đổi: checkpoint ghi sau commit của lô; lô lỗi bị huỷ nguyên giao dịch.
+- Dự phòng: nếu server từ chối chế độ hiện tại (SQLSTATE `0A000`, `42601`, `22P03`, `08P01`) công cụ hạ một bậc `binary -> text -> insert`, làm lại lô đó, và giữ bậc mới tới hết lần chạy (`load` trong tóm tắt JSON cho biết bậc cuối). `-load text` dùng COPY text; `-load insert` là đường cũ.
+- Khoá trùng giữa lúc tra cứu và COPY (người khác chèn cùng khoá): COPY báo `23505`, lô được tách ra thử từng dòng như mọi lỗi cơ sở dữ liệu, dòng đó thành cập nhật. Test `TestLoadCopyDuplicateFallsBackToRows`.
+- Chưa đo tốc độ (D32): chưa biết COPY nhanh hơn upsert nhiều dòng bao nhiêu trên engine này.
 
 ## 7. File .xlsx lớn
 

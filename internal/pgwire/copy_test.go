@@ -224,8 +224,6 @@ func TestCopyErrors(t *testing.T) {
 
 	// refusals
 	for q, st := range map[string]string{
-		"COPY c3 FROM STDIN BINARY":                    "0A000",
-		"COPY c3 FROM STDIN (FORMAT binary)":           "0A000",
 		"COPY c3 TO STDOUT (FORMAT binary)":            "0A000",
 		"COPY c3 FROM '/etc/passwd'":                   "0A000",
 		"COPY c3 TO PROGRAM 'cat'":                     "0A000",

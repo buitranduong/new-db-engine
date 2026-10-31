@@ -270,3 +270,21 @@ Trước khi đi tiếp bất kỳ giai đoạn nào: kiểm lại các dòng [V
 3. Quy tắc khi một nhà mạng có ít dòng hơn hạn ngạch trang (đã mở ở `scripts/r2-paginated-quota`): trả thiếu hay bù từ nhà mạng khác.
 4. Lược đồ thật tối thiểu của `sims`/`orders`/`stock` (tên cột, kiểu, số cột) để thay bộ sinh tổng hợp.
 5. Phần cứng và đĩa cho phép đo 50M/100M (đĩa ~50 GB đã hứa cho bậc 50M; 100M cần nêu rõ).
+
+## 9. Cắt lại giai đoạn thành lát dọc (người dùng, 2026-10-31; thay cách chia 1a/1b ở §5)
+
+Giai đoạn 1 phải chứng minh MỘT CHUỖI hoàn chỉnh, mỏng ở từng mắt xích, thay vì đi sâu từng mắt xích một:
+
+```
+giao dịch cập nhật nhiều bảng (đơn hàng + tồn kho + giá)
+  -> log bền
+  -> delta + chiếu cột
+  -> truy vấn R2 có join, cùng một snapshot
+  -> R được ưu tiên khi đang nhập (import)
+```
+
+Chuỗi này đạt ở 10 triệu dòng rồi 30 triệu dòng thì ý tưởng cốt lõi được chứng minh; khi đó các tính năng tương thích còn lại chỉ là phụ trợ. Lý do cắt dọc: cách chia cũ (1a điều phối + delta + R2, 1b join, giai đoạn 3 cách ly) dễ biến thành tối ưu từng mắt xích trong khi chuỗi chưa chạy hết, đúng rủi ro "chăm chăm một tiêu chí".
+
+Lát 1 (mỏng, đủ cả chuỗi): tối thiểu của mỗi mắt xích. (1) Một giao dịch ghi `orders`, `order_items`, `stock` cùng lúc. (2) Delta: khoá đổi trong (khoảng giữa view và snapshot) đọc từ lõi, phần còn lại đọc từ cột (§4 lemma delta). (3) Truy vấn R2 có join một bảng chiều nhỏ (nhà mạng hoặc kho) trong cùng snapshot, `EXPLAIN` nêu rõ lượng đọc từ lõi, delta, cột. (4) Một tải nhập (cập nhật 1% SIM trong một giao dịch) chạy đồng thời; R giữ độ trễ, T không bị chậm, và truy vấn tồn kho q13 luôn đúng. (5) `kill -9` giữa tải và kiểm đúng sau phục hồi. Điều kiện đạt: kết quả giống PostgreSQL 16 từng dòng, không đọc cũ mà không biết, và số đo (sạch, ở G3) so với SLO-R2.
+Lát 2: làm sâu từng mắt xích theo số đo (join cột tổng quát, bộ lọc runtime, cách ly tài nguyên dưới tải, bố cục vật lý). Quy tắc D35 (hai vòng mỗi hạng mục) vẫn áp dụng.
+

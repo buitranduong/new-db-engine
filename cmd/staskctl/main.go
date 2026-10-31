@@ -4,6 +4,8 @@
 //	staskctl backup  -from ADDR -out DIR [-cluster]         base backup of a leader (-repl-addr) or a cluster (Raft port) into DIR/<time>
 //	staskctl verify  -backup DIR/<time>                     restore into a scratch directory, start staskd on it, scrub, count rows
 //	staskctl restore -backup DIR/<time> -dir NEWDIR         put a backup into an empty data directory (cluster backup: a node directory)
+//	staskctl restore -backup DIR/<time> -dir NEWDIR -standalone   a cluster backup as a single-node data directory (point-in-time recovery: start staskd on it with -restore-archive)
+//	staskctl cluster add|remove -http URL[,URL...] -id N [-raft ADDR -node-http ADDR]   change the voters of a Raft cluster by one node
 //	staskctl backup-loop -from ADDR -out DIR -interval 6h   backup, verify, prune, write a Prometheus textfile; forever or -once
 //
 // A backup is a directory with a manifest (sha256 of every file) next to the
@@ -51,6 +53,8 @@ func main() {
 		err = cmdVerify(args)
 	case "restore":
 		err = cmdRestore(args)
+	case "cluster":
+		err = cmdCluster(args)
 	case "backup-loop":
 		err = cmdLoop(args)
 	default:
@@ -63,7 +67,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: staskctl status|backup|verify|restore|backup-loop [flags]  (staskctl <cmd> -h)")
+	fmt.Fprintln(os.Stderr, "usage: staskctl status|backup|verify|restore|cluster|backup-loop [flags]  (staskctl <cmd> -h)")
 	os.Exit(2)
 }
 
@@ -551,6 +555,7 @@ func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	dir := fs.String("backup", "", "backup directory (with manifest.json)")
 	to := fs.String("dir", "", "empty data directory to restore into (a cluster backup: the directory of one node; run once per node)")
+	standalone := fs.Bool("standalone", false, "a cluster backup: make a single-node data directory (for point-in-time recovery from the cluster's archive) instead of a cluster node directory")
 	fs.Parse(args)
 	if *dir == "" || *to == "" {
 		return errors.New("-backup and -dir are required")
@@ -568,7 +573,7 @@ func cmdRestore(args []string) error {
 			return fmt.Errorf("file %s differs from the manifest: not restoring a damaged backup", f)
 		}
 	}
-	if m.Kind == "cluster" {
+	if m.Kind == "cluster" && !*standalone {
 		if err := cluster.RestoreNode(*dir, *to); err != nil {
 			return err
 		}
@@ -585,7 +590,7 @@ func cmdRestore(args []string) error {
 	}
 	ents, _ := os.ReadDir(*dir)
 	for _, e := range ents {
-		if !e.IsDir() && e.Name() != manifestName {
+		if !e.IsDir() && e.Name() != manifestName && !(m.Kind == "cluster" && e.Name() == "meta.json") {
 			if err := copyFile(filepath.Join(*dir, e.Name()), filepath.Join(*to, e.Name())); err != nil {
 				return err
 			}
@@ -699,4 +704,53 @@ func writeProm(path string, ok, verified bool, lastOK time.Time, failures int, m
 	if os.WriteFile(tmp, []byte(b.String()), 0o644) == nil {
 		os.Rename(tmp, path)
 	}
+}
+
+// ---- cluster membership ----
+
+func cmdCluster(args []string) error {
+	if len(args) < 1 || (args[0] != "add" && args[0] != "remove") {
+		return errors.New("usage: staskctl cluster add|remove -http URL[,URL...] -id N [-raft ADDR] [-node-http ADDR]")
+	}
+	op := args[0]
+	fs := flag.NewFlagSet("cluster "+op, flag.ExitOnError)
+	urls := fs.String("http", "http://127.0.0.1:8080", "comma-separated HTTP API URLs of the nodes (the leader is found among them)")
+	id := fs.Uint64("id", 0, "id of the node to add or remove")
+	raftAddr := fs.String("raft", "", "add: the new node's Raft address (it must already run with -raft-join)")
+	nodeHTTP := fs.String("node-http", "", "add: the new node's HTTP address (informational)")
+	token := fs.String("token", os.Getenv("STASK_TOKEN"), "API token")
+	fs.Parse(args[1:])
+	if *id == 0 {
+		return errors.New("-id is required")
+	}
+	body, _ := json.Marshal(map[string]any{"op": op, "id": *id, "raft": *raftAddr, "http": *nodeHTTP})
+	hc := &http.Client{Timeout: 45 * time.Second}
+	var last error
+	for try := 0; try < 10; try++ {
+		for _, u := range strings.Split(*urls, ",") {
+			u = strings.TrimSpace(u)
+			req, _ := http.NewRequest("POST", strings.TrimRight(u, "/")+"/v1/admin/cluster/members", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			if *token != "" {
+				req.Header.Set("Authorization", "Bearer "+*token)
+			}
+			r, err := hc.Do(req)
+			if err != nil {
+				last = err
+				continue
+			}
+			b, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			if r.StatusCode == 200 {
+				fmt.Printf("%s node %d: committed\n", op, *id)
+				return nil
+			}
+			last = fmt.Errorf("%s: %s", u, strings.TrimSpace(string(b)))
+			if !strings.Contains(string(b), "not the leader") && !strings.Contains(string(b), "retry") {
+				return last // refused for a reason a retry does not fix
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return last
 }

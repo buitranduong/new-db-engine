@@ -43,7 +43,10 @@ const (
 type transport struct{ c *Cluster }
 
 func (t *transport) Send(m raft.Msg) {
-	if p := t.c.peers[m.To]; p != nil {
+	t.c.mmu.RLock()
+	p := t.c.peers[m.To]
+	t.c.mmu.RUnlock()
+	if p != nil {
 		select {
 		case p.out <- m:
 		default: // a peer that cannot keep up loses messages, as the network may
@@ -59,6 +62,7 @@ type peerConn struct {
 	addr string
 	sec  *repl.Security
 	out  chan raft.Msg
+	quit chan struct{} // closed when the node is removed from the cluster
 }
 
 func (p *peerConn) run() {
@@ -68,6 +72,8 @@ func (p *peerConn) run() {
 		select {
 		case <-p.c.stop:
 			return
+		case <-p.quit:
+			return
 		default:
 		}
 		err := p.session()
@@ -76,6 +82,8 @@ func (p *peerConn) run() {
 		}
 		select {
 		case <-p.c.stop:
+			return
+		case <-p.quit:
 			return
 		case <-time.After(backoff):
 		}
@@ -97,8 +105,11 @@ func (p *peerConn) session() error {
 		return err
 	}
 	defer conn.Close()
-	go func() { // closing on shutdown ends the writes below
-		<-p.c.stop
+	go func() { // closing on shutdown (or removal) ends the writes below
+		select {
+		case <-p.c.stop:
+		case <-p.quit:
+		}
 		conn.Close()
 	}()
 	w := bufio.NewWriterSize(conn, 256<<10)
@@ -113,6 +124,8 @@ func (p *peerConn) session() error {
 		select {
 		case m = <-p.out:
 		case <-p.c.stop:
+			return nil
+		case <-p.quit:
 			return nil
 		}
 		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
@@ -170,7 +183,7 @@ func (c *Cluster) serve(raw net.Conn) {
 		}
 		return
 	}
-	if _, ok := c.cfg.Peers[from]; !ok || from == c.cfg.ID {
+	if c.members0(from).Raft == "" || from == c.cfg.ID {
 		return
 	}
 	switch typ {
@@ -212,6 +225,10 @@ type snapMeta struct {
 	Seg              uint32
 	Off              int64
 	SegMax           int64
+	// the configuration at Index and the addresses of the nodes (a node
+	// that installs the snapshot may not have seen the entries that added them)
+	Voters  []uint64          `json:",omitempty"`
+	Members map[uint64]member `json:",omitempty"`
 }
 
 // serveSnapshot sends the engine's base backup and the Raft entry it
@@ -250,6 +267,8 @@ func (c *Cluster) serveSnapshot(conn net.Conn, segMax int64) error {
 		return err
 	}
 	meta.SegMax = segMax
+	meta.Voters = c.g.VotersAt(meta.Index)
+	meta.Members = c.memberList()
 	mb, _ := json.Marshal(meta)
 	if err := send(fMeta, mb); err != nil {
 		return err
@@ -272,7 +291,7 @@ func (c *Cluster) metaAt(pos wal.Pos) (snapMeta, error) {
 		if !ok {
 			break
 		}
-		if e.Noop || len(e.Data) == 0 {
+		if e.Noop || e.Conf || len(e.Data) == 0 {
 			continue
 		}
 		b, err := decodeBatch(e.Data)
@@ -318,7 +337,7 @@ func (c *Cluster) snapReady() string {
 }
 
 func (c *Cluster) fetchSnapshot(leader uint64) error {
-	addr := c.cfg.Peers[leader]
+	addr := c.members0(leader).Raft
 	sec, err := c.cfg.Settings.Replica(addr)
 	if err != nil {
 		return err
@@ -529,7 +548,7 @@ func (c *Cluster) finishSnapshot() error {
 	if err != nil {
 		return err
 	}
-	err = raft.InstallSnapshot(st, raft.Snapshot{Index: meta.Index, Term: meta.Term})
+	err = raft.InstallSnapshot(st, raft.Snapshot{Index: meta.Index, Term: meta.Term, Voters: meta.Voters})
 	st.Close()
 	if err != nil {
 		return err
@@ -546,6 +565,16 @@ func (c *Cluster) finishSnapshot() error {
 	bb, _ := json.Marshal(baseFile{meta.Index, meta.Term, meta.LSN, meta.Seg, meta.Off})
 	if err := writeFileSync(c.basePath(), bb); err != nil {
 		return err
+	}
+	if len(meta.Members) > 0 {
+		c.mmu.Lock()
+		for id, m := range meta.Members {
+			if c.members[id].Raft == "" {
+				c.members[id] = m
+			}
+		}
+		c.mmu.Unlock()
+		c.saveMembers()
 	}
 	c.cfg.Logf("cluster: installed the snapshot at entry %d (lsn %d)", meta.Index, meta.LSN)
 	return os.RemoveAll(ready)

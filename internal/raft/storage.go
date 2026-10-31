@@ -97,6 +97,10 @@ const (
 	recHard   = 1
 	recAppend = 2
 	recSnap   = 3 // [type][index u64][term u64]: the log is compacted to here
+	// recVoters [type][n u32][id u64 ...] follows a recSnap and gives the
+	// configuration at the snapshot's index. Added with membership change;
+	// a log without it (written before) uses the node's initial peers.
+	recVoters = 4
 )
 
 func OpenFileStorage(path string) (*FileStorage, error) {
@@ -154,7 +158,15 @@ func (s *FileStorage) replay(b []byte) error {
 		if len(b) != 17 {
 			return errors.New("raft: bad snapshot record")
 		}
-		s.ents = compactEntries(s.ents, &s.snap, Snapshot{binary.LittleEndian.Uint64(b[1:]), binary.LittleEndian.Uint64(b[9:])})
+		s.ents = compactEntries(s.ents, &s.snap, Snapshot{Index: binary.LittleEndian.Uint64(b[1:]), Term: binary.LittleEndian.Uint64(b[9:])})
+	case recVoters:
+		if len(b) < 5 || uint64(len(b)) != 5+8*uint64(binary.LittleEndian.Uint32(b[1:])) {
+			return errors.New("raft: bad voters record")
+		}
+		s.snap.Voters = nil
+		for i := 5; i < len(b); i += 8 {
+			s.snap.Voters = append(s.snap.Voters, binary.LittleEndian.Uint64(b[i:]))
+		}
 	default:
 		return errors.New("raft: unknown record")
 	}
@@ -170,6 +182,9 @@ func encodeEntries(es []Entry) []byte {
 		fl := byte(0)
 		if e.Noop {
 			fl = 1
+		}
+		if e.Conf {
+			fl |= 2
 		}
 		b = append(b, fl)
 		b = binary.LittleEndian.AppendUint32(b, uint32(len(e.Data)))
@@ -190,7 +205,7 @@ func decodeEntries(b []byte) ([]Entry, error) {
 		if len(b) < 21 {
 			return nil, bad
 		}
-		e := Entry{Index: binary.LittleEndian.Uint64(b), Term: binary.LittleEndian.Uint64(b[8:]), Noop: b[16] == 1}
+		e := Entry{Index: binary.LittleEndian.Uint64(b), Term: binary.LittleEndian.Uint64(b[8:]), Noop: b[16]&1 == 1, Conf: b[16]&2 != 0}
 		l := binary.LittleEndian.Uint32(b[17:])
 		b = b[21:]
 		if uint32(len(b)) < l {
@@ -270,6 +285,13 @@ func (s *FileStorage) rewrite(snap Snapshot, rest []Entry) error {
 	hb = binary.LittleEndian.AppendUint64(hb, s.hs.Term)
 	hb = binary.LittleEndian.AppendUint64(hb, s.hs.Vote)
 	err = rec(sb)
+	if err == nil && len(snap.Voters) > 0 {
+		vb := binary.LittleEndian.AppendUint32([]byte{recVoters}, uint32(len(snap.Voters)))
+		for _, v := range snap.Voters {
+			vb = binary.LittleEndian.AppendUint64(vb, v)
+		}
+		err = rec(vb)
+	}
 	if err == nil {
 		err = rec(hb)
 	}

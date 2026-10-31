@@ -82,6 +82,7 @@ func main() {
 	replInsecure := flag.Bool("repl-insecure", false, "allow -repl-addr on a non-loopback address without replica authentication")
 	raftID := flag.Uint64("raft-id", 0, "run as a node of a Raft cluster with this id (0 = off: a single node, unchanged). A write is acknowledged when a majority has fsynced it; the leader is elected, and failover needs no operator. Uses the -repl-secret*/-repl-tls-* settings for the node-to-node port (docs/06 section 5)")
 	raftPeers := flag.String("raft-peers", "", "every node of the cluster: id=raftHost:port[@httpHost:port], comma separated, this node included")
+	raftJoin := flag.Bool("raft-join", false, "with -raft-id: this node is new to a running cluster; -raft-peers lists the cluster and this node. It does not vote until the leader has added it (staskctl cluster add)")
 	raftListen := flag.String("raft-listen", "", "address for Raft connections (default: this node's address in -raft-peers)")
 	raftTick := flag.Duration("raft-tick", 50*time.Millisecond, "Raft tick; the election timeout is -raft-election-ticks to twice that many ticks")
 	raftElection := flag.Int("raft-election-ticks", 20, "ticks without a leader before a node asks for votes (at least 4)")
@@ -351,17 +352,18 @@ func main() {
 		if *gc {
 			log.Printf("raft: -gc is not supported in a cluster yet (docs/06 section 5.2): log reclamation is off")
 		}
-		if *archiveDir != "" {
-			log.Fatal("-archive-dir is not supported in a cluster yet")
-		}
 		opts.GC = false
 		cl, err = cluster.Prepare(cluster.Config{ID: *raftID, Peers: peers, HTTP: httpAddrs, Listen: *raftListen, Dir: *dir,
 			SegMax: opts.SegmentSize, Settings: replSettings, Insecure: *raftInsecure, TickInterval: *raftTick,
-			ElectionTicks: *raftElection, CompactEntries: *raftCompact, CompactKeep: *raftKeep, Logf: log.Printf})
+			ElectionTicks: *raftElection, CompactEntries: *raftCompact, CompactKeep: *raftKeep, Logf: log.Printf, Join: *raftJoin})
 		if err != nil {
 			log.Fatalf("raft: %v", err)
 		}
 		opts.Cluster, opts.Cut, opts.CutLSN, opts.Quorum = true, true, cl.CutLSN(), cl.Quorum()
+		if *archiveDir != "" {
+			// each node archives its own copy of the committed log (identical bytes on every node)
+			opts.ArchiveLimit = cl.ArchiveLimit
+		}
 	}
 	if *backupFrom != "" {
 		sec, err := replSettings.Replica(*backupFrom)
@@ -419,6 +421,7 @@ func main() {
 	hsrv := server.New(p, fault)
 	if cl != nil {
 		hsrv.Cluster = func() any { return cl.Status() }
+		hsrv.ClusterChange = cl.ChangeMember
 		hsrv.ClusterMetrics = func() map[string]float64 {
 			st := cl.Status()
 			b := func(v bool) float64 {

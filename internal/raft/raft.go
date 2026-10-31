@@ -23,11 +23,26 @@
 // leader no longer has gets MsgSnap and Config.NeedSnapshot is called; the
 // state-machine snapshot itself is moved by the caller (internal/cluster).
 //
-// Not done (docs/06 section 5): membership change (the voter set is fixed),
-// leadership transfer and learners.
+// Membership change follows the Raft thesis chapter 4.1 (single-server
+// changes, the same rule etcd/raft applies to a "simple" ConfChangeV2): a
+// configuration entry (Entry.Conf) adds or removes ONE voter; every node uses
+// the newest configuration in its log as soon as the entry is appended
+// (not when it commits), the entry commits with the majority of the new
+// configuration, and a leader accepts a change only when its previous change
+// is committed and it has committed an entry of its own term (the fix for the
+// bug in the 2014 paper that Ongaro describes in the thesis section 4.1).
+// Any two majorities of configurations that differ by one voter intersect, so
+// no joint consensus is needed. The configuration at the log base is kept in
+// Snapshot.Voters. A removed leader steps down once the change commits.
+//
+// Not done (docs/06 section 5): leadership transfer and learners (a node
+// that is added receives the log as a non-voting member only until the add
+// entry is appended, which is immediate; a slow joiner therefore counts
+// toward the majority while it catches up).
 package raft
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -52,7 +67,38 @@ func (r Role) String() string {
 type Entry struct {
 	Index, Term uint64
 	Noop        bool
-	Data        []byte
+	// Conf: Data is an encoded ConfChange (EncodeConf), a membership change.
+	Conf bool
+	Data []byte
+}
+
+// ConfType is the kind of a membership change.
+type ConfType uint8
+
+const (
+	ConfAdd    ConfType = 1 // ID becomes a voter
+	ConfRemove ConfType = 2 // ID stops being a voter
+)
+
+// ConfChange adds or removes one voter. Context is opaque to this package
+// (internal/cluster keeps the node's addresses there).
+type ConfChange struct {
+	Type    ConfType
+	ID      uint64
+	Context []byte
+}
+
+func EncodeConf(c ConfChange) []byte {
+	b := []byte{byte(c.Type)}
+	b = binary.LittleEndian.AppendUint64(b, c.ID)
+	return append(b, c.Context...)
+}
+
+func DecodeConf(b []byte) (ConfChange, error) {
+	if len(b) < 9 || (ConfType(b[0]) != ConfAdd && ConfType(b[0]) != ConfRemove) {
+		return ConfChange{}, errors.New("raft: bad configuration change")
+	}
+	return ConfChange{Type: ConfType(b[0]), ID: binary.LittleEndian.Uint64(b[1:]), Context: append([]byte(nil), b[9:]...)}, nil
 }
 
 type HardState struct {
@@ -64,6 +110,9 @@ type HardState struct {
 // of entry Index.
 type Snapshot struct {
 	Index, Term uint64
+	// Voters is the configuration as of Index (sorted); empty in a log
+	// written before membership change existed: the node's Config.Peers apply.
+	Voters []uint64
 }
 
 // Storage must make everything durable before it returns: the node answers
@@ -116,8 +165,12 @@ type Msg struct {
 }
 
 type Config struct {
-	ID    uint64
-	Peers []uint64 // every voter, including ID
+	ID uint64
+	// Peers is the initial configuration (every voter, including ID),
+	// used until the log or its snapshot says otherwise. With Joining the
+	// node is not part of it: it is a new node that waits to be added.
+	Peers   []uint64
+	Joining bool
 	// ElectionTicks: a follower starts an election after a random time in
 	// [ElectionTicks, 2*ElectionTicks) without hearing from a leader.
 	ElectionTicks  int
@@ -139,14 +192,34 @@ type Config struct {
 	// needs are compacted away. It is called again for each such message
 	// until the log base moves; the callee dedupes.
 	NeedSnapshot func(leader uint64)
+	// OnConf is called (under the caller's serialization, must not call
+	// back) for every configuration entry the node appends to its log or
+	// finds in it when it starts, before the entry commits.
+	OnConf func(Entry)
 }
 
-var ErrNotLeader = errors.New("raft: not the leader")
+var (
+	ErrNotLeader = errors.New("raft: not the leader")
+	// ErrConfNotReady: the leader has not committed an entry of its own term yet.
+	ErrConfNotReady = errors.New("raft: the leader has not committed an entry of its term yet; retry")
+	// ErrConfPending: the previous membership change is not committed yet.
+	ErrConfPending = errors.New("raft: a membership change is still in progress; retry")
+	// ErrConfRedundant: the node is already (not) a voter.
+	ErrConfRedundant = errors.New("raft: the configuration already has that outcome")
+	ErrConfLast      = errors.New("raft: cannot remove the last voter")
+)
 
 type Node struct {
 	cfg  Config
 	rng  *rand.Rand
 	peer []uint64 // other voters
+
+	// membership: baseVoters is the configuration at the log base, voters
+	// the newest one in the log (sorted), member whether this node is in it
+	baseVoters []uint64
+	voters     []uint64
+	member     bool
+	lastConf   uint64 // index of the newest configuration entry in the log (0: none)
 
 	term, vote uint64
 	base       uint64  // index of log[0], the snapshot base
@@ -186,14 +259,17 @@ func NewNode(c Config) (*Node, error) {
 	}
 	n := &Node{cfg: c, rng: rand.New(rand.NewSource(c.Seed ^ int64(c.ID)*7919)), log: []Entry{{}}}
 	self := false
+	var init []uint64
 	for _, p := range c.Peers {
 		if p == c.ID {
 			self = true
-		} else {
-			n.peer = append(n.peer, p)
+			if c.Joining {
+				continue // a joining node is not in the configuration it starts from
+			}
 		}
+		init = append(init, p)
 	}
-	if !self {
+	if !self && !c.Joining {
 		return nil, errors.New("raft: Peers must include ID")
 	}
 	hs, snap, ents, err := c.Storage.Load()
@@ -208,6 +284,11 @@ func NewNode(c Config) (*Node, error) {
 	n.term, n.vote = hs.Term, hs.Vote
 	n.base = snap.Index
 	n.log = append([]Entry{{Index: snap.Index, Term: snap.Term}}, ents...)
+	n.baseVoters = sortedIDs(init)
+	if len(snap.Voters) > 0 {
+		n.baseVoters = sortedIDs(snap.Voters)
+	}
+	n.recomputeConf(true)
 	// what the state machine has applied is committed
 	n.applied = min(max(c.Applied, n.base), n.lastIndex())
 	n.commit = n.applied
@@ -219,7 +300,107 @@ func (n *Node) die(err error) {
 	panic(fmt.Sprintf("raft %d: storage failure, the node cannot continue: %v", n.cfg.ID, err))
 }
 
-func (n *Node) quorum() int { return (len(n.peer)+1)/2 + 1 }
+func (n *Node) quorum() int { return len(n.voters)/2 + 1 }
+
+func sortedIDs(ids []uint64) []uint64 {
+	out := append([]uint64(nil), ids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func applyConf(voters []uint64, cc ConfChange) []uint64 {
+	out := make([]uint64, 0, len(voters)+1)
+	for _, v := range voters {
+		if v != cc.ID {
+			out = append(out, v)
+		}
+	}
+	if cc.Type == ConfAdd {
+		out = append(out, cc.ID)
+	}
+	return sortedIDs(out)
+}
+
+func (n *Node) isVoter(id uint64) bool {
+	for _, v := range n.voters {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// recomputeConf derives the configuration from the base configuration and
+// the configuration entries in the log (the newest wins, committed or not).
+// It runs when the node starts and whenever an entry that may have been a
+// configuration entry is cut off the log.
+func (n *Node) recomputeConf(notify bool) {
+	v := n.baseVoters
+	n.lastConf = 0
+	for _, e := range n.log[1:] {
+		if !e.Conf {
+			continue
+		}
+		cc, err := DecodeConf(e.Data)
+		if err != nil {
+			panic(fmt.Sprintf("raft %d: entry %d: %v", n.cfg.ID, e.Index, err))
+		}
+		v = applyConf(v, cc)
+		n.lastConf = e.Index
+		if notify && n.cfg.OnConf != nil {
+			n.cfg.OnConf(e)
+		}
+	}
+	n.setVoters(v)
+}
+
+func (n *Node) setVoters(v []uint64) {
+	n.voters, n.member, n.peer = v, false, n.peer[:0:0]
+	for _, id := range v {
+		if id == n.cfg.ID {
+			n.member = true
+		} else {
+			n.peer = append(n.peer, id)
+		}
+	}
+	if n.role == Leader {
+		for _, p := range n.peer {
+			if _, ok := n.next[p]; !ok {
+				n.next[p], n.match[p], n.ack[p] = n.lastIndex()+1, 0, n.now
+			}
+		}
+		for p := range n.next {
+			if p != n.cfg.ID && !n.isVoter(p) {
+				delete(n.next, p)
+				delete(n.match, p)
+				delete(n.ack, p)
+				delete(n.inflight, p)
+			}
+		}
+	}
+}
+
+// Voters is the node's current configuration (sorted).
+func (n *Node) Voters() []uint64 { return append([]uint64(nil), n.voters...) }
+
+// VotersAt is the configuration as of entry index (Base().Index <= index <= LastIndex()).
+func (n *Node) VotersAt(index uint64) []uint64 {
+	v := n.baseVoters
+	for _, e := range n.log[1:] {
+		if e.Index > index {
+			break
+		}
+		if e.Conf {
+			if cc, err := DecodeConf(e.Data); err == nil {
+				v = applyConf(v, cc)
+			}
+		}
+	}
+	return append([]uint64(nil), v...)
+}
+
+// Member reports whether this node is a voter of its newest configuration.
+func (n *Node) Member() bool { return n.member }
 
 func (n *Node) lastIndex() uint64 { return n.base + uint64(len(n.log)-1) }
 func (n *Node) lastTerm() uint64  { return n.log[len(n.log)-1].Term }
@@ -247,7 +428,9 @@ func (n *Node) Entry(i uint64) (Entry, bool) {
 
 // FirstIndex is the first entry the log still has (the base is Base).
 func (n *Node) FirstIndex() uint64 { return n.base + 1 }
-func (n *Node) Base() Snapshot     { return Snapshot{n.base, n.log[0].Term} }
+func (n *Node) Base() Snapshot {
+	return Snapshot{Index: n.base, Term: n.log[0].Term, Voters: append([]uint64(nil), n.baseVoters...)}
+}
 
 // LeaderTermStart is, on a leader, the index of the no-op it appended when
 // it was elected: once that entry is committed, so is everything before.
@@ -262,12 +445,16 @@ func (n *Node) Compact(index uint64) error {
 	if index > n.applied {
 		return fmt.Errorf("raft: compact %d beyond applied %d", index, n.applied)
 	}
-	snap := Snapshot{index, n.termAt(index)}
+	snap := Snapshot{Index: index, Term: n.termAt(index), Voters: n.VotersAt(index)}
 	if err := n.cfg.Storage.Compact(snap); err != nil {
 		return err
 	}
+	n.baseVoters = snap.Voters
 	n.log = append([]Entry{{Index: snap.Index, Term: snap.Term}}, n.log[index-n.base+1:]...)
 	n.base = index
+	if n.lastConf <= n.base {
+		n.lastConf = 0
+	}
 	return nil
 }
 
@@ -313,6 +500,12 @@ func (n *Node) Tick() {
 	default:
 		n.electionElapsed++
 		if n.electionElapsed >= n.timeout {
+			if !n.member {
+				// not a voter (a new node waiting to be added, or a removed
+				// one): never starts an election
+				n.resetTimeout()
+				return
+			}
 			n.campaign(true)
 		}
 	}
@@ -321,7 +514,10 @@ func (n *Node) Tick() {
 // quorumAcked: a majority (the leader counts itself) answered a message the
 // leader sent within the last `within` ticks.
 func (n *Node) quorumAcked(within uint64) bool {
-	c := 1
+	c := 0
+	if n.member {
+		c = 1
+	}
 	for _, p := range n.peer {
 		if n.ack[p]+within >= n.now {
 			c++
@@ -365,6 +561,17 @@ func (n *Node) becomeFollower(term, leader uint64) {
 	n.resetTimeout()
 }
 
+// voteCount counts the grants that come from voters of the current configuration.
+func (n *Node) voteCount() int {
+	c := 0
+	for id, ok := range n.votes {
+		if ok && n.isVoter(id) {
+			c++
+		}
+	}
+	return c
+}
+
 func (n *Node) campaign(pre bool) {
 	n.resetTimeout()
 	n.leader = 0
@@ -380,7 +587,7 @@ func (n *Node) campaign(pre bool) {
 		n.role = Candidate
 		term = n.term
 	}
-	if len(n.votes) >= n.quorum() {
+	if n.voteCount() >= n.quorum() {
 		if pre {
 			n.campaign(false)
 		} else {
@@ -416,6 +623,44 @@ func (n *Node) appendLocal(e Entry) uint64 {
 		n.maybeCommit()
 	}
 	return e.Index
+}
+
+// ProposeConf appends a membership change to the log of a leader and makes
+// the new configuration effective at once. The change is committed when
+// Apply sees the entry. See the package comment for the rules.
+func (n *Node) ProposeConf(cc ConfChange) (index, term uint64, err error) {
+	if n.role != Leader {
+		return 0, 0, ErrNotLeader
+	}
+	if n.commit < n.termStart {
+		return 0, 0, ErrConfNotReady
+	}
+	if n.lastConf > n.applied {
+		return 0, 0, ErrConfPending
+	}
+	in := n.isVoter(cc.ID)
+	if cc.ID == 0 || cc.Type == ConfAdd && in || cc.Type == ConfRemove && !in {
+		return 0, 0, ErrConfRedundant
+	}
+	if cc.Type == ConfRemove && len(n.voters) == 1 {
+		return 0, 0, ErrConfLast
+	}
+	e := Entry{Conf: true, Data: EncodeConf(cc), Index: n.lastIndex() + 1, Term: n.term}
+	if err := n.cfg.Storage.Append([]Entry{e}); err != nil {
+		n.die(err)
+	}
+	n.log = append(n.log, e)
+	n.lastConf = e.Index
+	if n.cfg.OnConf != nil {
+		n.cfg.OnConf(e)
+	}
+	n.setVoters(applyConf(n.voters, cc))
+	if n.member {
+		n.match[n.cfg.ID] = e.Index
+	}
+	n.bcastApp()
+	n.maybeCommit()
+	return e.Index, n.term, nil
 }
 
 // Propose appends data to the log of a leader. It returns the entry's index
@@ -489,6 +734,12 @@ func (n *Node) Step(m Msg) {
 	if m.To != n.cfg.ID {
 		return
 	}
+	// A vote request from a node that is not in this node's configuration
+	// is still answered: this node's configuration may be stale (it has
+	// not seen the entry that added the candidate), and refusing would
+	// leave a cluster whose newest members are unknown to a majority of the
+	// old ones without a leader. A removed node that keeps campaigning is
+	// held off by pre-vote and the leader lease (thesis section 4.2.3).
 	// Pre-vote messages never change a node's term.
 	switch m.Type {
 	case MsgPreVote:
@@ -511,7 +762,7 @@ func (n *Node) Step(m Msg) {
 		}
 		if m.Term == n.term+1 {
 			n.votes[m.From] = true
-			if len(n.votes) >= n.quorum() {
+			if n.voteCount() >= n.quorum() {
 				n.campaign(false)
 			}
 		}
@@ -552,7 +803,7 @@ func (n *Node) Step(m Msg) {
 			return
 		}
 		n.votes[m.From] = true
-		if len(n.votes) >= n.quorum() {
+		if n.voteCount() >= n.quorum() {
 			n.becomeLeader()
 		}
 	case MsgApp:
@@ -640,7 +891,25 @@ func (n *Node) handleApp(m Msg) {
 		if err := n.cfg.Storage.Append(add); err != nil {
 			n.die(err)
 		}
+		cut := n.lastConf >= add[0].Index // a configuration entry is replaced
 		n.log = append(n.log[:add[0].Index-n.base], add...)
+		if cut {
+			n.recomputeConf(false)
+		}
+		for _, e := range add {
+			if !e.Conf {
+				continue
+			}
+			cc, err := DecodeConf(e.Data)
+			if err != nil {
+				panic(fmt.Sprintf("raft %d: entry %d: %v", n.cfg.ID, e.Index, err))
+			}
+			n.setVoters(applyConf(n.voters, cc))
+			n.lastConf = e.Index
+			if n.cfg.OnConf != nil {
+				n.cfg.OnConf(e)
+			}
+		}
 	}
 	last := m.PrevIndex + uint64(len(m.Entries))
 	if m.Commit > n.commit {
@@ -655,6 +924,9 @@ func (n *Node) handleAppResp(m Msg) {
 		return
 	}
 	p := m.From
+	if !n.isVoter(p) {
+		return // a node that is not (or no longer) in the configuration
+	}
 	n.ack[p] = max(n.ack[p], m.Seq)
 	n.inflight[p] = false
 	if m.Reject {
@@ -666,9 +938,15 @@ func (n *Node) handleAppResp(m Msg) {
 		n.sendApp(p)
 		return
 	}
+	if _, ok := n.next[p]; !ok {
+		return // a node that is not (or no longer) in the configuration
+	}
 	if m.Hint > n.match[p] {
 		n.match[p] = m.Hint
 		n.maybeCommit()
+		if n.role != Leader { // removed itself with this commit
+			return
+		}
 	}
 	n.next[p] = max(n.next[p], n.match[p]+1)
 	if n.next[p] <= n.lastIndex() {
@@ -679,11 +957,17 @@ func (n *Node) handleAppResp(m Msg) {
 // maybeCommit moves the commit index to the highest index stored on a
 // majority, if the entry is of the current term (Raft paper section 5.4.2).
 func (n *Node) maybeCommit() {
-	ms := []uint64{n.match[n.cfg.ID]}
+	var ms []uint64
+	if n.member {
+		ms = append(ms, n.match[n.cfg.ID])
+	}
 	for _, p := range n.peer {
 		ms = append(ms, n.match[p])
 	}
 	sort.Slice(ms, func(i, j int) bool { return ms[i] > ms[j] })
+	if len(ms) < n.quorum() {
+		return
+	}
 	idx := ms[n.quorum()-1]
 	if idx > n.commit && n.termAt(idx) == n.term {
 		n.commit = idx
@@ -694,6 +978,11 @@ func (n *Node) maybeCommit() {
 			} else {
 				n.sendHeartbeat(p)
 			}
+		}
+		if !n.member && n.commit >= n.lastConf {
+			// this leader was removed and the change is committed: it
+			// has done its part (Raft thesis section 4.2.2)
+			n.becomeFollower(n.term, 0)
 		}
 	}
 }

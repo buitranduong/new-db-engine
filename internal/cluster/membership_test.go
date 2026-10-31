@@ -24,30 +24,36 @@ func buildCtl(t *testing.T) string {
 // proxies in front of it (the leader dials the address it is given), and
 // proxies from it to the existing nodes. It is not started.
 func (c *tcluster) newJoiner() *tnode {
-	idx := len(c.nodes)
-	base := freeBase(c.t, 3+len(c.nodes))
-	nd := &tnode{id: uint64(idx + 1), dir: filepath.Join(filepath.Dir(c.nodes[0].dir), fmt.Sprintf("n%d", idx+1)),
-		log:  filepath.Join(filepath.Dir(c.nodes[0].dir), fmt.Sprintf("n%d.log", idx+1)),
+	cur := c.snap()
+	idx := len(cur)
+	base := freeBase(c.t, 3+len(cur))
+	nd := &tnode{id: uint64(idx + 1), dir: filepath.Join(filepath.Dir(cur[0].dir), fmt.Sprintf("n%d", idx+1)),
+		log:  filepath.Join(filepath.Dir(cur[0].dir), fmt.Sprintf("n%d.log", idx+1)),
 		http: fmt.Sprintf("127.0.0.1:%d", base), raft: fmt.Sprintf("127.0.0.1:%d", base+1), pg: fmt.Sprintf("127.0.0.1:%d", base+2)}
 	var peers []string
-	for j, o := range c.nodes {
+	for j, o := range cur {
 		p, err := newProxy(fmt.Sprintf("127.0.0.1:%d", base+3+j), o.raft)
 		if err != nil {
 			c.t.Fatal(err)
 		}
+		c.mu.Lock()
 		c.proxies[[2]int{idx, j}] = p
+		c.mu.Unlock()
 		peers = append(peers, fmt.Sprintf("%d=%s@%s", o.id, p.ln.Addr().String(), o.http))
 	}
 	peers = append(peers, fmt.Sprintf("%d=%s@%s", nd.id, nd.raft, nd.http))
 	nd.args = append([]string{"-dir", nd.dir, "-addr", nd.http, "-pg-addr", nd.pg, "-segment-mb", "8", "-prezero=false", "-gc=false",
 		"-raft-id", fmt.Sprint(nd.id), "-raft-listen", nd.raft, "-raft-peers", strings.Join(peers, ","), "-raft-join"}, c.extra...)
-	c.nodes = append(c.nodes, nd)
+	next := append(append(make([]*tnode, 0, len(cur)+1), cur...), nd)
+	c.mu.Lock()
+	c.nodes = next
+	c.mu.Unlock()
 	return nd
 }
 
 func (c *tcluster) httpList() string {
 	var u []string
-	for _, nd := range c.nodes {
+	for _, nd := range c.snap() {
 		u = append(u, "http://"+nd.http)
 	}
 	return strings.Join(u, ",")

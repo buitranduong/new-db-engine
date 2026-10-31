@@ -174,6 +174,7 @@ type tnode struct {
 
 type tcluster struct {
 	t       *testing.T
+	mu      sync.RWMutex // guards nodes (copy-on-append) and proxies: newJoiner grows both while writers and pollers run
 	nodes   []*tnode
 	proxies map[[2]int]*proxy // [from][to]
 	bin     string
@@ -398,8 +399,28 @@ func (c *tcluster) kill(nd *tnode) {
 	nd.cmd = nil
 }
 
+// snap returns an immutable snapshot of the node list: newJoiner appends by
+// copy, so a snapshot never changes under its reader.
+func (c *tcluster) snap() []*tnode {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.nodes
+}
+
+func (c *tcluster) proxySnap() []*proxy {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	ps := make([]*proxy, 0, len(c.proxies))
+	for _, p := range c.proxies {
+		ps = append(ps, p)
+	}
+	return ps
+}
+
 // isolate cuts every link of node i (both directions) or restores them.
 func (c *tcluster) isolate(i int, cut bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for k, p := range c.proxies {
 		if k[0] == i || k[1] == i {
 			p.setBlocked(cut)
@@ -408,7 +429,7 @@ func (c *tcluster) isolate(i int, cut bool) {
 }
 
 func (c *tcluster) heal() {
-	for _, p := range c.proxies {
+	for _, p := range c.proxySnap() {
 		p.setBlocked(false)
 		p.setDelay(0)
 	}
@@ -438,7 +459,7 @@ func (c *tcluster) status(nd *tnode) (Status, bool) {
 // writes (the highest term if two claim it), or -1.
 func (c *tcluster) leader() (int, Status) {
 	best, bs := -1, Status{}
-	for i, nd := range c.nodes {
+	for i, nd := range c.snap() {
 		if !c.running(nd) {
 			continue
 		}
@@ -473,7 +494,7 @@ const (
 // write puts one row on node i.
 func (c *tcluster) writeTo(i int, key string, v int) outcome {
 	body := fmt.Sprintf(`{"ops":[{"op":"put","table":"t","row":{"id":%q,"v":%d}}]}`, key, v)
-	resp, err := c.client.Post("http://"+c.nodes[i].http+"/v1/write", "application/json", strings.NewReader(body))
+	resp, err := c.client.Post("http://"+c.snap()[i].http+"/v1/write", "application/json", strings.NewReader(body))
 	if err != nil {
 		var ne *net.OpError
 		if errors.As(err, &ne) && ne.Op == "dial" {
@@ -500,8 +521,9 @@ func (c *tcluster) write(key string, v int, within time.Duration) outcome {
 	end := time.Now().Add(within)
 	for {
 		start := int(c.lead.Load())
-		for k := 0; k < len(c.nodes); k++ {
-			i := (start + k) % len(c.nodes)
+		ns := c.snap()
+		for k := 0; k < len(ns); k++ {
+			i := (start + k) % len(ns)
 			switch o := c.writeTo(i, key, v); o {
 			case acked:
 				c.lead.Store(int32(i))
@@ -521,7 +543,7 @@ func (c *tcluster) createTable() {
 	body := `{"name":"t","columns":[{"name":"id","type":"string"},{"name":"v","type":"int"}],"key":"id"}`
 	end := time.Now().Add(30 * time.Second)
 	for time.Now().Before(end) {
-		for i, nd := range c.nodes {
+		for i, nd := range c.snap() {
 			resp, err := c.client.Post("http://"+nd.http+"/v1/tables", "application/json", strings.NewReader(body))
 			if err != nil {
 				continue
@@ -543,7 +565,7 @@ func (c *tcluster) createTable() {
 
 // get returns the value of key on node i (found=false if absent).
 func (c *tcluster) get(i int, key string) (v int, found bool, err error) {
-	resp, err := c.client.Get("http://" + c.nodes[i].http + "/v1/get?table=t&key=" + key)
+	resp, err := c.client.Get("http://" + c.snap()[i].http + "/v1/get?table=t&key=" + key)
 	if err != nil {
 		return 0, false, err
 	}
@@ -559,7 +581,7 @@ func (c *tcluster) get(i int, key string) (v int, found bool, err error) {
 }
 
 func (c *tcluster) durableLSN(i int) uint64 {
-	resp, err := c.client.Get("http://" + c.nodes[i].http + "/v1/status")
+	resp, err := c.client.Get("http://" + c.snap()[i].http + "/v1/status")
 	if err != nil {
 		return 0
 	}

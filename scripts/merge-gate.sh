@@ -54,7 +54,7 @@ claim() {
 if [ "${RACE:-}" = 1 ]; then
   step "race + claimcheck (parallel)"
   claim > "$W/claim.log" 2>&1 & CPID=$!
-  go test -p "$RP" -race -count=1 -timeout 40m ./internal/core ./internal/sql ./internal/pgwire ./internal/repl ./internal/wal || { wait "$CPID" 2>/dev/null; exit 1; }
+  go test -p "$RP" -race -count=1 -timeout 40m ./internal/core ./internal/sql ./internal/pgwire ./internal/repl ./internal/wal ./internal/cluster || { wait "$CPID" 2>/dev/null; exit 1; }
   wait "$CPID" || { cat "$W/claim.log"; echo "claimcheck run failed"; exit 1; }
 else
   step claimcheck

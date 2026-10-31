@@ -43,7 +43,7 @@ import (
 func main() {
 	dir := flag.String("dir", "/mnt/sda3/stask-data/db", "data directory")
 	addr := flag.String("addr", "127.0.0.1:17070", "listen address")
-	seg := flag.Int64("segment-mb", 256, "log segment size (MB)")
+	seg := flag.Int64("segment-mb", 64, "log segment size (MB); must be the same on every node of a cluster and for a data dir written earlier")
 	batch := flag.Int("max-batch", 512, "max transactions per group commit")
 	ckptMin := flag.Int64("checkpoint-min-mb", 512, "minimum log growth between checkpoints (MB)")
 	secDisk := flag.Bool("secindex-disk", false, "allow secondary indexes to be kept on disk: ALTER INDEX x SET (index_storage = 'disk') / ALTER TABLE t SET (index_storage = 'disk') (default off: all indexes stay in RAM)")
@@ -120,6 +120,7 @@ func main() {
 	pgTLSCert := flag.String("pg-tls-cert", "", "PEM certificate for PostgreSQL TLS (with -pg-tls-key; empty = SSLRequest answered 'N')")
 	pgTLSKey := flag.String("pg-tls-key", "", "PEM private key for PostgreSQL TLS")
 	pgTLSRequire := flag.Bool("pg-tls-require", false, "refuse unencrypted PostgreSQL connections (SQLSTATE 28000, like hostssl-only pg_hba.conf)")
+	hybrid := flag.Bool("hybrid", false, "hybrid R2 path (docs/30, docs/31): keep a segment copy of the columnar tables in RAM (base + tail + directory, rebuilt from the data at start) and answer the paginated quota query (row_number() OVER (PARTITION BY ...)) from it; EXPLAIN says why a statement did not take it. Default off: nothing changes")
 	pprofAddr := flag.String("pprof", "", "serve Go profiling endpoints on this address (empty = off; loopback only unless -pprof-insecure)")
 	pprofInsecure := flag.Bool("pprof-insecure", false, "allow -pprof on a non-loopback address")
 	var hs server.SecurityConfig
@@ -503,6 +504,10 @@ func main() {
 			log.Printf("pprof: %v", http.ListenAndServe(*pprofAddr, server.AuditWrap(httpAuth.Wrap(http.DefaultServeMux))))
 		}()
 	}
+	var hy *sql.Hybrid
+	if *hybrid {
+		hy = sql.NewHybrid(e)
+	}
 	var pg *pgwire.Server
 	if *pgAddr != "" {
 		if err := server.CheckBind(*pgAddr, *pgPassword != "", *pgInsecure, "-pg-addr",
@@ -519,7 +524,7 @@ func main() {
 		if *pgPassword != "" && (*pgAuth == "" || *pgAuth == "password") && *pgTLSCert == "" && !server.IsLoopback(*pgAddr) {
 			log.Printf("warn: -pg-addr %s uses cleartext password authentication without TLS: use -pg-auth scram and -pg-tls-cert/-pg-tls-key", *pgAddr)
 		}
-		pg = &pgwire.Server{E: e, Password: *pgPassword, Auth: *pgAuth, TLSRequire: *pgTLSRequire, MaxConns: *pgMaxConns, Views: p, RolesOnly: *pgRolesOnly,
+		pg = &pgwire.Server{E: e, Password: *pgPassword, Auth: *pgAuth, TLSRequire: *pgTLSRequire, MaxConns: *pgMaxConns, Views: p, Hybrid: hy, RolesOnly: *pgRolesOnly,
 			StatementTimeout: stmtTimeout, IdleInTxTimeout: idleInTxTimeout, IdleSessionTimeout: idleTimeout,
 			KeepAliveIdle: *pgKeepIdle, KeepAliveInterval: *pgKeepInterval, KeepAliveCount: *pgKeepCount, TCPUserTimeout: *pgUserTimeout}
 		if *pgHBA != "" {

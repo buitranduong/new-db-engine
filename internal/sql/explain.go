@@ -312,6 +312,11 @@ func (x *explainer) stmt(depth int, st Stmt) error {
 	s := x.s
 	switch q := st.(type) {
 	case *Select:
+		if done, note := x.hybrid(depth, q); done { // hybrid_explain.go
+			return nil
+		} else if note != "" {
+			defer x.detail(depth, "%s", note)
+		}
 		if q.From != "" && q.Rel == nil && !needsGeneral(q) && !s.isSequence(q.From) && !s.isView(q.From) {
 			t, err := s.table(q.From)
 			if err != nil {
@@ -599,11 +604,7 @@ func semiName(b *boundSub) string {
 func (x *explainer) from(depth int, f fromPlan) {
 	switch f := f.(type) {
 	case *tablePlan:
-		x.node(depth, "Seq Scan on %s", f.t.Name)
-		if f.asOf != nil {
-			x.detail(depth, "AS OF: historical read")
-		}
-		x.detail(depth, "Note: the general executor reads the whole table (no index pushdown)")
+		x.explainTable(depth, f)
 	case *joinPlan:
 		kind := f.kind
 		if kind == "" || kind == "cross" {
@@ -623,6 +624,9 @@ func (x *explainer) from(depth int, f fromPlan) {
 		}
 		if f.residual != nil {
 			x.detail(depth, "Join Filter: %s", deparse(f.residual, colNamer(f.c)))
+		}
+		for _, n := range f.joinNote() {
+			x.detail(depth, "%s", n)
 		}
 		x.from(depth+1, f.l)
 		x.from(depth+1, f.r)
@@ -680,6 +684,7 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 				rows, _ = strconv.Atoi(f[len(f)-1])
 			}
 		}
+		x.hybridAnalyzed(e.Stmt)
 		ms = float64(el.Microseconds()) / 1000
 		if e.Opts.Timing {
 			x.lines[0] += fmt.Sprintf(" (actual time=%.3f rows=%d loops=1)", ms, rows)

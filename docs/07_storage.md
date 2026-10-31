@@ -151,7 +151,7 @@ Mọi dòng dùng checkpoint v2 (256 MB), trừ dòng cuối (lần thử đầu
 - **Tốc độ nạp không đổi:** 60–66 s cho 20 triệu dòng ở mọi chế độ, vì nén chạy nền và theo kịp tốc độ ghi (chỉ trễ 1–3 s).
 
 **Khuyến nghị:**
-- Mặc định vẫn là `-compress off`, để giữ nguyên hành vi cũ.
+- Mặc định vẫn là `-compress off`, để giữ nguyên hành vi cũ. `-segment-mb` mặc định là 64 (trước đây 256); các bảng đo ở trên ghi cỡ segment trong từng dòng.
 - Dữ liệu nóng, cần độ trễ thấp: `-compress s2`.
 - Kho lớn, ưu tiên dung lượng: `-compress zstd -segment-mb 64`.
 

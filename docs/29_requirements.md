@@ -13,6 +13,9 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 - 2026-10-31, về rủi ro: "Cả tốc độ thực hiện và quy trình test tôi cảm nhận rất thấy rủi do từ bạn (dù lúc đầu là khả thi) vì bạn cứ chăm chăm tốc độ vào 1 tiêu chí mà quên mất các tiêu chí liên quan."
 - 2026-10-31, về R: "VD tôi nói R là tuyệt đối ưu tiên. Nhưng R có nhiều loại R. R đơn giản thì chỉ là lấy danh sách -> chi tiết bản ghi. R phức tạp có kiểu willcard hay trọng số, tỉ lệ ưu tiên (kết hợp ES + clickhouse)"
 - 2026-10-31, về vai trò của ES và Redis: "ES và Radis hoàn toàn có thể dùng chung với engine này và ko giẫm chân tôi quan niệm như vậy. vừa là tách vai trò nhiệm vụ. Nhưng nếu ko có nhu cầu làm search (nhất là văn bản) thì chỉ cần engine trong phần lớn nhu cầu là đã đủ. Đảm bảo sợ đơn giản trong vận hành mà vẫn đảm bảo tốc độ đủ nhanh"
+- 2026-10-31, về mẫu thử: "mẫu test phải tầm cỡ > 10tr thì mới thấy sự khác biệt được chứ nhỉ? 1tr thì nhỏ quá"
+- 2026-10-31, về tốc độ: "tốc độ query mới là quan trọng cả 3 kết quả chứ ko phải là ko làm được."
+- 2026-10-31, về nén dữ liệu: "về nén dữ liệu tôi kỳ vọng engine phải giảm tối thiêu 50% so với postgres chứ ko dám kỳ vọng siêu nhỏ như CH"
 - 2026-10-31, về cú pháp: "lệnh nào ít dùng (function, procedure ..etc) bỏ qua trong giai đoạn này"; lệnh SQL "đâu có sáng tạo ra mà dựa trên cú pháp có sẵn chỉ convert".
 
 ## 2. Yêu cầu rút ra (diễn giải của agent; người dùng sửa nếu sai)
@@ -30,6 +33,8 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | I1 | Nhập hàng triệu dòng Excel mỗi ngày không làm gián đoạn R | `staskimport` + làn |
 | P1 | Tương thích cú pháp PostgreSQL thông dụng (bỏ function/procedure tự định nghĩa và thứ hiếm) | `scripts/suite`, `pgdiff` |
 | O1 | Đơn giản trong vận hành mà vẫn đủ nhanh: chỉ riêng engine phải đáp ứng phần lớn nhu cầu; ES/Redis (nếu bạn dùng) là công cụ chung tách vai trò, engine KHÔNG cần tự làm thay phần tìm kiếm văn bản (xếp hạng toàn văn, bộ rút gốc từ) khi chưa có nhu cầu | ít thành phần, ít cấu hình, một đường backup/restore; tìm văn bản là tuỳ chọn, ưu tiên thấp nhất |
+| C1 | Nén: dung lượng lưu trữ trên đĩa của engine nhỏ hơn PostgreSQL ít nhất 50% cho cùng dữ liệu (không đòi nhỏ như ClickHouse) | đo cả chỉ mục; so cùng bảng, cùng chỉ mục |
+| M1 | Mẫu đo từ 10 triệu dòng trở lên (1 triệu quá nhỏ để thấy khác biệt); tốc độ truy vấn của CẢ ba hệ là thước đo, không phải chỉ "làm được" | `docs/24` bậc L3 (20M) và bậc 10M |
 | S1 | An toàn dữ liệu và bảo mật (không mất dữ liệu đã xác nhận, restore, PITR, TLS, audit, mã hoá backup) | G2 |
 
 ## 3. Truy vết yêu cầu -> bài test (cập nhật khi có thay đổi)
@@ -45,6 +50,8 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | I1 | `cmd/staskimport` tests, `scripts/suite-cdc` | đo G3 |
 | P1 | `scripts/suite` (1698/2196 sau `suitefix`), `pgdiff` | các nhóm `compat-*` đang làm |
 | O1 | `docs/21_operations.md`, `/metrics`, `/v1/ready`, `staskctl` | kiểm đếm số thành phần phải vận hành cho mỗi kịch bản (một nút, cụm 3 nút) |
+| C1 | lần chạy 10 triệu dòng (`scripts/r2-paginated-quota`, kích thước đĩa PostgreSQL / STASK / ClickHouse) | đo sạch ở G3, nhiều kiểu dữ liệu |
+| M1 | `scripts/r2-paginated-quota` (10M) | bậc 20M, 50M ở G3 |
 | S1 | `accept/security.sh`, `kill9.sh`, `pitr.sh`, `scripts/suite-cdc` | diễn tập G2 |
 
 Quy tắc bảo trì: khi người dùng nói thêm điều gì, chỉ THÊM dòng nguyên văn vào §1, rồi chỉnh §2 và §3 nếu cần; không viết lại các tài liệu khác.

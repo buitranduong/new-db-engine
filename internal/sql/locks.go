@@ -112,6 +112,11 @@ func modesConflict(sp lockSpace, a, b uint8) bool {
 type lockNode struct {
 	waiting []*lockNode
 	s       *Session
+	// what the node waits for (valid while waiting is not empty): an edge to a holder counts only
+	// while that holder still holds a conflicting lock on it, because a waiter notices a release
+	// only when it wakes up, and the stale edge made a false 40P01 (TestMergeConcurrent under load)
+	wkey  lockKey
+	wmode uint8
 }
 
 // lockOwner holds locks: a transaction's, or a session's.
@@ -194,16 +199,33 @@ func (lt *lockTable) grant(o *lockOwner, k lockKey, mode uint8) {
 
 // cycle reports whether the session o would wait for (through any chain of
 // waiting sessions) already waits for o. Called with lt.mu held.
-func cycle(from *lockNode, target *lockNode, seen map[*lockNode]bool) bool {
+func (lt *lockTable) cycle(from *lockNode, target *lockNode, seen map[*lockNode]bool) bool {
 	for _, n := range from.waiting {
+		if !lt.stillHolds(n, from.wkey, from.wmode) {
+			continue
+		}
 		if n == target {
 			return true
 		}
 		if !seen[n] {
 			seen[n] = true
-			if cycle(n, target, seen) {
+			if lt.cycle(n, target, seen) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// stillHolds: some owner of session node n holds a lock on k that conflicts with mode.
+func (lt *lockTable) stillHolds(n *lockNode, k lockKey, mode uint8) bool {
+	e := lt.entries[k]
+	if e == nil {
+		return false
+	}
+	for h, hl := range e.holders {
+		if h.node == n && modesConflict(k.sp, mode, hl.mode) {
+			return true
 		}
 	}
 	return false
@@ -239,7 +261,8 @@ func (lt *lockTable) acquire(o *lockOwner, k lockKey, mode uint8, pol waitPolicy
 		for _, h := range bl {
 			o.node.waiting = append(o.node.waiting, h.node)
 		}
-		if cycle(o.node, o.node, map[*lockNode]bool{}) {
+		o.node.wkey, o.node.wmode = k, mode
+		if lt.cycle(o.node, o.node, map[*lockNode]bool{}) {
 			o.node.waiting = nil
 			lt.mu.Unlock()
 			return false, errf("40P01", "deadlock detected: process waits for a lock on %s held by another transaction that waits for this one", k.describe())

@@ -121,6 +121,7 @@ type OnConflict struct {
 
 type Insert struct {
 	Table      string
+	Alias      string
 	Cols       []string
 	Rows       [][]Expr
 	Query      Stmt // INSERT ... SELECT

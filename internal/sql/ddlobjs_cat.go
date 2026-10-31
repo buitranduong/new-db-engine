@@ -88,6 +88,9 @@ func init() {
 		for _, r := range rows {
 			if o, ok := idxNS[r[0].I]; ok {
 				r[2] = IntD(o)
+				if sch, b, ok := splitSchema(r[1].S); ok && ns[sch] {
+					r[1] = TextD(b)
+				}
 				continue
 			}
 			o, _, b := ns.split(r[1].S)

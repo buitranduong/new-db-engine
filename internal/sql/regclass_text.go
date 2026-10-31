@@ -53,6 +53,9 @@ func (c *evalCtx) regOtherText(in *Cast) (Datum, bool, error) {
 	}
 	switch in.Type {
 	case "regtype":
+		if n, ok := userTypeFormat(v.I); ok {
+			return TextD(s.relDisplay(n)), true, nil
+		}
 		if n := formatType(uint32(v.I), -1); n != "" {
 			return TextD(n), true, nil
 		}

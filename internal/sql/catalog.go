@@ -218,9 +218,15 @@ func pkNums(t *schema.Table) []int { return attnums(t, t.PKCols()) }
 
 // defaultText is a column default as pg_get_expr shows it: PostgreSQL
 // shows the sequence argument of nextval as a regclass.
-func defaultText(c schema.Column) string {
+func defaultText(s *Session, c schema.Column) string {
 	d := c.Default
 	if strings.HasPrefix(d, "nextval('") && strings.HasSuffix(d, "')") {
+		if seq := d[len("nextval('") : len(d)-2]; seq != "" && !strings.Contains(seq, "'") {
+			// the sequence is shown as regclass prints it: relative to the search path
+			if _, _, ok := splitSchema(seq); ok {
+				return "nextval('" + strings.ReplaceAll(s.relDisplay(seq), "'", "''") + "'::regclass)"
+			}
+		}
 		return d[:len(d)-1] + "::regclass)"
 	}
 	return castDefault(d, c)

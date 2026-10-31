@@ -218,7 +218,7 @@ func init() {
 			for _, col := range t.Columns {
 				if hasDef(col) {
 					rows = append(rows, []Datum{IntD(attrdefOID(t, col.Num)), IntD(tableOID(t)), IntD(int64(col.Num)),
-						TextD(defaultText(col))})
+						TextD(defaultText(c.s, col))})
 				}
 			}
 		}
@@ -433,7 +433,7 @@ const roleName = "stask"
 
 // indexDef is pg_get_indexdef of the primary-key index.
 func indexDef(t *schema.Table) string {
-	return "CREATE UNIQUE INDEX " + quoteIdent(pkeyName(t)) + " ON public." + quoteIdent(t.Name) +
+	return "CREATE UNIQUE INDEX " + quoteIdent(stripOwnSchema(pkeyName(t), schemaOfName(t.Name))) + " ON " + qualified(t.Name) +
 		" USING btree (" + quoteList(t.PKCols()) + ")"
 }
 

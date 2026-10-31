@@ -11,14 +11,20 @@
 //	-- drop: t1, t2     tables dropped on both sides before and after the session
 //	-- args: 1 | x | null   parameters of the next statement (text, "null" = NULL)
 //	-- unordered        compare the next statement's rows as a set
+//	-- shape            compare only columns, command tag and SQLSTATE, not row values (EXPLAIN)
 //	-- ordered          compare rows in order (default when SQL has ORDER BY)
 //	-- simple           send the next statement with the simple protocol
 //	-- note: text       free text shown beside the next statement in the report
+//	-- stdin: a\tb\n    payload of the next COPY ... FROM STDIN (\n newline, \t tab, \\ backslash)
+//	                    COPY ... TO STDOUT is captured: one result row per output line
+//	                    (binary COPY output is hex-encoded)
 //	SQL ending with ;   one statement (quotes and $$ are respected)
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,6 +46,8 @@ type stmt struct {
 	Ordered   bool
 	Simple    bool
 	Note      string
+	Stdin     *string
+	Shape     bool
 	Line      int
 }
 
@@ -151,6 +159,11 @@ func parseFile(path string) ([]session, error) {
 						pend.Args = append(pend.Args, &x)
 					}
 				}
+			case strings.HasPrefix(d, "stdin:"):
+				x := unescapeStdin(strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(d, "stdin:")), " "))
+				pend.Stdin = &x
+			case d == "shape":
+				pend.Shape = true
 			case d == "unordered":
 				pend.Unordered = true
 			case d == "ordered":
@@ -276,8 +289,13 @@ func runSession(ctx context.Context, s session, pgURL, stURL string, tol float64
 	ss := s
 	for _, st := range s.Stmts {
 		r := record{Sess: &ss, St: st}
-		r.Pg = exec(ctx, conns[0], st.SQL, st.Args, st.Simple, to)
-		r.Sk = exec(ctx, conns[1], st.SQL, st.Args, st.Simple, to)
+		if isCopy(st.SQL) {
+			r.Pg = execCopy(ctx, conns[0], st, to)
+			r.Sk = execCopy(ctx, conns[1], st, to)
+		} else {
+			r.Pg = exec(ctx, conns[0], st.SQL, st.Args, st.Simple, to)
+			r.Sk = exec(ctx, conns[1], st.SQL, st.Args, st.Simple, to)
+		}
 		compare(&r, tol)
 		out = append(out, r)
 		for i, c := range conns { // reconnect if a side died
@@ -290,6 +308,78 @@ func runSession(ctx context.Context, s session, pgURL, stURL string, tol float64
 		}
 	}
 	return out
+}
+
+// unescapeStdin turns the one-line "-- stdin:" payload into COPY data.
+func unescapeStdin(s string) string {
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case 'n':
+				sb.WriteByte('\n')
+			case 't':
+				sb.WriteByte('\t')
+			default:
+				sb.WriteByte(s[i])
+			}
+			continue
+		}
+		sb.WriteByte(s[i])
+	}
+	return sb.String()
+}
+
+func isCopy(sql string) bool {
+	u := strings.ToUpper(strings.Join(strings.Fields(sql), " "))
+	return strings.HasPrefix(u, "COPY ") && (strings.Contains(u, " FROM STDIN") || strings.Contains(u, " TO STDOUT"))
+}
+
+// execCopy runs COPY FROM STDIN (payload from "-- stdin:") or COPY TO STDOUT
+// and returns the output as rows of one text column named "copy".
+func execCopy(ctx context.Context, c *pgconn.PgConn, st stmt, to time.Duration) result {
+	cctx, cancel := context.WithTimeout(ctx, to)
+	defer cancel()
+	var res result
+	var tag pgconn.CommandTag
+	var err error
+	u := strings.ToUpper(st.SQL)
+	if strings.Contains(u, " FROM STDIN") {
+		data := ""
+		if st.Stdin != nil {
+			data = *st.Stdin
+		}
+		tag, err = c.CopyFrom(cctx, strings.NewReader(data), st.SQL)
+	} else {
+		var buf bytes.Buffer
+		tag, err = c.CopyTo(cctx, &buf, st.SQL)
+		if err == nil {
+			out := buf.String()
+			if strings.Contains(u, "BINARY") {
+				out = hex.EncodeToString(buf.Bytes())
+			}
+			res.Cols = []col{{"copy", 25}}
+			for _, l := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+				res.Rows = append(res.Rows, []string{l})
+			}
+			if out == "" {
+				res.Rows = nil
+			}
+		}
+	}
+	if err != nil {
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) {
+			res.Err = pe
+		} else {
+			res.ErrStr = err.Error()
+		}
+		return res
+	}
+	res.Tag = tag.String()
+	res.Rowsn = tag.RowsAffected()
+	return res
 }
 
 func exec(ctx context.Context, c *pgconn.PgConn, sql string, args []*string, simple bool, to time.Duration) result {
@@ -413,7 +503,7 @@ func compare(r *record, tol float64) {
 		d = append(d, fmt.Sprintf("command tag pg=%q stask=%q", pg.Tag, sk.Tag))
 		set("tag")
 	}
-	if len(pg.Cols) == len(sk.Cols) {
+	if len(pg.Cols) == len(sk.Cols) && !r.St.Shape {
 		a, b := pg.Rows, sk.Rows
 		if !r.St.Ordered && (r.St.Unordered || !hasOrderBy(r.St.SQL)) {
 			a, b = sortedRows(a), sortedRows(b)
@@ -618,6 +708,9 @@ func report(recs []record, verbose bool) int {
 			fmt.Printf("args: %s\n\n", strings.Join(a, ", "))
 		}
 		if r.Verdict == "PASS" {
+			if r.Pg.Err != nil { // -v: both sides rejected it with the same SQLSTATE
+				fmt.Printf("- both-error: %s\n\n", r.Pg.Err.Code)
+			}
 			continue
 		}
 		fmt.Printf("- why: %s\n- pg: `%s`\n- stask: `%s`\n", r.Detail, oneLine(fmtRes(r.Pg)), oneLine(fmtRes(r.Sk)))

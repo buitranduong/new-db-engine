@@ -63,6 +63,9 @@ func TestCursorBasics(t *testing.T) {
 	if _, err := tryRun(s, "FETCH 1 FROM c"); code(err) != "34000" {
 		t.Fatal(err)
 	}
+	// the failed FETCH aborted the block (as in PostgreSQL): start a new one
+	run(t, s, "ROLLBACK")
+	run(t, s, "BEGIN")
 	run(t, s, "DECLARE d NO SCROLL CURSOR FOR SELECT id FROM nums")
 	if _, err := tryRun(s, "FETCH PRIOR FROM d"); code(err) != "55000" {
 		t.Fatalf("no scroll: %v", err)

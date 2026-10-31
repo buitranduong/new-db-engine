@@ -1139,7 +1139,7 @@ func (a *aggState) add(v Datum) error {
 	case "sum", "avg":
 		switch v.K {
 		case KInt:
-			a.sumI += v.I
+			addInt64Sum(&a.sumI, &a.sumN, &a.isNum, v.I)
 		case KFloat:
 			a.isFloat = true
 			a.sumF += v.F
@@ -1204,9 +1204,9 @@ func (a *aggState) result() Datum {
 // merge adds b, the same aggregate over other rows, into a.
 func (a *aggState) merge(b *aggState) error {
 	a.count += b.count
-	a.sumI += b.sumI
 	a.sumF += b.sumF
 	a.sumN = pgnum.Add(a.sumN, b.sumN)
+	addInt64Sum(&a.sumI, &a.sumN, &a.isNum, b.sumI)
 	a.isNum = a.isNum || b.isNum
 	a.isFloat = a.isFloat || b.isFloat
 	if b.best.IsNull() {
@@ -2153,7 +2153,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 		}
 		st = &ins
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
 	var cols []int

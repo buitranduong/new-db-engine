@@ -56,6 +56,7 @@ func TestSavepoints(t *testing.T) {
 	if _, err := tryRun(s, `ROLLBACK TO SAVEPOINT s2`); code(err) != "3B001" {
 		t.Errorf("s2 after rollback to s1: %v", err)
 	}
+	run(t, s, `ROLLBACK TO s1`) // the error aborted the block; s1 revives it (PostgreSQL)
 	run(t, s, `INSERT INTO sp VALUES (9, 'x')`)
 	run(t, s, `ROLLBACK TO s1`)
 	if count() != "1" {
@@ -74,8 +75,11 @@ func TestSavepoints(t *testing.T) {
 	if _, err := tryRun(s, `ROLLBACK TO s1`); code(err) != "3B001" {
 		t.Errorf("released: %v", err)
 	}
-	run(t, s, `COMMIT`)
-	if got := render(run(t, s, `SELECT id FROM sp ORDER BY id`)); got != "1;4" {
+	// the failed ROLLBACK TO aborted the block: COMMIT reports ROLLBACK and keeps nothing
+	if r := run(t, s, `COMMIT`); r.Tag != "ROLLBACK" {
+		t.Errorf("COMMIT of an aborted transaction: tag %s", r.Tag)
+	}
+	if got := render(run(t, s, `SELECT id FROM sp ORDER BY id`)); got != "" {
 		t.Errorf("committed: %s", got)
 	}
 }

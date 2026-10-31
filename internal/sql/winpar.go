@@ -4,6 +4,8 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+
+	"stask/internal/core"
 )
 
 // Parallel pieces of the window executor. They use the elastic scan helpers (lanes.go), so a wide
@@ -51,7 +53,13 @@ func parallelRange(n int, fn func(lo, hi int, c *evalCtx) error, base *evalCtx) 
 			if lo >= n {
 				return
 			}
-			if err := fn(lo, min(lo+chunk, n), c); err != nil {
+			var err error
+			if base.qx != nil && base.qx.s != nil && base.qx.s.interrupted() {
+				err = core.ErrInterrupted // a cancelled statement stops between chunks
+			} else {
+				err = fn(lo, min(lo+chunk, n), c)
+			}
+			if err != nil {
 				emu.Lock()
 				if ferr == nil {
 					ferr = err

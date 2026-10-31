@@ -1215,7 +1215,31 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 		rows = [][]Datum{{}}
 	}
 	ctx := qx.ctx(outer)
-	if p.where != nil && !pushedWhere {
+	if p.where != nil && !pushedWhere && len(rows) >= parallelWindowMinRows && pushableWhere(p.where) {
+		// the rows are materialized already: evaluate WHERE in chunks on the scan helpers
+		keep := make([]bool, len(rows))
+		err := parallelRange(len(rows), func(lo, hi int, c *evalCtx) error {
+			for i := lo; i < hi; i++ {
+				c.drow = rows[i]
+				v, err := c.evalBool(p.where)
+				if err != nil {
+					return err
+				}
+				keep[i] = v.Bool()
+			}
+			return nil
+		}, ctx)
+		if err != nil {
+			return nil, err
+		}
+		kept := rows[:0:0]
+		for i, r := range rows {
+			if keep[i] {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	} else if p.where != nil && !pushedWhere {
 		kept := rows[:0:0]
 		for i, r := range rows {
 			if i&4095 == 4095 && qx.s.interrupted() {

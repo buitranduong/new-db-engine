@@ -71,7 +71,15 @@ func (p *tablePlan) runParallelWhere(qx *qexec, ctx *evalCtx, where Expr) ([][]D
 	var wctx []evalCtx
 	var scratch [][]Datum
 	var werr []error
+	var used []int
 	if where != nil {
+		seen := make([]bool, n)
+		walk(where, func(e Expr) {
+			if sl, ok := e.(*Slot); ok && sl.I >= 0 && sl.I < n && !seen[sl.I] {
+				seen[sl.I] = true
+				used = append(used, sl.I)
+			}
+		})
 		wctx, scratch, werr = make([]evalCtx, helpers+1), make([][]Datum, helpers+1), make([]error, helpers+1)
 		for w := range wctx {
 			wctx[w] = evalCtx{params: ctx.params, now: ctx.now, qx: qx, outer: ctx.outer}
@@ -82,7 +90,7 @@ func (p *tablePlan) runParallelWhere(qx *qexec, ctx *evalCtx, where Expr) ([][]D
 		var d []Datum
 		if where != nil {
 			sc := scratch[w]
-			for i := range cols {
+			for _, i := range used { // only the columns WHERE reads: the rest is converted for the rows that stay
 				sc[i] = fromCol(&cols[i], r[i])
 			}
 			wctx[w].drow = sc
@@ -94,7 +102,10 @@ func (p *tablePlan) runParallelWhere(qx *qexec, ctx *evalCtx, where Expr) ([][]D
 			if !v.Bool() {
 				return true
 			}
-			d = append(make([]Datum, 0, n), sc...)
+			d = make([]Datum, n)
+			for i := range cols {
+				d[i] = fromCol(&cols[i], r[i])
+			}
 		}
 		bs := buckets[w]
 		if len(bs) == 0 || bs[len(bs)-1].seq != seq {

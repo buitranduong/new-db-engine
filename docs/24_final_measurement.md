@@ -13,6 +13,13 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 - **C. Ổn định:** p99 không tăng quá 2x giữa 10 phút đầu và 10 phút cuối của mỗi lượt chạy; RSS không tăng đều; không lỗi.
 - **D. Mọi chỉ tiêu tuyệt đối của người dùng** (khi có) thay A cho phép đo tương ứng. **Đã có một (người dùng, 2026-10-31, `docs/29` SLO-R2):** tổng phản hồi website tối đa 1 đến 2 giây, lý tưởng khoảng 1 giây, nên câu R2 (phép đo số 2) được chấm theo trần 1 giây và lý tưởng dưới 0,5 giây (diễn giải, chờ xác nhận), p95, nóng, ở 20M và 50M, thay cho "không tệ hơn PostgreSQL 16". PostgreSQL và ClickHouse vẫn đo làm đối chiếu.
 
+## 1b. Cờ khi đo (bắt buộc)
+
+- `staskd -scrub-interval 0`: quét nền mặc định BẬT (6 giờ, lần đầu 30 giây sau khởi động, 32 MB/s) và làm nhiễu phép đo ngắn. Chỉ tắt khi đo, ghi vào báo cáo.
+- Kiểm CRC khi đọc log luôn bật (`-no-read-crc` chỉ để đo chi phí của chính nó, một lần, ghi nhãn).
+- `-hybrid` bật khi đo đường lai; đo cả hai (có và không) cho cùng truy vấn.
+- Đĩa trống >= 5 GB, tải 1 phút < 1,0, qua `scripts/perf-run.sh`; không có gate hay agent nào chạy.
+
 ## 2. Kích thước (vừa VM: 8 vCPU, 31 GB RAM; đĩa trống ~12 GB, ~23 GB sau khi xoá cache Go)
 
 Ước tính RAM ở 50M số (PROCESS D29, chưa đo): chỉ mục chính ~2-4 GB, view cột ~2 GB, trigram ~7 GB => ~12-13 GB, vừa 31 GB. Đĩa là ràng buộc; thang kích thước:

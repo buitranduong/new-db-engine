@@ -134,7 +134,9 @@ var reserved = map[string]bool{
 
 func (p *parser) ident() (string, error) {
 	t := p.peek()
-	if t.k == tQuoted || t.k == tIdent && !reserved[t.s] {
+	// NULLS is reserved only so it is not taken as a bare alias before NULLS FIRST/LAST;
+	// PostgreSQL treats it as an unreserved keyword, so it is a valid table/column name.
+	if t.k == tQuoted || t.k == tIdent && (!reserved[t.s] || t.s == "nulls") {
 		p.next()
 		return t.s, nil
 	}

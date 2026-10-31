@@ -1,0 +1,229 @@
+# docs/25 section 9: probes of scripts/suite/17_funcs_more.sql that still differ from PostgreSQL 16 (session:line, class, statement | what differs)
+string:117 ERR SELECT 'abc' IS NFC NORMALIZED | STASK rejects: 42601
+string:201 ERR SELECT 'ab' ~ 'a(?=b)' | STASK rejects: 2201B
+string:202 ERR SELECT 'ab' ~ 'a(?!c)' | STASK rejects: 2201B
+string:203 ERR SELECT 'ab' ~ '(?<=a)b' | STASK rejects: 2201B
+string:204 ERR SELECT 'ab' ~ '(?<!c)b' | STASK rejects: 2201B
+string:217 ERR SELECT 'abab' ~ '^(ab)\1$' | STASK rejects: 2201B
+format:249 ERR SELECT to_char(interval '3 days 04:05:06', 'DD HH24:MI:SS') | STASK rejects: 42883
+format:266 DIFF SELECT to_timestamp('2024-03-05 14:07:09 +02', 'YYYY-MM-DD HH24:MI:SS TZH') | row 1 col to_timestamp: pg="2024-03-05 12:07:09+00" stask="2024-03-05 14:07:09+00"
+format:267 DIFF SELECT to_timestamp('12:34', 'HH24:MI') | row 1 col to_timestamp: pg="0001-01-01 12:34:00+00 BC" stask="0001-01-01 12:34:00+00"
+math:306 DIFF SELECT 2.5 ^ 2 | row 1 col ?column?: pg="6.2500000000000000" stask="6.25"
+math:310 DIFF SELECT sqrt(2.0) | col 1 (sqrt) type OID pg=1700 stask=701; row 1 col sqrt: pg="1.414213562373095" stask="1.4142135623730951"
+math:312 ERR SELECT |/ 25 | STASK rejects: 42601
+math:313 ERR SELECT ||/ 27 | STASK rejects: 42601
+math:315 DIFF SELECT exp(1.0) | col 1 (exp) type OID pg=1700 stask=701; row 1 col exp: pg="2.7182818284590452" stask="2.718281828459045"
+math:317 DIFF SELECT ln(10.0) | col 1 (ln) type OID pg=1700 stask=701; row 1 col ln: pg="2.3025850929940457" stask="2.302585092994046"
+math:319 DIFF SELECT log(2, 64) | col 1 (log) type OID pg=1700 stask=701; row 1 col log: pg="6.0000000000000000" stask="6"
+math:321 DIFF SELECT log(2.0, 8.0) | col 1 (log) type OID pg=1700 stask=701; row 1 col log: pg="3.0000000000000000" stask="3"
+math:357 DIFF SELECT !! 5 | SQLSTATE pg=42883 stask=42601
+math:376 DIFF SELECT width_bucket(DATE '2024-03-05', DATE '2024-01-01', DATE '2024-12-31', 4) | SQLSTATE pg=42883 stask=2201G
+math:379 DIFF SELECT setseed(0.5) | col 1 (setseed) type OID pg=2278 stask=25
+math:402 DIFF SELECT 0.1::float4 + 0.2::float4 | col 1 (?column?) type OID pg=700 stask=701; row 1 col ?column?: pg="0.3" stask="0.30000000447034836"
+math:405 ERR SELECT @ -5 | STASK rejects: 42601
+math:412 DIFF SELECT 'NaN'::float8 > 1e300::float8 | row 1 col ?column?: pg="t" stask="f"
+math:430 ERR SELECT numeric_div_trunc(9, 4) IS NULL | STASK rejects: 42883
+math:431 ERR SELECT int4 '7' / int4 '2' | STASK rejects: 42601
+math:432 ERR SELECT int8 '7' % int8 '4' | STASK rejects: 42601
+math:437 DIFF SELECT 2.0 ^ 100 | row 1 col ?column?: pg="1267650600228229401496703205376.0" stask="1267650600228229401496703205376.000000000000000000000000000000000000000000000000…"
+math:448 ERR SELECT round(123.456::float8, 1) | STASK accepts, PostgreSQL rejects: 42883
+math:461 DIFF SELECT greatest(NULL, 1) | col 1 (greatest) type OID pg=23 stask=25
+math:510 DIFF SELECT pg_typeof(sum(1::bigint)) | row 1 col pg_typeof: pg="numeric" stask="bigint"
+datetime:526 DIFF SELECT make_date(-44, 1, 1) | row 1 col make_date: pg="0044-01-01 BC" stask="-0044-01-01"
+datetime:535 ERR SELECT make_date(2024, 13, 1) | STASK accepts, PostgreSQL rejects: 22008
+datetime:536 ERR SELECT make_date(2024, 2, 30) | STASK accepts, PostgreSQL rejects: 22008
+datetime:543 ERR SELECT make_interval(1, 2, 3, 4, 5, 6, 7.5)::text | STASK rejects: 42883
+datetime:544 ERR SELECT make_interval(days => 10)::text | STASK rejects: 42883
+datetime:545 ERR SELECT make_interval(hours => 25, mins => 61)::text | STASK rejects: 42883
+datetime:546 ERR SELECT make_interval(secs => 0.5)::text | STASK rejects: 42883
+datetime:547 ERR SELECT make_interval()::text | STASK rejects: 42883
+datetime:564 ERR SELECT date_trunc('day', interval '3 days 04:05:06')::text | STASK rejects: 42804
+datetime:565 ERR SELECT date_trunc('hour', interval '3 days 04:05:06')::text | STASK rejects: 42804
+datetime:591 DIFF SELECT extract(epoch from interval '1 day 2 hours') | row 1 col extract: pg="93600.000000" stask="93600"
+datetime:599 ERR SELECT extract(hour from time '14:07:09') | STASK rejects: 22007
+datetime:600 ERR SELECT extract(epoch from time '14:07:09') | STASK rejects: 22007
+datetime:606 ERR SELECT justify_days(interval '35 days')::text | STASK rejects: 42883
+datetime:607 ERR SELECT justify_hours(interval '27 hours')::text | STASK rejects: 42883
+datetime:608 ERR SELECT justify_interval(interval '1 month -1 hour')::text | STASK rejects: 42883
+datetime:609 ERR SELECT justify_interval(interval '35 days 30 hours')::text | STASK rejects: 42883
+datetime:617 DIFF SELECT date '2024-03-05' + time '10:00' | col 1 (?column?) type OID pg=1114 stask=701
+datetime:625 ERR SELECT (time '10:00' - time '08:30')::text | STASK rejects: 42883
+datetime:630 DIFF SELECT interval '1 day' - interval '2 hours' | row 1 col ?column?: pg="1 day -02:00:00" stask="22:00:00"
+datetime:633 ERR SELECT justify_hours(interval '1 day' * 1.5) | STASK rejects: 42883
+datetime:637 DIFF SELECT time '10:00' + interval '2 hours' | col 1 (?column?) type OID pg=1083 stask=1186
+datetime:638 DIFF SELECT time '10:00' - interval '2 hours' | col 1 (?column?) type OID pg=1083 stask=1186
+datetime:639 DIFF SELECT time '23:00' + interval '2 hours' | col 1 (?column?) type OID pg=1083 stask=1186; row 1 col ?column?: pg="01:00:00" stask="1 day 01:00:00"
+datetime:640 DIFF SELECT time '10:00' + interval '1 day' | col 1 (?column?) type OID pg=1083 stask=1186; row 1 col ?column?: pg="10:00:00" stask="1 day 10:00:00"
+datetime:646 ERR SELECT time '10:00' AT TIME ZONE 'UTC' IS NOT NULL | STASK rejects: 22007
+datetime:649 ERR SELECT timestamptz '2024-03-05 10:00+00' AT TIME ZONE INTERVAL '+02:00' | STASK rejects: 22023
+datetime:663 DIFF SELECT pg_typeof(current_time) | row 1 col pg_typeof: pg="time with time zone" stask="text"
+datetime:673 ERR SELECT timestamptz '2024-03-05 10:00+00'::time | STASK rejects: 22007
+datetime:674 ERR SELECT timestamp '2024-03-05 10:00'::time | STASK rejects: 22007
+datetime:685 ERR SELECT 'epoch'::timestamp | STASK rejects: 22007
+datetime:686 ERR SELECT 'today'::date = current_date | STASK rejects: 22007
+datetime:687 ERR SELECT 'tomorrow'::date - 'today'::date | STASK rejects: 22007
+datetime:688 ERR SELECT 'yesterday'::date = current_date - 1 | STASK rejects: 22007
+datetime:689 ERR SELECT 'allballs'::time | STASK rejects: 22007
+datetime:690 ERR SELECT 'now'::timestamp IS NOT NULL | STASK rejects: 22007
+datetime:692 ERR SELECT '2024-03-05 24:00:00'::timestamp | STASK rejects: 22008
+datetime:694 ERR SELECT '20240305'::date | STASK rejects: 22007
+datetime:695 ERR SELECT '03/05/2024'::date | STASK rejects: 22007
+datetime:696 ERR SELECT 'March 5, 2024'::date | STASK rejects: 22007
+datetime:697 ERR SELECT '5 Mar 2024'::date | STASK rejects: 22007
+datetime:698 ERR SELECT '2024-03-05 10:00 PST'::timestamptz | STASK rejects: 22008
+datetime:700 ERR SELECT '10:00:00 PM'::time | STASK rejects: 22007
+datetime:705 DIFF SELECT '25:00'::time | SQLSTATE pg=22008 stask=22007
+datetime:707 ERR SELECT '1-2'::interval::text | STASK rejects: 22007
+datetime:708 ERR SELECT 'P1Y2M3DT4H5M6S'::interval::text | STASK rejects: 22007
+datetime:711 DIFF SELECT '-1 days +02:00:00'::interval::text | row 1 col text: pg="-1 days +02:00:00" stask="-22:00:00"
+datetime:737 DIFF SELECT * FROM generate_series(1, 3) WITH ORDINALITY AS t(v, n) | column count pg=2 stask=1
+datetime:746 ERR SELECT (timetz '10:00+02')::text | STASK rejects: 42601
+datetime:747 ERR SELECT timetz '10:00+02' AT TIME ZONE 'UTC' IS NOT NULL | STASK rejects: 42601
+datetime:748 ERR SELECT extract(hour from timetz '10:00+02') | STASK rejects: 42601
+datetime:749 ERR SELECT abbrev('10.1.2.3/32'::inet) | STASK rejects: 42883
+datetime:751 DIFF SELECT masklen('10.1.2.3/24') | col 1 (masklen) type OID pg=23 stask=20
+datetime:757 DIFF SELECT pg_typeof(date '2024-01-01' + time '10:00') | row 1 col pg_typeof: pg="timestamp without time zone" stask="double precision"
+datetime:758 DIFF SELECT pg_typeof(time '10:00' - time '09:00') | row 1 col pg_typeof: pg="interval" stask="double precision"
+datetime:762 DIFF SELECT pg_typeof(date_trunc('hour', interval '1 day')) | row 1 col pg_typeof: pg="interval" stask="timestamp with time zone"
+datetime:765 DIFF SELECT pg_typeof(justify_days(interval '1 day')) | row 1 col pg_typeof: pg="interval" stask="text"
+datetime:766 DIFF SELECT pg_typeof(make_interval(days => 1)) | row 1 col pg_typeof: pg="interval" stask="text"
+datetime:769 ERR SELECT to_char(make_interval(hours => 1), 'HH24:MI') | STASK rejects: 42883
+datetime:770 ERR SELECT make_timestamp(2024, 3, 5, 0, 0, 0) + make_interval(mins => 90) | STASK rejects: 42883
+array:791 DIFF SELECT array_fill(0, ARRAY[2], ARRAY[0]) | row 1 col array_fill: pg="[0:1]={0,0}" stask="{0,0}"
+array:831 DIFF SELECT (ARRAY[[1, 2], [3, 4]])[1:2][2] | col 1 (array) type OID pg=1007 stask=23; row 1 col array: pg="{{1,2},{3,4}}" stask=NULL
+array:852 ERR SELECT '[0:2]={1,2,3}'::int[] | STASK rejects: 22P02
+array:857 DIFF SELECT string_agg(g::text, ',') , string_agg(g::text, ',' ORDER BY g DESC), string_agg(DISTINCT (g % 2)::text, '') FROM generate_series(1, 4) g | row 1 col string_agg: pg="4,3,2,1" stask="1,2,3,4"
+array:867 ERR SELECT ARRAY[1, 2, 3][2] | STASK accepts, PostgreSQL rejects: 42601
+json:1015 ERR SELECT * FROM jsonb_populate_record(NULL::record, '{"a": 1}'::jsonb) AS r(a int) | STASK rejects: 0A000
+json:1016 ERR SELECT row_to_json(r), to_json(r), to_jsonb(r), row_to_json(r, true) FROM (SELECT 1 AS a, 'x' AS b) r | STASK rejects: 42883
+json:1056 ERR SELECT jsonb_path_query_tz('{"a": "2024-03-05T10:00:00+00:00"}'::jsonb, '$.a.datetime()') | STASK rejects: 42601
+json:1057 ERR SELECT jsonb_path_exists_tz('{"a": "2024-03-05T10:00:00+00:00"}'::jsonb, '$.a.datetime() ? (@ > "2024-01-01T00:00:00+00:00".datetime())') | STASK rejects: 42601
+json:1063 ERR SELECT jsonb_populate_record(NULL::pg_catalog.pg_class, '{}') IS NOT NULL | STASK rejects: 42704
+agg:1116 DIFF SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY g), percentile_disc(0.5) WITHIN GROUP (ORDER BY g), percentile_cont(ARRAY[0.25, 0.75]) WITHIN GROUP (ORDER BY g), percentile_disc(ARRAY[0.25, 0.75])  | col 3 (percentile_cont) type OID pg=1022 stask=701; col 4 (percentile_disc) type OID pg=1007 stask=23
+agg:1120 DIFF SELECT string_agg(g::text, ',' ORDER BY g), string_agg(b, ',') FROM (SELECT g, ('\x' || to_hex(g))::bytea b FROM generate_series(10, 11) g) t | SQLSTATE pg=22023 stask=22P02
+agg:1121 ERR SELECT xmlagg('<a/>'::xml) IS NULL | STASK rejects: 0A000
+agg:1125 DIFF SELECT max(a), min(a) FROM (VALUES (ARRAY[1, 2]), (ARRAY[1, 3])) v(a) | col 1 (max) type OID pg=1007 stask=1009; col 2 (min) type OID pg=1007 stask=1009
+agg:1136 DIFF SELECT pg_typeof(sum(g::smallint)), pg_typeof(sum(g::bigint)), pg_typeof(sum(g::numeric)), pg_typeof(sum(g::float4)), pg_typeof(avg(g::smallint)), pg_typeof(avg(g::float4)), pg_typeof(min(g::smallint) | row 1 col pg_typeof: pg="real" stask="double precision"
+agg:1137 DIFF SELECT sum(g::float4) FROM generate_series(1, 3) g | col 1 (sum) type OID pg=700 stask=701
+window:1143 DIFF SELECT g, sum(g) OVER (PARTITION BY g % 2 ORDER BY g), array_agg(g) OVER (PARTITION BY g % 2 ORDER BY g ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), string_agg(g::text, ',') OVER (ORDER BY g) FR | col 3 (array_agg) type OID pg=1007 stask=1009
+window:1144 ERR SELECT g, sum(g) OVER (ORDER BY g GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) FROM generate_series(1, 4) g ORDER BY g | STASK rejects: 0A000
+window:1145 ERR SELECT g, sum(g) FILTER (WHERE g > 2) OVER (ORDER BY g) FROM generate_series(1, 4) g ORDER BY g | STASK rejects: 0A000
+system:1152 DIFF SELECT current_database() | row 1 col current_database: pg="postgres" stask="stask"
+system:1154 DIFF SELECT current_schemas(false) | col 1 (current_schemas) type OID pg=1003 stask=1009
+system:1155 DIFF SELECT current_user | row 1 col current_user: pg="postgres" stask="app"
+system:1156 DIFF SELECT session_user | row 1 col session_user: pg="postgres" stask="app"
+system:1157 DIFF SELECT current_catalog | row 1 col current_catalog: pg="postgres" stask="stask"
+system:1158 DIFF SELECT current_role | row 1 col current_role: pg="postgres" stask="app"
+system:1159 ERR SELECT user | STASK rejects: 42703
+system:1173 ERR SELECT current_setting('myapp.y') | STASK rejects: 42704
+system:1196 DIFF SELECT pg_typeof('1'::regclass) | row 1 col pg_typeof: pg="regclass" stask="bigint"
+system:1201 DIFF SELECT pg_typeof(1::oid) | row 1 col pg_typeof: pg="oid" stask="bigint"
+system:1203 DIFF SELECT pg_typeof(1)::regtype | col 1 (pg_typeof) type OID pg=2206 stask=20; row 1 col pg_typeof: pg="integer" stask="23"
+system:1237 DIFF SELECT pg_typeof(uuid_in('00000000-0000-0000-0000-000000000000')) | row 1 col pg_typeof: pg="uuid" stask="text"
+system:1269 ERR SELECT pg_get_expr('1', 0) IS NULL OR true | STASK accepts, PostgreSQL rejects: 0A000
+system:1276 DIFF SELECT 'int4'::regtype::oid | col 1 (oid) type OID pg=26 stask=20
+system:1277 DIFF SELECT 23::regtype | col 1 (regtype) type OID pg=2206 stask=20; row 1 col regtype: pg="integer" stask="23"
+system:1278 DIFF SELECT 'pg_class'::regclass | col 1 (regclass) type OID pg=2205 stask=20; row 1 col regclass: pg="pg_class" stask="1259"
+system:1280 ERR SELECT 'now()'::regprocedure::text | STASK rejects: 22P02
+system:1281 DIFF SELECT '+'::regoper::text | SQLSTATE pg=42725 stask=22P02
+system:1283 ERR SELECT 'postgres'::regrole::text IS NOT NULL | STASK rejects: 22P02
+system:1284 DIFF SELECT to_regclass('pg_class') | col 1 (to_regclass) type OID pg=2205 stask=20; row 1 col to_regclass: pg="pg_class" stask="1259"
+system:1285 DIFF SELECT to_regclass('nope') | col 1 (to_regclass) type OID pg=2205 stask=20
+system:1286 DIFF SELECT to_regtype('int4') | col 1 (to_regtype) type OID pg=2206 stask=20; row 1 col to_regtype: pg="integer" stask="23"
+system:1287 DIFF SELECT to_regtype('nope') | col 1 (to_regtype) type OID pg=2206 stask=20
+system:1288 ERR SELECT to_regproc('now') | STASK rejects: 42883
+system:1289 ERR SELECT to_regnamespace('public') | STASK rejects: 42883
+system:1290 ERR SELECT to_regrole('postgres') IS NOT NULL | STASK rejects: 42883
+system:1291 ERR SELECT to_regprocedure('now()') | STASK rejects: 42883
+system:1292 DIFF SELECT pg_get_viewdef('pg_tables'::regclass) IS NOT NULL | row 1 col ?column?: pg="t" stask="f"
+system:1295 DIFF SELECT pg_get_functiondef('now'::regproc) IS NOT NULL | row 1 col ?column?: pg="t" stask="f"
+system:1305 DIFF SELECT pg_notify('ch', 'p') IS NOT NULL | row 1 col ?column?: pg="t" stask="f"
+system:1306 ERR SELECT pg_listening_channels() IS NOT NULL OR true | STASK accepts, PostgreSQL rejects: 42804
+system:1308 ERR SELECT pg_cancel_backend(0) IS NOT NULL OR true | STASK rejects: 42883
+system:1309 ERR SELECT pg_terminate_backend(0) IS NOT NULL OR true | STASK rejects: 42883
+system:1310 DIFF SELECT pg_blocking_pids(pg_backend_pid()) | col 1 (pg_blocking_pids) type OID pg=1007 stask=1009
+system:1311 DIFF SELECT pg_safe_snapshot_blocking_pids(pg_backend_pid()) | col 1 (pg_safe_snapshot_blocking_pids) type OID pg=1007 stask=1009
+system:1312 ERR SELECT pg_stat_get_backend_pid(1) IS NULL OR true | STASK rejects: 42883
+system:1315 ERR SELECT pg_get_keywords() IS NOT NULL OR true | STASK accepts, PostgreSQL rejects: 42804
+system:1321 DIFF SELECT * FROM pg_input_error_info('x', 'int4') | row 1 col message: pg="invalid input syntax for type integer: \"x\"" stask="invalid input syntax for type bigint: \"x\""
+system:1323 ERR SELECT pg_relation_filepath('pg_class') IS NOT NULL OR true | STASK rejects: 42883
+system:1324 ERR SELECT current_query() IS NOT NULL OR true | STASK rejects: 42883
+system:1330 DIFF SELECT (txid_snapshot_xip(txid_current_snapshot())) IS NULL OR true | SQLSTATE pg=42804 stask=42883
+system:1333 DIFF SELECT pg_typeof(pg_sleep(0)) | row 1 col pg_typeof: pg="void" stask="text"
+system:1337 DIFF SELECT pg_typeof(current_schemas(true)) | row 1 col pg_typeof: pg="name[]" stask="text[]"
+system:1342 ERR SELECT num_nulls(VARIADIC ARRAY[NULL, 1]::int[]) | STASK rejects: 42601
+system:1344 ERR SELECT pg_column_size(1) | STASK rejects: 42883
+system:1345 ERR SELECT pg_column_size('abc'::text) | STASK rejects: 42883
+system:1346 ERR SELECT pg_column_size(1::bigint) | STASK rejects: 42883
+system:1347 DIFF SELECT pg_column_size(NULL::int) | col 1 (pg_column_size) type OID pg=23 stask=25
+system:1348 ERR SELECT pg_column_size('{1,2}'::int[]) > 0 | STASK rejects: 42883
+system:1349 DIFF SELECT pg_collation_for('a') | row 1 col pg_collation_for: pg=NULL stask="\"default\""
+system:1351 DIFF SELECT row(1, 'a') | col 1 name pg="row" stask="?column?"; col 1 (row) type OID pg=2249 stask=25
+system:1354 ERR SELECT (row(1, 'a')).f1 | STASK rejects: 42703
+system:1356 DIFF SELECT ROW(NULL, NULL) IS NULL | row 1 col ?column?: pg="t" stask="f"
+system:1357 DIFF SELECT ROW(1, NULL) IS NOT NULL | row 1 col ?column?: pg="f" stask="t"
+system:1360 DIFF SELECT EXISTS (SELECT 1) | col 1 name pg="exists" stask="?column?"
+system:1383 DIFF SELECT 'abc'::char(5) | row 1 col bpchar: pg="abc  " stask="abc"
+system:1385 ERR SELECT int4 '1' | STASK rejects: 42601
+system:1391 ERR SELECT '0x10'::int | STASK rejects: 22P02
+system:1398 DIFF SELECT 1::oid | col 1 (oid) type OID pg=26 stask=20
+system:1400 ERR SELECT '1'::oid + 1 | STASK accepts, PostgreSQL rejects: 42883
+system:1401 ERR SELECT bit_length(B'101') | STASK rejects: 42601
+system:1402 ERR SELECT B'101' & B'011' | STASK rejects: 42601
+system:1403 ERR SELECT B'101' | B'011' | STASK rejects: 42601
+system:1404 ERR SELECT B'101' # B'011' | STASK rejects: 42601
+system:1405 ERR SELECT ~B'101' | STASK rejects: 42601
+system:1406 ERR SELECT B'101' << 1 | STASK rejects: 42601
+system:1407 ERR SELECT B'101' || B'1' | STASK rejects: 42601
+system:1408 ERR SELECT length(B'101') | STASK rejects: 42601
+system:1409 ERR SELECT get_bit(B'101', 0) | STASK rejects: 42601
+system:1410 ERR SELECT set_bit(B'101', 0, 0) | STASK rejects: 42601
+system:1411 ERR SELECT B'101'::int | STASK rejects: 42601
+system:1412 ERR SELECT 5::bit(4) | STASK rejects: 0A000
+system:1413 ERR SELECT 5::bit(8) | STASK rejects: 0A000
+system:1414 ERR SELECT x'ff'::int | STASK rejects: 42601
+system:1415 ERR SELECT B'101' = B'101' | STASK rejects: 42601
+system:1416 ERR SELECT overlay(B'1111' placing B'00' from 2) | STASK rejects: 42601
+system:1417 ERR SELECT substring(B'10101' from 2 for 3) | STASK rejects: 42601
+system:1418 ERR SELECT position(B'01' in B'1010') | STASK rejects: 42601
+system:1419 ERR SELECT bit_count(B'1011') | STASK rejects: 42601
+system:1420 ERR SELECT '10.1.2.3'::inet + 1 | STASK rejects: 22P02
+system:1422 DIFF SELECT network('10.1.2.3/24') | col 1 (network) type OID pg=650 stask=25
+system:1423 ERR SELECT broadcast('10.1.2.3/24') | STASK rejects: 42883
+system:1424 DIFF SELECT netmask('10.1.2.3/24') | col 1 (netmask) type OID pg=869 stask=25
+system:1425 ERR SELECT hostmask('10.1.2.3/24') | STASK rejects: 42883
+system:1426 DIFF SELECT family('10.1.2.3') | col 1 (family) type OID pg=23 stask=20
+system:1427 ERR SELECT set_masklen('10.1.2.3/24', 16) | STASK rejects: 42883
+system:1428 ERR SELECT inet_merge('10.1.2.3/24', '10.1.5.3/24') | STASK rejects: 42883
+system:1429 ERR SELECT '10.1.2.3'::inet - '10.1.2.1'::inet | STASK rejects: 42883
+system:1430 ERR SELECT text('10.1.2.3'::inet) | STASK rejects: 42883
+system:1432 ERR SELECT inet_same_family('10.0.0.1', '::1') | STASK rejects: 42883
+system:1433 ERR SELECT '10.1.2.3/24'::inet <<= '10.1.2.0/24'::inet | STASK rejects: 42601
+system:1435 ERR SELECT trunc('08:00:2b:01:02:03'::macaddr) | STASK rejects: 22P02
+system:1436 ERR SELECT macaddr8_set7bit('08:00:2b:01:02:03:04:05'::macaddr8) | STASK rejects: 0A000
+system:1439 ERR SELECT uuid_in('550e8400-e29b-41d4-a716-446655440000')::text | STASK rejects: 42883
+system:1441 ERR SELECT '{[1,5)}'::int4multirange IS NOT NULL OR true | STASK rejects: 42704
+system:1442 ERR SELECT int4range(1, 5) | STASK rejects: 42883
+system:1443 ERR SELECT int4range(1, 5) @> 3 | STASK rejects: 42883
+system:1444 ERR SELECT lower(int4range(1, 5)) | STASK rejects: 42883
+system:1445 ERR SELECT upper(int4range(1, 5)) | STASK rejects: 42883
+system:1446 ERR SELECT isempty(int4range(1, 1)) | STASK rejects: 42883
+system:1447 ERR SELECT int4range(1, 5) && int4range(4, 8) | STASK rejects: 42883
+system:1448 ERR SELECT int4range(1, 5) + int4range(5, 8) | STASK rejects: 42883
+system:1449 ERR SELECT range_merge(int4range(1, 3), int4range(5, 8)) | STASK rejects: 42883
+system:1450 ERR SELECT numrange(1.5, 2.5, '[]') | STASK rejects: 42883
+system:1451 ERR SELECT daterange('2024-01-01', '2024-02-01') | STASK rejects: 42883
+system:1452 ERR SELECT lower_inc(int4range(1, 5)) | STASK rejects: 42883
+system:1453 ERR SELECT upper_inc(int4range(1, 5)) | STASK rejects: 42883
+system:1454 DIFF SELECT lower_inf(int4range(NULL, 5)) | col 1 (lower_inf) type OID pg=16 stask=25; row 1 col lower_inf: pg="t" stask=NULL
+system:1455 ERR SELECT tstzrange(now(), now() + interval '1 day') IS NOT NULL | STASK rejects: 42883
+system:1456 ERR SELECT int4range(1, 5) * int4range(3, 8) | STASK rejects: 42883
+system:1457 ERR SELECT int4range(1, 5) - int4range(3, 8) | STASK rejects: 42883
+system:1458 ERR SELECT int4range(1, 5) << int4range(6, 8) | STASK rejects: 42883
+system:1459 ERR SELECT int4range(1, 5) -|- int4range(5, 8) | STASK rejects: 42601
+system:1460 ERR SELECT 3 <@ int4range(1, 5) | STASK rejects: 42883
+system:1461 ERR SELECT int4range(1, 5)::text | STASK rejects: 42883
+trgm:1986 DIFF SELECT show_trgm('café') | row 1 col show_trgm: pg="{0xef5960,\"  c\",\" ca\",0x544980,caf}" stask="{\"  c\",\" ca\",afé,caf,\"fé \"}"
+fts:2352 ERR SELECT to_tsvector('german', 'x') | STASK rejects: 42704
+jsonpath:2427 ERR SELECT jsonb_path_query_array('{"a":[1,2,3]}'::jsonb, '$.a[$i]', '{"i":1}'::jsonb) | STASK rejects: 42601
+jsonpath:2428 ERR SELECT jsonb_path_exists('{"a":[1,2,3]}'::jsonb, '$.a[$i]', '{"i":1}'::jsonb, true) | STASK rejects: 42601

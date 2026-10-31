@@ -14,9 +14,8 @@ aggregates and facets, time-series, history) and Redis (an in-RAM primary index
 for point lookups). psql, pgjdbc, pgx and Liquibase work unchanged. One durable
 log is the source of truth and the other structures are derived from it: one copy
 of the data and one recovery path instead of several systems to keep in sync.
-Elasticsearch is not a database and is not part of the engine's design; text
-matching is limited to what PostgreSQL itself offers (`LIKE`/`ILIKE`, trigram
-indexes in the style of `pg_trgm`). The claim is functional coverage;
+Elasticsearch is not considered a database and is not used as a reference or criterion for further development; the code already in place stays as it is.
+The claim is functional coverage;
 performance parity is not claimed until the final verification phase (see
 `docs/24_final_measurement.md`).
 

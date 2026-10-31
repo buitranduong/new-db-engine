@@ -25,7 +25,7 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 ## 3. Thứ tự đo (tuần tự, mỗi phép đo trọn trước khi sang phép tiếp)
 
 1. **Bộ nhớ từng cấu trúc** (`scripts/memmap.sh`, `cmd/memmap`): L1/L2/L3 (+L4); trigram dùng đầu số thật (090/091/098...). Kết quả quyết định cấu hình (RAM hay `index_storage=disk`).
-2. **Tra cứu và truy vấn nền** (`scripts/simbench.sh` trên bản đóng băng, so với PG16 có `pg_trgm`): điểm, tiền tố, hậu tố, chứa (kiểu `LIKE`, không phải tìm kiếm văn bản kiểu Elasticsearch), facet, đếm, lịch sử một SIM; nền và trong lúc nhập.
+2. **Tra cứu và truy vấn nền** (`scripts/simbench.sh` trên bản đóng băng, so với PG16 có `pg_trgm`): điểm, tiền tố, hậu tố, chứa (kiểu `LIKE`), facet, đếm, lịch sử một SIM; nền và trong lúc nhập.
 3. **Nhập Excel hằng ngày** (`cmd/staskimport`, chế độ binary/text/insert): L3 và L4 hàng triệu dòng; thông lượng, độ trễ nền trong lúc nhập, tốc độ view bắt kịp.
 4. **Làn công việc:** `-heavy-workers` (0 so với tự động), `-heavy-share`; p99 tra cứu khi có truy vấn nặng (rủi ro đã biết: p99 43 -> 313 ms ở 20M khi GC).
 5. **Chỉ mục đĩa `pindex` trên đĩa thật** (điều kiện D29 số 3): đọc điểm với truy cập lệch, nhập ngẫu nhiên cập nhật chỉ mục phụ, tỉ lệ trúng cache; so với chỉ mục RAM.

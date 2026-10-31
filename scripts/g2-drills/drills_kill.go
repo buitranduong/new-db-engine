@@ -80,7 +80,7 @@ func drillD1(e *Env, o *Opts, r *Result, mode string) {
 	for _, n := range t.Nodes {
 		scrubCheck(r, n)
 	}
-	r.OracleOK("columnar, trigram, secondary-index and history structures equal the core after catch-up (reconcile -full), scrub clean")
+	r.OracleOK("columnar, trigram and secondary-index structures (and the history store on a single node) equal the core after catch-up (reconcile -full), scrub clean")
 }
 
 func startAll(t *Topo) error {

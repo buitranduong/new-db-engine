@@ -16,6 +16,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 - 2026-10-31, về mẫu thử: "mẫu test phải tầm cỡ > 10tr thì mới thấy sự khác biệt được chứ nhỉ? 1tr thì nhỏ quá"
 - 2026-10-31, về tốc độ: "tốc độ query mới là quan trọng cả 3 kết quả chứ ko phải là ko làm được."
 - 2026-10-31, về nén dữ liệu: "về nén dữ liệu tôi kỳ vọng engine phải giảm tối thiêu 50% so với postgres chứ ko dám kỳ vọng siêu nhỏ như CH"
+- 2026-10-31, về lý do cần engine và ngưỡng thời gian: "tôi chỉ cần 1 VD để bạn thấy sự cần thiết engin này. nếu chỉ sử dụng postgres thì trải nghiệm website sẽ cực tệ. tổng phản hồi của website tính từ lúc request đến respon chỉ cho phép trong ngưỡng tôi đa 1~2s. lý tưởng ~1s. Đằng này nguyên db đã mất >1,5s rồi thì bắt buộc phải đồng bộ qua clickhouse (hoặc ES với giải pháp lấy dư rồi cache phân trang)"
 - 2026-10-31, về cú pháp: "lệnh nào ít dùng (function, procedure ..etc) bỏ qua trong giai đoạn này"; lệnh SQL "đâu có sáng tạo ra mà dựa trên cú pháp có sẵn chỉ convert".
 
 ## 2. Yêu cầu rút ra (diễn giải của agent; người dùng sửa nếu sai)
@@ -33,6 +34,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | I1 | Nhập hàng triệu dòng Excel mỗi ngày không làm gián đoạn R | `staskimport` + làn |
 | P1 | Tương thích cú pháp PostgreSQL thông dụng (bỏ function/procedure tự định nghĩa và thứ hiếm) | `scripts/suite`, `pgdiff` |
 | O1 | Đơn giản trong vận hành mà vẫn đủ nhanh: chỉ riêng engine phải đáp ứng phần lớn nhu cầu; ES/Redis (nếu bạn dùng) là công cụ chung tách vai trò, engine KHÔNG cần tự làm thay phần tìm kiếm văn bản (xếp hạng toàn văn, bộ rút gốc từ) khi chưa có nhu cầu | ít thành phần, ít cấu hình, một đường backup/restore; tìm văn bản là tuỳ chọn, ưu tiên thấp nhất |
+| SLO-R2 | Chỉ tiêu tuyệt đối đầu tiên của người dùng: tổng phản hồi của website (từ request đến response) tối đa 1 đến 2 giây, lý tưởng khoảng 1 giây. Phần của cơ sở dữ liệu cho câu R2 (một câu nhiều điều kiện, xếp hạng, phân trang) phải chiếm phần nhỏ của ngân sách đó. Diễn giải của agent, chờ người dùng xác nhận: trần 1 giây và lý tưởng dưới 0,5 giây cho riêng câu truy vấn ở 30 đến 50 triệu dòng, nóng, p95 | nếu không đạt thì phải đồng bộ sang ClickHouse (hoặc ES lấy dư + cache), tức đúng cái engine này muốn tránh |
 | C1 | Nén: dung lượng lưu trữ trên đĩa của engine nhỏ hơn PostgreSQL ít nhất 50% cho cùng dữ liệu (không đòi nhỏ như ClickHouse) | đo cả chỉ mục; so cùng bảng, cùng chỉ mục |
 | M1 | Mẫu đo từ 10 triệu dòng trở lên (1 triệu quá nhỏ để thấy khác biệt); tốc độ truy vấn của CẢ ba hệ là thước đo, không phải chỉ "làm được" | `docs/24` bậc L3 (20M) và bậc 10M |
 | S1 | An toàn dữ liệu và bảo mật (không mất dữ liệu đã xác nhận, restore, PITR, TLS, audit, mã hoá backup) | G2 |
@@ -50,6 +52,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | I1 | `cmd/staskimport` tests, `scripts/suite-cdc` | đo G3 |
 | P1 | `scripts/suite` (1698/2196 sau `suitefix`), `pgdiff` | các nhóm `compat-*` đang làm |
 | O1 | `docs/21_operations.md`, `/metrics`, `/v1/ready`, `staskctl` | kiểm đếm số thành phần phải vận hành cho mỗi kịch bản (một nút, cụm 3 nút) |
+| SLO-R2 | `scripts/r2-paginated-quota` (r2big.sh); đo sạch ở G3 ở 20M và 50M | số 10M hôm nay (không sạch): PG 6,5 s, STASK 21,7 s, ClickHouse 0,9 s: CHƯA đạt |
 | C1 | lần chạy 10 triệu dòng (`scripts/r2-paginated-quota`, kích thước đĩa PostgreSQL / STASK / ClickHouse) | đo sạch ở G3, nhiều kiểu dữ liệu |
 | M1 | `scripts/r2-paginated-quota` (10M) | bậc 20M, 50M ở G3 |
 | S1 | `accept/security.sh`, `kill9.sh`, `pitr.sh`, `scripts/suite-cdc` | diễn tập G2 |

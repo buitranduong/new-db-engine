@@ -11,7 +11,7 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 - **A. Không tệ hơn PostgreSQL 16** trên cùng dữ liệu, cùng truy vấn, cùng VM (PG16 là hệ thống đang bị thay): p50 và p99 của tra cứu điểm, tiền tố, đếm/nhóm, lịch sử một SIM; thời gian nhập.
 - **B. Các truy vấn khớp chuỗi** (hậu tố, chứa, đuôi đẹp) so với PG16 + `pg_trgm`. Elasticsearch không phải đối chứng (không coi là cơ sở dữ liệu).
 - **C. Ổn định:** p99 không tăng quá 2x giữa 10 phút đầu và 10 phút cuối của mỗi lượt chạy; RSS không tăng đều; không lỗi.
-- **D. Mọi chỉ tiêu tuyệt đối của người dùng** (khi có) thay A cho phép đo tương ứng.
+- **D. Mọi chỉ tiêu tuyệt đối của người dùng** (khi có) thay A cho phép đo tương ứng. **Đã có một (người dùng, 2026-10-31, `docs/29` SLO-R2):** tổng phản hồi website tối đa 1 đến 2 giây, lý tưởng khoảng 1 giây, nên câu R2 (phép đo số 2) được chấm theo trần 1 giây và lý tưởng dưới 0,5 giây (diễn giải, chờ xác nhận), p95, nóng, ở 20M và 50M, thay cho "không tệ hơn PostgreSQL 16". PostgreSQL và ClickHouse vẫn đo làm đối chiếu.
 
 ## 2. Kích thước (vừa VM: 8 vCPU, 31 GB RAM; đĩa trống ~12 GB, ~23 GB sau khi xoá cache Go)
 

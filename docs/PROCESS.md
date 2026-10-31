@@ -98,7 +98,7 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 - D18 sửa: Raft đã nối vào engine; đường HA chốt là cụm Raft 3 nút (bằng chứng: replica bất đồng bộ mất ghi đã xác nhận khi kill -9; cụm Raft 46 813 ghi xác nhận, 0 mất). Còn thiếu: đổi thành viên cụm, PITR trong cụm, kiểm với pgjdbc thật.
 - `staskd -heavy-workers` mặc định giữ TẮT (0) cho tới khi đo cuối (D32): agent aggfacet đổi sang tự động nhưng chưa đo; Phụ lục O ghi p99 ghi 43 -> 313 ms ở 20M khi bật làn nặng.
 - Chấp nhận phụ thuộc excelize v2.11.0 (BSD-3) và việc nâng x/crypto, x/net, x/sync, x/text, go 1.25.0.
-- Chấp nhận thay đổi định dạng cộng thêm (omitempty/có phiên bản): IndexDef.Storage, Column.Collation, IndexDef.Colls, meta trigger/hàm nạp chồng, loại danh mục `collation`, cờ First của histstore. Bản cũ đọc dữ liệu mới không hỏng nhưng không thấy tính năng mới.
+- Chấp nhận thay đổi định dạng cộng thêm (omitempty/có phiên bản): Column.Generated, ForeignKey.OnUpdate/Deferrable/InitiallyDeferred/NotValid, Check.NotValid, IndexDef.NullsNotDistinct, Table.Partitioned/PartPreds/PartDefault, loại danh mục `vchk`/`vpath` (nhánh compat-ddl), IndexDef.Storage, Column.Collation, IndexDef.Colls, meta trigger/hàm nạp chồng, loại danh mục `collation`, cờ First của histstore. Bản cũ đọc dữ liệu mới không hỏng nhưng không thấy tính năng mới.
 - Mặc định `-collation` = C. Bật `en_US.utf8` khớp 100% PG16 glibc trên 5 tập thử; chọn theo `datcollate` của PG production (chờ người dùng).
 
 ## D34 — Tiêu chí sẵn sàng cho prod, và các quyết định sau đợt phủ mã thứ hai (2026-10-31)

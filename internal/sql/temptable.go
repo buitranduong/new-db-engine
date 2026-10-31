@@ -357,6 +357,13 @@ func (c *catSnap) relExt(row []Datum, t *schema.Table) {
 	if t.MatUnpopulated {
 		row[24] = BoolD(false)
 	}
+	if t.Partitioned {
+		row[16] = TextD("p")
+	}
+	// foreign keys are enforced by internal triggers in PostgreSQL: the tables on both sides have triggers
+	if len(t.ForeignKeys) > 0 || len(c.s.E.FKRefs(t.Name)) > 0 {
+		row[20] = BoolD(true)
+	}
 }
 
 func init() {

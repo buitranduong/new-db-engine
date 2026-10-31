@@ -163,6 +163,11 @@ func (s *Session) dropIndex(d *DropIndex) (*Result, error) {
 			}
 		}
 		if def == nil {
+			for _, ts := range s.E.UserTables() { // the index of a primary key belongs to its constraint
+				if t := ts.Schema(); t.HasPK() && stripOwnSchema(pkeyName(t), schemaOfName(t.Name)) == bareName(name) {
+					return nil, errf(codeDependentObjects, "cannot drop index %s because constraint %s on table %s requires it", name, name, t.Name)
+				}
+			}
 			if d.IfExists {
 				res.Notice = fmt.Sprintf("index %q does not exist, skipping", name)
 				continue

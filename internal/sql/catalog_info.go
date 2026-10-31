@@ -2,6 +2,7 @@ package sql
 
 import (
 	"slices"
+	"strings"
 
 	"stask/internal/core"
 	"stask/internal/schema"
@@ -152,6 +153,13 @@ func init() {
 		"cycle_option:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, q := range c.seqs {
+			if i := strings.LastIndex(q.Owner, "."); i > 0 { // the sequence of an identity column is not listed
+				if t := c.tableNamed(q.Owner[:i]); t != nil {
+					if j := colIndex(t, q.Owner[i+1:]); j >= 0 && t.Columns[j].Identity != "" {
+						continue
+					}
+				}
+			}
 			prec, radix, scale, _ := numericInfo(seqTypeOID(q.Type))
 			rows = append(rows, []Datum{cat, pub, TextD(q.Name), TextD(q.Type), prec, radix, scale, TextD(itoa(q.Start)),
 				TextD(itoa(q.Min)), TextD(itoa(q.Max)), TextD(itoa(q.Inc)), TextD(boolStr(q.Cycle))})
@@ -308,8 +316,16 @@ func init() {
 		"is_trigger_insertable_into:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, v := range c.views {
-			rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD(" " + v.Query + ";"), TextD("NONE"), TextD("NO"),
-				TextD("NO"), TextD("NO"), TextD("NO"), TextD("NO")})
+			upd, opt := "NO", "NONE"
+			if _, ok := c.s.simpleViewOf(v.Name); ok {
+				upd = "YES"
+				opt = map[string]string{"cascaded": "CASCADED", "local": "LOCAL", "partition": "CASCADED"}[c.s.viewOption(v.Name)]
+				if opt == "" {
+					opt = "NONE"
+				}
+			}
+			rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD(" " + v.Query + ";"), TextD(opt), TextD(upd),
+				TextD(upd), TextD("NO"), TextD("NO"), TextD("NO")})
 		}
 		return rows
 	})

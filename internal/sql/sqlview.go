@@ -83,6 +83,16 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 			return nil, true, err
 		}
 	}
+	if p.isKw("with") && p.peekN(1).k == tOp && p.peekN(1).s == "(" { // WITH (security_barrier, check_option = local, ...)
+		p.next()
+		opts, err := p.parseOptions()
+		if err != nil {
+			return nil, true, err
+		}
+		if v, ok := opts["check_option"]; ok {
+			c.CheckOpt = strings.ToLower(strings.Trim(v, "'\""))
+		}
+	}
 	if err := p.expectKw("as"); err != nil {
 		return nil, true, err
 	}

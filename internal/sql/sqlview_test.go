@@ -123,11 +123,14 @@ func TestSQLView(t *testing.T) {
 	}
 
 	// ALTER TABLE that would break the stored query is refused
-	for _, q := range []string{`ALTER TABLE emp DROP COLUMN sal`, `ALTER TABLE emp RENAME TO emp2`, `ALTER TABLE emp RENAME COLUMN sal TO pay`} {
+	for _, q := range []string{`ALTER TABLE emp DROP COLUMN sal`, `ALTER TABLE emp RENAME COLUMN sal TO pay`} {
 		if _, err := tryRun(s, q); code(err) != "2BP01" {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
+	// a RENAME of the table rewrites the views that read it, as PostgreSQL's OID binding keeps them working
+	run(t, s, `ALTER TABLE emp RENAME TO emp2`)
+	run(t, s, `ALTER TABLE emp2 RENAME TO emp`)
 	run(t, s, `ALTER TABLE emp ADD COLUMN more BIGINT`) // harmless
 
 	// dependencies

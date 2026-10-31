@@ -16,7 +16,8 @@ import (
 type AlterView struct {
 	Name, NewName string
 	IfExists, Mat bool
-	Noop          bool // OWNER TO, SET (..): accepted
+	Noop          bool   // OWNER TO, SET (..): accepted
+	Col, NewCol   string // RENAME COLUMN
 }
 
 func (*AlterView) stmt() {}
@@ -34,6 +35,16 @@ func (p *parser) alterView() (Stmt, bool, error) {
 		return nil, true, err
 	}
 	switch {
+	case p.acceptKw("rename", "column"), p.isKw("rename") && p.peekN(1).s != "to" && p.next().k == tIdent:
+		if a.Col, err = p.ident(); err != nil {
+			return nil, true, err
+		}
+		if err = p.expectKw("to"); err != nil {
+			return nil, true, err
+		}
+		if a.NewCol, err = p.ident(); err != nil {
+			return nil, true, err
+		}
 	case p.acceptKw("rename", "to"):
 		if a.NewName, err = p.ident(); err != nil {
 			return nil, true, err
@@ -70,6 +81,12 @@ func (s *Session) alterView(a *AlterView) (*Result, error) {
 		if a.Noop {
 			return res, nil
 		}
+		if a.Col != "" {
+			if _, err := s.alterTable(&AlterTable{Name: a.Name, Actions: []AlterAction{{Kind: "rename_column", Column: a.Col, NewName: a.NewCol}}}); err != nil {
+				return nil, err
+			}
+			return res, nil
+		}
 		nn := a.NewName
 		if sch := schemaOfName(a.Name); sch != "public" {
 			nn = sch + "." + nn
@@ -94,6 +111,22 @@ func (s *Session) alterView(a *AlterView) (*Result, error) {
 		return nil, errf(codeUndefinedTable, "relation %q does not exist", a.Name)
 	}
 	if a.Noop {
+		return res, nil
+	}
+	if a.Col != "" {
+		def := *v
+		def.Cols = slices.Clone(v.Cols)
+		i := slices.Index(def.Cols, a.Col)
+		if i < 0 {
+			return nil, errf(codeUndefinedColumn, "column %q does not exist", a.Col)
+		}
+		if slices.Contains(def.Cols, a.NewCol) {
+			return nil, errf("42701", "column %q of relation %q already exists", a.NewCol, a.Name)
+		}
+		def.Cols[i] = a.NewCol
+		if err := s.E.PutView(def, true); err != nil {
+			return nil, AsError(err)
+		}
 		return res, nil
 	}
 	nn := a.NewName

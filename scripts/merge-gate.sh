@@ -13,6 +13,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH=$PATH:/usr/local/go/bin
+# One gate at a time: parallel gates overload the machine and make timing tests flaky.
+exec 9>/tmp/stask-merge-gate.lock; flock 9
 NCPU=$(nproc 2>/dev/null || echo 2)
 if [ -z "${P:-}" ]; then if [ "$NCPU" -ge 8 ]; then P=4; else P=2; fi; fi
 RP=${RACE_P:-2}   # -race slows timing-sensitive tests (pgwire statement_timeout failed at 4 + claimcheck): keep it at 2
@@ -52,7 +54,7 @@ claim() {
 if [ "${RACE:-}" = 1 ]; then
   step "race + claimcheck (parallel)"
   claim > "$W/claim.log" 2>&1 & CPID=$!
-  go test -p "$RP" -race -count=1 ./internal/core ./internal/sql ./internal/pgwire ./internal/repl ./internal/wal || { wait "$CPID" 2>/dev/null; exit 1; }
+  go test -p "$RP" -race -count=1 -timeout 40m ./internal/core ./internal/sql ./internal/pgwire ./internal/repl ./internal/wal || { wait "$CPID" 2>/dev/null; exit 1; }
   wait "$CPID" || { cat "$W/claim.log"; echo "claimcheck run failed"; exit 1; }
 else
   step claimcheck

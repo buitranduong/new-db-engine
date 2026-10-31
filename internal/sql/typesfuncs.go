@@ -4,14 +4,20 @@ import "strings"
 
 // typesCall runs the functions of the added types (interval, ranges, macaddr8, bit strings; exttypes.go).
 func (c *evalCtx) typesCall(f *Func, args []Datum) (Datum, bool, error) {
-	if typesFuncNames[f.Name] {
+	if rngTagOfName(f.Name) != 0 {
+		return rangeFunc(f.Name, args)
+	}
+	tagged := false
+	for _, a := range args {
+		if a.K == KText && a.D != 0 {
+			tagged = true
+			break
+		}
+	}
+	if tagged {
 		for _, a := range args {
-			if a.IsNull() && f.Name != "make_interval" && rngTagOfName(f.Name) == 0 {
-				for _, b := range args {
-					if isRange(b) {
-						return Null, true, nil
-					}
-				}
+			if a.IsNull() {
+				return Null, true, nil
 			}
 		}
 		switch f.Name {
@@ -24,9 +30,16 @@ func (c *evalCtx) typesCall(f *Func, args []Datum) (Datum, bool, error) {
 		case "stask_rng_adjacent":
 			return rangeBinary("-|-", args[0], args[1])
 		}
+		if d, ok, err := bitFunc(f.Name, args); ok {
+			return d, true, err
+		}
+		if d, ok, err := macFunc(f.Name, args); ok {
+			return d, true, err
+		}
 		if d, ok, err := rangeFunc(f.Name, args); ok {
 			return d, true, err
 		}
+		return Null, false, nil
 	}
 	switch f.Name {
 	case "justify_days", "justify_hours", "justify_interval":
@@ -101,7 +114,9 @@ func (c *evalCtx) typesCall(f *Func, args []Datum) (Datum, bool, error) {
 }
 
 var typesFuncNames = func() map[string]bool {
-	m := map[string]bool{"justify_days": true, "justify_hours": true, "justify_interval": true, "make_interval": true, "isfinite": true,
+	m := map[string]bool{"length": true, "bit_length": true, "octet_length": true, "bit_count": true, "get_bit": true, "set_bit": true,
+		"substr": true, "substring": true, "overlay": true, "strpos": true, "trunc": true, "macaddr8_set7bit": true,
+		"justify_days": true, "justify_hours": true, "justify_interval": true, "make_interval": true, "isfinite": true,
 		"stask_contains": true, "stask_contained": true, "stask_overlap": true, "stask_rng_overleft": true, "stask_rng_overright": true,
 		"stask_rng_adjacent": true, "isempty": true, "lower": true, "upper": true, "lower_inc": true, "upper_inc": true,
 		"lower_inf": true, "upper_inf": true, "range_merge": true}
@@ -118,8 +133,14 @@ func typesFuncKind(name string, args []Kind) (Kind, bool) {
 		return KInterval, true
 	case "stask_rng_overleft", "stask_rng_overright", "stask_rng_adjacent", "isempty", "lower_inc", "upper_inc", "lower_inf", "upper_inf":
 		return KBool, true
-	case "range_merge":
+	case "range_merge", "macaddr8_set7bit", "set_bit":
 		return KText, true
+	case "bit_count", "get_bit":
+		return KInt, true
+	case "trunc":
+		if len(args) == 1 && args[0] == KText { // trunc(macaddr)
+			return KText, true
+		}
 	}
 	if rngTagOfName(name) != 0 {
 		return KText, true

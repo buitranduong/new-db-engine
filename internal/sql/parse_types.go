@@ -103,3 +103,18 @@ func ivLastUnit(mask int) string {
 	}
 	return "year"
 }
+
+// bitLitEnd is the index of the quote that closes a B'..' / X'..' literal whose digits start at i, or -1 when the
+// digits are not a plain run of alphanumerics (then the text is an ordinary identifier followed by a string).
+func bitLitEnd(src string, i int) int {
+	for j := i; j < len(src); j++ {
+		switch c := src[j]; {
+		case c == '\'':
+			return j
+		case c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
+		default:
+			return -1
+		}
+	}
+	return -1
+}

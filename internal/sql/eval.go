@@ -166,6 +166,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return BoolD(v.I == 0), nil
 		}
 		if e.Op == "~" {
+			if d, ok, err := typesUnary("~", v); ok { // bit strings, macaddr (exttypes.go)
+				return d, err
+			}
 			if v.K != KInt {
 				return Null, errf(codeUndefinedFunction, "operator does not exist: ~ %s", v.K)
 			}
@@ -292,6 +295,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		}
 		if strings.HasPrefix(e.PG, "ut:") { // a cast to an enum or domain
 			return c.castUser(e, v)
+		}
+		if d, ok, err := extCast(v, e); ok { // bit string <-> integer (exttypes.go)
+			return d, err
 		}
 		if d, ok, err := c.castCatalog(v, e.Type); ok {
 			return d, err

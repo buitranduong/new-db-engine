@@ -105,6 +105,9 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if e.Name == "avg" && arg() == KInterval {
 				return KInterval
 			}
+			if e.Name == "trunc" && arg() == KText { // trunc(macaddr)
+				return KText
+			}
 			if e.Name == "round" && len(e.Args) == 1 && arg() == KInt {
 				return KInt
 			}

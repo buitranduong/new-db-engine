@@ -37,6 +37,8 @@ DELETE FROM iv WHERE d < '0' RETURNING id;
 CREATE INDEX iv_d ON iv (d);
 SELECT id FROM iv WHERE d >= '1 month' ORDER BY d, id;
 SELECT id FROM iv WHERE d = '1 mon' ORDER BY id;
+SELECT id FROM iv WHERE d = '720:00:00' ORDER BY id;
+SELECT id FROM iv WHERE d > '29 days' AND d <= '30 days' ORDER BY id;
 CREATE TABLE iv2 (d interval PRIMARY KEY);
 INSERT INTO iv2 VALUES ('1 day'), ('2 days'), ('1 hour');
 INSERT INTO iv2 VALUES ('1 day');
@@ -213,6 +215,8 @@ UPDATE rg SET dr = daterange(lower(dr), upper(dr), '[]') WHERE id = 4 RETURNING 
 CREATE INDEX rg_ir ON rg (ir);
 CREATE INDEX rg_dr ON rg (dr);
 SELECT id FROM rg WHERE ir = '[3,7)' ORDER BY id;
+SELECT id FROM rg WHERE ir = '[3,6]' ORDER BY id;
+SELECT id FROM rg WHERE nr = '[1.50,2.5]' ORDER BY id;
 SELECT id FROM rg WHERE ir > '[3,7)' ORDER BY ir, id;
 SELECT id FROM rg WHERE dr >= '[2024-01-15,)' ORDER BY dr, id;
 CREATE TABLE rg2 (r int4range PRIMARY KEY, n int);
@@ -252,6 +256,131 @@ SELECT $1::int4range;
 SELECT id FROM rgb WHERE ir @> $1::int4 ORDER BY id;
 -- args: [2024-01-01,2024-01-15]
 SELECT $1::daterange;
+
+-- ### 15_types_more/macaddr-input
+SET search_path = s15;
+SELECT '08:00:2b:01:02:03'::macaddr, '08-00-2b-01-02-03'::macaddr, '08002b:010203'::macaddr, '08002b-010203'::macaddr, '0800.2b01.0203'::macaddr, '0800-2b01-0203'::macaddr, '08002b010203'::macaddr, 'AA:BB:CC:DD:EE:FF'::macaddr;
+SELECT '08:00:2b:01:02:03'::macaddr8, '08-00-2b-01-02-03'::macaddr8, '08002b:010203'::macaddr8, '0800.2b01.0203'::macaddr8, '08002b010203'::macaddr8, 'AA:BB:CC:DD:EE:FF'::macaddr8;
+SELECT '08:00:2b:01:02:03:04:05'::macaddr8, '08-00-2b-01-02-03-04-05'::macaddr8, '08002b:0102030405'::macaddr8, '08002b-0102030405'::macaddr8, '0800.2b01.0203.0405'::macaddr8, '0800-2b01-0203-0405'::macaddr8, '08002b01:02030405'::macaddr8, '08002b0102030405'::macaddr8;
+SELECT '08:00:2b:01:02'::macaddr;
+SELECT '08:00:2b:01:02:03:04'::macaddr8;
+SELECT 'xx:00:2b:01:02:03'::macaddr8;
+SELECT '08:00:2b:01:02:03:04:05'::macaddr;
+SELECT pg_typeof('08:00:2b:01:02:03'::macaddr8)::text, pg_typeof(~'08:00:2b:01:02:03'::macaddr8)::text, pg_typeof(trunc('08:00:2b:01:02:03'::macaddr))::text;
+
+-- ### 15_types_more/macaddr-ops
+SET search_path = s15;
+SELECT ~'08:00:2b:01:02:03'::macaddr, ~'08:00:2b:01:02:03:04:05'::macaddr8;
+SELECT '08:00:2b:01:02:03'::macaddr & 'ff:ff:ff:00:00:00'::macaddr, '08:00:2b:01:02:03'::macaddr | '00:00:00:ff:ff:ff'::macaddr;
+SELECT '08:00:2b:01:02:03:04:05'::macaddr8 & 'ff:ff:ff:00:00:00:00:00'::macaddr8, '08:00:2b:01:02:03:04:05'::macaddr8 | '00:00:00:ff:ff:ff:ff:ff'::macaddr8;
+SELECT trunc('08:00:2b:01:02:03'::macaddr), trunc('08:00:2b:01:02:03:04:05'::macaddr8), macaddr8_set7bit('00:00:2b:01:02:03:04:05'::macaddr8), macaddr8_set7bit('08:00:2b:01:02:03'::macaddr8);
+SELECT '08:00:2b:01:02:03'::macaddr = '08:00:2b:01:02:03', '08:00:2b:01:02:03'::macaddr = '08-00-2B-01-02-03', '08:00:2b:01:02:03'::macaddr < '08:00:2b:01:02:04'::macaddr, '08:00:2b:01:02:03'::macaddr8 = '08:00:2b:ff:fe:01:02:03'::macaddr8, '09:00:2b:01:02:03'::macaddr > '08:00:2b:ff:ff:ff'::macaddr;
+SELECT '08:00:2b:01:02:03'::macaddr::macaddr8, '08:00:2b:ff:fe:01:02:03'::macaddr8::macaddr;
+SELECT '08:00:2b:01:02:03:04:05'::macaddr8::macaddr;
+SELECT '08:00:2b:01:02:03'::macaddr::text, '08:00:2b:01:02:03:04:05'::macaddr8::text;
+
+-- ### 15_types_more/macaddr-column
+SET search_path = s15;
+CREATE TABLE mc (id int PRIMARY KEY, m macaddr, m8 macaddr8);
+INSERT INTO mc VALUES (1, '08:00:2b:01:02:03', '08:00:2b:01:02:03:04:05');
+INSERT INTO mc VALUES (2, 'AA-BB-CC-DD-EE-FF', 'aabbccddeeff0011');
+INSERT INTO mc VALUES (3, '00:00:00:00:00:01', '0800.2b01.0203');
+INSERT INTO mc VALUES (4, NULL, NULL);
+SELECT * FROM mc ORDER BY id;
+SELECT id FROM mc WHERE m = 'AA:BB:CC:DD:EE:FF' ORDER BY id;
+SELECT id FROM mc WHERE m8 > '08:00:2b:01:02:03:04:00' ORDER BY m8, id;
+SELECT id FROM mc ORDER BY m8, id;
+SELECT id, trunc(m), ~m8 FROM mc ORDER BY id;
+SELECT id, m8::macaddr FROM mc WHERE id = 3;
+CREATE UNIQUE INDEX mc_m ON mc (m);
+INSERT INTO mc VALUES (5, '08-00-2b-01-02-03', NULL);
+SELECT id FROM mc WHERE m = '08002b010203';
+SELECT m, count(*) FROM mc GROUP BY m ORDER BY m;
+SELECT pg_typeof(m)::text, pg_typeof(m8)::text FROM mc LIMIT 1;
+SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'mc'::regclass AND attnum > 1 ORDER BY attnum;
+CREATE TABLE mcb (id int, m macaddr, m8 macaddr8);
+INSERT INTO mcb VALUES (1, '08:00:2b:01:02:03', '08:00:2b:01:02:03:04:05'), (2, NULL, NULL);
+COPY s15.mcb TO STDOUT;
+COPY s15.mcb TO STDOUT WITH (FORMAT binary);
+-- stdin: 3\t0a:0b:0c:0d:0e:0f\t0a-0b-0c-0d-0e-0f-10-11\n
+COPY s15.mcb FROM STDIN;
+SELECT * FROM mcb ORDER BY id;
+-- args: aa:bb:cc:dd:ee:ff
+SELECT $1::macaddr8;
+
+-- ### 15_types_more/bit-literals
+SET search_path = s15;
+SELECT B'101', B'', X'1F', x'ff', B'1'::bit(4), B'101'::bit(5), B'101'::bit(2), '101'::bit(3), '101'::varbit, '101'::varbit(2), 'x1F'::bit(8);
+SELECT pg_typeof(B'101')::text, pg_typeof(B'101'::varbit)::text, pg_typeof(X'1F')::text, length(B'10101'), bit_length(B'10101'), octet_length(B'10101'), octet_length(B'');
+SELECT B'1' = B'1', B'101' = B'101', B'101' < B'110', B'1' < B'10', B'10' > B'1', B'01' < B'1', B'0' < B'00', B'101' <> B'100';
+SELECT B'1100' & B'1010', B'1100' | B'1010', B'1100' # B'1010', ~B'1100', B'1100' << 1, B'1100' << 2, B'1100' >> 1, B'1100' >> 5, B'1100' << 9, B'1100' << -1;
+SELECT B'101' || B'11', B'' || B'1', B'1' || B'0' || B'1';
+SELECT B'1100' & B'101';
+SELECT B'1100' | B'101';
+SELECT B'1100' # B'101';
+SELECT get_bit(B'10110', 0), get_bit(B'10110', 1), get_bit(B'10110', 4), set_bit(B'10110', 0, 0), set_bit(B'10110', 1, 1), bit_count(B'10110'), bit_count(B'');
+SELECT get_bit(B'101', 3);
+SELECT set_bit(B'101', 1, 2);
+SELECT substring(B'101101' from 2 for 3), substring(B'101101' from 4), substring(B'101101' from 0 for 3), substring(B'101101' from 5 for 10), substring(B'101101' from 7);
+SELECT position(B'11' in B'0110'), position(B'111' in B'0110'), position(B'' in B'0110');
+SELECT overlay(B'101101' placing B'00' from 2), overlay(B'101101' placing B'00' from 2 for 3), overlay(B'101101' placing B'' from 3 for 2);
+SELECT 5::bit(8), 5::bit(3), 5::bit(2), (-1)::bit(4), 5::bit, 255::bit(16), (-1)::bit(40), 5::bigint::bit(70);
+SELECT B'101'::int, B'11111111'::int, B'11111111'::bigint, B'1'::int;
+SELECT ('1' || repeat('0', 33))::varbit::int;
+SELECT B'102';
+SELECT '1010'::bit(3)::text, B'1010'::text, B'101'::varbit(5)::text;
+SELECT B'111' & '101', '101' | B'010';
+SELECT x'zz';
+
+-- ### 15_types_more/bit-column
+SET search_path = s15;
+CREATE TABLE bt (id int PRIMARY KEY, b bit(4), v varbit(6), w bit varying, f bit);
+INSERT INTO bt VALUES (1, B'1010', B'101', B'1', B'1');
+INSERT INTO bt VALUES (2, '0110', '', '10101010101', '0');
+INSERT INTO bt VALUES (3, B'0000', B'111111', NULL, NULL);
+INSERT INTO bt VALUES (4, X'F', B'01', B'', B'1');
+INSERT INTO bt VALUES (5, B'101', NULL, NULL, NULL);
+INSERT INTO bt VALUES (6, B'1010', B'1111111', NULL, NULL);
+INSERT INTO bt VALUES (7, B'1010', B'1', NULL, B'11');
+SELECT * FROM bt ORDER BY id;
+SELECT id, b FROM bt ORDER BY b, id;
+SELECT id, v FROM bt ORDER BY v, id;
+SELECT id, w FROM bt ORDER BY w DESC, id;
+SELECT id FROM bt WHERE b = B'1010' ORDER BY id;
+SELECT id FROM bt WHERE b = '1010' ORDER BY id;
+SELECT id FROM bt WHERE v > B'1' ORDER BY id;
+SELECT id FROM bt WHERE v BETWEEN B'0' AND B'11' ORDER BY id;
+SELECT id, b & B'0110', b | B'0001', b # B'1111', ~b, b << 1, b >> 1, b || v FROM bt WHERE id IN (1, 2, 4) ORDER BY id;
+SELECT id, length(b), length(v), bit_length(w), get_bit(b, 1), bit_count(b), substring(v from 1 for 2), b::int FROM bt WHERE id IN (1, 2, 4) ORDER BY id;
+UPDATE bt SET b = b # B'1111', v = set_bit(v, 0, 1) WHERE id = 1 RETURNING b, v;
+SELECT b, count(*) FROM bt GROUP BY b ORDER BY b;
+SELECT DISTINCT v FROM bt ORDER BY v;
+CREATE INDEX bt_v ON bt (v);
+SELECT id FROM bt WHERE v >= B'11' ORDER BY v, id;
+SELECT pg_typeof(b)::text, pg_typeof(v)::text, pg_typeof(w)::text, pg_typeof(f)::text, pg_typeof(b & b)::text, pg_typeof(b || v)::text, pg_typeof(~v)::text FROM bt LIMIT 1;
+SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'bt'::regclass AND attnum > 1 ORDER BY attnum;
+CREATE TABLE bt2 AS SELECT id, b, v FROM bt WHERE id < 4;
+SELECT * FROM bt2 ORDER BY id;
+SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'bt2'::regclass AND attnum > 1 ORDER BY attnum;
+CREATE TABLE bt3 (b bit(3) DEFAULT B'101', c varbit(4) CHECK (length(c) > 1));
+INSERT INTO bt3 (c) VALUES (B'11');
+INSERT INTO bt3 (c) VALUES (B'1');
+SELECT * FROM bt3;
+SELECT typname, typcategory::text FROM pg_type WHERE typname IN ('bit', 'varbit', 'macaddr8') ORDER BY typname;
+
+-- ### 15_types_more/bit-binary
+SET search_path = s15;
+CREATE TABLE btb (id int, b bit(5), v varbit);
+INSERT INTO btb VALUES (1, B'10110', B'101'), (2, B'00000', B''), (3, NULL, B'1111111111'), (4, B'11111', NULL);
+COPY s15.btb TO STDOUT;
+COPY s15.btb TO STDOUT WITH (FORMAT binary);
+-- stdin: 5\t01010\t0101010101\n
+COPY s15.btb FROM STDIN;
+SELECT * FROM btb ORDER BY id;
+-- args: 10101
+SELECT $1::varbit;
+-- args: 10101
+SELECT $1::bit(5) & B'11000';
 
 -- ### 15_types_more/teardown
 DROP SCHEMA s15 CASCADE;

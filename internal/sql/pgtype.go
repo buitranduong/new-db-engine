@@ -234,7 +234,11 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		}
 	case *Unary:
 		if e.Op == "-" || e.Op == "+" || e.Op == "~" {
-			return inferTy(e.X, leaf)
+			t := inferTy(e.X, leaf)
+			if e.Op == "~" && isBitOID(t.oid) { // ~varbit is a bit
+				t = pgTy{oid: 1560, mod: -1}
+			}
+			return t
 		}
 	case *Binary:
 		if t, ok := extBinaryTy(e, inferTy(e.L, leaf), inferTy(e.R, leaf)); ok {
@@ -454,6 +458,9 @@ func formatType(oid uint32, mod int32) string {
 
 // castName is the name PostgreSQL gives an unnamed cast column: the type.
 func castName(c *Cast) string {
+	if c.Type == "bitlit" { // B'101' is an unnamed column
+		return "?column?"
+	}
 	if n := arrayCastName(c); n != "" {
 		return n
 	}
@@ -473,6 +480,9 @@ func castName(c *Cast) string {
 			return "time"
 		}
 		if n, ok := extTyName(t.oid); ok {
+			if t.oid == 1562 {
+				return "varbit"
+			}
 			return n
 		}
 		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyFloat4: "float4", tyName: "name", tyDate: "date", 26: "oid",
@@ -482,6 +492,8 @@ func castName(c *Cast) string {
 		return "numeric"
 	}
 	switch c.Type {
+	case "bitlit": // B'101' is an unnamed column
+		return "?column?"
 	case "int":
 		return "int8"
 	case "float":

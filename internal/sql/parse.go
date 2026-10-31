@@ -1794,6 +1794,11 @@ func (p *parser) primary() (Expr, error) {
 				}
 				return &Subquery{Q: q, Array: true}, p.expectOp(")")
 			}
+		case "stask_bitlit":
+			if p.peekN(1).k == tString {
+				p.next()
+				return bitLiteral(p.next().s), nil
+			}
 		case "interval":
 			// INTERVAL '1 day', INTERVAL '2' HOUR, ClickHouse INTERVAL 2 HOUR
 			if p.peekN(1).k == tString {

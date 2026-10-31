@@ -1609,5 +1609,5 @@ Lệnh tái lập: `SCRIPTS=/tmp/sg2/scr PGP=29532 HP=29190 SP=29533 NAME=sg2-pg
 
 **Chênh lệch/lưu ý.** (a) Chênh lệch thông điệp (cùng SQLSTATE): `invalid input syntax for type bigint` thay vì `integer` (kiểu số nguyên nội bộ), `function f does not exist` thiếu `()`, `trigger functions cannot be called directly` thay vì `can only be called as triggers`. (b) Lỗi phát hiện nhờ thử: gọi hàm plpgsql `RETURNS bảng` bằng `RETURN ROW(a,b)` trước đây trả 0 dòng (nay trả dòng, `plcall.go`); `recordText` in bool là `true` thay vì `t` (nay đúng PG). (c) Hành vi cũ giữ: hàm trả SETOF trong select list chỉ lấy cột đầu.
 
-**Cổng.** Xem báo cáo cuối của nhánh (kết quả `RACE=1 scripts/merge-gate.sh` ghi ở commit cuối).
+**Cổng.** `RACE=1 bash scripts/merge-gate.sh > /tmp/gate-sqlgaps2.log` trên `e6d59d0`: gofmt, build, vet, test thường (mọi gói) OK; `-race` OK cho `sql` (589 s), `pgwire`, `repl`, `wal`; **gate thoát 1 vì `-race ./internal/core` chạm timeout 10 phút của gói** khi VM đang chạy 4 gate song song (load ~15; nhánh này không sửa `internal/core`). Chạy lại riêng `go test -race -count=1 -timeout 45m ./internal/core` khi tải thấp hơn: `ok 604 s`. Bước claimcheck của gate chưa chạy tới (gate dừng ở bước race), nên **chưa có số claimcheck cho nhánh này**; orchestrator cần chạy lại gate khi VM rảnh. Không có phép đo hiệu năng nào.
 

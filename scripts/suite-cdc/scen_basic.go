@@ -283,6 +283,7 @@ func scenBasic(t *T) {
 		last = tx.CommitLSN
 		for _, r := range tx.Rels {
 			rels[r]++
+			t.Logf("tx %d (%s) carries relation message %q", i, exp[i].label, r)
 		}
 	}
 	for r, k := range rels {

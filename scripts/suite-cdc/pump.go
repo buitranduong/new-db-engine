@@ -112,6 +112,20 @@ func (p *Pump) run() {
 		}
 		if !p.NoAck {
 			if err := p.R.Ack(bg(), tx.EndLSN); err != nil {
+				if p.Reconnect != nil { // the connection died under the acknowledgement: same as on receive
+					p.R.Close()
+					var start pglogrepl.LSN
+					if p.Ap != nil {
+						start = p.Ap.LastEnd
+					}
+					if r, rerr := p.Reconnect(start); rerr == nil {
+						p.mu.Lock()
+						p.R = r
+						p.Reconnects++
+						p.mu.Unlock()
+						continue
+					}
+				}
 				p.mu.Lock()
 				p.Err = fmt.Errorf("ack: %w", err)
 				p.mu.Unlock()

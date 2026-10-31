@@ -113,6 +113,7 @@ func (s scenario) run(env *Env, seed int64, limit time.Duration) (t *T) {
 		buf = buf[:runtime.Stack(buf, true)]
 		t.Logf("goroutines at the timeout:\n%s", buf)
 		t.Errorf("scenario did not finish within %v", limit)
+		t.Env.StopAll() // a stuck scenario must not leave its servers behind
 	}
 	return t
 }
@@ -192,6 +193,10 @@ func main() {
 	fmt.Print("\n" + sum.String())
 	os.WriteFile(filepath.Join(*out, "report.txt"), []byte(sum.String()+"\n"+rep.String()), 0o644)
 	fmt.Printf("report: %s\n", filepath.Join(*out, "report.txt"))
+	env.StopAll()
+	if !*keep {
+		os.RemoveAll(*work)
+	}
 	if failed > 0 {
 		os.Exit(1)
 	}

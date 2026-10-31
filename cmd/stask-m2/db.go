@@ -84,6 +84,14 @@ type TxResult struct {
 	Codes    map[string]int // sqlstates seen on failed attempts
 }
 
+// txContext detaches a live transaction from the end of the run: a transaction that was sent to the server must be
+// allowed to finish (commit or fail) before the final checks read the journal and the tables, otherwise a COMMIT that
+// the client abandoned at the deadline lands on the server between those reads (B2: an order that "has no journal row").
+// A crash is not affected: the connection error ends the attempt.
+func txContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+}
+
 // RunTx runs fn in a transaction with retry on 40001/40P01 (and on connection loss before COMMIT, after reconnecting).
 // fn returns commit=false for a no-op (rolled back).
 func (s *Sess) RunTx(ctx context.Context, maxAttempts int, fn func(ctx context.Context, tx pgx.Tx) (bool, error)) TxResult {

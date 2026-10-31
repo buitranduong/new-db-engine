@@ -176,9 +176,15 @@ func (t *Tree) User() []byte {
 // (alternating slots, CRC), fsync. A crash before the second fsync leaves the
 // previous checkpoint fully intact because nothing it reaches was overwritten.
 func (t *Tree) Checkpoint(user []byte) error {
-	if len(user) > MaxUser {
-		return ErrTooLarge
-	}
+	return t.CheckpointFn(func() []byte { return user })
+}
+
+// CheckpointFn is Checkpoint with the user blob computed by userFn at the
+// instant the state is frozen (tree lock held, so no write is half applied):
+// the blob can describe exactly the state that becomes durable, for example
+// the highest log position any entry of it came from. userFn must be quick
+// and must not call into the tree.
+func (t *Tree) CheckpointFn(userFn func() []byte) error {
 	t.cpmu.Lock()
 	defer t.cpmu.Unlock()
 
@@ -186,6 +192,11 @@ func (t *Tree) Checkpoint(user []byte) error {
 	if t.failed != nil {
 		t.mu.Unlock()
 		return t.failed
+	}
+	user := userFn()
+	if len(user) > MaxUser {
+		t.mu.Unlock()
+		return ErrTooLarge
 	}
 	s := t.freezeLocked()
 	// Free list for this checkpoint: everything reusable now, everything

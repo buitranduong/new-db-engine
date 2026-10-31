@@ -52,6 +52,18 @@ type Options struct {
 	// SidxHook is called at the steps of an index storage conversion (tests
 	// copy the data directory in it to capture a crash image).
 	SidxHook func(step string)
+	// SidxMigMemOps: mutations of an index kept in RAM while it is converted
+	// before the rest of the conversion log goes to a temp file (default
+	// 65536).
+	SidxMigMemOps int
+	// ArenaCompactMinDead: dead key-arena bytes of a table from which its
+	// primary index is rebuilt into a fresh arena (default 64 MiB; negative
+	// disables).
+	ArenaCompactMinDead int64
+	// IndexMemBudget is the RAM, in bytes, index structures may hold (0: no
+	// budget); BudgetSample is how often it is sampled (default 10 s).
+	IndexMemBudget int64
+	BudgetSample   time.Duration
 	// ArchiveDir: copy each sealed log segment there (archive.go).
 	// RestoreArchive: before recovery, take the segments the log lacks
 	// from this archive, and stop replay at RecoveryTargetLSN or at the
@@ -166,10 +178,11 @@ type TableState struct {
 	// The index is immutable once published: the installer applies each
 	// batch to a copy-on-write clone and publishes it, so readers never
 	// lock and scans and checkpoints need no copy.
-	idx  atomic.Pointer[tree]
-	keys keyArena // long keys of every version of idx
-	live atomic.Int64
-	e    *Engine
+	idx       atomic.Pointer[tree]
+	keys      atomic.Pointer[keyArena] // long keys of every version of idx (replaced by arenacompact.go)
+	arenaBusy atomic.Bool
+	live      atomic.Int64
+	e         *Engine
 
 	// DROP TABLE and TRUNCATE (which replaces the table by an empty one
 	// with a new ID). dropping is set by the committer when it places the
@@ -234,6 +247,14 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
+	// disk secondary index persistence counters (secpersist.go)
+	SidxCkpts, SidxAdopted, SidxRebuilt, SidxAsync atomic.Int64
+	// key arena compaction (arenacompact.go)
+	ArenaCompactions, ArenaReclaimed, ArenaCompactGaveUp atomic.Int64
+	// index memory budget (idxbudget.go)
+	BudgetAlerts atomic.Int64
+	budget       budgetState
+
 	trig trigCache // row triggers (trigger.go)
 	// histTail supplies versions older than the log still holds (histtail.go); nil = none
 	histTail atomic.Pointer[HistoryTailFunc]
@@ -382,11 +403,9 @@ func Open(opts Options) (*Engine, error) {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	// disk secondary indexes are rebuilt at every start; whatever a crash
-	// left here (a temp file, an orphan) is junk (secdisk.go)
-	if err := os.RemoveAll(filepath.Join(opts.Dir, "sidx")); err != nil {
-		return nil, err
-	}
+	// the disk secondary index files are reused only when proved good, and
+	// whatever else a crash left in sidx is removed after the checkpoint is
+	// loaded (secpersist.go)
 	if opts.RestoreArchive != "" {
 		if err := restoreFromArchive(filepath.Join(opts.Dir, "wal"), opts.RestoreArchive, opts.SegmentSize, opts.Logf); err != nil {
 			return nil, fmt.Errorf("restore from archive: %w", err)
@@ -437,6 +456,14 @@ func Open(opts Options) (*Engine, error) {
 	if !opts.Replica {
 		e.wg.Add(1)
 		go e.committer()
+		if opts.IndexMemBudget > 0 {
+			e.wg.Add(1)
+			go e.budgetMonitor()
+		}
+		if opts.ArenaCompactMinDead >= 0 {
+			e.wg.Add(1)
+			go e.arenaCompactor()
+		}
 	}
 	if opts.GC && !opts.Replica && !opts.Cluster {
 		e.wg.Add(1)
@@ -490,7 +517,8 @@ func (e *Engine) addTable(t *schema.Table) (*TableState, error) {
 	ts.sch.Store(t)
 	ts.durable.Store(t)
 	e.fkCache.Store(nil)
-	ts.idx.Store(newTree(&ts.keys))
+	ts.keys.Store(&keyArena{})
+	ts.idx.Store(newTree(ts.keys.Load()))
 	if t.DroppedLSN == 0 {
 		// a new table is empty; a table from a checkpoint gets its
 		// entries from rebuildSec once its rows are loaded

@@ -72,6 +72,27 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// With -disk the secondary and trigram indexes are moved to disk and the heap
+// shrinks; the estimate of RAM the engine reports follows.
+func TestRunSmallDisk(t *testing.T) {
+	rep, err := run(config{N: 20000, Dir: t.TempDir() + "/mm", Dist: "prefix", Updates: 1, Batch: 500, Rate: 4096, Disk: true}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"spill-secondary", "spill-trigram"} {
+		s := stage(rep, n)
+		if s == nil {
+			t.Fatalf("no stage %s", n)
+		}
+		if s.Delta >= 0 {
+			t.Errorf("%s: the heap grew by %d bytes, want it to shrink", n, s.Delta)
+		}
+	}
+	if rep.Direct["index_mem_disk_bytes"] <= 0 {
+		t.Errorf("direct: %v", rep.Direct)
+	}
+}
+
 // TestRunSmall runs the whole measurement at N=20k, the size the unit test
 // is allowed (docs/19: scale numbers come from scripts/perf-run.sh only).
 func TestRunSmall(t *testing.T) {

@@ -74,9 +74,22 @@ type secIndex struct {
 	failed  atomic.Pointer[error]
 	retired atomic.Bool
 
+	// hi is the highest LSN any entry was added at (secpersist.go);
+	// adopted: the disk file was reused from the previous run
+	hi      atomic.Uint64
+	adopted atomic.Bool
+
+	// cancel stops a running conversion (the index goes away); want is the
+	// storage an asynchronous conversion should end at (convertAsync)
+	cancel    atomic.Bool
+	want      atomic.Pointer[string]
+	asyncBusy atomic.Bool
+
 	// mutations replayed into a new store by conversions: while it was being
 	// built, and under the lock at the swap
 	ConvCatchUp, ConvFinal atomic.Int64
+	// ConvSpilled: ops of the conversion log that went to a temp file
+	ConvSpilled atomic.Int64
 
 	Adds, Dead, Swept, Scans atomic.Int64
 }
@@ -424,6 +437,11 @@ func (e *Engine) buildSec(t *TableState, def schema.IndexDef, src *tree) (*secIn
 			last = i
 		}
 	}
+	for _, k := range ks {
+		if k.lsn > si.hi.Load() {
+			si.hi.Store(k.lsn)
+		}
+	}
 	if def.Storage == "disk" {
 		if d := e.buildDisk(t, def, ks); d != nil {
 			si.dk.Store(d)
@@ -564,9 +582,15 @@ func (e *Engine) reconcileSec(t *TableState, sch *schema.Table, src *tree) error
 		if si := t.secNamed(def.Name); si != nil {
 			// a storage change that arrives by replay or on a replica (the
 			// leader converted online before logging it)
-			if want := cmp(def.Storage, "memory"); si.storageOf() != want && (want == "memory" || e.opts.DiskIndexes) {
-				if err := e.convertSec(t, si, want); err != nil {
-					e.logf("index %s: cannot change storage to %s: %v", def.Name, want, err)
+			want := cmp(def.Storage, "memory")
+			if want == "memory" || e.opts.DiskIndexes {
+				// compare with what an earlier request is already heading for,
+				// not only with where the index is now: a log with disk, memory,
+				// disk must end on disk
+				if w := si.want.Load(); (w != nil && *w != want) || (w == nil && si.storageOf() != want) {
+					// online: the replaying goroutine (start-up, a replica
+					// applying the leader's ALTER) does not wait for the build
+					e.convertAsync(t, si, want)
 				}
 			}
 			continue
@@ -586,7 +610,7 @@ func (e *Engine) reconcileSec(t *TableState, sch *schema.Table, src *tree) error
 
 // rebuildSec rebuilds every index of every table from its primary index
 // (after a checkpoint is loaded): the checkpoint holds definitions only.
-func (e *Engine) rebuildSec() error {
+func (e *Engine) rebuildSec(hdr *ckptHeader) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var first error
@@ -602,7 +626,14 @@ func (e *Engine) rebuildSec() error {
 			go func(t *TableState, def schema.IndexDef) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				si, err := e.buildSec(t, def, t.index())
+				si := e.adoptSec(t, def, hdr)
+				var err error
+				if si == nil {
+					si, err = e.buildSec(t, def, t.index())
+					if err == nil && def.Storage == "disk" && e.opts.DiskIndexes {
+						e.SidxRebuilt.Add(1)
+					}
+				}
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
@@ -885,6 +916,8 @@ type SecStats struct {
 	Storage     string // "memory" or "disk"
 	ConvCatchUp int64  // mutations replayed into a new store while it was built (conversions)
 	ConvFinal   int64  // mutations replayed under the index lock at the swap
+	ConvSpilled int64  // conversion log ops that were spilled to a temp file (bounded RAM)
+	Adopted     bool   // the disk file was reused from the previous run (secpersist.go)
 	Failed      string // why a disk index is unusable, if it is
 }
 
@@ -903,7 +936,8 @@ func (e *Engine) SecIndexStats() []SecStats {
 			}
 			st := SecStats{Table: t.Schema().Name, Name: si.name, Entries: n, Storage: si.storageOf(),
 				Added: si.Adds.Load(), Dead: si.Dead.Load(), Swept: si.Swept.Load(), Pending: p, Scans: si.Scans.Load(),
-				ConvCatchUp: si.ConvCatchUp.Load(), ConvFinal: si.ConvFinal.Load()}
+				ConvCatchUp: si.ConvCatchUp.Load(), ConvFinal: si.ConvFinal.Load(),
+				ConvSpilled: si.ConvSpilled.Load(), Adopted: si.adopted.Load()}
 			if err := si.unusable(); err != nil {
 				st.Failed = err.Error()
 			}

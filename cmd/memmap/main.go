@@ -45,6 +45,7 @@ type config struct {
 	Batch   int
 	Rate    int
 	Skip    string // stages to skip: comma list of history,secondary,trigram,columnar
+	Disk    bool   // after the other stages, move the secondary and trigram indexes to disk (stages spill-secondary, spill-trigram)
 }
 
 // StageResult is one step of the incremental measurement.
@@ -81,6 +82,7 @@ func main() {
 		batch   = flag.Int("batch", 1000, "rows per INSERT statement")
 		rate    = flag.Int("memprofile-rate", 16384, "runtime.MemProfileRate (bytes between samples)")
 		skip    = flag.String("skip", "", "comma list of stages to skip: history,secondary,trigram,columnar")
+		disk    = flag.Bool("disk", false, "also measure moving the secondary and trigram indexes to disk (ALTER INDEX .. SET (index_storage = 'disk')): stages spill-secondary and spill-trigram show the heap that goes away")
 		jsonOut = flag.String("json", "", "also write the reports as JSON to this file")
 		child   = flag.Bool("child", false, "internal: run one N and print its report as JSON on stdout")
 	)
@@ -88,7 +90,7 @@ func main() {
 	runtime.MemProfileRate = *rate
 	if *child {
 		n, _ := strconv.ParseInt(strings.TrimSpace(*ns), 10, 64)
-		rep, err := run(config{N: n, Dir: *dir, Dist: *dist, Updates: *updates, Batch: *batch, Rate: *rate, Skip: *skip}, os.Stderr)
+		rep, err := run(config{N: n, Dir: *dir, Dist: *dist, Updates: *updates, Batch: *batch, Rate: *rate, Skip: *skip, Disk: *disk}, os.Stderr)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "memmap:", err)
 			os.Exit(1)
@@ -105,7 +107,7 @@ func main() {
 		}
 		self, _ := os.Executable()
 		cmd := exec.Command(self, "-child", "-n", s, "-dir", *dir, "-dist", *dist, "-updates", strconv.Itoa(*updates),
-			"-batch", strconv.Itoa(*batch), "-memprofile-rate", strconv.Itoa(*rate), "-skip", *skip)
+			"-batch", strconv.Itoa(*batch), "-memprofile-rate", strconv.Itoa(*rate), "-skip", *skip, "-disk="+strconv.FormatBool(*disk))
 		cmd.Stderr = os.Stderr
 		out, err := cmd.Output()
 		if err != nil {
@@ -210,7 +212,7 @@ func run(c config, log io.Writer) (*Report, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(c.Dir)
-	e, err := core.Open(core.Options{Dir: c.Dir, SegmentSize: 64 << 20, NoViewFile: true, NoCheckpoint: true})
+	e, err := core.Open(core.Options{Dir: c.Dir, SegmentSize: 64 << 20, NoViewFile: true, NoCheckpoint: true, DiskIndexes: c.Disk, DiskIndexCacheMB: 16})
 	if err != nil {
 		return nil, err
 	}
@@ -291,6 +293,32 @@ func run(c config, log io.Writer) (*Report, error) {
 		}
 	}
 
+	if c.Disk {
+		if !skipped(c, "secondary") {
+			t0 = time.Now()
+			if err := r.exec(`ALTER INDEX sims_cf SET (index_storage = 'disk')`); err != nil {
+				return nil, err
+			}
+			stage("spill-secondary", "the btree (carrier,status,price) moved to a disk file: the heap that goes away", t0)
+		}
+		if !skipped(c, "trigram") {
+			t0 = time.Now()
+			if err := r.exec(`ALTER INDEX sims_trgm SET (index_storage = 'disk')`); err != nil {
+				return nil, err
+			}
+			ts, _ := e.Table("sims")
+			for p.Sub.StorageOf(ts.Schema().ID, "number") != "disk" {
+				time.Sleep(10 * time.Millisecond)
+			}
+			p.Sub.WaitConversions()
+			stage("spill-trigram", "the trigram posting lists moved to a disk file (documents stay in RAM)", t0)
+		}
+	}
+	if ts, err := e.Table("sims"); err == nil {
+		rep.Direct["primary_key_arena_dead_bytes"] = ts.IndexStats().ArenaDead
+	}
+	ir := e.IndexMemoryReport()
+	rep.Direct["index_mem_ram_bytes_estimate"], rep.Direct["index_mem_disk_bytes"] = ir.RAMBytes, ir.DiskBytes
 	rep.LogDisk = e.Log().DiskBytes()
 	rep.GC = e.GCStats()
 	runtime.GC()

@@ -10,8 +10,10 @@ import (
 
 // ObjDDL is one object DDL statement.
 type ObjDDL struct {
-	Op          string // create, drop, alter
-	Class       string // type, domain, schema, extension
+	CollOpts    map[string]string // CREATE COLLATION (...) options, lower case names
+	CollFrom    string            // CREATE COLLATION name FROM existing
+	Op          string            // create, drop, alter
+	Class       string            // type, domain, schema, extension
 	Names       []string
 	IfExists    bool // DROP/ALTER IF EXISTS
 	IfNotExists bool // CREATE IF NOT EXISTS / ADD VALUE IF NOT EXISTS
@@ -130,6 +132,8 @@ func (p *parser) createObj() (Stmt, bool, error) {
 			}
 		}
 		return c, true, nil
+	case p.acceptKw("collation"):
+		return p.createCollation()
 	case p.acceptKw("domain"):
 		c := &ObjDDL{Op: "create", Class: "domain"}
 		n, err := p.typeQName()
@@ -248,6 +252,8 @@ func (p *parser) dropObj() (Stmt, bool, error) {
 		class = "schema"
 	case p.acceptKw("extension"):
 		class = "extension"
+	case p.acceptKw("collation"):
+		class = "collation"
 	default:
 		return nil, false, nil
 	}

@@ -30,6 +30,7 @@ type CreateIndex struct {
 	Name        string // empty: generated
 	Table       string
 	Cols        []string // the column of each element
+	Colls       []string // the COLLATE name of each element ("" for none); nil if no element has one
 	Exprs       []string // the function applied to it (canonical name), "" for none; nil if no element has one
 	Unique      bool
 	IfNotExists bool
@@ -125,6 +126,11 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 		}
 		c.Cols = append(c.Cols, col)
 		c.Exprs = append(c.Exprs, fn)
+		coll, err := p.lastCollName()
+		if err != nil {
+			return nil, true, err
+		}
+		c.Colls = append(c.Colls, coll)
 		// the order is accepted: an index is read forwards or backwards
 		if err = p.indexElemTail(); err != nil {
 			return nil, true, err
@@ -138,6 +144,9 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 	}
 	if !slices.ContainsFunc(c.Exprs, func(e string) bool { return e != "" }) {
 		c.Exprs = nil
+	}
+	if !slices.ContainsFunc(c.Colls, func(e string) bool { return e != "" }) {
+		c.Colls = nil
 	}
 	for { // INCLUDE and storage parameters do not change results: accepted, not stored
 		switch {

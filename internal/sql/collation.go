@@ -80,6 +80,9 @@ func LookupCollation(name string) (*Collation, error) {
 	if n == "" || n == "default" {
 		return DefaultCollation(), nil
 	}
+	if v, ok := userColls.Load(n); ok { // CREATE COLLATION (collddl.go)
+		return v.(*Collation), nil
+	}
 	if v, ok := collCache.Load(n); ok {
 		return v.(*Collation), nil
 	}

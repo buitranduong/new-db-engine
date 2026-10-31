@@ -1,13 +1,9 @@
 package sql
 
 import (
-	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
-
-	"stask/internal/core"
 )
 
 // CREATE FUNCTION / CREATE PROCEDURE / DO / CALL with a small subset of PL/pgSQL (docs/14
@@ -39,6 +35,8 @@ type DropFunc struct {
 	Name      string
 	IfExists  bool
 	Cascade   bool
+	HasTypes  bool     // DROP FUNCTION name(types): the overload with those argument types
+	Types     []string // their PostgreSQL names
 }
 
 // DoStmt is DO [LANGUAGE x] 'body'.
@@ -56,6 +54,8 @@ type funcArg struct {
 	Name string `json:"n,omitempty"`
 	Type string `json:"t"`
 	PG   string `json:"pg,omitempty"` // the PostgreSQL type as declared (int4, varchar(20)...), for pg_proc
+	Mode string `json:"m,omitempty"`  // "" IN, o OUT, b INOUT, v VARIADIC, t column of RETURNS TABLE
+	Def  string `json:"d,omitempty"`  // DEFAULT expression text
 }
 
 // funcDef is the stored definition.
@@ -69,6 +69,7 @@ type funcDef struct {
 	RetPG     string    `json:"retpg,omitempty"`
 	Vol       string    `json:"vol,omitempty"`    // provolatile: i, s ("" is volatile)
 	Strict    bool      `json:"strict,omitempty"` // STRICT / RETURNS NULL ON NULL INPUT
+	Set       bool      `json:"set,omitempty"`    // RETURNS SETOF / RETURNS TABLE
 }
 
 // ---- parsing ----
@@ -101,12 +102,17 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 				return nil, true, err
 			}
 		}
-		switch {
-		case p.isKw("out"), p.isKw("inout"), p.isKw("variadic"):
-			return nil, true, errf(codeFeature, "%s parameters are not supported", strings.ToUpper(p.peek().s))
-		}
-		p.acceptKw("in")
 		var a funcArg
+		switch {
+		case p.acceptKw("out"):
+			a.Mode = "o"
+		case p.acceptKw("inout"):
+			a.Mode = "b"
+		case p.acceptKw("variadic"):
+			a.Mode = "v"
+		default:
+			p.acceptKw("in")
+		}
 		t := p.peek()
 		nt := p.peekN(1)
 		if t.k == tIdent || t.k == tQuoted {
@@ -116,30 +122,65 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 				p.next()
 			}
 		}
-		ty, err := p.typeName()
+		ty, err := p.funcTypeName()
 		if err != nil {
 			return nil, true, err
 		}
 		a.Type, a.PG = ty, p.pgSpec
 		if p.isKw("default") || p.isOp("=") {
-			return nil, true, errf(codeFeature, "default values of function arguments are not supported")
+			p.next()
+			start := p.peek().pos
+			depth := 0
+			for p.peek().k != tEOF && !(depth == 0 && (p.isOp(",") || p.isOp(")"))) {
+				if p.isOp("(") {
+					depth++
+				} else if p.isOp(")") {
+					depth--
+				}
+				p.next()
+			}
+			a.Def = strings.TrimSpace(p.src[start:p.peek().pos])
 		}
 		c.Def.Args = append(c.Def.Args, a)
 	}
 	c.Def.Ret = "void"
+	retSeen := false
 	var bodies []string
 	for p.peek().k != tEOF && !p.isOp(";") {
 		switch {
 		case p.acceptKw("returns"):
+			retSeen = true
 			switch {
-			case p.isKw("setof"), p.isKw("table"):
-				return nil, true, errf(codeFeature, "set-returning functions are not supported")
+			case p.acceptKw("table"):
+				if err := p.expectOp("("); err != nil {
+					return nil, true, err
+				}
+				for !p.acceptOp(")") {
+					if len(c.Def.Args) > 0 && c.Def.Args[len(c.Def.Args)-1].Mode == "t" {
+						if err := p.expectOp(","); err != nil {
+							return nil, true, err
+						}
+					}
+					col := funcArg{Mode: "t"}
+					col.Name = p.next().s
+					if col.Type, err = p.typeName(); err != nil {
+						return nil, true, err
+					}
+					col.PG = p.pgSpec
+					c.Def.Args = append(c.Def.Args, col)
+				}
+				c.Def.Ret, c.Def.Set = "record", true
+			case p.acceptKw("setof"):
+				if c.Def.Ret, err = p.funcTypeName(); err != nil {
+					return nil, true, err
+				}
+				c.Def.RetPG, c.Def.Set = p.pgSpec, true
 			case p.acceptKw("void"):
 				c.Def.Ret = "void"
 			case p.acceptKw("trigger"):
 				c.Def.Ret = "trigger"
 			default:
-				if c.Def.Ret, err = p.typeName(); err != nil {
+				if c.Def.Ret, err = p.funcTypeName(); err != nil {
 					return nil, true, err
 				}
 				c.Def.RetPG = p.pgSpec
@@ -185,6 +226,13 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 			p.next()
 		}
 	}
+	if outs := c.Def.outs(); !retSeen && len(outs) > 0 && !proc {
+		if len(outs) == 1 {
+			c.Def.Ret, c.Def.RetPG = outs[0].Type, outs[0].PG
+		} else {
+			c.Def.Ret = "record"
+		}
+	}
 	if len(bodies) == 0 {
 		return nil, true, errf("42P13", "no function body specified")
 	}
@@ -196,6 +244,36 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 		return nil, true, errf(codeFeature, "language %q is not supported (sql and plpgsql only)", c.Def.Lang)
 	}
 	return c, true, nil
+}
+
+// funcTypeName is typeName that also accepts the name of a table (its row type) and "record".
+func (p *parser) funcTypeName() (string, error) {
+	save := p.i
+	ty, err := p.typeName()
+	if err == nil {
+		return ty, nil
+	}
+	p.i = save
+	t := p.peek()
+	if t.k == tIdent && t.s == "refcursor" {
+		p.next()
+		p.pgSpec = ""
+		return "string", nil
+	}
+	if (t.k == tIdent || t.k == tQuoted) && p.sess != nil {
+		name := t.s
+		if t.s == "record" {
+			p.next()
+			p.pgSpec = ""
+			return "record", nil
+		}
+		if _, terr := p.sess.E.UserTable(name); terr == nil {
+			p.next()
+			p.pgSpec = ""
+			return name, nil
+		}
+	}
+	return "", err
 }
 
 func (p *parser) dropFunction() (Stmt, bool, error) {
@@ -212,9 +290,29 @@ func (p *parser) dropFunction() (Stmt, bool, error) {
 		return nil, true, err
 	}
 	d.Name = names[len(names)-1]
-	if p.isOp("(") { // the argument types identify an overload; the name is the identity here
-		if err := p.skipParens(); err != nil {
-			return nil, true, err
+	if p.isOp("(") { // the argument types identify an overload
+		p.next()
+		d.HasTypes = true
+		for !p.acceptOp(")") {
+			if len(d.Types) > 0 {
+				if err := p.expectOp(","); err != nil {
+					return nil, true, err
+				}
+			}
+			out := p.acceptKw("out")
+			p.acceptKw("in")
+			p.acceptKw("variadic")
+			t, nt := p.peek(), p.peekN(1)
+			if (t.k == tIdent || t.k == tQuoted) && (nt.k == tIdent || nt.k == tQuoted) && !(nt.k == tIdent && (nt.s == "precision" || nt.s == "varying")) {
+				p.next()
+			}
+			ty, err := p.typeName()
+			if err != nil {
+				return nil, true, err
+			}
+			if !out {
+				d.Types = append(d.Types, funcTypeName(ty, p.pgSpec))
+			}
 		}
 	}
 	if p.acceptKw("cascade") {
@@ -274,167 +372,9 @@ func retKind(ret string) Kind {
 	return kindOfType(ret)
 }
 
-func (s *Session) loadFunc(name string) (*funcDef, bool) {
-	o, ok := s.E.Obj("func", name)
-	if !ok {
-		return nil, false
-	}
-	var d funcDef
-	if json.Unmarshal([]byte(o.Data), &d) != nil {
-		return nil, false
-	}
-	userFuncKinds.Store(name, retKind(d.Ret))
-	return &d, true
-}
-
-func (s *Session) createFunc(c *CreateFunc) (*Result, error) {
-	d := c.Def
-	if d.Lang == "plpgsql" && d.Ret != "trigger" {
-		if _, err := plParse(d.Body, d.argNames()); err != nil {
-			return nil, err
-		}
-	}
-	// PostgreSQL's way of adding a varchar overload of a text function is a body that calls
-	// the function by its own name; with the name as identity here that would replace the
-	// real body by a recursion, so such a definition is ignored when the name is defined
-	if _, exists := s.E.Obj("func", d.Name); exists && d.Lang == "sql" && strings.Contains(strings.ToLower(d.Body), strings.ToLower(d.Name)+"(") {
-		return &Result{Tag: "CREATE FUNCTION", Notice: fmt.Sprintf("function %s already exists (overloads by argument type are not distinguished), skipping", d.Name)}, nil
-	}
-	if _, exists := s.E.Obj("func", d.Name); exists && !c.OrReplace {
-		return nil, errf("42723", "function %q already exists with same argument types", d.Name)
-	}
-	b, _ := json.Marshal(d)
-	if err := s.E.PutObj(core.Obj{Kind: "func", Name: d.Name, Data: string(b)}, true); err != nil {
-		return nil, AsError(err)
-	}
-	userFuncKinds.Store(d.Name, retKind(d.Ret))
-	if d.Procedure {
-		return &Result{Tag: "CREATE PROCEDURE"}, nil
-	}
-	return &Result{Tag: "CREATE FUNCTION"}, nil
-}
-
-func (d funcDef) argNames() []string {
-	out := make([]string, len(d.Args))
-	for i, a := range d.Args {
-		out[i] = a.Name
-	}
-	return out
-}
-
-func (s *Session) dropFunc(d *DropFunc) (*Result, error) {
-	if _, ok := s.E.Obj("func", d.Name); !ok {
-		if d.IfExists {
-			return &Result{Tag: "DROP FUNCTION", Notice: fmt.Sprintf("function %s() does not exist, skipping", d.Name)}, nil
-		}
-		return nil, errf(codeUndefinedFunction, "function %s does not exist", d.Name)
-	}
-	for _, tg := range s.E.AllTriggers() { // trigger definitions name their function
-		if tg.Func != d.Name {
-			continue
-		}
-		if !d.Cascade {
-			return nil, errf("2BP01", "cannot drop function %s because other objects depend on it (trigger %s on table %s)", d.Name, tg.Name, tg.Table)
-		}
-		if err := s.E.DropTrigger(tg.Table, tg.Name); err != nil {
-			return nil, AsError(err)
-		}
-	}
-	if err := s.E.WriteObjs([]core.ObjOp{{O: core.Obj{Kind: "func", Name: d.Name}, Delete: true}}); err != nil {
-		return nil, AsError(err)
-	}
-	userFuncKinds.Delete(d.Name)
-	if d.Procedure {
-		return &Result{Tag: "DROP PROCEDURE"}, nil
-	}
-	return &Result{Tag: "DROP FUNCTION"}, nil
-}
-
-var funcsLoaded sync.Map // *core.Engine -> true
-
-// loadUserFuncs records the result kinds of the functions stored in e, once per engine, so
-// that the first query after a restart already types them.
-func loadUserFuncs(e *core.Engine) {
-	if _, done := funcsLoaded.LoadOrStore(e, true); done {
-		return
-	}
-	for _, o := range e.Objs("func") {
-		var d funcDef
-		if json.Unmarshal([]byte(o.Data), &d) == nil {
-			userFuncKinds.Store(o.Name, retKind(d.Ret))
-		}
-	}
-}
-
-// callUser calls the user function named by f with evaluated args; ok=false if there is none.
-func (c *evalCtx) callUser(f *Func, args []Datum) (Datum, bool, error) {
-	s := c.session()
-	if s == nil {
-		return Null, false, nil
-	}
-	if _, known := userFuncKinds.Load(f.Name); !known {
-		return Null, false, nil
-	}
-	d, ok := s.loadFunc(f.Name)
-	if !ok {
-		return Null, false, nil
-	}
-	v, err := s.runFunc(d, args)
-	return v, true, err
-}
-
 // ---- running ----
 
 const maxPLDepth = 32
-
-func (s *Session) runFunc(d *funcDef, args []Datum) (Datum, error) {
-	if d.Ret == "trigger" {
-		return Null, errf(codeFeature, "trigger functions cannot be called directly")
-	}
-	if len(args) != len(d.Args) {
-		return Null, errf(codeUndefinedFunction, "function %s with %d arguments does not exist", d.Name, len(args))
-	}
-	if s.plDepth >= maxPLDepth {
-		return Null, errf("54001", "stack depth limit exceeded")
-	}
-	s.plDepth++
-	defer func() { s.plDepth-- }()
-	vars := map[string]Datum{}
-	for i, a := range d.Args {
-		v := args[i]
-		if k := kindOfType(a.Type); !v.IsNull() && v.K != k {
-			var err error
-			if v, err = coerce(v, k); err != nil {
-				return Null, err
-			}
-		}
-		vars[fmt.Sprintf("$%d", i+1)] = v
-		if a.Name != "" {
-			vars[strings.ToLower(a.Name)] = v
-		}
-	}
-	var res Datum
-	var err error
-	if d.Lang == "sql" {
-		res, err = s.runSQLBody(d.Body, vars)
-	} else {
-		var blk *plBlock
-		if blk, err = plParse(d.Body, d.argNames()); err != nil {
-			return Null, err
-		}
-		res, err = s.plRunBlock(blk, vars)
-	}
-	if err != nil {
-		return Null, err
-	}
-	if d.Ret == "void" {
-		return TextD(""), nil
-	}
-	if k := retKind(d.Ret); !res.IsNull() && res.K != k {
-		return coerce(res, k)
-	}
-	return res, nil
-}
 
 // sqlWithVars replaces the variables named in src (and $k for the k-th function argument) by
 // fresh $n placeholders and returns the new text and the values.
@@ -448,14 +388,69 @@ func sqlWithVars(src string, vars map[string]Datum) (string, []Datum, error) {
 	}
 	var b strings.Builder
 	var params []Datum
+	skip := assignTargets(toks)
 	idx := map[string]int{}
 	last := 0
+	paramFor := func(name string) string {
+		n, seen := idx[name]
+		if !seen {
+			params = append(params, vars[name])
+			n = len(params)
+			idx[name] = n
+		}
+		return "$" + strconv.Itoa(n)
+	}
 	for i, t := range toks {
 		name, width := "", 0
 		switch t.k {
 		case tIdent:
-			if i > 0 && toks[i-1].k == tOp && toks[i-1].s == "." {
+			if i > 0 && toks[i-1].k == tOp && toks[i-1].s == "." || skip[i] {
 				continue
+			}
+			if m, isRec := vars[t.s+".*"]; isRec && !(i+1 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == "(") {
+				var fields []string
+				if m.S != "" {
+					fields = strings.Split(m.S, ",")
+				}
+				nextDot := i+1 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == "."
+				switch {
+				case nextDot && i+2 < len(toks) && toks[i+2].k == tOp && toks[i+2].s == "*": // rec.*
+					refs := make([]string, len(fields))
+					afterSelect := i > 0 && toks[i-1].k == tIdent && toks[i-1].s == "select"
+					for k, f := range fields {
+						refs[k] = paramFor(t.s + "." + f)
+						if afterSelect { // SELECT rec.* keeps the field names as column names
+							refs[k] += ` AS "` + strings.ReplaceAll(f, `"`, `""`) + `"`
+						}
+					}
+					b.WriteString(src[last:t.pos])
+					b.WriteString(strings.Join(refs, ", "))
+					last = toks[i+2].pos + 1
+					continue
+				case !nextDot:
+					refs := make([]string, len(fields))
+					for k, f := range fields {
+						refs[k] = paramFor(t.s + "." + f)
+					}
+					if i >= 2 && toks[i-1].k == tOp && toks[i-1].s == "(" && toks[i-2].k == tIdent &&
+						i+1 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == ")" {
+						if fn, ok := map[string]string{"to_jsonb": "jsonb_build_object", "to_json": "json_build_object",
+							"row_to_json": "json_build_object", "jsonb_pretty": ""}[toks[i-2].s]; ok && fn != "" {
+							args := make([]string, 0, 2*len(fields))
+							for k, f := range fields {
+								args = append(args, "'"+strings.ReplaceAll(f, "'", "''")+"'", refs[k])
+							}
+							b.WriteString(src[last:toks[i-2].pos])
+							b.WriteString(fn + "(" + strings.Join(args, ", ") + ")")
+							last = toks[i+1].pos + 1
+							continue
+						}
+					}
+					b.WriteString(src[last:t.pos])
+					b.WriteString("ROW(" + strings.Join(refs, ", ") + ")")
+					last = t.pos + len(t.s)
+					continue
+				}
 			}
 			if i+1 < len(toks) && toks[i+1].k == tOp && toks[i+1].s == "(" {
 				continue
@@ -509,33 +504,6 @@ func sqlWithVars(src string, vars map[string]Datum) (string, []Datum, error) {
 	return b.String(), params, nil
 }
 
-// runSQLBody runs a LANGUAGE sql body: the result is the first column of the first row of the
-// last statement that returns rows.
-func (s *Session) runSQLBody(body string, vars map[string]Datum) (Datum, error) {
-	text, params, err := sqlWithVars(body, vars)
-	if err != nil {
-		return Null, err
-	}
-	sts, err := parseWith(text, s)
-	if err != nil {
-		return Null, err
-	}
-	res := Null
-	for _, st := range sts {
-		r, err := s.exec(st, params)
-		if err != nil {
-			return Null, err
-		}
-		if r.HasRows {
-			res = Null
-			if len(r.Rows) > 0 && len(r.Rows[0]) > 0 {
-				res = r.Rows[0][0]
-			}
-		}
-	}
-	return res, nil
-}
-
 func (s *Session) execDo(st *DoStmt) (*Result, error) {
 	blk, err := plParse(st.Body, nil)
 	if err != nil {
@@ -548,11 +516,12 @@ func (s *Session) execDo(st *DoStmt) (*Result, error) {
 }
 
 func (s *Session) execCall(st *CallStmt) (*Result, error) {
-	return s.inTransaction("CALL", func() (string, error) {
+	res, err := s.inTransaction("CALL", func() (string, error) {
 		sts, err := parseWith(st.Text, s)
 		if err != nil {
 			return "", err
 		}
+		s.lastProc = nil
 		for _, x := range sts {
 			if _, err := s.exec(x, nil); err != nil {
 				return "", err
@@ -560,6 +529,11 @@ func (s *Session) execCall(st *CallStmt) (*Result, error) {
 		}
 		return s.plNotice, nil
 	})
+	if err == nil && s.lastProc != nil {
+		res.Cols, res.Rows, res.HasRows = s.lastProc.cols, s.lastProc.rows, true
+		s.lastProc = nil
+	}
+	return res, err
 }
 
 // inTransaction runs f as one atomic unit: in the open transaction if there is one, else in
@@ -586,4 +560,58 @@ func (s *Session) inTransaction(tag string, f func() (string, error)) (*Result, 
 		return nil, err
 	}
 	return &Result{Tag: tag, Notice: notice}, nil
+}
+
+// assignTargets marks the tokens that name a column and must not be replaced by a variable of the same name:
+// the targets of UPDATE ... SET a = ..., b = ... and the column list of INSERT INTO t (a, b).
+func assignTargets(toks []token) map[int]bool {
+	if len(toks) == 0 || toks[0].k != tIdent {
+		return nil
+	}
+	var skip map[int]bool
+	mark := func(i int) {
+		if skip == nil {
+			skip = map[int]bool{}
+		}
+		skip[i] = true
+	}
+	switch toks[0].s {
+	case "update":
+		depth, inSet := 0, false
+		for i, t := range toks {
+			switch {
+			case t.k == tOp && t.s == "(":
+				depth++
+			case t.k == tOp && t.s == ")":
+				depth--
+			case depth == 0 && t.k == tIdent && t.s == "set" && !inSet:
+				inSet = true
+			case depth == 0 && inSet && t.k == tIdent && (t.s == "where" || t.s == "from" || t.s == "returning"):
+				inSet = false
+			case inSet && depth == 0 && (t.k == tIdent || t.k == tQuoted) && i > 0 && i+1 < len(toks) &&
+				(toks[i-1].k == tIdent && toks[i-1].s == "set" || toks[i-1].k == tOp && toks[i-1].s == ",") &&
+				toks[i+1].k == tOp && toks[i+1].s == "=":
+				mark(i)
+			}
+		}
+	case "insert":
+		i := 1
+		if i < len(toks) && toks[i].k == tIdent && toks[i].s == "into" {
+			i++
+		}
+		if i < len(toks) && (toks[i].k == tIdent || toks[i].k == tQuoted) {
+			i++ // the table name, possibly qualified
+			if i+1 < len(toks) && toks[i].k == tOp && toks[i].s == "." {
+				i += 2
+			}
+		}
+		if i < len(toks) && toks[i].k == tOp && toks[i].s == "(" && (i+1 >= len(toks) || !(toks[i+1].k == tIdent && toks[i+1].s == "select")) {
+			for j := i + 1; j < len(toks) && !(toks[j].k == tOp && toks[j].s == ")"); j++ {
+				if toks[j].k == tIdent || toks[j].k == tQuoted {
+					mark(j)
+				}
+			}
+		}
+	}
+	return skip
 }

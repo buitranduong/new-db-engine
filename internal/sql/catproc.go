@@ -1,7 +1,6 @@
 package sql
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -25,16 +24,34 @@ const (
 	oidInternal    = 2281
 )
 
-func funcOID(name string) int64 { return funcOIDBase + int64(hash32("f:"+name)&0x03ffffff) }
+// funcOID is the OID of the overload of name that takes no arguments (what a trigger names).
+func funcOID(name string) int64 { return funcOIDSig(name, "") }
+
+// funcOIDSig is the OID of the overload of name with these input argument types.
+func funcOIDSig(name, sig string) int64 {
+	if sig == "" {
+		return funcOIDBase + int64(hash32("f:"+name)&0x03ffffff)
+	}
+	return funcOIDBase + int64(hash32("f:"+name+"("+sig+")")&0x03ffffff)
+}
+
+func (d *funcDef) oid() int64 { return funcOIDSig(d.Name, d.sig()) }
 
 func init() {
-	wrapCat("pg_proc", func(c *catSnap, rows [][]Datum) [][]Datum {
-		for _, o := range c.s.E.Objs("func") {
-			var d funcDef
-			if json.Unmarshal([]byte(o.Data), &d) != nil {
-				continue
+	// pg_language: what \df+ joins to name the language of a function
+	defCat("pg_language", "oid:i lanname:t lanowner:i lanispl:b lanpltrusted:b lanplcallfoid:i laninline:i lanvalidator:i lanacl:t",
+		func(c *catSnap) [][]Datum {
+			return [][]Datum{
+				{IntD(12), TextD("internal"), IntD(ownerOID), BoolD(false), BoolD(false), IntD(0), IntD(0), IntD(2246), Null},
+				{IntD(13), TextD("c"), IntD(ownerOID), BoolD(false), BoolD(false), IntD(0), IntD(0), IntD(2247), Null},
+				{IntD(14), TextD("sql"), IntD(ownerOID), BoolD(false), BoolD(true), IntD(0), IntD(0), IntD(2248), Null},
+				{IntD(oidLangPlpgsql), TextD("plpgsql"), IntD(ownerOID), BoolD(true), BoolD(true), IntD(13641), IntD(13642), IntD(13643), Null},
 			}
-			rows = append(rows, userProcRow(d))
+		})
+	catalogTables["pg_language"].cols[1].ty = pgTy{oid: tyName, mod: -1}
+	wrapCat("pg_proc", func(c *catSnap, rows [][]Datum) [][]Datum {
+		for _, d := range allFuncs(c.s.E) {
+			rows = append(rows, c.s.userProcRow(d))
 		}
 		for _, o := range c.s.E.Objs("ext") {
 			for _, f := range extProcs[o.Name] {
@@ -77,7 +94,7 @@ func oidVector(oids []int64) string {
 	return strings.Join(parts, " ")
 }
 
-func userProcRow(d funcDef) []Datum {
+func (s *Session) userProcRow(d funcDef) []Datum {
 	kind, lang := "f", int64(oidLangSQL)
 	if d.Procedure {
 		kind = "p"
@@ -89,26 +106,64 @@ func userProcRow(d funcDef) []Datum {
 	if vol == "" {
 		vol = "v"
 	}
-	args := make([]int64, len(d.Args))
-	var names []string
-	named := false
-	for i, a := range d.Args {
-		args[i] = funcTypeOID(a.Type, a.PG)
+	var ins []int64
+	var allTypes []int64
+	var modes, names []string
+	named, special, defaults := false, false, 0
+	variadic := int64(0)
+	for _, a := range d.Args {
+		oid := funcTypeOID(a.Type, a.PG)
+		allTypes = append(allTypes, oid)
+		mode := map[string]string{"": "i", "o": "o", "b": "b", "v": "v", "t": "t"}[a.Mode]
+		modes = append(modes, mode)
 		names = append(names, a.Name)
 		named = named || a.Name != ""
+		special = special || a.Mode != ""
+		if a.isIn() {
+			ins = append(ins, oid)
+			if a.Def != "" {
+				defaults++
+			}
+		}
+		if a.Mode == "v" {
+			variadic = oid
+		}
 	}
-	nm := Null
+	nm, all, md := Null, Null, Null
 	if named {
 		nm = Datum{K: KArray, S: "{" + strings.Join(names, ",") + "}", I: int64(KText)}
 	}
+	if special {
+		all = Datum{K: KArray, S: "{" + strings.ReplaceAll(oidVector(allTypes), " ", ",") + "}", I: int64(KInt)}
+		md = Datum{K: KArray, S: "{" + strings.Join(modes, ",") + "}", I: int64(KText)}
+	}
 	ret := int64(oidVoid)
 	if !d.Procedure {
-		ret = funcTypeOID(d.Ret, d.RetPG)
+		ret = s.funcRetOID(&d)
 	}
-	return []Datum{IntD(funcOID(d.Name)), TextD(d.Name), IntD(nsPublic), IntD(ownerOID), IntD(lang), FloatD(100), FloatD(0), IntD(0),
-		TextD("-"), TextD(kind), BoolD(false), BoolD(false), BoolD(d.Strict), BoolD(false), TextD(vol), TextD("u"),
-		IntD(int64(len(d.Args))), IntD(0), IntD(ret), TextD(oidVector(args)), Null, Null, nm, Null, Null,
+	var defTree Datum
+	if defaults > 0 {
+		defTree = TextD("(defaults)")
+	}
+	return []Datum{IntD(d.oid()), TextD(d.Name), IntD(nsPublic), IntD(ownerOID), IntD(lang), FloatD(100), FloatD(map[bool]float64{true: 1000, false: 0}[d.Set]), IntD(variadic),
+		TextD("-"), TextD(kind), BoolD(false), BoolD(false), BoolD(d.Strict), BoolD(d.Set), TextD(vol), TextD("u"),
+		IntD(int64(len(ins))), IntD(int64(defaults)), IntD(ret), TextD(oidVector(ins)), all, md, nm, defTree, Null,
 		TextD(d.Body), Null, Null, Null, Null}
+}
+
+// funcRetOID is prorettype: record for several output columns, the row type of a table.
+func (s *Session) funcRetOID(d *funcDef) int64 {
+	outs := d.outs()
+	switch {
+	case len(outs) > 1 || d.Ret == "record":
+		return 2249
+	case len(outs) == 1:
+		return funcTypeOID(outs[0].Type, outs[0].PG)
+	}
+	if _, err := s.E.UserTable(d.Ret); err == nil {
+		return 2249 // a table row type has no pg_type row here
+	}
+	return funcTypeOID(d.Ret, d.RetPG)
 }
 
 // extProc is a function of an extension.
@@ -122,8 +177,12 @@ type extProc struct {
 	src    string
 }
 
+func (f extProc) oid() int64 {
+	return extFuncOIDBase + int64(hash32("e:"+f.name+"("+oidVector(f.args)+")")&0x03ffffff)
+}
+
 func (f extProc) row(sch string) []Datum {
-	return []Datum{IntD(extFuncOIDBase + int64(hash32("e:"+f.name+"("+oidVector(f.args)+")")&0x03ffffff)), TextD(f.name),
+	return []Datum{IntD(f.oid()), TextD(f.name),
 		IntD(nsPublic), IntD(ownerOID), IntD(oidLangC), FloatD(1), FloatD(0), IntD(0), TextD("-"), TextD("f"), BoolD(false), BoolD(false),
 		BoolD(f.strict), BoolD(false), TextD(f.vol), TextD(f.par), IntD(int64(len(f.args))), IntD(0), IntD(f.ret), TextD(oidVector(f.args)),
 		Null, Null, Null, Null, Null, TextD(f.src), Null, Null, Null, Null}
@@ -169,28 +228,120 @@ var extProcs = map[string][]extProc{
 
 // funcByOID finds a user function by its pg_proc OID.
 func (s *Session) funcByOID(oid int64) (*funcDef, bool) {
-	for _, o := range s.E.Objs("func") {
-		var d funcDef
-		if json.Unmarshal([]byte(o.Data), &d) == nil && funcOID(d.Name) == oid {
+	for _, d := range allFuncs(s.E) {
+		if d.oid() == oid {
+			d := d
 			return &d, true
 		}
 	}
 	return nil, false
 }
 
+// deparseDefault prints a parameter DEFAULT the way pg_get_function_arguments does.
+func deparseDefault(def, typ string) string {
+	toks, err := lex(def)
+	if err != nil || len(toks) != 2 { // one token and EOF
+		return def
+	}
+	switch t := toks[0]; t.k {
+	case tString:
+		return "'" + strings.ReplaceAll(t.s, "'", "''") + "'::" + typ
+	case tNumber:
+		return t.s
+	case tIdent:
+		if t.s == "null" {
+			return "NULL::" + typ
+		}
+		return strings.ToUpper(t.s) // true, false
+	}
+	return def
+}
+
+// argText is pg_get_function_arguments: every argument but the columns of RETURNS TABLE, with
+// its mode and DEFAULT.
 func (d *funcDef) argText() string {
-	parts := make([]string, len(d.Args))
-	for i, a := range d.Args {
+	var parts []string
+	for _, a := range d.Args {
+		if a.Mode == "t" {
+			continue
+		}
 		p := ""
-		if d.Procedure {
-			p = "IN "
+		switch a.Mode {
+		case "o":
+			p = "OUT "
+		case "b":
+			p = "INOUT "
+		case "v":
+			p = "VARIADIC "
+		default:
+			if d.Procedure {
+				p = "IN "
+			}
 		}
 		if a.Name != "" {
 			p += quoteIdent(a.Name) + " "
 		}
-		parts[i] = p + funcTypeName(a.Type, a.PG)
+		p += funcTypeName(a.Type, a.PG)
+		if a.Def != "" {
+			p += " DEFAULT " + deparseDefault(a.Def, funcTypeName(a.Type, a.PG))
+		}
+		parts = append(parts, p)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// identityArgs is pg_get_function_identity_arguments: the input arguments without DEFAULTs.
+func (d *funcDef) identityArgs() string {
+	var parts []string
+	for _, a := range d.Args {
+		if !a.isIn() {
+			if a.Mode == "o" {
+				parts = append(parts, "OUT "+quoteIdentOpt(a.Name)+funcTypeName(a.Type, a.PG))
+			}
+			continue
+		}
+		p := ""
+		if a.Mode == "b" {
+			p = "INOUT "
+		} else if a.Mode == "v" {
+			p = "VARIADIC "
+		}
+		p += quoteIdentOpt(a.Name) + funcTypeName(a.Type, a.PG)
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func quoteIdentOpt(n string) string {
+	if n == "" {
+		return ""
+	}
+	return quoteIdent(n) + " "
+}
+
+// resultText is pg_get_function_result.
+func (d *funcDef) resultText() string {
+	var tcols []string
+	for _, a := range d.Args {
+		if a.Mode == "t" {
+			tcols = append(tcols, quoteIdent(a.Name)+" "+funcTypeName(a.Type, a.PG))
+		}
+	}
+	if len(tcols) > 0 {
+		return "TABLE(" + strings.Join(tcols, ", ") + ")"
+	}
+	outs := d.outs()
+	t := funcTypeName(d.Ret, d.RetPG)
+	switch {
+	case len(outs) > 1:
+		t = "record"
+	case len(outs) == 1:
+		t = funcTypeName(outs[0].Type, outs[0].PG)
+	}
+	if d.Set {
+		return "SETOF " + t
+	}
+	return t
 }
 
 // functionDef is pg_get_functiondef.
@@ -202,7 +353,7 @@ func (d *funcDef) functionDef() string {
 	}
 	fmt.Fprintf(&b, "CREATE OR REPLACE %s public.%s(%s)\n", kind, quoteIdent(d.Name), d.argText())
 	if !d.Procedure {
-		fmt.Fprintf(&b, " RETURNS %s\n", funcTypeName(d.Ret, d.RetPG))
+		fmt.Fprintf(&b, " RETURNS %s\n", d.resultText())
 	}
 	fmt.Fprintf(&b, " LANGUAGE %s\n", d.Lang)
 	switch d.Vol {
@@ -233,7 +384,7 @@ func (s *Session) funcCatalogFn(name string, args []Datum) (Datum, bool) {
 		oid = args[0].I
 	}
 	switch name {
-	case "pg_get_functiondef", "pg_get_function_arguments", "pg_get_function_result":
+	case "pg_get_functiondef", "pg_get_function_arguments", "pg_get_function_result", "pg_get_function_identity_arguments":
 		d, ok := s.funcByOID(oid)
 		if !ok {
 			return Null, true
@@ -241,11 +392,13 @@ func (s *Session) funcCatalogFn(name string, args []Datum) (Datum, bool) {
 		switch name {
 		case "pg_get_function_arguments":
 			return TextD(d.argText()), true
+		case "pg_get_function_identity_arguments":
+			return TextD(d.identityArgs()), true
 		case "pg_get_function_result":
 			if d.Procedure {
 				return Null, true
 			}
-			return TextD(funcTypeName(d.Ret, d.RetPG)), true
+			return TextD(d.resultText()), true
 		}
 		return TextD(d.functionDef()), true
 	case "pg_get_triggerdef":

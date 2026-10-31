@@ -64,6 +64,8 @@ type CreateTrigger struct {
 	Args        []string // its arguments (TG_ARGV)
 	Level       string   // "row" or "statement"
 	UpdateOf    []string // UPDATE OF col, ...
+	TransOld    string   // REFERENCING OLD TABLE AS name
+	TransNew    string   // REFERENCING NEW TABLE AS name
 }
 
 // DropTrigger is DROP TRIGGER [IF EXISTS] name [ON table].
@@ -97,8 +99,11 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 		c.Timing = "before"
 	case p.acceptKw("after"):
 		c.Timing = "after"
-	case p.isKw("instead"):
-		return nil, true, errf(codeFeature, "INSTEAD OF triggers are not supported")
+	case p.acceptKw("instead"):
+		if err := p.expectKw("of"); err != nil {
+			return nil, true, err
+		}
+		c.Timing = "instead"
 	default:
 		return nil, true, p.errHere("syntax error at or near %q (expected BEFORE or AFTER)", p.peek().s)
 	}
@@ -191,8 +196,35 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 			return nil, true, p.errHere("syntax error: empty WHEN condition")
 		}
 	}
-	if p.isKw("referencing") {
-		return nil, true, errf(codeFeature, "REFERENCING (transition tables) is not supported")
+	if p.acceptKw("referencing") {
+		for p.isKw("old") || p.isKw("new") {
+			which := p.next().s
+			if !p.acceptKw("table") {
+				return nil, true, errf(codeFeature, "ROW transition variables in REFERENCING are not supported")
+			}
+			p.acceptKw("as")
+			name, err := p.ident()
+			if err != nil {
+				return nil, true, err
+			}
+			if which == "old" {
+				c.TransOld = name
+			} else {
+				c.TransNew = name
+			}
+		}
+		if c.TransOld == "" && c.TransNew == "" {
+			return nil, true, p.errHere("syntax error at or near %q (expected OLD or NEW)", p.peek().s)
+		}
+	}
+	if c.Level == "" && p.acceptKw("for") { // FOR EACH may also follow REFERENCING
+		p.acceptKw("each")
+		switch {
+		case p.acceptKw("statement"):
+			c.Level = "statement"
+		case p.acceptKw("row"):
+			c.Level = "row"
+		}
 	}
 	if p.acceptKw("execute") {
 		if !p.acceptKw("function") && !p.acceptKw("procedure") {
@@ -646,6 +678,11 @@ func (s *Session) fireTriggers(tx *core.Tx, t *schema.Table, tgs []*core.Trigger
 	if s.noTrig {
 		return nw, false, nil
 	}
+	if timing == "after" && s.afterQ != nil && s.trans != nil && s.trans.table == t.Name {
+		// transition tables are filled as the rows are written; the AFTER ROW
+		// triggers themselves run at the end of the statement (trigstmt.go)
+		s.trans.add(old, nw)
+	}
 	if timing == "after" && s.queueAfter(t, tgs, event, old, nw) {
 		return nw, false, nil
 	}
@@ -816,10 +853,13 @@ func (s *Session) triggerDDL(st Stmt) (*Result, error) {
 }
 
 func (s *Session) createTrigger(st *CreateTrigger) (*Result, error) {
+	if err := s.checkTriggerShape(st); err != nil {
+		return nil, err
+	}
 	t, err := s.E.UserTable(st.Table)
 	if err != nil {
 		if s.isView(st.Table) {
-			return nil, errf(codeWrongObjectType, "%q is a view: views cannot have row-level triggers", st.Table)
+			return s.createViewTrigger(st)
 		}
 		return nil, errf(codeUndefinedTable, "relation %q does not exist", st.Table)
 	}
@@ -831,7 +871,7 @@ func (s *Session) createTrigger(st *CreateTrigger) (*Result, error) {
 		return nil, errf(codeDuplicateObject, "trigger %q for relation %q already exists", st.Name, st.Table)
 	}
 	tg := &core.Trigger{Name: st.Name, Table: st.Table, Timing: st.Timing, Events: st.Events, When: st.When, Body: st.Body,
-		Func: st.Func, Args: st.Args, Level: st.Level, UpdateOf: st.UpdateOf}
+		Func: st.Func, Args: st.Args, Level: st.Level, UpdateOf: st.UpdateOf, TransOld: st.TransOld, TransNew: st.TransNew}
 	for _, c := range tg.UpdateOf {
 		if _, ok := t.Schema().Col(c); !ok {
 			return nil, errf(codeUndefinedColumn, "column %q of relation %q does not exist", c, st.Table)
@@ -910,6 +950,13 @@ func pgTriggerRows(c *catSnap) [][]Datum {
 			}
 		}
 		if rel == 0 {
+			for _, v := range c.views {
+				if v.Name == tg.Table {
+					rel = viewOID(v.Name)
+				}
+			}
+		}
+		if rel == 0 {
 			continue
 		}
 		typ := int64(1)
@@ -918,6 +965,9 @@ func pgTriggerRows(c *catSnap) [][]Datum {
 		}
 		if tg.Timing == "before" {
 			typ |= 2
+		}
+		if tg.Timing == "instead" {
+			typ |= 64
 		}
 		for _, ev := range tg.Events {
 			typ |= map[string]int64{"insert": 4, "delete": 8, "update": 16, "truncate": 32}[ev]

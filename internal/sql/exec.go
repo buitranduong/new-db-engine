@@ -55,18 +55,23 @@ type Session struct {
 	E           *core.Engine
 	prng        pgPRNG // random() / setseed()
 	tx          *core.Tx
-	txid        pgTxid      // txid_current() of the current transaction (pgcmds.go)
-	plDepth     int         // nesting of user functions being run (plsql.go)
-	setCols     []string    // columns the running UPDATE assigns, for UPDATE OF triggers (trigfunc.go); nil: unknown
-	plNotice    string      // the last RAISE NOTICE message of the running DO / CALL
-	afterQ      *afterQueue // AFTER ROW triggers of the running statement (trigstmt.go)
-	inTruncTrig bool        // TRUNCATE is being run by truncateTriggered
-	explicit    bool        // inside BEGIN ... COMMIT
-	inCascade   bool        // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
-	txLevel     string      // isolation level of the explicit transaction (readcommitted.go)
-	spilled     bool        // the last query ran in spill mode (EXPLAIN ANALYZE)
-	rep         *repairRec  // occ_repair.go: the autocommit statement being run
-	failed      bool        // an error occurred inside the explicit transaction
+	txid        pgTxid               // txid_current() of the current transaction (pgcmds.go)
+	plDepth     int                  // nesting of user functions being run (plsql.go)
+	setCols     []string             // columns the running UPDATE assigns, for UPDATE OF triggers (trigfunc.go); nil: unknown
+	plNotice    string               // the last RAISE NOTICE message of the running DO / CALL
+	trans       *transCollector      // rows the running statement writes, for transition tables (transition.go)
+	transTabs   map[string]*transTab // transition tables visible to the running trigger function
+	notices     []Notice             // RAISE NOTICE / WARNING / INFO of the running statement (plsql_run.go)
+	lastProc    *fnResult            // output of the last procedure called (CALL of a procedure with OUT parameters)
+	fnTx        bool                 // the transaction of the running autocommit statement is implicit, begun by a function call (plcall.go)
+	afterQ      *afterQueue          // AFTER ROW triggers of the running statement (trigstmt.go)
+	inTruncTrig bool                 // TRUNCATE is being run by truncateTriggered
+	explicit    bool                 // inside BEGIN ... COMMIT
+	inCascade   bool                 // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
+	txLevel     string               // isolation level of the explicit transaction (readcommitted.go)
+	spilled     bool                 // the last query ran in spill mode (EXPLAIN ANALYZE)
+	rep         *repairRec           // occ_repair.go: the autocommit statement being run
+	failed      bool                 // an error occurred inside the explicit transaction
 	vars        map[string]string
 	Views       Views // nil: aggregates always scan rows
 
@@ -115,6 +120,7 @@ func NewSession(e *core.Engine) *Session {
 	s := &Session{E: e, vars: sessionDefaults()}
 	s.recoverDDL()
 	loadUserFuncs(e)
+	loadUserCollations(e)
 	return s
 }
 
@@ -649,7 +655,10 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings
 		}
-		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, Domain: cd.Domain, NotNull: cd.NotNull || cd.Primary})
+		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, Domain: cd.Domain, Collation: cd.Collation, NotNull: cd.NotNull || cd.Primary})
+		if cd.Collation != "" {
+			noteCollatedColumns(s.E)
+		}
 	}
 	for k, v := range c.Options {
 		switch k {
@@ -768,11 +777,15 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 }
 
 func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
+	if res, done, err := s.insteadDML(tx, st, params); done {
+		return res, err
+	}
 	if rw, err := s.viewDML(st); err != nil {
 		return nil, err
 	} else {
 		st = rw
 	}
+	st = s.applyColumnCollations(st) // columns declared COLLATE (collddl.go)
 	switch st := st.(type) {
 	case *Select:
 		if needsGeneral(st) {
@@ -2495,6 +2508,11 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 			res.Notice = strings.Trim(res.Notice+"; "+note, "; ")
 		}
 	}
+	if tag != "DROP TABLE" {
+		if err := s.fireTruncate(todo, "before"); err != nil {
+			return nil, err
+		}
+	}
 	for _, n := range todo {
 		var err error
 		if tag == "DROP TABLE" {
@@ -2521,6 +2539,11 @@ func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
 			if err != nil {
 				return nil, AsError(err)
 			}
+		}
+	}
+	if tag != "DROP TABLE" {
+		if err := s.fireTruncate(todo, "after"); err != nil {
+			return nil, err
 		}
 	}
 	s.forgetDropped()

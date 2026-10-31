@@ -182,9 +182,12 @@ type Column struct {
 	Hidden bool `json:"hidden,omitempty"`
 	// Domain is the name of the domain the column was declared with (PG and
 	// Type are those of its base type); empty for other columns.
-	Domain string  `json:"domain,omitempty"`
-	T      ColType `json:"-"`
-	prevT  ColType
+	Domain string `json:"domain,omitempty"`
+	// Collation is the COLLATE name the column was declared with (collddl.go); empty: the
+	// database default. Additive: it only changes how text is ordered, not how it is stored.
+	Collation string  `json:"coll,omitempty"`
+	T         ColType `json:"-"`
+	prevT     ColType
 }
 
 // Check is a CHECK constraint: Expr is its SQL text.

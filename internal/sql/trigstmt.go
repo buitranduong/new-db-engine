@@ -85,6 +85,14 @@ func (s *Session) withStmtEvents(tx *core.Tx, table string, events []string, f f
 		}
 	}
 	for _, ev := range fire {
+		if wantsTransition(tgs, ev) { // REFERENCING OLD/NEW TABLE (transition.go)
+			prevT := s.trans
+			s.trans = &transCollector{table: table}
+			defer func() { s.trans = prevT }()
+			break
+		}
+	}
+	for _, ev := range fire {
 		if err := s.fireStmtTriggers(tx, table, tgs, "before", ev); err != nil {
 			return nil, err
 		}

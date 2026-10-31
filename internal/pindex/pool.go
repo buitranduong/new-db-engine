@@ -323,8 +323,13 @@ func (p *pool) readPage(id uint64, v *frame) error {
 
 // flush writes every dirty frame whose generation is <= maxGen. Pages of
 // those generations are immutable, so this runs while the writer continues.
-// Frames stay pinned until their run is written, so no one can evict and
-// re-read a page whose write is still in flight.
+// A frame is pinned only while its run (at most flushRun pages) is being
+// copied and written, so no one can evict and re-read a page whose write is
+// in flight, and the flusher never holds more than flushRun pins. (Pinning
+// every candidate up front let a checkpoint pin most of a small pool for as
+// long as its I/O took; a writer needing a frame then got ErrPoolFull.
+// PostgreSQL's checkpointer likewise pins one buffer at a time, in
+// SyncOneBuffer.)
 func (p *pool) flush(maxGen uint64) error {
 	type cand struct {
 		id uint64
@@ -337,26 +342,34 @@ func (p *pool) flush(maxGen uint64) error {
 		if !f.dirty.Load() || f.gen.Load() > maxGen {
 			continue
 		}
-		if !tryPin(f) {
-			continue // being evicted: the evictor writes it
+		if id := f.id.Load(); id != noPage {
+			cs = append(cs, cand{id: id, f: f})
 		}
-		id := f.id.Load()
-		if id == noPage || !f.dirty.Load() || f.gen.Load() > maxGen {
-			p.unpin(f)
-			continue
-		}
-		cs = append(cs, cand{id: id, f: f})
 	}
 	sort.Slice(cs, func(a, b int) bool { return cs[a].id < cs[b].id })
-	const run = 128
-	buf := make([]byte, run*PageSize)
-	var ferr error
+	buf := make([]byte, flushRun*PageSize)
 	for i := 0; i < len(cs); {
 		j := i
-		for j < len(cs) && j-i < run && cs[j].id-cs[i].id == uint64(j-i) {
+		for j < len(cs) && j-i < flushRun && cs[j].id-cs[i].id == uint64(j-i) {
 			j++
 		}
+		// pin the run; a frame that was meanwhile evicted or reassigned is
+		// skipped (its evictor wrote it)
 		for k := i; k < j; k++ {
+			f := cs[k].f
+			if !tryPin(f) {
+				continue
+			}
+			if f.id.Load() != cs[k].id || !f.dirty.Load() || f.gen.Load() > maxGen {
+				p.unpin(f)
+				continue
+			}
+			cs[k].ok = true
+		}
+		for k := i; k < j; k++ {
+			if !cs[k].ok {
+				continue
+			}
 			f := cs[k].f
 			f.mu.Lock()
 			if f.gen.Load() <= maxGen && f.id.Load() == cs[k].id {
@@ -364,10 +377,15 @@ func (p *pool) flush(maxGen uint64) error {
 				copy(pg, f.data)
 				sealPage(pg)
 				f.dirty.Store(false)
-				cs[k].ok = true
+			} else {
+				cs[k].ok = false
 			}
 			f.mu.Unlock()
+			if !cs[k].ok {
+				p.unpin(f)
+			}
 		}
+		var ferr error
 		for k := i; k < j && ferr == nil; {
 			if !cs[k].ok {
 				k++
@@ -388,21 +406,23 @@ func (p *pool) flush(maxGen uint64) error {
 			k = e
 		}
 		for k := i; k < j; k++ {
-			if ferr != nil && cs[k].ok {
-				cs[k].f.dirty.Store(true)
-			}
-			p.unpin(cs[k].f)
-		}
-		if ferr != nil {
-			for k := j; k < len(cs); k++ {
+			if cs[k].ok {
+				if ferr != nil {
+					cs[k].f.dirty.Store(true)
+				}
 				p.unpin(cs[k].f)
 			}
+		}
+		if ferr != nil {
 			return ferr
 		}
 		i = j
 	}
 	return nil
 }
+
+// flushRun bounds both the write batch and the pins the flusher holds.
+const flushRun = 128
 
 func (p *pool) dirtyCount() (n int) {
 	for i := range p.frames {

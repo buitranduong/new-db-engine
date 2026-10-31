@@ -95,6 +95,7 @@ type colTable struct {
 	// of keyPos (see keyindex.go); kcol is that column, -1 if unused
 	kcol int
 	kidx *intPosIndex
+	gen  uint32 // bumped when positions are renumbered or columns replaced (reconcile.go)
 }
 
 func NewColumnar() *Columnar { return &Columnar{tables: map[uint32]*colTable{}} }
@@ -156,6 +157,7 @@ func (ct *colTable) alterLocked(t *schema.Table) {
 		}
 	}
 	ct.cols = cols
+	ct.gen++
 	if ct.kcol >= 0 {
 		ct.kcol = t.KeyIndex()
 	}
@@ -418,6 +420,7 @@ func (ct *colTable) maybeCompact() {
 		nt.n++
 	}
 	ct.cols, ct.n, ct.live, ct.dead, ct.keyPos, ct.kidx = nt.cols, nt.n, nt.live, 0, nt.keyPos, nt.kidx
+	ct.gen++
 }
 
 // MemBytes is the memory a table's columns take (values, NULL and live

@@ -187,6 +187,9 @@ func jsonarrBinKind(op string, l, r Kind) (Kind, bool) {
 
 // binaryHook is || and - for arrays and json, called before the core.
 func binaryHook(op string, l, r Datum) (Datum, bool, error) {
+	if d, ok, err := ftsBinary(op, l, r); ok {
+		return d, true, err
+	}
 	if l.IsNull() || r.IsNull() {
 		if op == "||" && (l.K == KArray || r.K == KArray) { // array_cat(NULL, a) is a
 			if l.IsNull() {

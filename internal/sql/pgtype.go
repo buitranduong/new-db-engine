@@ -134,7 +134,7 @@ func (t pgTy) family() Kind {
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
-	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249, tyRegtype:
+	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249, tyRegtype, tyTSVector, tyTSQuery:
 		return KText
 	case tyDate:
 		return KDate
@@ -223,6 +223,11 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			return inferTy(e.X, leaf)
 		}
 	case *Binary:
+		if e.Op == "||" {
+			if inferTy(e.L, leaf).oid == tyTSVector && inferTy(e.R, leaf).oid == tyTSVector {
+				return pgTy{oid: tyTSVector, mod: -1}
+			}
+		}
 		switch e.Op {
 		case "+", "-", "*", "/", "%", "&", "|", "#", "<<", ">>":
 			l, r := inferTy(e.L, leaf), inferTy(e.R, leaf)
@@ -358,6 +363,10 @@ func pgTyName(t pgTy) string {
 		}
 	}
 	switch t.oid {
+	case tyTSVector:
+		return "tsvector"
+	case tyTSQuery:
+		return "tsquery"
 	case tyBool:
 		return "boolean"
 	case tyBytea:

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"stask/internal/schema"
 )
@@ -321,7 +322,15 @@ func TestSecPersistDDLAfterCheckpoint(t *testing.T) {
 			e.Close()
 			e2 := openDisk(t, img, true, nil)
 			defer e2.Close()
-			files, _ := filepath.Glob(filepath.Join(img, "sidx", "*"))
+			// a move back to memory that arrives by log replay is made in the
+			// background (convertAsync), so the file goes a moment later
+			var files []string
+			for i := 0; i < 800; i++ {
+				if files, _ = filepath.Glob(filepath.Join(img, "sidx", "*")); len(files) == 0 {
+					break
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
 			if len(files) != 0 {
 				t.Fatalf("files left: %v", files)
 			}

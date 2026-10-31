@@ -388,6 +388,16 @@ func (p *parser) statement() (Stmt, error) {
 			if a.Name, err = p.qualifiedName(); err != nil {
 				return nil, err
 			}
+			if p.acceptKw("rename") { // ALTER INDEX x RENAME TO y (renameidx.go)
+				if err = p.expectKw("to"); err != nil {
+					return nil, err
+				}
+				r := &RenameIndex{IfExists: a.IfExists, Name: bareName(a.Name)}
+				if r.NewName, err = p.ident(); err != nil {
+					return nil, err
+				}
+				return r, nil
+			}
 			if !p.isKw("set") || p.peekN(1).k != tOp || p.peekN(1).s != "(" {
 				return nil, p.errHere("syntax error at or near %q", p.peek().s)
 			}
@@ -407,9 +417,6 @@ func (p *parser) statement() (Stmt, error) {
 				return nil, err
 			}
 			return a, nil
-		}
-		if p.acceptKw("index") {
-			return p.alterIndex()
 		}
 		if err := p.expectKw("table"); err != nil {
 			return nil, err

@@ -85,14 +85,9 @@ func TestPlsqlDoBlocks(t *testing.T) {
 	if got := ids(t, s, `SELECT id FROM d WHERE id = 30`); got != "" {
 		t.Errorf("DO in a rolled back transaction left rows: %q", got)
 	}
-	// unsupported constructs fail clearly
-	for _, q := range []string{
-		`DO $$ BEGIN FOREACH x IN ARRAY ARRAY[1] LOOP NULL; END LOOP; END $$`,
-		`DO $$ BEGIN GET DIAGNOSTICS n = ROW_COUNT; END $$`,
-	} {
-		if _, err := tryRun(s, q); err == nil || AsError(err).Code != codeFeature {
-			t.Errorf("%s: %v", q, err)
-		}
+	// constructs that do not exist fail clearly
+	if _, err := tryRun(s, `DO $$ BEGIN GET DIAGNOSTICS n = ROW_COUNT; END $$`); err == nil || AsError(err).Code != "42703" {
+		t.Errorf("GET DIAGNOSTICS into an undeclared variable: %v", err)
 	}
 }
 

@@ -127,7 +127,7 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 		_ = tbl
 		return nil, errf(codeDuplicateTable, "relation %q already exists", c.Name)
 	}
-	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Unique: c.Unique, Where: c.Where}); err != nil {
+	if err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: c.Name, Columns: c.Cols, Exprs: c.Exprs, Colls: c.Colls, Unique: c.Unique, Where: c.Where}); err != nil {
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", c.Name)

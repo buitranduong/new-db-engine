@@ -5,15 +5,16 @@ package sql
 type Stmt interface{ stmt() }
 
 type ColDef struct {
-	Name    string
-	Type    string // schema type: int, float, string, text, time, bool
-	PG      string // declared PostgreSQL type when Type cannot tell (pgtype.go)
-	Domain  string // the domain of the column (ddlobjs_types.go)
-	Primary bool
-	PKName  string // CONSTRAINT name PRIMARY KEY (column constraint)
-	NotNull bool
-	Default string // SQL text of DEFAULT
-	Checks  []CheckDef
+	Collation string // COLLATE name (collddl.go)
+	Name      string
+	Type      string // schema type: int, float, string, text, time, bool
+	PG        string // declared PostgreSQL type when Type cannot tell (pgtype.go)
+	Domain    string // the domain of the column (ddlobjs_types.go)
+	Primary   bool
+	PKName    string // CONSTRAINT name PRIMARY KEY (column constraint)
+	NotNull   bool
+	Default   string // SQL text of DEFAULT
+	Checks    []CheckDef
 	// a SERIAL type or an IDENTITY column owns a sequence of IntType
 	Serial   bool
 	Identity string   // "always" or "by default"
@@ -77,6 +78,7 @@ type AlterAction struct {
 	Type       string   // set_type: the new type (schema type name)
 	PG         string   // set_type: its PostgreSQL spelling (pgtype.go)
 	Using      bool     // set_type: USING col::type was given
+	Collation  string   // set_type: COLLATE name
 	Check      CheckDef
 	Constraint *ConstraintDef    // add_constraint (UNIQUE, FOREIGN KEY)
 	IfExists   bool              // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
@@ -285,6 +287,7 @@ type Func struct {
 	Filter   Expr        // agg(x) FILTER (WHERE ...)
 	Within   []OrderItem // percentile_cont(0.5) WITHIN GROUP (ORDER BY x)
 	Params   []Expr      // ClickHouse parametric: quantileExact(0.5)(x)
+	ArgNames []string    // name => value arguments of a user function ("" for positional ones)
 	Over     *WindowSpec // window function
 }
 type IsNull struct {

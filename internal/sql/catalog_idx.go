@@ -77,8 +77,12 @@ func attnumsIx(t *schema.Table, ix schema.IndexDef) []int {
 func elemDef(t *schema.Table, ix schema.IndexDef, k int) string {
 	col := quoteIdent(ix.Columns[k])
 	fn := ix.ElemExpr(k)
+	coll := ""
+	if k < len(ix.Colls) && ix.Colls[k] != "" {
+		coll = " COLLATE " + quoteIdent(ix.Colls[k])
+	}
 	if fn == "" {
-		return col
+		return col + coll
 	}
 	if fn == "btrim" {
 		fn = "TRIM(BOTH FROM %s)"
@@ -90,7 +94,7 @@ func elemDef(t *schema.Table, ix schema.IndexDef, k int) string {
 	if j, ok := t.Col(ix.Columns[k]); ok && ctypeOf(t, j) == schema.TString {
 		col = "(" + col + ")::text"
 	}
-	return fmt.Sprintf(fn, col)
+	return fmt.Sprintf(fn, col) + coll
 }
 
 func ctypeOf(t *schema.Table, i int) schema.ColType {

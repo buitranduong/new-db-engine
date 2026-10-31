@@ -117,9 +117,13 @@ func init() {
 						idCycle = TextD(boolStr(q.Cycle))
 					}
 				}
+				collCat, collSch, collName := Null, Null, Null
+				if col.Collation != "" {
+					collCat, collSch, collName = cat, pub, TextD(col.Collation)
+				}
 				rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD(col.Name), IntD(int64(col.Num)), def,
 					TextD(boolStr(!(col.NotNull || col.Name == t.Key))), TextD(dataType), charLen, octet, prec, radix, scale, dt,
-					Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
+					Null, Null, Null, Null, Null, collCat, collSch, collName, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
 					Null, Null, Null, Null, TextD(itoa(int64(col.Num))), TextD("NO"), TextD(isID), gen, idStart, idInc,
 					idMax, idMin, idCycle, TextD("NEVER"), Null, TextD("YES")})
 			}

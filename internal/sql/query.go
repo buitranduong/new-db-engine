@@ -101,6 +101,7 @@ func (qx *qexec) ctx(outer *evalCtx) *evalCtx {
 
 // runQuery executes a query statement on the general executor.
 func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
+	st = s.applyColumnCollations(st)
 	c := &compiler{s: s, tx: tx}
 	p, err := c.compile(st, &qscope{lvl: &qlevel{}})
 	if err != nil {
@@ -311,6 +312,15 @@ func (b *binder) resolve(cr *ColRef) (Expr, error) {
 			}
 		}
 	}
+	if cr.Table == "" { // a FROM item on its own is its row: SELECT t FROM tbl t, t::text
+		if cols := b.rowCols(cr.Name); len(cols) > 0 {
+			items := make([]Expr, len(cols))
+			for i, c := range cols {
+				items[i] = &ColRef{Table: cr.Name, Name: c}
+			}
+			return b.bind(&RowExpr{Items: items})
+		}
+	}
 	if cr.Table != "" {
 		known := false
 		for sc := b.sc; sc != nil && !known; sc = sc.outer {
@@ -338,6 +348,11 @@ func (b *binder) bind(x Expr) (Expr, error) {
 	if f, ok := x.(*Func); ok {
 		if i, ok := b.winSlots[f]; ok {
 			return &Slot{I: i}, nil
+		}
+		if wholeRowScalarFns[f.Name] && len(f.Args) == 1 && f.Over == nil {
+			if bx, ok, err := b.wholeRowJSON(f.Args[0], f.Name); ok || err != nil {
+				return bx, err
+			}
 		}
 		if i, ok := b.aggSlots[f]; ok {
 			return &Slot{I: i}, nil
@@ -590,6 +605,9 @@ func (p *selPlan) outCols() []relCol  { return p.cols }
 func (p *selPlan) isCorrelated() bool { return p.sc.lvl.correlated }
 
 func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
+	if x, ok := c.s.applyColumnCollations(st).(*Select); ok { // columns declared COLLATE (collddl.go)
+		st = x
+	}
 	lvl := &qlevel{}
 	sc, err := c.withScope(st.With, outer, lvl)
 	if err != nil {
@@ -819,7 +837,10 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				if hasAggOrWin(x) {
 					return nil, errf(codeGrouping, "aggregate function calls cannot be nested")
 				}
-				bx, err := pre.bind(x)
+				bx, ok, err := pre.wholeRowJSON(x, f.Name)
+				if !ok && err == nil {
+					bx, err = pre.bind(x)
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -964,6 +985,10 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				}
 				if f.Name == "generate_subscripts" {
 					k = KInt
+				}
+				if isUserSRF(f.Name) {
+					k, _ = userFuncKind(f.Name)
+					t, _ = userFuncTy(f.Name)
 				}
 				sk = append(sk, k)
 				st2 = append(st2, t)
@@ -1967,6 +1992,9 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		if virtualTables[f.Name] {
 			return &funcPlan{name: f.Name, c: renameCols(tableFuncCols[f.Name], f.ColAliases, qual)}, nil
 		}
+		if tt := c.s.transTable(f.Name); tt != nil { // a transition table of the running trigger
+			return &batchPlan{c: renameCols(relColsOf(tt.t, qual), f.ColAliases, qual), rows: tt.datums()}, nil
+		}
 		t, err := c.s.table(f.Name)
 		if err != nil {
 			if f.AsOf != nil {
@@ -2480,9 +2508,12 @@ func (p *joinPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 // ---- table functions ----
 
 type funcPlan struct {
-	name string
-	args []Expr
-	c    []relCol
+	name     string
+	args     []Expr
+	c        []relCol
+	user     bool // a user function (plcall.go)
+	argNames []string
+	ord      bool // WITH ORDINALITY
 }
 
 func (p *funcPlan) cols() []relCol { return p.c }
@@ -2531,6 +2562,26 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 			fp.c = renameCols(cols, f.ColAliases, qual)
 			return fp, nil
 		}
+		if d, ok := c.s.userSRF(f.F.Name, len(f.F.Args), f.F.ArgNames); ok {
+			fp.user, fp.argNames = true, f.F.ArgNames
+			cols := c.s.resultCols(d)
+			rc := make([]relCol, len(cols))
+			for i, col := range cols {
+				rc[i] = relCol{name: col.Name, kind: col.Kind}
+				if col.OID != 0 {
+					rc[i].ty = pgTy{oid: col.OID, mod: col.Mod}
+				}
+			}
+			if f.Ordinality {
+				fp.ord = true
+				rc = append(rc, relCol{name: "ordinality", kind: KInt, ty: pgTy{oid: tyInt8, mod: -1}})
+			}
+			fp.c = renameCols(rc, f.ColAliases, qual)
+			if len(f.ColAliases) == 0 && len(rc) == 1 && f.Alias != "" && d.Set && len(d.outs()) == 0 {
+				fp.c[0].name = f.Alias // SELECT * FROM f() AS x: a scalar function's column takes the alias
+			}
+			return fp, nil
+		}
 		return nil, errf(codeUndefinedFunction, "table function %s does not exist", f.F.Name)
 	}
 	return fp, nil
@@ -2545,6 +2596,15 @@ func (p *funcPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 			return nil, err
 		}
 		args[i] = v
+	}
+	if p.user {
+		rows, err := qx.s.callSRF(p.name, args, p.argNames)
+		if err == nil && p.ord {
+			for i := range rows {
+				rows[i] = append(append([]Datum(nil), rows[i]...), IntD(int64(i+1)))
+			}
+		}
+		return rows, err
 	}
 	if p.name == "stask_history" {
 		rows, err := qx.s.historyRows(args)
@@ -3012,7 +3072,13 @@ func (p *selPlan) expandSRFs(ctx *evalCtx, rows [][]Datum) ([][]Datum, error) {
 			if sess := ctx.session(); sess != nil {
 				tick = func([][]Datum) error { return sess.checkInterrupt() }
 			}
-			l, err := tableFuncRows(f.Name, args, tick)
+			var l [][]Datum
+			var err error
+			if sess := ctx.session(); sess != nil && isUserSRF(f.Name) {
+				l, err = sess.callSRF(f.Name, args, f.ArgNames)
+			} else {
+				l, err = tableFuncRows(f.Name, args, tick)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -3030,4 +3096,57 @@ func (p *selPlan) expandSRFs(ctx *evalCtx, rows [][]Datum) ([][]Datum, error) {
 		}
 	}
 	return out, nil
+}
+
+// wholeRowFns are the functions that turn a row (a FROM item named on its own) into JSON.
+var wholeRowScalarFns = map[string]bool{"to_jsonb": true, "to_json": true, "row_to_json": true}
+var wholeRowFns = map[string]bool{"to_jsonb": true, "to_json": true, "row_to_json": true, "jsonb_agg": true, "json_agg": true}
+
+// rowCols lists the visible columns of the FROM item named qual, in order.
+func (b *binder) rowCols(qual string) []string {
+	for sc := b.sc; sc != nil; sc = sc.outer {
+		var out []string
+		for _, col := range sc.cols {
+			if col.qual == qual && !col.hidden && !col.sys {
+				out = append(out, col.name)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
+}
+
+// wholeRowJSON binds x as a JSON object of the row when it is a bare reference to a FROM item (to_jsonb(t),
+// row_to_json(t), jsonb_agg(t)); ok=false when x is anything else, including a real column.
+func (b *binder) wholeRowJSON(x Expr, fn string) (Expr, bool, error) {
+	if !wholeRowFns[fn] {
+		return nil, false, nil
+	}
+	cr, ok := x.(*ColRef)
+	if !ok || cr.Table != "" {
+		return nil, false, nil
+	}
+	for sc := b.sc; sc != nil; sc = sc.outer {
+		for _, col := range sc.cols {
+			if col.name == cr.Name && !col.hidden { // a real column of that name wins
+				return nil, false, nil
+			}
+		}
+	}
+	cols := b.rowCols(cr.Name)
+	if len(cols) == 0 {
+		return nil, false, nil
+	}
+	build := "json_build_object"
+	if fn == "to_jsonb" || fn == "jsonb_agg" {
+		build = "jsonb_build_object"
+	}
+	args := make([]Expr, 0, 2*len(cols))
+	for _, c := range cols {
+		args = append(args, &Lit{TextD(c)}, &ColRef{Table: cr.Name, Name: c})
+	}
+	bx, err := b.bind(&Func{Name: build, Args: args})
+	return bx, true, err
 }

@@ -29,7 +29,10 @@ type IndexDef struct {
 	// Exprs, parallel to Columns, is the function applied to each column
 	// (lower, upper, btrim, ltrim, rtrim, length, abs); "" or absent for a
 	// plain column (indexexpr.go). Additive: old checkpoints lack it.
-	Exprs  []string `json:"exprs,omitempty"`
+	Exprs []string `json:"exprs,omitempty"`
+	// Colls, parallel to Columns, is the COLLATE name of each index column ("" for the column's own).
+	// Additive. The index is still stored in byte order (collddl.go says what that means for the planner).
+	Colls  []string `json:"colls,omitempty"`
 	Unique bool     `json:"unique,omitempty"`
 	// Where is the predicate of a partial index (indexpred.go); additive.
 	Where []IndexPred `json:"where,omitempty"`

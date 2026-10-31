@@ -13,6 +13,7 @@ import (
 type plStmt interface{}
 
 type plBlock struct {
+	label    string
 	decls    []plDecl
 	stmts    []plStmt
 	handlers []plHandler
@@ -20,6 +21,7 @@ type plBlock struct {
 
 type plDecl struct {
 	name, typ, init string
+	cursor          *plCurDecl
 }
 
 type plHandler struct {
@@ -31,8 +33,12 @@ type plSQL struct {
 	text    string
 	into    []string
 	perform bool
+	strict  bool
 }
-type plAssign struct{ name, expr string }
+type plAssign struct {
+	name, expr string
+	idx        string // a[idx] := expr (one dimension)
+}
 type plIf struct {
 	conds  []string
 	blocks [][]plStmt
@@ -43,14 +49,15 @@ type plRaise struct {
 	level   string
 	format  string
 	args    []string
-	errcode string
-	message string // USING MESSAGE = expr
+	errcode string // condition name or SQLSTATE given before USING
+	opts    map[string]string
 	rethrow bool
 }
 type plExecute struct {
-	expr  string
-	into  []string
-	using []string
+	expr   string
+	into   []string
+	using  []string
+	strict bool
 }
 type plNested struct{ b *plBlock }
 
@@ -66,6 +73,11 @@ type plLoop struct {
 	rev   bool
 	query string
 	body  []plStmt
+	qexec bool     // FOR r IN EXECUTE expr
+	using []string // its USING values
+	vars  []string // FOR a, b IN query: several targets
+	cur   string   // FOR r IN cursor [(args)]
+	args  []string
 }
 
 // plExit is EXIT / CONTINUE [label] [WHEN cond].
@@ -90,6 +102,7 @@ type plp struct {
 	src    string
 	scope  map[string]bool
 	closed bool
+	curs   map[string]bool // declared cursor variables
 }
 
 func plErr(format string, a ...any) *Error { return errf(codeFeature, format, a...) }
@@ -100,18 +113,18 @@ func plParse(src string, names []string) (*plBlock, error) {
 	if err != nil {
 		return nil, err
 	}
-	q := &plp{toks: toks, src: src, scope: map[string]bool{"found": true}}
+	q := &plp{toks: toks, src: src, scope: map[string]bool{"found": true}, curs: map[string]bool{}}
 	for _, n := range names {
 		if n != "" {
 			q.scope[strings.ToLower(n)] = true
 		}
 	}
 	// optional label <<name>>
-	if q.opIs("<") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == "<" {
-		for !(q.opIs(">") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == ">") && q.cur().k != tEOF {
+	if q.opIs("<<") {
+		for !q.opIs(">>") && q.cur().k != tEOF {
 			q.i++
 		}
-		q.i += 2
+		q.i++
 	}
 	b, err := q.block()
 	if err != nil {
@@ -165,6 +178,9 @@ func (q *plp) textUntil(stop func(t token) bool) (string, error) {
 		if t.k == tOp && t.s == "(" {
 			depth++
 		} else if t.k == tOp && t.s == ")" {
+			if depth == 0 && stop(t) {
+				return strings.TrimSpace(q.src[start:t.pos]), nil
+			}
 			depth--
 		} else if depth == 0 && stop(t) {
 			return strings.TrimSpace(q.src[start:t.pos]), nil
@@ -240,6 +256,23 @@ func (q *plp) decl() (plDecl, error) {
 	}
 	q.i++
 	d := plDecl{name: strings.ToLower(t.s)}
+	if q.kw("alias") {
+		q.i++
+		q.acceptKw("for")
+		src, err := q.textUntil(q.semi())
+		if err != nil {
+			return d, err
+		}
+		d.typ, d.init = "alias", strings.ToLower(src)
+		q.skipSemis()
+		return d, nil
+	}
+	if ok, err := q.declCursor(&d); ok || err != nil {
+		if ok {
+			q.curs[d.name] = true
+		}
+		return d, err
+	}
 	q.acceptKw("constant")
 	typ, err := q.textUntil(func(t token) bool {
 		return t.k == tOp && (t.s == ";" || t.s == ":" || t.s == "=") || t.k == tIdent && (t.s == "default" || t.s == "not")
@@ -265,10 +298,6 @@ func (q *plp) decl() (plDecl, error) {
 	}
 	q.skipSemis()
 	return d, nil
-}
-
-var plUnsupported = map[string]bool{
-	"foreach": true, "get": true, "open": true, "fetch": true, "close": true, "move": true,
 }
 
 func (q *plp) stmts(stop ...string) ([]plStmt, error) {
@@ -309,21 +338,32 @@ func (q *plp) endStmt() error {
 
 func (q *plp) stmt() (plStmt, error) {
 	t := q.cur()
-	if q.opIs("<") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == "<" { // <<label>> before a loop or block
-		label := q.toks[q.i+2].s
-		q.i += 3
-		for q.cur().k != tEOF && !(q.opIs(">") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == ">") {
+	if q.opIs("<<") { // <<label>> before a loop or block
+		label := q.toks[q.i+1].s
+		q.i += 2
+		for q.cur().k != tEOF && !q.opIs(">>") {
 			q.i++
 		}
-		q.i += 2
+		q.i++
 		if q.kw("loop") || q.kw("while") || q.kw("for") {
 			return q.loopStmt(label)
+		}
+		if q.kw("foreach") {
+			return q.foreachStmt(label)
+		}
+		if q.kw("declare") || q.kw("begin") {
+			b, err := q.block()
+			if err != nil {
+				return nil, err
+			}
+			b.label = strings.ToLower(label)
+			return &plNested{b}, q.endStmt()
 		}
 		return q.stmt()
 	}
 	if t.k == tIdent {
-		if plUnsupported[t.s] {
-			return nil, plErr("PL/pgSQL statement %s is not supported (no FOREACH, cursors or GET DIAGNOSTICS)", strings.ToUpper(t.s))
+		if st, ok, err := q.ext(); ok {
+			return st, err
 		}
 		switch t.s {
 		case "loop", "while", "for":
@@ -345,8 +385,30 @@ func (q *plp) stmt() (plStmt, error) {
 			return q.ifStmt()
 		case "return":
 			q.i++
-			if q.kw("next") || q.kw("query") {
-				return nil, plErr("RETURN NEXT / RETURN QUERY are not supported")
+			if q.acceptKw("next") {
+				e, err := q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" })
+				if err != nil {
+					return nil, err
+				}
+				return &plReturnNext{e}, q.endStmt()
+			}
+			if q.acceptKw("query") {
+				rq := &plReturnQuery{}
+				var err error
+				if q.acceptKw("execute") {
+					rq.exec = true
+					if rq.query, err = q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" || t.k == tIdent && t.s == "using" }); err != nil {
+						return nil, err
+					}
+					if q.acceptKw("using") {
+						if rq.using, err = q.usingList(); err != nil {
+							return nil, err
+						}
+					}
+				} else if rq.query, err = q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" }); err != nil {
+					return nil, err
+				}
+				return rq, q.endStmt()
 			}
 			e, err := q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" })
 			if err != nil {
@@ -378,7 +440,31 @@ func (q *plp) stmt() (plStmt, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &plAssign{t.s, e}, q.endStmt()
+			return &plAssign{name: t.s, expr: e}, q.endStmt()
+		}
+		// array element assignment: a[i] := expr
+		if n.k == tOp && n.s == "[" && q.scope[t.s] {
+			j, depth := q.i+2, 1
+			for depth > 0 && j < len(q.toks) && q.toks[j].k != tEOF {
+				if q.toks[j].k == tOp && q.toks[j].s == "[" {
+					depth++
+				} else if q.toks[j].k == tOp && q.toks[j].s == "]" {
+					depth--
+				}
+				j++
+			}
+			if j+1 < len(q.toks) && q.toks[j].k == tOp && (q.toks[j].s == "=" || q.toks[j].s == ":" && q.toks[j+1].k == tOp && q.toks[j+1].s == "=") {
+				idx := strings.TrimSpace(q.src[q.toks[q.i+1].pos+1 : q.toks[j-1].pos])
+				q.i = j + 1
+				if q.toks[j].s == ":" {
+					q.i++
+				}
+				e, err := q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" })
+				if err != nil {
+					return nil, err
+				}
+				return &plAssign{name: t.s, expr: e, idx: idx}, q.endStmt()
+			}
 		}
 		// record field assignment: NEW.col := expr (also with =), rec.col := expr
 		if n.k == tOp && n.s == "." && q.i+4 < len(q.toks) && (q.toks[q.i+2].k == tIdent || q.toks[q.i+2].k == tQuoted) {
@@ -395,7 +481,7 @@ func (q *plp) stmt() (plStmt, error) {
 				if err != nil {
 					return nil, err
 				}
-				return &plAssign{t.s + "." + f.s, e}, q.endStmt()
+				return &plAssign{name: t.s + "." + f.s, expr: e}, q.endStmt()
 			}
 		}
 	}
@@ -406,18 +492,18 @@ func (q *plp) stmt() (plStmt, error) {
 		return nil, err
 	}
 	st := &plSQL{text: text}
-	if text, into, ok := splitInto(text, first); ok {
-		st.text, st.into = text, into
+	if text, into, strict, ok := splitInto(text, first); ok {
+		st.text, st.into, st.strict = text, into, strict
 	}
 	return st, q.endStmt()
 }
 
 // splitInto removes a PL/pgSQL "INTO [STRICT] v1, v2" from a SELECT or from the RETURNING of a
 // DML statement.
-func splitInto(text, first string) (string, []string, bool) {
+func splitInto(text, first string) (string, []string, bool, bool) {
 	toks, err := lex(text)
 	if err != nil {
-		return text, nil, false
+		return text, nil, false, false
 	}
 	depth := 0
 	after := first != "insert" && first != "update" && first != "delete"
@@ -430,8 +516,10 @@ func splitInto(text, first string) (string, []string, bool) {
 			after = true
 		} else if depth == 0 && after && t.k == tIdent && t.s == "into" && i > 0 {
 			j := i + 1
+			strict := false
 			if toks[j].k == tIdent && toks[j].s == "strict" {
 				j++
+				strict = true
 			}
 			var names []string
 			for toks[j].k == tIdent || toks[j].k == tQuoted {
@@ -444,13 +532,13 @@ func splitInto(text, first string) (string, []string, bool) {
 				break
 			}
 			if len(names) == 0 {
-				return text, nil, false
+				return text, nil, false, false
 			}
 			end := toks[j].pos
-			return text[:t.pos] + " " + text[end:], names, true
+			return text[:t.pos] + " " + text[end:], names, strict, true
 		}
 	}
-	return text, nil, false
+	return text, nil, false, false
 }
 
 func (q *plp) ifStmt() (plStmt, error) {
@@ -485,20 +573,24 @@ func (q *plp) ifStmt() (plStmt, error) {
 
 func (q *plp) raiseStmt() (plStmt, error) {
 	q.i++
-	r := &plRaise{level: "exception"}
+	r := &plRaise{level: "exception", opts: map[string]string{}}
 	if q.opIs(";") {
 		r.rethrow = true
 		return r, q.endStmt()
 	}
 	if t := q.cur(); t.k == tIdent {
 		switch t.s {
-		case "notice", "warning", "info", "log", "debug", "exception":
+		case "notice", "warning", "info", "log", "debug", "debug1", "debug2", "debug3", "debug4", "debug5", "exception":
 			r.level = t.s
 			q.i++
 		}
 	}
 	t := q.cur()
-	if t.k == tIdent && t.s != "using" { // RAISE unique_violation USING ...
+	if t.k == tIdent && t.s == "sqlstate" && q.toks[q.i+1].k == tString {
+		r.errcode = q.toks[q.i+1].s
+		q.i += 2
+		t = q.cur()
+	} else if t.k == tIdent && t.s != "using" { // RAISE unique_violation USING ...
 		if _, ok := plConditions[t.s]; ok {
 			r.errcode = t.s
 			q.i++
@@ -542,12 +634,7 @@ func (q *plp) raiseStmt() (plStmt, error) {
 			if err != nil {
 				return nil, err
 			}
-			switch opt.s {
-			case "errcode":
-				r.errcode = strings.Trim(e, "'")
-			case "message":
-				r.message = e
-			}
+			r.opts[opt.s] = e
 			if !q.opIs(",") {
 				break
 			}
@@ -578,29 +665,55 @@ func (q *plp) loopStmt(label string) (plStmt, error) {
 			return nil, q.syntax()
 		}
 		q.i++
-		l.v = v.s
+		l.v = strings.ToLower(v.s)
+		for q.opIs(",") { // FOR a, b IN query
+			q.i++
+			n, err := q.identTok()
+			if err != nil {
+				return nil, err
+			}
+			l.vars = append(l.vars, n)
+		}
 		if !q.acceptKw("in") {
 			return nil, q.syntax()
 		}
 		l.rev = q.acceptKw("reverse")
-		txt, err := q.textUntil(func(t token) bool { return t.k == tIdent && t.s == "loop" })
+		txt, err := q.textUntil(func(t token) bool { return t.k == tIdent && (t.s == "loop" || t.s == "using") })
 		if err != nil {
 			return nil, err
 		}
-		q.i++
+		if q.acceptKw("using") {
+			if l.using, err = q.usingList(); err != nil {
+				return nil, err
+			}
+		}
+		if !q.acceptKw("loop") {
+			return nil, q.syntax()
+		}
+		lt := strings.ToLower(strings.TrimSpace(txt))
+		name := lt
+		if i := strings.IndexByte(name, '('); i >= 0 {
+			name = strings.TrimSpace(name[:i])
+		}
 		if a, b, ok := splitRange(txt); ok {
 			l.kind, l.lo, l.hi = "int", a, b
 			if m := plByRe.FindStringSubmatch(b); m != nil {
 				l.hi, l.by = m[1], m[2]
 			}
+		} else if strings.HasPrefix(lt, "execute") && (len(lt) == 7 || lt[7] == ' ' || lt[7] == '(' || lt[7] == '\n') {
+			l.kind, l.query, l.qexec = "query", strings.TrimSpace(txt[7:]), true
+		} else if q.curs[name] {
+			l.kind, l.cur = "cursor", name
+			if i := strings.IndexByte(txt, '('); i >= 0 {
+				inner := strings.TrimSpace(txt[i+1 : strings.LastIndexByte(txt, ')')])
+				if inner != "" {
+					l.args = splitTopCommas(inner)
+				}
+			}
 		} else {
 			l.kind, l.query = "query", txt
-			if strings.HasPrefix(strings.ToLower(txt), "execute") {
-				return nil, plErr("FOR .. IN EXECUTE is not supported")
-			}
 		}
-		q.scope[strings.ToLower(l.v)] = true
-		l.v = strings.ToLower(l.v)
+		q.scope[l.v] = true
 	}
 	var err error
 	if l.body, err = q.stmts("end"); err != nil {
@@ -613,6 +726,32 @@ func (q *plp) loopStmt(label string) (plStmt, error) {
 		q.i++
 	}
 	return l, q.endStmt()
+}
+
+// splitTopCommas splits at commas outside parentheses and quotes.
+func splitTopCommas(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == ',' && depth == 0:
+			out = append(out, strings.TrimSpace(s[start:i]))
+			start = i + 1
+		}
+	}
+	return append(out, strings.TrimSpace(s[start:]))
 }
 
 var plByRe = regexp.MustCompile(`(?is)^(.*?)\s+by\s+(.*)$`)
@@ -704,7 +843,7 @@ func (q *plp) executeStmt() (plStmt, error) {
 	}
 	x := &plExecute{expr: e}
 	if q.acceptKw("into") {
-		q.acceptKw("strict")
+		x.strict = q.acceptKw("strict")
 		for {
 			t := q.cur()
 			q.i++
@@ -732,19 +871,6 @@ func (q *plp) executeStmt() (plStmt, error) {
 }
 
 // ---- interpreter ----
-
-var plConditions = map[string]string{
-	"unique_violation": "23505", "foreign_key_violation": "23503", "not_null_violation": "23502",
-	"check_violation": "23514", "duplicate_object": "42710", "duplicate_table": "42P07",
-	"duplicate_column": "42701", "duplicate_function": "42723", "duplicate_schema": "42P06",
-	"duplicate_alias": "42712", "duplicate_database": "42P04", "undefined_table": "42P01",
-	"undefined_column": "42703", "undefined_object": "42704", "undefined_function": "42883",
-	"invalid_text_representation": "22P02", "division_by_zero": "22012", "raise_exception": "P0001",
-	"no_data_found": "P0002", "too_many_rows": "P0003", "syntax_error": "42601",
-	"insufficient_privilege": "42501", "feature_not_supported": "0A000", "invalid_schema_name": "3F000",
-	"dependent_objects_still_exist": "2BP01", "string_data_right_truncation": "22001",
-	"numeric_value_out_of_range": "22003", "serialization_failure": "40001", "deadlock_detected": "40P01",
-}
 
 func condMatches(c string, e *Error) bool {
 	if c == "others" {
@@ -780,6 +906,18 @@ type plRun struct {
 	returned  bool
 	flowLabel string // label of the EXIT / CONTINUE in flight
 	iters     int
+
+	kinds    map[string]Kind // declared kinds of the variables
+	fn       *funcDef        // the function being run (nil: DO block, trigger)
+	cols     []Column        // its result columns
+	outNames []string        // its OUT parameters
+	rows     [][]Datum       // RETURN NEXT / RETURN QUERY
+	retRow   []Datum         // RETURN of a record
+	rowCount int64           // GET DIAGNOSTICS ROW_COUNT
+	opened   []string        // cursors this run opened
+	curSeq   int
+	curDefs  map[string]*plCurDecl
+	labels   map[string]string // label.variable -> variable, for the blocks being run
 }
 
 const maxPLIterations = 20_000_000
@@ -795,6 +933,9 @@ func (s *Session) plRunBlock(b *plBlock, vars map[string]Datum) (Datum, error) {
 func (r *plRun) eval(text string) (Datum, error) {
 	if strings.TrimSpace(text) == "" {
 		return Null, nil
+	}
+	if v, ok := r.vars[strings.ToLower(strings.TrimSpace(text))]; ok && isPlainName(text) {
+		return v, nil // a variable on its own: no query
 	}
 	res, err := r.sql("SELECT " + text)
 	if err != nil {
@@ -820,7 +961,11 @@ func (r *plRun) exec(st Stmt, params []Datum) (*Result, error) {
 }
 
 func (r *plRun) sql(text string) (*Result, error) {
-	text, params, err := sqlWithVars(text, r.vars)
+	vars := r.vars
+	if (len(r.labels) > 0 || r.fn != nil && r.fn.Name != "") && strings.Contains(text, ".") {
+		vars = r.qualified() // label.variable and function.parameter names
+	}
+	text, params, err := sqlWithVars(text, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -842,27 +987,37 @@ func (r *plRun) sql(text string) (*Result, error) {
 
 func (r *plRun) block(b *plBlock, outer *Error) (plFlow, error) {
 	saved := map[string]*Datum{}
+	if r.kinds == nil {
+		r.kinds = map[string]Kind{}
+	}
 	for _, d := range b.decls {
-		if v, ok := r.vars[d.name]; ok {
-			c := v
-			saved[d.name] = &c
-		} else {
-			saved[d.name] = nil
-		}
-		v := Null
-		if d.init != "" {
-			var err error
-			if v, err = r.eval(d.init); err != nil {
-				return flowNext, err
+		for _, key := range []string{d.name, d.name + ".*"} {
+			if _, seen := saved[key]; seen {
+				continue
+			}
+			if v, ok := r.vars[key]; ok {
+				c := v
+				saved[key] = &c
+			} else {
+				saved[key] = nil
 			}
 		}
-		if k := kindOfTypeText(d.typ); !v.IsNull() && v.K != k && k != KNull {
-			var err error
-			if v, err = coerce(v, k); err != nil {
-				return flowNext, err
-			}
+		if err := r.declare(d, saved); err != nil {
+			return flowNext, err
 		}
-		r.vars[d.name] = v
+	}
+	if b.label != "" {
+		if r.labels == nil {
+			r.labels = map[string]string{}
+		}
+		for _, d := range b.decls {
+			r.labels[b.label+"."+d.name] = d.name
+		}
+		defer func() {
+			for _, d := range b.decls {
+				delete(r.labels, b.label+"."+d.name)
+			}
+		}()
 	}
 	defer func() {
 		for n, v := range saved {
@@ -923,6 +1078,106 @@ func (r *plRun) block(b *plBlock, outer *Error) (plFlow, error) {
 	return flowNext, err
 }
 
+// declare gives the variable of d its initial value.
+func (r *plRun) declare(d plDecl, saved map[string]*Datum) error {
+	typ := strings.ToLower(strings.TrimSpace(d.typ))
+	switch {
+	case d.cursor != nil:
+		if r.curDefs == nil {
+			r.curDefs = map[string]*plCurDecl{}
+		}
+		r.curDefs[d.name] = d.cursor
+		r.vars[d.name] = Null
+		return nil
+	case typ == "alias":
+		r.vars[d.name] = r.vars[d.init]
+		return nil
+	case typ == "record":
+		r.vars[d.name+".*"] = TextD("")
+		return nil
+	case strings.HasSuffix(typ, "%rowtype") || r.isTableType(typ):
+		tbl := strings.TrimSuffix(typ, "%rowtype")
+		t, err := r.s.E.UserTable(strings.TrimSpace(tbl))
+		if err != nil {
+			return errf("42P01", "relation %q does not exist", tbl)
+		}
+		var names []string
+		for _, ci := range t.Schema().VisibleCols() {
+			c := &t.Schema().Columns[ci]
+			names = append(names, strings.ToLower(c.Name))
+			key := d.name + "." + strings.ToLower(c.Name)
+			if _, seen := saved[key]; !seen {
+				if v, ok := r.vars[key]; ok {
+					cv := v
+					saved[key] = &cv
+				} else {
+					saved[key] = nil
+				}
+			}
+			r.vars[key] = Null
+			r.kinds[key] = kindOfType(c.Type)
+		}
+		r.vars[d.name+".*"] = TextD(strings.Join(names, ","))
+		return nil
+	case strings.HasSuffix(typ, "%type"):
+		ref := strings.TrimSuffix(typ, "%type")
+		var k Kind
+		if k0, ok := r.kinds[strings.TrimSpace(ref)]; ok {
+			k = k0
+		} else if i := strings.LastIndexByte(ref, '.'); i > 0 {
+			t, err := r.s.E.UserTable(strings.TrimSpace(ref[:i]))
+			if err != nil {
+				return errf("42P01", "relation %q does not exist", ref[:i])
+			}
+			ci, ok := t.Schema().Col(strings.TrimSpace(ref[i+1:]))
+			if !ok {
+				return errf("42703", "column %q does not exist", ref[i+1:])
+			}
+			k = kindOfType(t.Schema().Columns[ci].Type)
+		}
+		r.kinds[d.name] = k
+		typ = ""
+	}
+	v := Null
+	if d.init != "" {
+		var err error
+		if v, err = r.eval(d.init); err != nil {
+			return err
+		}
+	}
+	k := KNull
+	if typ != "" {
+		k = kindOfTypeText(d.typ)
+		if k != KNull {
+			r.kinds[d.name] = k
+		}
+	} else {
+		k = r.kinds[d.name]
+	}
+	if !v.IsNull() && v.K != k && k != KNull {
+		var err error
+		if v, err = coerce(v, k); err != nil {
+			return err
+		}
+	}
+	r.vars[d.name] = v
+	return nil
+}
+
+// isTableType reports whether typ names a table (a composite type for a variable).
+func (r *plRun) isTableType(typ string) bool {
+	if typ == "" || strings.ContainsAny(typ, " ()[]%.") {
+		return false
+	}
+	switch typ {
+	case "int", "integer", "text", "bigint", "smallint", "numeric", "boolean", "bool", "date", "uuid", "jsonb", "json",
+		"refcursor", "bytea", "real", "timestamp", "timestamptz", "varchar", "float8", "float4", "interval", "time", "record", "void":
+		return false
+	}
+	_, err := r.s.E.UserTable(typ)
+	return err == nil
+}
+
 func kindOfTypeText(t string) Kind {
 	toks, err := lex(t)
 	if err != nil {
@@ -950,6 +1205,13 @@ func (r *plRun) set(name string, v Datum) error {
 	if _, ok := r.vars[name]; !ok {
 		return errf("42703", "variable %q does not exist", name)
 	}
+	if k, ok := r.kinds[name]; ok && k != KNull && !v.IsNull() && v.K != k {
+		c, err := coerce(v, k)
+		if err != nil {
+			return err
+		}
+		v = c
+	}
 	r.vars[name] = v
 	return nil
 }
@@ -959,6 +1221,12 @@ func (r *plRun) one(st plStmt, cur *Error) (plFlow, error) {
 	case *plNested:
 		return r.block(st.b, cur)
 	case *plAssign:
+		if st.idx != "" {
+			return flowNext, r.assignElem(st)
+		}
+		if r.isRecord(st.name) {
+			return flowNext, r.assignRecord(st)
+		}
 		v, err := r.eval(st.expr)
 		if err != nil {
 			return flowNext, err
@@ -977,6 +1245,10 @@ func (r *plRun) one(st plStmt, cur *Error) (plFlow, error) {
 		return flowNext, r.set(st.name, v)
 	case *plReturn:
 		r.returned = true
+		if n := strings.ToLower(strings.TrimSpace(st.expr)); r.isRecord(n) && n != "new" && n != "old" {
+			r.retRow = r.recordValues(n)
+			return flowReturn, nil
+		}
 		switch strings.ToLower(strings.TrimSpace(st.expr)) {
 		case "new", "old":
 			r.retMode = strings.ToLower(strings.TrimSpace(st.expr))
@@ -1041,96 +1313,182 @@ func (r *plRun) one(st plStmt, cur *Error) (plFlow, error) {
 		if err != nil {
 			return flowNext, err
 		}
-		n := len(res.Rows)
-		if !res.HasRows {
-			if f := strings.Fields(res.Tag); len(f) > 0 {
-				n, _ = strconv.Atoi(f[len(f)-1])
-			}
+		r.noteCount(res)
+		n := int(r.rowCount)
+		if len(st.into) > 0 && n > 1 && st.strict {
+			return flowNext, errf("P0003", "query returned more than one row")
+		}
+		if len(st.into) > 0 && n == 0 && st.strict {
+			return flowNext, errf("P0002", "query returned no rows")
 		}
 		r.vars["found"] = BoolD(n > 0)
 		if res.Notice != "" {
-			r.s.plNotice = res.Notice
+			r.queueNotice("notice", "00000", res.Notice, "", "")
 		}
-		for i, name := range st.into {
-			v := Null
-			if len(res.Rows) > 0 && i < len(res.Rows[0]) {
-				v = res.Rows[0][i]
-			}
-			if err := r.set(name, v); err != nil {
+		if len(st.into) > 0 {
+			if err := r.intoTargets(st.into, res); err != nil {
 				return flowNext, err
 			}
 		}
 		return flowNext, nil
 	case *plExecute:
-		q, err := r.eval(st.expr)
+		res, err := r.runDynamic(st.expr, st.using)
 		if err != nil {
 			return flowNext, err
 		}
-		var params []Datum
-		for _, a := range st.using {
-			v, err := r.eval(a)
-			if err != nil {
-				return flowNext, err
+		if len(st.into) > 0 {
+			if st.strict && len(res.Rows) != 1 {
+				if len(res.Rows) == 0 {
+					return flowNext, errf("P0002", "query returned no rows")
+				}
+				return flowNext, errf("P0003", "query returned more than one row")
 			}
-			params = append(params, v)
-		}
-		sts, err := parseWith(q.String(), r.s)
-		if err != nil {
-			return flowNext, err
-		}
-		var res *Result
-		for _, x := range sts {
-			if res, err = r.exec(x, params); err != nil {
-				return flowNext, err
-			}
-		}
-		for i, name := range st.into {
-			v := Null
-			if res != nil && len(res.Rows) > 0 && i < len(res.Rows[0]) {
-				v = res.Rows[0][i]
-			}
-			if err := r.set(name, v); err != nil {
-				return flowNext, err
-			}
+			return flowNext, r.intoTargets(st.into, res)
 		}
 		return flowNext, nil
+	case *plGetDiag:
+		return flowNext, r.runGetDiag(st, cur)
+	case *plForeach:
+		return r.foreach(st, cur)
+	case *plOpen:
+		return flowNext, r.openCursor(st)
+	case *plFetch:
+		return flowNext, r.fetchCursor(st)
+	case *plClose:
+		name, err := r.curName(st.cur, false)
+		if err != nil {
+			return flowNext, err
+		}
+		_, err = r.s.exec(&CloseCursor{Name: name}, nil)
+		return flowNext, err
+	case *plAssert:
+		v, err := r.eval(st.cond)
+		if err != nil {
+			return flowNext, err
+		}
+		if v.IsNull() || !v.Bool() {
+			msg := "assertion failed"
+			if st.msg != "" {
+				m, err := r.eval(st.msg)
+				if err != nil {
+					return flowNext, err
+				}
+				msg = m.String()
+			}
+			return flowNext, errf("P0004", "%s", msg)
+		}
+		return flowNext, nil
+	case *plReturnNext:
+		row, err := r.returnRow(st.expr)
+		if err != nil {
+			return flowNext, err
+		}
+		r.rows = append(r.rows, row)
+		return flowNext, nil
+	case *plReturnQuery:
+		var res *Result
+		var err error
+		if st.exec {
+			res, err = r.runDynamic(st.query, st.using)
+		} else {
+			res, err = r.sql(st.query)
+		}
+		if err != nil {
+			return flowNext, err
+		}
+		r.addRows(res.Rows)
+		r.vars["found"] = BoolD(len(res.Rows) > 0)
+		return flowNext, nil
 	case *plRaise:
-		if st.rethrow {
-			if cur == nil {
-				return flowNext, errf("0Z002", "RAISE without parameters cannot be used outside an exception handler")
-			}
-			return flowNext, cur
-		}
-		var args []string
-		for _, a := range st.args {
-			v, err := r.eval(a)
-			if err != nil {
-				return flowNext, err
-			}
-			args = append(args, v.String())
-		}
-		msg := raiseFormat(st.format, args)
-		if st.message != "" {
-			v, err := r.eval(st.message)
-			if err != nil {
-				return flowNext, err
-			}
-			msg = v.String()
-		}
-		if st.level != "exception" {
-			r.s.plNotice = msg
-			return flowNext, nil
-		}
-		code := "P0001"
-		if st.errcode != "" {
-			code = st.errcode
-			if c, ok := plConditions[strings.ToLower(code)]; ok {
-				code = c
-			}
-		}
-		return flowNext, errf(code, "%s", msg)
+		return flowNext, r.runRaise(st, cur)
 	}
 	return flowNext, errf(codeInternal, "unexpected PL/pgSQL node %T", st)
+}
+
+// assignElem handles a[i] := expr on a one-dimensional array.
+func (r *plRun) assignElem(st *plAssign) error {
+	v, err := r.eval(st.expr)
+	if err != nil {
+		return err
+	}
+	iv, err := r.eval(st.idx)
+	if err != nil {
+		return err
+	}
+	if iv.K != KInt {
+		if iv, err = coerce(iv, KInt); err != nil {
+			return err
+		}
+	}
+	arr, ok := r.vars[st.name]
+	if !ok {
+		return errf("42703", "variable %q does not exist", st.name)
+	}
+	elems := parseArrayText(arr)
+	i := int(iv.I)
+	if i < 1 {
+		return errf("2202E", "array subscript out of range")
+	}
+	for len(elems) < i {
+		elems = append(elems, Null)
+	}
+	elems[i-1] = v
+	nv := arrayD(elems)
+	if arr.K == KArray && arr.I != 0 {
+		nv.I = arr.I
+	}
+	r.vars[st.name] = nv
+	return nil
+}
+
+// assignRecord handles "rec := ROW(...)" and "rec := other_rec".
+func (r *plRun) assignRecord(st *plAssign) error {
+	if cols, vals, ok, err := r.rowConstructor(st.expr); ok || err != nil {
+		if err == nil {
+			r.setRecord(st.name, cols, vals)
+		}
+		return err
+	}
+	src := strings.ToLower(strings.TrimSpace(st.expr))
+	if r.isRecord(src) {
+		fs := r.recFields(src)
+		cols := make([]Column, len(fs))
+		for i, f := range fs {
+			cols[i] = Column{Name: f}
+		}
+		r.setRecord(st.name, cols, r.recordValues(src))
+		return nil
+	}
+	res, err := r.sql("SELECT " + st.expr)
+	if err != nil {
+		return err
+	}
+	var row []Datum
+	if len(res.Rows) > 0 {
+		row = res.Rows[0]
+	}
+	r.setRecord(st.name, res.Cols, row)
+	return nil
+}
+
+// snapshotVar saves variable v and its record fields; the returned func restores them.
+func (r *plRun) snapshotVar(v string) func() {
+	saved := map[string]Datum{}
+	for k, d := range r.vars {
+		if k == v || strings.HasPrefix(k, v+".") {
+			saved[k] = d
+		}
+	}
+	return func() {
+		for k := range r.vars {
+			if k == v || strings.HasPrefix(k, v+".") {
+				delete(r.vars, k)
+			}
+		}
+		for k, d := range saved {
+			r.vars[k] = d
+		}
+	}
 }
 
 // raiseFormat replaces each % by the next argument; %% is a percent sign.
@@ -1252,8 +1610,29 @@ func (r *plRun) loop(l *plLoop, cur *Error) (plFlow, error) {
 			}
 		}
 		return flowNext, nil
-	case "query":
-		res, err := r.sql(l.query)
+	case "query", "cursor":
+		var res *Result
+		var err error
+		switch {
+		case l.kind == "cursor":
+			if err = r.openCursor(&plOpen{cur: l.cur, args: l.args, bound: true}); err != nil {
+				return flowNext, err
+			}
+			name := r.vars[l.cur].String()
+			sts, perr := parseWith("FETCH ALL FROM "+quoteIdent(name), r.s)
+			if perr != nil {
+				return flowNext, perr
+			}
+			res, err = r.s.exec(sts[0], nil)
+			r.s.exec(&CloseCursor{Name: name}, nil)
+		case l.qexec:
+			res, err = r.runDynamic(l.query, l.using)
+		default:
+			res, err = r.sql(l.query)
+			if err == nil {
+				r.noteCount(res)
+			}
+		}
 		if err != nil {
 			return flowNext, err
 		}
@@ -1261,41 +1640,79 @@ func (r *plRun) loop(l *plLoop, cur *Error) (plFlow, error) {
 		for _, c := range res.Cols {
 			names = append(names, strings.ToLower(c.Name))
 		}
-		saved := map[string]Datum{}
-		keys := []string{l.v}
-		for _, n := range names {
-			keys = append(keys, l.v+"."+n)
-		}
-		for _, k := range keys {
-			if v, ok := r.vars[k]; ok {
-				saved[k] = v
-			}
-		}
-		defer func() {
-			for _, k := range keys {
-				if v, ok := saved[k]; ok {
-					r.vars[k] = v
-				} else {
-					delete(r.vars, k)
-				}
-			}
-		}()
+		restore := r.snapshotVar(l.v)
+		defer restore()
+		targets := append([]string{l.v}, l.vars...)
+		_, declared := r.vars[l.v]
+		scalar := len(l.vars) > 0 || declared && !r.isRecord(l.v)
 		for _, row := range res.Rows {
-			for i, n := range names {
-				if i < len(row) {
-					r.vars[l.v+"."+n] = row[i]
+			switch {
+			case len(l.vars) > 0:
+				for i, t := range targets {
+					v := Null
+					if i < len(row) {
+						v = row[i]
+					}
+					r.vars[t] = v
 				}
-			}
-			if len(row) == 1 {
-				r.vars[l.v] = row[0]
+			case scalar:
+				if len(row) > 0 {
+					r.vars[l.v] = row[0]
+				}
+			default:
+				r.setRecord(l.v, res.Cols, row)
+				if len(row) == 1 {
+					r.vars[l.v] = row[0]
+					delete(r.vars, l.v+".*")
+				}
 			}
 			r.vars["found"] = BoolD(true)
 			if done, flow, err := body(); done || err != nil {
 				return flow, err
 			}
 		}
+		_ = names
 		r.vars["found"] = BoolD(len(res.Rows) > 0)
 		return flowNext, nil
 	}
 	return flowNext, errf(codeInternal, "unknown loop kind %q", l.kind)
+}
+
+// isPlainName reports whether s is name or name.name (letters, digits, underscores).
+func isPlainName(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c == '_' || c == '.' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' && i > 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// qualified is the variables plus the label.variable and function.parameter names that refer to them.
+func (r *plRun) qualified() map[string]Datum {
+	m := make(map[string]Datum, len(r.vars)+len(r.labels)+8)
+	for k, v := range r.vars {
+		m[k] = v
+	}
+	for q, n := range r.labels {
+		if v, ok := r.vars[n]; ok {
+			m[q] = v
+		}
+	}
+	if r.fn != nil {
+		fn := strings.ToLower(r.fn.Name)
+		for _, a := range r.fn.Args {
+			if a.Name != "" {
+				if v, ok := r.vars[strings.ToLower(a.Name)]; ok {
+					m[fn+"."+strings.ToLower(a.Name)] = v
+				}
+			}
+		}
+	}
+	return m
 }

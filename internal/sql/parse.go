@@ -658,6 +658,9 @@ func (p *parser) colDef() (ColDef, error) {
 		return cd, err
 	}
 	cd.PG = p.pgSpec
+	if cd.Collation, err = p.lastCollName(); err != nil {
+		return cd, err
+	}
 	switch raw {
 	case "smallserial", "serial", "bigserial":
 		cd.Serial, cd.NotNull = true, true
@@ -858,6 +861,8 @@ func (p *parser) typeName() (string, error) {
 	case "text":
 		out = "text"
 	case "regclass", "regtype", "oid", "regproc", "regnamespace": // OID types (catalog_funcs.go)
+		out = t.s
+	case "regprocedure", "regrole", "regoper", "regoperator", "regconfig", "regdictionary":
 		out = t.s
 	case "int2vector", "oidvector":
 		out = "array"
@@ -1287,6 +1292,22 @@ func (p *parser) notExpr() (Expr, error) {
 	return p.predicate()
 }
 
+// lastCollName is the name of the collation that COLLATE gave right after the token just consumed
+// ("" if none); an unknown name is an error.
+func (p *parser) lastCollName() (string, error) {
+	if p.colls == nil || p.i == 0 {
+		return "", nil
+	}
+	name, ok := p.colls[p.i-1]
+	if !ok {
+		return "", nil
+	}
+	if _, err := lookupCollationIn(p.sess, name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 // lastColl is the collation named by COLLATE right after the operand the
 // parser just consumed, or nil.
 func (p *parser) lastColl() (*Collation, error) {
@@ -1297,7 +1318,7 @@ func (p *parser) lastColl() (*Collation, error) {
 	if !ok {
 		return nil, nil
 	}
-	return LookupCollation(name)
+	return lookupCollationIn(p.sess, name)
 }
 
 func (p *parser) predicate() (Expr, error) {
@@ -1601,7 +1622,7 @@ func (p *parser) unary() (Expr, error) {
 			}
 			continue
 		case p.isOp("[") && p.i > 0 && (p.toks[p.i-1].s == ")" || p.toks[p.i-1].s == "]" && p.toks[p.i-1].k == tOp ||
-			p.toks[p.i-1].k == tIdent && !reserved[p.toks[p.i-1].s] || p.toks[p.i-1].k == tQuoted): // (array)[i], col[i]
+			p.toks[p.i-1].k == tIdent && !reserved[p.toks[p.i-1].s] || p.toks[p.i-1].k == tQuoted || p.toks[p.i-1].k == tParam): // (array)[i], col[i], $1[i]
 			x, err = p.subscriptSuffix(x)
 			continue
 		case p.isOp(".") && p.i > 0 && p.toks[p.i-1].s == ")" && p.toks[p.i-1].k == tOp: // (record).field
@@ -1933,11 +1954,24 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			p.acceptKw("all")
 		}
 		for {
+			argName := ""
+			if t, n1, n2 := p.peek(), p.peekN(1), p.peekN(2); (t.k == tIdent || t.k == tQuoted) &&
+				(n1.k == tOp && n1.s == "=" && n2.k == tOp && n2.s == ">" && n2.pos == n1.pos+1 ||
+					n1.k == tOp && n1.s == ":" && n2.k == tOp && n2.s == "=" && n2.pos == n1.pos+1) {
+				argName = t.s
+				p.i += 3
+			}
 			x, err := p.expr()
 			if err != nil {
 				return err
 			}
 			f.Args = append(f.Args, x)
+			if argName != "" {
+				for len(f.ArgNames) < len(f.Args)-1 {
+					f.ArgNames = append(f.ArgNames, "")
+				}
+				f.ArgNames = append(f.ArgNames, argName)
+			}
 			if p.acceptOp(",") {
 				continue
 			}
@@ -2327,6 +2361,9 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 					return nil, err
 				}
 				act.PG = p.pgSpec
+				if act.Collation, err = p.lastCollName(); err != nil {
+					return nil, err
+				}
 				if p.acceptKw("using") {
 					// only the cast of the column itself: USING col::type or CAST(col AS type)
 					x, err := p.expr()

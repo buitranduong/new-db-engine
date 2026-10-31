@@ -57,6 +57,10 @@ func (s *Session) objDDL(st Stmt) (*Result, error) {
 			res, err = s.dropSchemas(st)
 		case "schema alter":
 			res, err = s.alterSchema(st)
+		case "collation create":
+			res, err = s.createCollation(st)
+		case "collation drop":
+			res, err = s.dropCollations(st)
 		case "extension create":
 			res, err = s.createExtension(st)
 		case "extension drop":

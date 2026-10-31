@@ -191,7 +191,7 @@ func TestTriggerDDL(t *testing.T) {
 		`CREATE TRIGGER x BEFORE DELETE ON acct BEGIN SET NEW.bal = 1; END`:                           codeFeature,
 		`CREATE TRIGGER x AFTER INSERT ON acct BEGIN END`:                                             codeSyntax,
 		`CREATE TRIGGER x AFTER INSERT ON acct BEGIN CREATE TABLE z (a INT); END`:                     codeFeature,
-		`CREATE TRIGGER x INSTEAD OF INSERT ON acct BEGIN SELECT 1; END`:                              codeFeature,
+		`CREATE TRIGGER x INSTEAD OF INSERT ON acct BEGIN SELECT 1; END`:                              codeWrongObjectType,
 		`CREATE TRIGGER x AFTER INSERT ON acct EXECUTE FUNCTION f()`:                                  codeUndefinedFunction,
 		`CREATE TRIGGER x AFTER UPDATE OF nope ON acct BEGIN SELECT 1; END`:                           codeUndefinedColumn,
 		`DROP TRIGGER nope ON acct`:                                                                   codeUndefinedObject,

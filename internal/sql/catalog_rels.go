@@ -66,11 +66,15 @@ func init() {
 		"attacl:a attoptions:a attfdwoptions:a attmissingval:a", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		mod := int64(-1) // atttypmod of the column being added
+		curColl := ""
 		att := func(rel int64, name string, typ int64, num int, notNull, def bool, ident string, missing, dropped bool) {
 			ty := typeByOID(typ)
 			coll := int64(0)
 			if ty.cat == "S" {
 				coll = 100
+				if curColl != "" {
+					coll = collOID(curColl)
+				}
 			}
 			if dropped { // PostgreSQL keeps the slot: no type, a placeholder name
 				name, typ, notNull, def, ident, coll = fmt.Sprintf("........pg.dropped.%d........", num), 0, false, false, "", 0
@@ -97,10 +101,11 @@ func init() {
 			for _, a := range all {
 				col := a.col
 				mod = typmodOf(col)
+				curColl = col.Collation
 				att(tableOID(t), col.Name, colTypeOID(col), col.Num, col.NotNull || col.Name == t.Key, hasDef(col),
 					identityChar(col), col.Missing != nil, a.dropped)
 			}
-			mod = -1
+			mod, curColl = -1, ""
 			for i, name := range t.PKCols() {
 				j, _ := t.Col(name)
 				att(indexOID(t), name, colTypeOID(t.Columns[j]), i+1, false, false, "", false, false)
@@ -252,6 +257,13 @@ func init() {
 						IntD(pkeyConOID(t)), IntD(0), TextD("i")})
 				}
 			}
+			// the functions of an installed extension belong to it (DROP EXTENSION takes them along)
+			for _, o := range c.s.E.Objs("ext") {
+				for _, f := range extProcs[o.Name] {
+					rows = append(rows, []Datum{IntD(pgProcRelOID), IntD(f.oid()), IntD(0), IntD(3079),
+						IntD(extensionOID(o.Name)), IntD(0), TextD("e")})
+				}
+			}
 			return rows
 		})
 
@@ -309,9 +321,10 @@ func init() {
 				TextD(name), TextD(name)}
 		}
 		// default is the database collation (SHOW lc_collate); the others are the names COLLATE accepts
-		return [][]Datum{row(100, "default", "d", -1), row(950, "C", "c", 6), row(951, "POSIX", "c", 6),
+		rows := [][]Datum{row(100, "default", "d", -1), row(950, "C", "c", 6), row(951, "POSIX", "c", 6),
 			row(12000, "ucs_basic", "c", 6), row(12001, "C.utf8", "c", 6), row(12002, "en_US.utf8", "c", 6),
-			row(12003, "vi_VN.utf8", "c", 6), row(12004, "und-x-icu", "i", -2)}
+			row(12003, "vi_VN.utf8", "c", 6), row(12004, "und-x-icu", "i", -2), row(12005, "en_US", "c", 6), row(12006, "vi_VN", "c", 6)}
+		return append(rows, userCollationRows(c.s)...)
 	})
 
 	defCat("pg_tablespace", "oid:i spcname:t spcowner:i spcacl:a spcoptions:a", func(c *catSnap) [][]Datum {

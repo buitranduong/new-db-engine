@@ -365,7 +365,7 @@ func kindOfType(t string) Kind {
 		return KArray
 	}
 	switch t {
-	case "int", "regclass", "regtype", "oid", "regproc", "regnamespace":
+	case "int", "regclass", "regtype", "oid", "regproc", "regnamespace", "regprocedure", "regrole", "regoper", "regoperator", "regconfig", "regdictionary":
 		return KInt
 	case "float":
 		return KFloat

@@ -98,14 +98,22 @@ func triggerVars(t *schema.Table, tg *core.Trigger, timing, event string, old, n
 		v["tg_argv["+strconv.Itoa(i)+"]"] = TextD(a)
 	}
 	if !tg.Statement() {
+		var names []string
 		for _, ci := range t.VisibleCols() {
 			c := &t.Columns[ci]
+			names = append(names, strings.ToLower(c.Name))
 			if nw != nil {
 				v["new."+c.Name] = fromCol(c, nw[ci])
 			}
 			if old != nil {
 				v["old."+c.Name] = fromCol(c, old[ci])
 			}
+		}
+		if nw != nil {
+			v["new.*"] = TextD(strings.Join(names, ","))
+		}
+		if old != nil {
+			v["old.*"] = TextD(strings.Join(names, ","))
 		}
 	}
 	return v
@@ -190,6 +198,11 @@ func (s *Session) withStmtTriggers(tx *core.Tx, table, event string, f func() (*
 	if !has {
 		return f()
 	}
+	if wantsTransition(tgs, event) {
+		prev := s.trans
+		s.trans = &transCollector{table: table}
+		defer func() { s.trans = prev }()
+	}
 	if err := s.fireStmtTriggers(tx, table, tgs, "before", event); err != nil {
 		return nil, err
 	}
@@ -222,7 +235,13 @@ func (s *Session) fireStmtTriggers(tx *core.Tx, table string, tgs []*core.Trigge
 			defer func() { s.trigDepth-- }()
 		}
 		if tg.Func != "" {
-			if _, _, err := s.runTriggerFunc(tx, t, tg, timing, event, nil, nil); err != nil {
+			restore := s.installTransition(t, tg)
+			saved := s.trans
+			s.trans = nil // writes of the trigger function are not part of the statement's transition tables
+			_, _, err := s.runTriggerFunc(tx, t, tg, timing, event, nil, nil)
+			s.trans = saved
+			restore()
+			if err != nil {
 				return err
 			}
 			continue
@@ -266,11 +285,20 @@ func (s *Session) validateTriggerFunc(name string) error {
 // triggerDef renders pg_get_triggerdef.
 func triggerDef(tg *core.Trigger) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CREATE TRIGGER %s %s ", tg.Name, strings.ToUpper(tg.Timing))
-	for i, e := range tg.Events {
-		if i > 0 {
+	timing := strings.ToUpper(tg.Timing)
+	if tg.Timing == "instead" {
+		timing = "INSTEAD OF"
+	}
+	fmt.Fprintf(&b, "CREATE TRIGGER %s %s ", tg.Name, timing)
+	first := true
+	for _, e := range []string{"insert", "delete", "update", "truncate"} { // PostgreSQL's order
+		if !slices.Contains(tg.Events, e) {
+			continue
+		}
+		if !first {
 			b.WriteString(" OR ")
 		}
+		first = false
 		b.WriteString(strings.ToUpper(e))
 		if e == "update" && len(tg.UpdateOf) > 0 {
 			b.WriteString(" OF " + strings.Join(tg.UpdateOf, ", "))
@@ -280,7 +308,17 @@ func triggerDef(tg *core.Trigger) string {
 	if tg.Statement() {
 		level = "STATEMENT"
 	}
-	fmt.Fprintf(&b, " ON public.%s FOR EACH %s", tg.Table, level)
+	fmt.Fprintf(&b, " ON public.%s", tg.Table)
+	if tg.TransOld != "" || tg.TransNew != "" {
+		b.WriteString(" REFERENCING")
+		if tg.TransOld != "" {
+			b.WriteString(" OLD TABLE AS " + tg.TransOld)
+		}
+		if tg.TransNew != "" {
+			b.WriteString(" NEW TABLE AS " + tg.TransNew)
+		}
+	}
+	fmt.Fprintf(&b, " FOR EACH %s", level)
 	if tg.When != "" {
 		fmt.Fprintf(&b, " WHEN (%s)", tg.When)
 	}

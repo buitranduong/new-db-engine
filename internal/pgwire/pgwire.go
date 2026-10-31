@@ -782,10 +782,30 @@ func (c *conn) fail(err error) {
 
 func (c *conn) sendError(e *sql.Error) {
 	m := newMsg('E').byte1('S').str("ERROR").byte1('V').str("ERROR").byte1('C').str(e.Code).byte1('M').str(e.Msg)
+	if e.Detail != "" {
+		m.byte1('D').str(e.Detail)
+	}
+	if e.Hint != "" {
+		m.byte1('H').str(e.Hint)
+	}
 	if e.Pos > 0 {
 		m.byte1('P').str(strconv.Itoa(e.Pos))
 	}
 	c.send(m.byte1(0))
+}
+
+// flushNotices sends the notices the statement that just ran queued (RAISE inside a function).
+func (c *conn) flushNotices() {
+	for _, n := range c.sess.TakeNotices() {
+		m := newMsg('N').byte1('S').str(n.Sev).byte1('V').str(n.Sev).byte1('C').str(n.Code).byte1('M').str(n.Msg)
+		if n.Detail != "" {
+			m.byte1('D').str(n.Detail)
+		}
+		if n.Hint != "" {
+			m.byte1('H').str(n.Hint)
+		}
+		c.send(m.byte1(0))
+	}
 }
 
 func (c *conn) notice(text string) {
@@ -813,6 +833,7 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 	for _, st := range stmts {
 		c.sess.SetQuery(q)
 		res, err := c.sess.Exec(st, nil)
+		c.flushNotices()
 		if err != nil {
 			c.sendError(sql.AsError(err))
 			return false
@@ -987,6 +1008,7 @@ func (c *conn) execute(body []byte) {
 		}
 		c.sess.SetQuery(p.ps.query)
 		res, err := c.sess.Exec(p.ps.stmt, p.params)
+		c.flushNotices()
 		if core.LatDebug {
 			if _, ok := p.ps.stmt.(*sql.Select); ok {
 				core.LatRead.Add(time.Since(t0))

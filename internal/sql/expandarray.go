@@ -11,7 +11,7 @@ import "strconv"
 // isSelectSRF reports the set-returning functions expanded in a select
 // list (see selPlan.srfs).
 func isSelectSRF(name string) bool {
-	return name == "generate_series" || name == "unnest" || name == "_pg_expandarray" || name == "generate_subscripts"
+	return isUserSRF(name) || name == "generate_series" || name == "unnest" || name == "_pg_expandarray" || name == "generate_subscripts"
 }
 
 func expandArrayRows(args []Datum) [][]Datum {

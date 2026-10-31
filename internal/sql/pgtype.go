@@ -134,7 +134,7 @@ func (t pgTy) family() Kind {
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
-	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr:
+	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249:
 		return KText
 	case tyDate:
 		return KDate
@@ -250,6 +250,9 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		}
 		return commonTy(ts, as)
 	case *Func:
+		if t, ok := userFuncTy(e.Name); ok {
+			return t
+		}
 		if t, ok := supfixFuncTy(e); ok {
 			return t
 		}

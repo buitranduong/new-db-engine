@@ -151,7 +151,7 @@ staskd -dir /data/stask -addr 10.0.0.1:8080 -pg-addr 10.0.0.1:5432 \
        -repl-secret-file /etc/stask/repl.secret -repl-require-secure
 ```
 
-Cổng Raft dùng chung cơ chế bảo mật của cổng nhân bản (docs/06): mTLS + bí mật chung; cổng Raft không phải loopback mà không xác thực thì `staskd` từ chối chạy. `-gc` và `-archive-dir` bị tắt trong cụm.
+Cổng Raft dùng chung cơ chế bảo mật của cổng nhân bản (docs/06): mTLS + bí mật chung; cổng Raft không phải loopback mà không xác thực thì `staskd` từ chối chạy. `-gc` bị tắt trong cụm; `-archive-dir` dùng được (mỗi node một thư mục, docs/06 §5.2b). Đổi thành viên cụm: `staskctl cluster add|remove` (docs/06 §5.2b).
 
 ### 3.2 Nút báo đúng trạng thái đọc/ghi
 
@@ -216,7 +216,7 @@ staskctl status      -url http://n1:8080,http://n2:8080
 - Mỗi bản sao lưu là một thư mục có `manifest.json` (sha256 của từng file, loại, LSN, chỉ số Raft, kích thước).
 - **`verify` là bài khôi phục thật** (giống chạy `pg_restore` vào DB tạm): kiểm manifest, chép sang thư mục tạm, **khởi động `staskd` trên bản chép**, đợi `/v1/ready`, chạy quét CRC toàn bộ (`/v1/admin/scrub`), đọc số dòng từng bảng, báo JSON (`-json`), thoát khác 0 nếu hỏng. Bản hỏng bị đổi tên `.FAILED` và không tính vào `-keep`. Đã kiểm (`TestBackupVerifyRestore`): file đổi sau khi sao lưu bị manifest bắt; checkpoint hoặc log hỏng sẵn lúc sao lưu (manifest được làm khớp) vẫn bị bắt (tiến trình khôi phục thoát lúc khởi động, hoặc quét CRC thất bại).
 - **Lịch**: `backup-loop` chạy sao lưu, kiểm khôi phục, tỉa theo `-keep`, rồi ghi file Prometheus (textfile collector): `stask_backup_last_run_ok`, `stask_backup_last_success_timestamp_seconds`, `stask_backup_consecutive_failures`, `stask_backup_restore_test_ok`, `stask_backup_restore_start_seconds`, `stask_backup_bytes`, `stask_backup_lsn`, `stask_backup_duration_seconds` (`TestBackupLoopMetrics`). Chạy bằng systemd service hoặc cron với `-once` (thoát 1 khi hỏng).
-- **PITR nút đơn**: base backup + `-archive-dir` của staskd (lưu liên tục các segment) + `-restore-archive`, `-recovery-target-time|-lsn` (docs/05 §14, `accept/pitr.sh`). Cụm Raft chưa hỗ trợ `-archive-dir`: sao lưu cụm là ảnh chụp theo thời điểm, khoảng giữa hai lần sao lưu không khôi phục được [giới hạn §9].
+- **PITR nút đơn**: base backup + `-archive-dir` của staskd (lưu liên tục các segment) + `-restore-archive`, `-recovery-target-time|-lsn` (docs/05 §14, `accept/pitr.sh`). Cụm Raft: `-archive-dir` ở mỗi node + `staskctl backup -cluster` + `staskctl restore -standalone` + `-restore-archive` (docs/06 §5.2b, `TestHAClusterPITR`); khôi phục ra một nút đơn, chưa tự dựng lại cụm từ đó [giới hạn §9].
 - Khôi phục nút đơn: `staskctl restore -backup ... -dir NEW`, `staskd -dir NEW -segment-mb N` (N in sẵn).
 - Kiểm tra dung lượng: sao lưu đầy đủ mỗi lần; `-keep` × kích thước DB phải vừa đĩa đích.
 
@@ -328,7 +328,7 @@ Thường tự phục hồi bằng snapshot từ leader (nhật ký `fetched a s
 | Mục | Ghi chú |
 |---|---|
 | Đổi thành viên cụm (thêm/bớt/thay nút) | Chưa làm. Tập bỏ phiếu cố định. Không xoá thư mục dữ liệu của nút đang là thành viên (nó quên phiếu bầu và có thể bỏ phiếu hai lần trong một term). Thiết kế định làm ở docs/06 §5.4. Hệ quả: nút hỏng đĩa không thay được tại chỗ; đường thoát là khôi phục cụm từ sao lưu |
-| PITR cho cụm | `-archive-dir` chưa dùng được trong cụm; sao lưu cụm là theo thời điểm |
+| PITR cho cụm | Có (§5.2b docs/06); khôi phục ra nút đơn, chưa có lệnh dựng lại cụm 3 node từ bản khôi phục; chưa thử với kho hàng chục GB |
 | Đọc tuyến tính hoá | Không có (đọc ở bất kỳ nút nào có thể cũ); đọc-ghi-của-mình dùng LSN |
 | pgjdbc | Chưa chạy driver thật (không có Java trên VM) |
 | Hiệu năng cụm | Độ trễ p50 3 đến 4 lần một nút (docs/06); không đo lại ở đây (D32: đo dồn về cuối, `perf-run.sh`) |

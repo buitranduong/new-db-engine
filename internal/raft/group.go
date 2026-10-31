@@ -83,8 +83,18 @@ func (g *Group) Step(m Msg) {
 // Propose appends data and waits until it is committed and applied. It
 // returns ErrNotLeader at once on a node that is not the leader.
 func (g *Group) Propose(ctx context.Context, data []byte) (uint64, error) {
+	return g.propose(ctx, func() (uint64, uint64, error) { return g.n.Propose(data) })
+}
+
+// ProposeConf appends a membership change (Node.ProposeConf) and waits until
+// it is committed and applied.
+func (g *Group) ProposeConf(ctx context.Context, cc ConfChange) (uint64, error) {
+	return g.propose(ctx, func() (uint64, uint64, error) { return g.n.ProposeConf(cc) })
+}
+
+func (g *Group) propose(ctx context.Context, do func() (uint64, uint64, error)) (uint64, error) {
 	g.mu.Lock()
-	idx, term, err := g.n.Propose(data)
+	idx, term, err := do()
 	if err != nil {
 		g.mu.Unlock()
 		return 0, err
@@ -158,6 +168,8 @@ type Info struct {
 	TermStart           uint64 // leader: index of its no-op (committed => all earlier entries are)
 	Lease               bool
 	BaseIndex, BaseTerm uint64
+	Voters              []uint64 // the node's newest configuration
+	Member              bool     // this node is one of the voters
 }
 
 func (g *Group) Info() Info {
@@ -167,7 +179,14 @@ func (g *Group) Info() Info {
 	b := g.n.Base()
 	return Info{Role: role, Term: term, Leader: leader, Commit: commit, Applied: g.n.Applied(),
 		First: g.n.FirstIndex(), Last: g.n.LastIndex(), TermStart: g.n.LeaderTermStart(), Lease: g.n.LeaseValid(),
-		BaseIndex: b.Index, BaseTerm: b.Term}
+		BaseIndex: b.Index, BaseTerm: b.Term, Voters: g.n.Voters(), Member: g.n.Member()}
+}
+
+// VotersAt is the configuration as of the entry at index.
+func (g *Group) VotersAt(index uint64) []uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n.VotersAt(index)
 }
 
 // Entry returns the log entry at index, if the node still has it.

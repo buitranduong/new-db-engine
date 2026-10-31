@@ -180,6 +180,7 @@ type tcluster struct {
 	rng     *rand.Rand
 	client  *http.Client
 	lead    atomic.Int32 // index of the last known leader
+	extra   []string     // extra staskd flags given to newCluster (a joining node gets them too)
 }
 
 // portLockDir is shared by every `go test` process on the machine (and by
@@ -260,7 +261,7 @@ func newCluster(t *testing.T, n int, extra ...string) *tcluster {
 // newClusterPre is newCluster with a hook that runs before the processes
 // start (to place restored data in the node directories).
 func newClusterPre(t *testing.T, n int, pre func(*tcluster), extra ...string) *tcluster {
-	c := &tcluster{t: t, bin: staskdBin(t), proxies: map[[2]int]*proxy{}, rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+	c := &tcluster{t: t, extra: extra, bin: staskdBin(t), proxies: map[[2]int]*proxy{}, rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 		client: &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
 	base := freeBase(t, 3*n+n*n)
 	dir := t.TempDir()

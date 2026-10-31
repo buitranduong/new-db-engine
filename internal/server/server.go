@@ -30,6 +30,9 @@ type Server struct {
 	// Raft cluster (internal/cluster); clients and the router find the
 	// leader with it.
 	Cluster func() any
+	// ClusterChange, if set, serves POST /v1/admin/cluster/members: add or
+	// remove one voter (op "add" or "remove"). It must be sent to the leader.
+	ClusterChange func(op string, id uint64, raftAddr, httpAddr string) error
 	// HistMetrics, if set, adds lines to /metrics (the history store health).
 	HistMetrics func(p func(name, typ, help string, v any))
 	// ClusterMetrics, if set, adds the node's Raft state to /metrics (name
@@ -73,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/health", s.health)
 	m.HandleFunc("GET /v1/ready", s.ready)
 	m.HandleFunc("GET /v1/cluster", s.cluster)
+	m.HandleFunc("POST /v1/admin/cluster/members", s.clusterMembers)
 	m.HandleFunc("POST /v1/admin/checkpoint", s.checkpoint)
 	m.HandleFunc("POST /v1/admin/gc", s.gcRound)
 	m.HandleFunc("GET /metrics", s.metrics)
@@ -730,6 +734,30 @@ func (s *Server) setFault(w http.ResponseWriter, r *http.Request) {
 		s.Fault.syncEIO.Store(*req.SyncEIO)
 	}
 	reply(w, 200, map[string]any{"create_enospc": s.Fault.createENOSPC.Load(), "write_enospc": s.Fault.writeENOSPC.Load(), "sync_eio": s.Fault.syncEIO.Load()})
+}
+
+// clusterMembers changes the voter set of a Raft cluster by one node.
+// Any refusal is 409 (not the leader, a change is in progress, redundant).
+func (s *Server) clusterMembers(w http.ResponseWriter, r *http.Request) {
+	if s.ClusterChange == nil {
+		reply(w, http.StatusNotFound, map[string]any{"error": "not a cluster node"})
+		return
+	}
+	var req struct {
+		Op   string `json:"op"`
+		ID   uint64 `json:"id"`
+		Raft string `json:"raft"`
+		HTTP string `json:"http"`
+	}
+	if err := decode(r, &req); err != nil {
+		fail(w, err)
+		return
+	}
+	if err := s.ClusterChange(req.Op, req.ID, req.Raft, req.HTTP); err != nil {
+		reply(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	reply(w, 200, map[string]any{"ok": true, "op": req.Op, "id": req.ID})
 }
 
 func (s *Server) cluster(w http.ResponseWriter, r *http.Request) {

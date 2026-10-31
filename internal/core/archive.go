@@ -67,6 +67,9 @@ func (e *Engine) archiver() {
 			continue
 		}
 		w := e.log.WriteSeg()
+		if e.opts.ArchiveLimit != nil {
+			w = min(w, e.opts.ArchiveLimit())
+		}
 		for _, seg := range e.log.Segments() {
 			if seg >= w || seg <= uint32(e.archived.Load()) && e.archived.Load() >= 0 {
 				continue

@@ -68,7 +68,11 @@ type Options struct {
 	// RestoreArchive: before recovery, take the segments the log lacks
 	// from this archive, and stop replay at RecoveryTargetLSN or at the
 	// first commit after RecoveryTargetTS (unix ns), if set.
-	ArchiveDir         string
+	ArchiveDir string
+	// ArchiveLimit, if set, holds back the archiver: only segments below the
+	// number it returns are copied (a cluster node passes the first segment
+	// that may hold uncommitted entries).
+	ArchiveLimit       func() uint32
 	RestoreArchive     string
 	RecoveryTargetLSN  uint64
 	RecoveryTargetTS   int64

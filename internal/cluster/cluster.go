@@ -18,6 +18,13 @@
 // Likewise a node that fell behind the compacted Raft log fetches a
 // snapshot (the engine's base backup, tied to a Raft index) and restarts on
 // it.
+//
+// Membership: the voter set changes one node at a time through the Raft
+// log (internal/raft, ChangeMember). A new node is started with Config.Join,
+// listing the existing cluster and itself in Peers; the leader adds it and it
+// catches up from the log or from a snapshot. Addresses of nodes that are
+// not in the flags travel in the configuration entry and in snapshots, and
+// are kept in raft/members.json.
 package cluster
 
 import (
@@ -31,6 +38,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -54,6 +62,14 @@ type Config struct {
 	SegMax   int64
 	Settings repl.Settings
 	Insecure bool // allow a non-loopback Listen without authentication
+	// Join: this node is new to a running cluster. Peers lists the cluster
+	// and this node; the node does not vote or campaign until the leader
+	// has added it (ChangeMember).
+	Join bool
+	// ArchiveDir: copy every sealed log segment that the cluster has
+	// committed here (continuous archiving, see core.Options.ArchiveDir).
+	// The log is byte-identical on every node, so any node may archive; use
+	// one directory per node.
 
 	TickInterval   time.Duration // default 50 ms
 	ElectionTicks  int           // default 20 (election timeout 1 to 2 s)
@@ -76,7 +92,10 @@ type Cluster struct {
 
 	serverSec *repl.Security
 	ln        net.Listener
+	mmu       sync.RWMutex // guards members, peers, started (taken after the Raft lock, never before it)
+	members   map[uint64]member
 	peers     map[uint64]*peerConn
+	started   bool
 	cutLSN    uint64
 	startApp  applied
 
@@ -141,7 +160,11 @@ func Prepare(cfg Config) (*Cluster, error) {
 	if cfg.ID == 0 || cfg.Peers[cfg.ID] == "" {
 		return nil, errors.New("cluster: this node's id must be in the peer list")
 	}
-	c := &Cluster{cfg: cfg, stop: make(chan struct{}), boot: true, peers: map[uint64]*peerConn{}}
+	c := &Cluster{cfg: cfg, stop: make(chan struct{}), boot: true, peers: map[uint64]*peerConn{}, members: map[uint64]member{}}
+	c.loadMembers()
+	for id, a := range cfg.Peers {
+		c.members[id] = member{Raft: a, HTTP: cfg.HTTP[id]}
+	}
 	c.qcond = sync.NewCond(&c.qmu)
 	var b [8]byte
 	rand.Read(b[:])
@@ -189,6 +212,7 @@ func (c *Cluster) Start(e *core.Engine) error {
 	for id := range c.cfg.Peers {
 		ids = append(ids, id)
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	sec, err := c.cfg.Settings.Leader()
 	if err != nil {
 		return err
@@ -199,8 +223,8 @@ func (c *Cluster) Start(e *core.Engine) error {
 	c.serverSec = sec
 	tr := &transport{c: c}
 	g, err := raft.NewGroup(raft.Config{ID: c.cfg.ID, Peers: ids, ElectionTicks: c.cfg.ElectionTicks, HeartbeatTicks: 1,
-		Seed: time.Now().UnixNano(), Storage: c.st, Applied: c.startApp.Index,
-		NeedSnapshot: c.needSnapshot}, tr, c.onApply, c.cfg.TickInterval)
+		Seed: time.Now().UnixNano(), Storage: c.st, Applied: c.startApp.Index, Joining: c.cfg.Join,
+		NeedSnapshot: c.needSnapshot, OnConf: c.onConf}, tr, c.onApply, c.cfg.TickInterval)
 	if err != nil {
 		return err
 	}
@@ -209,18 +233,13 @@ func (c *Cluster) Start(e *core.Engine) error {
 		g.Stop()
 		return err
 	}
-	for id, addr := range c.cfg.Peers {
-		if id == c.cfg.ID {
-			continue
-		}
-		psec, err := c.cfg.Settings.Replica(addr)
-		if err != nil {
+	c.mmu.Lock()
+	c.started = true
+	c.mmu.Unlock()
+	for _, id := range g.Info().Voters {
+		if err := c.ensurePeer(id); err != nil {
 			return err
 		}
-		p := &peerConn{c: c, id: id, addr: addr, sec: psec, out: make(chan raft.Msg, 4096)}
-		c.peers[id] = p
-		c.wg.Add(1)
-		go p.run()
 	}
 	c.wg.Add(4)
 	go c.acceptLoop()
@@ -255,27 +274,30 @@ func (c *Cluster) Close() {
 // ---- state exposed to the server ----
 
 type Status struct {
-	ID         uint64 `json:"id"`
-	Role       string `json:"role"`
-	Term       uint64 `json:"term"`
-	Leader     uint64 `json:"leader"`
-	Writable   bool   `json:"writable"` // the leader's engine accepts writes
-	Lease      bool   `json:"lease"`
-	Commit     uint64 `json:"commit"`
-	Applied    uint64 `json:"applied"`
-	First      uint64 `json:"log_first"`
-	Last       uint64 `json:"log_last"`
-	HTTP       string `json:"http,omitempty"`
-	LeaderHTTP string `json:"leader_http,omitempty"`
+	ID         uint64   `json:"id"`
+	Role       string   `json:"role"`
+	Term       uint64   `json:"term"`
+	Leader     uint64   `json:"leader"`
+	Writable   bool     `json:"writable"` // the leader's engine accepts writes
+	Lease      bool     `json:"lease"`
+	Commit     uint64   `json:"commit"`
+	Applied    uint64   `json:"applied"`
+	First      uint64   `json:"log_first"`
+	Last       uint64   `json:"log_last"`
+	Voters     []uint64 `json:"voters"`
+	Member     bool     `json:"member"` // this node is one of the voters
+	HTTP       string   `json:"http,omitempty"`
+	LeaderHTTP string   `json:"leader_http,omitempty"`
 }
 
 func (c *Cluster) Status() Status {
 	i := c.g.Info()
 	s := Status{ID: c.cfg.ID, Role: i.Role.String(), Term: i.Term, Leader: i.Leader,
 		Writable: c.writable.Load() && !c.e.ReadOnly(), Lease: i.Lease, Commit: i.Commit,
-		Applied: c.cur.Load().Index, First: i.First, Last: i.Last, HTTP: c.cfg.HTTP[c.cfg.ID]}
+		Applied: c.cur.Load().Index, First: i.First, Last: i.Last, Voters: i.Voters, Member: i.Member,
+		HTTP: c.members0(c.cfg.ID).HTTP}
 	if i.Leader != 0 {
-		s.LeaderHTTP = c.cfg.HTTP[i.Leader]
+		s.LeaderHTTP = c.members0(i.Leader).HTTP
 	}
 	return s
 }
@@ -374,7 +396,11 @@ func (c *Cluster) applier() {
 func (c *Cluster) applyOne(e raft.Entry) error {
 	prev := c.cur.Load()
 	next := &applied{Index: e.Index, LSN: prev.LSN, Pos: prev.Pos}
-	if !e.Noop && len(e.Data) > 0 {
+	if e.Conf {
+		if err := c.applyConf(e); err != nil {
+			return err
+		}
+	} else if !e.Noop && len(e.Data) > 0 {
 		b, err := decodeBatch(e.Data)
 		if err != nil {
 			return err
@@ -493,7 +519,7 @@ func (c *Cluster) maybeCompact(info raft.Info) {
 		if !ok {
 			return
 		}
-		if e.Noop || len(e.Data) == 0 {
+		if e.Noop || e.Conf || len(e.Data) == 0 {
 			continue
 		}
 		b, err := decodeBatch(e.Data)

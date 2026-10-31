@@ -23,16 +23,20 @@ type simNode struct {
 	n        *Node
 	up       bool
 	part     int    // partition group
+	joining  bool   // added later: Config.Joining
 	applied0 uint64 // state-machine position that survives a restart (after a snapshot)
 }
 
 type sim struct {
-	t     *testing.T
-	rng   *rand.Rand
-	now   int
-	ids   []uint64
-	nodes map[uint64]*simNode
-	q     []delivery
+	t   *testing.T
+	rng *rand.Rand
+	now int
+	ids []uint64
+	// initial is the configuration every node starts from (Config.Peers);
+	// later changes come from the log
+	initial []uint64
+	nodes   map[uint64]*simNode
+	q       []delivery
 
 	dropP, dupP float64
 	maxDelay    int
@@ -78,6 +82,7 @@ func newSim(t *testing.T, seed int64, nn int) *sim {
 	for i := 1; i <= nn; i++ {
 		s.ids = append(s.ids, uint64(i))
 	}
+	s.initial = append([]uint64(nil), s.ids...)
 	for _, id := range s.ids {
 		s.nodes[id] = &simNode{id: id, st: &MemStorage{}}
 		s.start(id, seed)
@@ -87,7 +92,7 @@ func newSim(t *testing.T, seed int64, nn int) *sim {
 
 func (s *sim) start(id uint64, seed int64) {
 	sn := s.nodes[id]
-	n, err := NewNode(Config{ID: id, Peers: s.ids, ElectionTicks: s.electionTk, Seed: seed + int64(s.now), Storage: sn.st,
+	n, err := NewNode(Config{ID: id, Peers: s.initial, Joining: sn.joining, ElectionTicks: s.electionTk, Seed: seed + int64(s.now), Storage: sn.st,
 		Send:         func(m Msg) { s.send(m) },
 		Apply:        func(e Entry) { s.onApply(id, e) },
 		Applied:      sn.applied0,
@@ -180,7 +185,7 @@ func (s *sim) installSnapshots() {
 		if !ok || a <= sn.n.Base().Index {
 			continue
 		}
-		if err := InstallSnapshot(sn.st, Snapshot{a, c.Term}); err != nil {
+		if err := InstallSnapshot(sn.st, Snapshot{Index: a, Term: c.Term, Voters: ln.n.VotersAt(a)}); err != nil {
 			s.t.Fatal(err)
 		}
 		sn.applied0 = a

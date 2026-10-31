@@ -367,7 +367,7 @@ func init() {
 			if t.MatView == "" {
 				continue
 			}
-			rows = append(rows, []Datum{TextD("public"), TextD(t.Name), TextD(roleName), Null, BoolD(len(t.Indexes) > 0),
+			rows = append(rows, []Datum{TextD(schemaOfName(t.Name)), TextD(bareName(t.Name)), TextD(roleName), Null, BoolD(len(t.Indexes) > 0),
 				BoolD(!t.MatUnpopulated), TextD(" " + strings.TrimSuffix(strings.TrimSpace(t.MatView), ";") + ";")})
 		}
 		return rows

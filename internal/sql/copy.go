@@ -505,6 +505,7 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	if !cs.From || cs.Query != nil {
 		return nil, errf(codeFeature, "not a COPY FROM")
 	}
+	cs.Table = s.resolveRel(cs.Table) // along the search path
 	if err := s.checkNeeds([]need{{cs.Table, core.PrivInsert}}, ""); s.role != "" && err != nil {
 		return nil, s.copyFail(err)
 	}
@@ -1100,6 +1101,7 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	if s.failed {
 		return 0, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 	}
+	cs.Table = s.resolveRel(cs.Table)
 	if s.role != "" {
 		if err := s.checkNeeds([]need{{cs.Table, core.PrivSelect}}, ""); err != nil {
 			s.markFailed()

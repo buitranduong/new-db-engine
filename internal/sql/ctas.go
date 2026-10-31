@@ -119,7 +119,7 @@ loop:
 			return nil, true, errf(codeFeature, "materialized views cannot be temporary or unlogged")
 		}
 		c := &CreateAs{Mat: true, IfNotExists: p.acceptKw("if", "not", "exists")}
-		if c.Name, err = p.qualifiedName(); err != nil {
+		if c.Name, err = p.qualifiedNameNew(); err != nil {
 			return nil, true, err
 		}
 		if err = p.ctasRest(c); err != nil {
@@ -133,7 +133,11 @@ loop:
 		return nil, false, nil
 	}
 	c := &CreateAs{Temp: temp, Unlogged: unlogged, IfNotExists: p.acceptKw("if", "not", "exists")}
-	if c.Name, err = p.qualifiedName(); err != nil {
+	prevTemp := p.tempCreate
+	p.tempCreate = p.tempCreate || temp
+	c.Name, err = p.qualifiedNameNew()
+	p.tempCreate = prevTemp
+	if err != nil {
 		return nil, true, err
 	}
 	isAs := p.isKw("as") || p.isKw("on") && p.peekN(1).s == "commit"
@@ -176,7 +180,9 @@ loop:
 	// plain CREATE TEMP|UNLOGGED TABLE: let createStmt parse it again from TABLE
 	p.toks[tpos-1] = token{k: tIdent, s: "create", pos: p.toks[tpos-1].pos}
 	p.i = tpos - 1
+	p.tempCreate = temp
 	st, err = p.createStmt()
+	p.tempCreate = prevTemp
 	if err != nil {
 		return nil, true, err
 	}

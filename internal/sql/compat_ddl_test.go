@@ -133,3 +133,68 @@ func TestViewCheckOption(t *testing.T) {
 	ddlWantRows(t, s, `SELECT count(*) FROM vn`, "1")
 	wantErr(t, s, `CREATE VIEW vj AS SELECT a.id FROM vt a JOIN vt b ON a.id = b.id WITH CHECK OPTION`, "0A000")
 }
+
+// Names must resolve along the session search_path everywhere, also in stored view queries,
+// which PostgreSQL resolves once at CREATE time (schemapath.go).
+func TestSearchPathResolution(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE SCHEMA s`)
+	mustq(t, s, `SET search_path = s`)
+	mustq(t, s, `CREATE TABLE t (id int PRIMARY KEY, n int)`)
+	mustq(t, s, `INSERT INTO t VALUES (1, 1), (2, 2)`)
+	mustq(t, s, `CREATE VIEW v AS SELECT * FROM t`)
+	mustq(t, s, `CREATE MATERIALIZED VIEW mv AS SELECT id FROM t`)
+	ddlWantRows(t, s, `SELECT count(*) FROM v`, "2")
+	ddlWantRows(t, s, `SELECT count(*) FROM mv`, "2")
+	mustq(t, s, `INSERT INTO t VALUES (3, 3)`)
+	mustq(t, s, `REFRESH MATERIALIZED VIEW mv`)
+	ddlWantRows(t, s, `SELECT count(*) FROM mv`, "3")
+	ddlWantRows(t, s, `SELECT schemaname, matviewname FROM pg_matviews`, "s,mv")
+
+	// another session with another path still reads the view (it was resolved at CREATE)
+	s2 := NewSession(s.E)
+	ddlWantRows(t, s2, `SELECT count(*) FROM s.v`, "3")
+	mustq(t, s2, `SET search_path = public`)
+	ddlWantRows(t, s2, `SELECT count(*) FROM s.v`, "3")
+	ddlWantRows(t, s2, `SELECT count(*) FROM s.mv`, "3")
+	mustq(t, s2, `SET search_path = pg_catalog, s, public`)
+	ddlWantRows(t, s2, `SELECT count(*) FROM t`, "3")
+
+	// a same-named table in public does not capture the view
+	mustq(t, s2, `SET search_path = public`)
+	mustq(t, s2, `CREATE TABLE t (id int PRIMARY KEY, n int)`)
+	ddlWantRows(t, s2, `SELECT count(*) FROM s.v`, "3")
+	ddlWantRows(t, s2, `SELECT count(*) FROM t`, "0")
+
+	// TEMP tables are found whatever the path is, also as pg_temp.name
+	mustq(t, s, `CREATE TEMP TABLE tt (a int)`)
+	mustq(t, s, `INSERT INTO tt VALUES (1)`)
+	ddlWantRows(t, s, `SELECT count(*) FROM tt`, "1")
+	ddlWantRows(t, s, `SELECT count(*) FROM pg_temp.tt`, "1")
+	mustq(t, s, `SET search_path = s, public`)
+	ddlWantRows(t, s, `SELECT count(*) FROM tt`, "1")
+
+	// COPY
+	cs, ok, err := ParseCopy(`COPY t FROM STDIN`)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	ci, err := s.CopyFrom(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ci.Write([]byte("10\t10\n\\.\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ci.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	ddlWantRows(t, s, `SELECT count(*) FROM s.t`, "4")
+	ddlWantRows(t, s, `SELECT count(*) FROM public.t`, "0")
+
+	// regclass / regnamespace follow the path
+	ddlWantRows(t, s, `SELECT 't'::regclass::text, 's'::regnamespace::text`, "t,s")
+	ddlWantRows(t, s2, `SELECT 's.t'::regclass::text`, "s.t")
+
+	mustq(t, s, `DROP SCHEMA s CASCADE`)
+}

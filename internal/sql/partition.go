@@ -455,6 +455,12 @@ func (s *Session) attachChild(parent string, d *partData, child, pred string) er
 }
 
 func (s *Session) attachChildSpec(parent string, d *partData, ch partChild) error {
+	d.Children = append(d.Children, ch)
+	return s.makeChildView(parent, d, ch)
+}
+
+// makeChildView creates the view of partition ch, which is already in d.Children.
+func (s *Session) makeChildView(parent string, d *partData, ch partChild) error {
 	cols, err := s.partViewCols(parent)
 	if err != nil {
 		return err
@@ -465,7 +471,6 @@ func (s *Session) attachChildSpec(parent string, d *partData, ch partChild) erro
 	if err := s.setViewOption(ch.Name, "partition"); err != nil {
 		return err
 	}
-	d.Children = append(d.Children, ch)
 	if err := s.partSave(parent, d); err != nil {
 		return err
 	}
@@ -711,11 +716,23 @@ func (s *Session) partAlter(a *PartAlter) (*Result, error) {
 		for i, c := range cols.Cols {
 			names[i] = quoteIdent(c.Name)
 		}
-		if _, err := s.runText(fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", quoteIdent(a.Parent), strings.Join(names, ", "), strings.Join(names, ", "), quoteIdent(a.Child))); err != nil {
+		// the bound is registered first, so that the rows of the child pass the parent's check
+		undo := func(err error) (*Result, error) {
+			_ = s.partSave(a.Parent, d)
 			return nil, err
 		}
+		if err := AsErrNil(s.E.AlterTable(a.Parent, func(t *schema.Table) error {
+			t.PartPreds = append(append([]string(nil), t.PartPreds...), ch.Pred)
+			t.PartDefault = t.PartDefault || ch.Default
+			return nil
+		})); err != nil {
+			return undo(err)
+		}
+		if _, err := s.runText(fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s", quoteIdent(a.Parent), strings.Join(names, ", "), strings.Join(names, ", "), quoteIdent(a.Child))); err != nil {
+			return undo(err)
+		}
 		if _, err := s.runText("DROP TABLE " + quoteIdent(a.Child)); err != nil {
-			return nil, err
+			return undo(err)
 		}
 		if err := s.attachChildSpec(a.Parent, d, ch); err != nil {
 			return nil, err

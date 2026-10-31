@@ -175,7 +175,7 @@ func (c *compiler) expandView(f *FromTable, qual string) (fromPlan, bool, error)
 // compileViewDef plans the stored query of a view. It sees no scope of the
 // query that uses the view (no CTEs, no outer columns).
 func (c *compiler) compileViewDef(def *core.View) (qplan, error) {
-	st, err := ParseOne(def.Query)
+	st, err := c.s.parseOwned(def.Name, def.Query)
 	if err != nil || st == nil {
 		return nil, errf(codeInternal, "view %q has an invalid definition", def.Name)
 	}
@@ -294,6 +294,7 @@ func (s *Session) createView(st *CreateView) (*Result, error) {
 	if err := s.setViewOption(st.Name, st.CheckOpt); err != nil {
 		return nil, err
 	}
+	s.noteOwnerPath(st.Name)
 	return &Result{Tag: "CREATE VIEW"}, nil
 }
 

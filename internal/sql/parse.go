@@ -66,6 +66,8 @@ type parser struct {
 	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
 	// when the schema type says it all.
 	pgSpec string
+	// tempCreate: parsing CREATE TEMP TABLE: the name is not placed in a schema (it lives in pg_temp)
+	tempCreate bool
 }
 
 func (p *parser) peek() token { return p.toks[p.i] }

@@ -170,6 +170,9 @@ func (c *evalCtx) castCatalog(v Datum, typ string) (Datum, bool, error) {
 		case "information_schema":
 			return IntD(nsInfoSchema), true, nil
 		}
+		if s := c.session(); s != nil && s.schemaExists(strings.Trim(v.S, `"`)) {
+			return IntD(schemaOID(strings.Trim(v.S, `"`))), true, nil
+		}
 		return Null, true, errf(codeUndefinedObject, "schema %q does not exist", v.S)
 	}
 	d, err := coerce(v, KInt)

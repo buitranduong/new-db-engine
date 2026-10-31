@@ -23,7 +23,7 @@ func (s *Session) simpleViewOf(name string) (*simpleView, bool) {
 	if !ok || v == nil {
 		return nil, false
 	}
-	st, err := ParseOne(v.Query)
+	st, err := s.parseOwned(name, v.Query)
 	if err != nil {
 		return nil, false
 	}

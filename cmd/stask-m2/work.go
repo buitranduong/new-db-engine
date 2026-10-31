@@ -22,6 +22,9 @@ type Rec struct {
 type Recorder struct{ recs []Rec }
 
 func (r *Recorder) Add(class, phase string, d time.Duration, err string) {
+	if phase == "warmup" {
+		return
+	}
 	r.recs = append(r.recs, Rec{class, phase, d, err})
 }
 
@@ -366,7 +369,7 @@ func (r *Run) workerImport(ctx context.Context) {
 	defer s.Drop()
 	n := r.g.TEnd
 	for ctx.Err() == nil {
-		if r.cfg.ImportMode == "never" || (r.cfg.ImportMode == "alternate" && r.Phase() != "import") {
+		if r.cfg.ImportMode == "never" || r.Phase() == "warmup" || (r.cfg.ImportMode == "alternate" && r.Phase() != "import") {
 			sleepCtx(ctx, 200*time.Millisecond)
 			continue
 		}
@@ -376,28 +379,43 @@ func (r *Run) workerImport(ctx context.Context) {
 		if slice == 99 {
 			b = int64(n)
 		}
-		p := &Payload{Kind: "import", TS: fmtTS(time.Now()), Slice: slice, Nums: []string{simNum(a), simNum(b)}, OrderID: impHistBase + run*100_000_000}
-		txid := r.txid.Add(1)
-		r.gate.RLock()
-		t0 := time.Now()
-		txc, txcancel := txContext(ctx)
-		res := s.RunTx(txc, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
-		txcancel()
-		d := time.Since(t0)
-		r.gate.RUnlock()
-		switch {
-		case res.Unknown:
-			r.unknown.Store(txid, "import")
-			rc.Add("import", r.Phase(), d, "unknown_commit")
-		case ctx.Err() != nil && res.Err != nil:
-		case res.Err != nil:
-			rc.Add("import", r.Phase(), d, ErrCode(res.Err))
-		default:
-			r.acked.Store(txid, time.Now())
-			r.ackedKind.Store(txid, "import")
-			rc.Add("import", r.Phase(), d, "")
+		// default shape: batches of ImportBatch rows, each its own transaction (and its own journal row),
+		// one after another with ImportPause between them, as staskimport commits. ImportBatch 0 = the whole
+		// slice in ONE transaction (worst case, measured separately).
+		step := int64(r.cfg.ImportBatch)
+		if step <= 0 || step > b-a {
+			step = b - a
 		}
-		r.Count("import_retries", int64(res.Retries))
+		for lo := a; lo < b && ctx.Err() == nil; lo += step {
+			hi := min(lo+step, b)
+			p := &Payload{Kind: "import", TS: fmtTS(time.Now()), Slice: slice, Nums: []string{simNum(lo), simNum(hi)}, OrderID: impHistBase + run*100_000_000}
+			txid := r.txid.Add(1)
+			r.gate.RLock()
+			t0 := time.Now()
+			txc, txcancel := txContext(ctx)
+			res := s.RunTx(txc, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+			txcancel()
+			d := time.Since(t0)
+			r.gate.RUnlock()
+			switch {
+			case res.Unknown:
+				r.unknown.Store(txid, "import")
+				rc.Add("import", r.Phase(), d, "unknown_commit")
+			case ctx.Err() != nil && res.Err != nil:
+			case res.Err != nil:
+				rc.Add("import", r.Phase(), d, ErrCode(res.Err))
+			default:
+				r.acked.Store(txid, time.Now())
+				r.ackedKind.Store(txid, "import")
+				rc.Add("import", r.Phase(), d, "")
+				r.Count("import_batches", 1)
+				r.Count("import_rows", p.Rows)
+			}
+			r.Count("import_retries", int64(res.Retries))
+			if hi < b && r.cfg.ImportPause > 0 {
+				sleepCtx(ctx, r.cfg.ImportPause)
+			}
+		}
 		sleepCtx(ctx, time.Duration(r.cfg.ImportEvery)*time.Second)
 	}
 }

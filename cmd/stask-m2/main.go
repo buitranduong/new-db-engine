@@ -208,6 +208,7 @@ func main() {
 	}
 	if !cfg.NoRef {
 		t0 := time.Now()
+		ColumnarSims = false
 		if err := Load(ctx, cfg.RefDSN, g, cfg.SchemaFile, "copy", logf); err != nil {
 			logf("load reference failed: %v", err)
 			cleanup()

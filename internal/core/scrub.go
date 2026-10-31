@@ -25,12 +25,13 @@ type ScrubReport struct {
 	Running     bool      `json:"running"`
 	Started     time.Time `json:"started"`
 	Finished    time.Time `json:"finished,omitempty"`
-	Segments    int       `json:"segments"`    // log segments checked
-	Records     int64     `json:"records"`     // log records whose CRC matched
-	Checkpoints int       `json:"checkpoints"` // checkpoint files checked
-	Bytes       int64     `json:"bytes"`       // bytes read
-	Skipped     int       `json:"skipped"`     // segments removed by log reclamation while the scrub ran
-	Errors      []string  `json:"errors"`      // one line per corruption found
+	Segments    int       `json:"segments"`       // log segments checked
+	Total       int       `json:"total_segments"` // log segments to check (progress = segments/total_segments)
+	Records     int64     `json:"records"`        // log records whose CRC matched
+	Checkpoints int       `json:"checkpoints"`    // checkpoint files checked
+	Bytes       int64     `json:"bytes"`          // bytes read
+	Skipped     int       `json:"skipped"`        // segments removed by log reclamation while the scrub ran
+	Errors      []string  `json:"errors"`         // one line per corruption found
 	Cancelled   bool      `json:"cancelled,omitempty"`
 }
 
@@ -196,7 +197,9 @@ func (sc *scrubber) checkpoints() bool {
 // everything after it).
 func (sc *scrubber) segments() bool {
 	l := sc.e.Log()
-	for _, seg := range l.Segments() {
+	segs := l.Segments()
+	sc.update(func(r *ScrubReport) { r.Total = len(segs) })
+	for _, seg := range segs {
 		wp := l.WritePos()
 		if seg > wp.Seg {
 			continue // spare, not yet written
@@ -230,11 +233,14 @@ func (sc *scrubber) segments() bool {
 				sc.update(func(r *ScrubReport) { r.Skipped++ })
 				continue
 			}
+			l.InvalidateVerified(seg)
 			sc.bad("segment %d: %v", seg, err)
 		case torn:
+			l.InvalidateVerified(seg)
 			sc.bad("segment %d: bad record (CRC or framing) at offset %d, after %d good records", seg, end, recs)
 		case !active:
 			if off, ok := sc.zeroTail(seg, end); !ok {
+				l.InvalidateVerified(seg)
 				sc.bad("segment %d: data after the last record, at offset %d", seg, off)
 			}
 		}

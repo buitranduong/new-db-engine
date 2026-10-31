@@ -25,6 +25,7 @@ import (
 	"stask/internal/repl"
 	"stask/internal/schema"
 	"stask/internal/sql"
+	"stask/internal/wal"
 )
 
 type Server struct {
@@ -165,6 +166,8 @@ func fail(w http.ResponseWriter, err error) {
 		code = http.StatusGone
 	case errors.Is(err, core.ErrUnknownOutcome):
 		code = http.StatusServiceUnavailable
+	case errors.Is(err, wal.ErrCorrupt):
+		code = http.StatusInternalServerError
 	case errors.Is(err, core.ErrReadOnly):
 		// nothing ran: not the leader (or not yet), try the leader
 		w.Header().Set(HeaderNotLeader, "1")
@@ -594,6 +597,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusServiceUnavailable, map[string]any{"ok": false})
 		return
 	}
+	// writes refused because the log cannot get a new segment (F7): the
+	// engine is alive and serves reads, but "accepts writes" is false
+	if why := s.P.E.WritesBlocked(); why != "" {
+		reply(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "writes_blocked": why})
+		return
+	}
 	reply(w, 200, map[string]any{"ok": true})
 }
 
@@ -634,6 +643,8 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, 200, map[string]any{
 		"hybrid":             hyst,
+		"scrub":              e.ScrubStatus(),
+		"read_crc_errors":    wal.ReadCRCErrors.Load(),
 		"durable_lsn":        e.DurableLSN(),
 		"uptime_s":           time.Since(s.start).Seconds(),
 		"write_failed":       failed,

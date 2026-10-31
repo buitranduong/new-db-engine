@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"stask/internal/core"
+	"stask/internal/wal"
 )
 
 // SQLSTATE codes (PostgreSQL appendix A) used by STASK.
@@ -38,6 +39,7 @@ const (
 	codeSnapshotTooOld    = "72000"
 	codeIOError           = "58030"
 	codeInternal          = "XX000"
+	codeDataCorrupted     = "XX001"
 	codeObjectInUse       = "55006"
 	codeDuplicateObject   = "42710"
 	codeWrongObjectType   = "42809"
@@ -122,6 +124,8 @@ func AsError(err error) *Error {
 		return errf(codeUndefinedTable, "%v", err)
 	case errors.Is(err, core.ErrSnapshotTooOld):
 		return errf(codeSnapshotTooOld, "%v", err)
+	case errors.Is(err, wal.ErrCorrupt):
+		return errf(codeDataCorrupted, "%v", err)
 	case errors.Is(err, core.ErrUnknownOutcome):
 		return errf(codeIOError, "%v", err)
 	case errors.Is(err, core.ErrAppendOnly):

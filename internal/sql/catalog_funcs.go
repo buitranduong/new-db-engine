@@ -54,7 +54,9 @@ func vecElems(d Datum) (el []Datum, zero bool) {
 var settingDefaults = map[string]string{"server_version_num": "160000", "max_index_keys": "32",
 	"max_identifier_length": "63", "block_size": "8192", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8", // SetDefaultCollation replaces the two
 	"is_superuser": "on", "session_authorization": roleName, "in_hot_standby": "off", "wal_level": "logical",
-	"default_with_oids": "off", "transaction_read_only": "off", "extra_float_digits": "1"}
+	"default_with_oids": "off", "transaction_read_only": "off", "extra_float_digits": "1",
+	// pg_recvlogical and pg_basebackup of PostgreSQL 11+ ask for it right after connecting
+	"data_directory_mode": "0700"}
 
 func init() {
 	for n := range catalogFuncKinds {

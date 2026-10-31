@@ -38,3 +38,29 @@ func TestNotifySavepointRollback(t *testing.T) {
 		t.Fatalf("LISTEN rolled back with the savepoint still heard: %q", got)
 	}
 }
+
+// TestListeningChannels: pg_listening_channels() lists the channels of the session.
+func TestListeningChannels(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	chans := func() string {
+		res := run(t, s, `SELECT * FROM pg_listening_channels()`)
+		var out []string
+		for _, r := range res.Rows {
+			out = append(out, r[0].String())
+		}
+		return strings.Join(out, ",")
+	}
+	if got := chans(); got != "" {
+		t.Fatalf("before LISTEN: %q", got)
+	}
+	run(t, s, `LISTEN b`)
+	run(t, s, `LISTEN a`)
+	if got := chans(); got != "a,b" {
+		t.Fatalf("after LISTEN: %q", got)
+	}
+	run(t, s, `UNLISTEN a`)
+	if got := chans(); got != "b" {
+		t.Fatalf("after UNLISTEN: %q", got)
+	}
+}

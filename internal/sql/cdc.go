@@ -45,7 +45,7 @@ func parseLSN(s string) (wal.Pos, error) {
 
 // sessionFuncs need the session (and run on the general executor).
 var sessionFuncs = map[string]bool{
-	"pg_notify": true, "pg_create_logical_replication_slot": true, "pg_drop_replication_slot": true,
+	"pg_notify": true, "pg_listening_channels": true, "pg_create_logical_replication_slot": true, "pg_drop_replication_slot": true,
 	"pg_replication_slot_advance": true, "pg_current_wal_lsn": true,
 	"pg_logical_slot_get_changes": true, "pg_logical_slot_peek_changes": true,
 }
@@ -62,6 +62,7 @@ var tableFuncCols = map[string][]relCol{
 	"pg_drop_replication_slot":           {{name: "pg_drop_replication_slot", kind: KText}},
 	"pg_current_wal_lsn":                 {{name: "pg_current_wal_lsn", kind: KText}},
 	"pg_notify":                          {{name: "pg_notify", kind: KText}},
+	"pg_listening_channels":              {{name: "pg_listening_channels", kind: KText}},
 	"pg_replication_slots": {{name: "slot_name", kind: KText}, {name: "plugin", kind: KText}, {name: "slot_type", kind: KText},
 		{name: "database", kind: KText}, {name: "temporary", kind: KBool}, {name: "active", kind: KBool},
 		{name: "restart_lsn", kind: KText}, {name: "confirmed_flush_lsn", kind: KText}, {name: "wal_status", kind: KText},
@@ -113,6 +114,22 @@ func (s *Session) sessionTableFunc(name string, args []Datum) ([][]Datum, error)
 			return nil, err
 		}
 		return [][]Datum{{Null}}, s.notify(str(0), str(1))
+	case "pg_listening_channels":
+		// the channels this session listens on (LISTENs of the open transaction not yet counted)
+		var rows [][]Datum
+		if s.listener != nil {
+			s.listener.mu.Lock()
+			var cs []string
+			for c := range s.listener.chans {
+				cs = append(cs, c)
+			}
+			s.listener.mu.Unlock()
+			slices.Sort(cs)
+			for _, c := range cs {
+				rows = append(rows, []Datum{TextD(c)})
+			}
+		}
+		return rows, nil
 	case "pg_current_wal_lsn":
 		_, pos, _ := s.E.DurablePoint()
 		return [][]Datum{{TextD(pgLSN(pos))}}, nil

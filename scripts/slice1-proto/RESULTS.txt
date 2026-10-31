@@ -1,0 +1,47 @@
+# PROTOTYPE RESULTS (docs/31), VM 8 cores, other jobs running (load1 2-3): indicative
+## proto.log
+# scale N=10000000 rows, GOMAXPROCS=8, load1=2.56 2.66 2.64
+build base unsorted: 286.1 ms
+build base sorted(cat,price): 2494.7 ms
+memory both bases (cols+keys+zonemaps): 160 MB => 8.0 B/row each (price i32, cat/tel/rate u8, key 11B)
+R2 base-only unsorted workers=1 page1: median 62.8 ms (chunks read 153 pruned 0, rows scanned 10000000 passed 1000026)
+R2 base-only unsorted workers=4 page1: median 16.3 ms (chunks read 153 pruned 0, rows scanned 10000000 passed 1000026)
+R2 base-only unsorted workers=8 page1: median 11.8 ms (chunks read 153 pruned 0, rows scanned 10000000 passed 1000026)
+row directory build (unsorted): 1713.3 ms; heap with dir: +0 MB => dir 0.0 B/row
+R2 base-only sorted   workers=1 page1: median 45.9 ms (chunks read 18 pruned 135, rows scanned 1179648 passed 1000026)
+R2 base-only sorted   workers=4 page1: median 14.6 ms (chunks read 18 pruned 135, rows scanned 1179648 passed 1000026)
+R2 base-only sorted   workers=8 page1: median 9.9 ms (chunks read 18 pruned 135, rows scanned 1179648 passed 1000026)
+row directory build (sorted): 1915.3 ms; heap with dir: +0 MB => dir 0.0 B/row
+B apply+publish K=1000 (1050 ops, 2 txns of 1000): 1.4 ms => 1.35 us/op; tail 1050 rows; mem +0.7 MB (676 B/tail row incl. dir+bits)
+R2 base+tail K=1000 workers=4 page1: median 13.6 ms (tail rows scanned 1050)
+R2 base+tail K=1000 workers=1 page1: median 45.5 ms
+B apply+publish K=100000 (105000 ops, 105 txns of 1000): 71.9 ms => 0.69 us/op; tail 105000 rows; mem +4.5 MB (43 B/tail row incl. dir+bits)
+R2 base+tail K=100000 workers=4 page1: median 14.1 ms (tail rows scanned 105000)
+R2 base+tail K=100000 workers=1 page1: median 45.7 ms
+B apply+publish K=1000000 (1050000 ops, 1050 txns of 1000): 1420.9 ms => 1.35 us/op; tail 1050000 rows; mem +31.8 MB (30 B/tail row incl. dir+bits)
+R2 base+tail K=1000000 workers=4 page1: median 33.4 ms (tail rows scanned 1050000)
+R2 base+tail K=1000000 workers=1 page1: median 61.7 ms
+INTERF B writer=false: 335 reads (2 readers, R2 w=1 page1) p50 59.7 ms p99 63.7 ms max 84.2 ms
+INTERF B writer=true: 644 reads (2 readers, R2 w=1 page1) p50 62.0 ms p99 77.0 ms max 90.1 ms; writer 1467000 ops in 20s (73144 ops/s), apply+publish per txn(500 ops) p50 1.0 ms p99 3.1 ms max 243.8 ms, merges done 1
+## pg.log (postgres:16, oracle + timing)
+NOTICE:  table "sims" does not exist, skipping
+PG16 R2 join page1 base, 7 hot runs ms: 6411.024 6422.281 6412.349 6513.441 6447.158 6453.685 6435.734 => median 6435.734
+done; sims rows: 10000000
+## core4.log (real engine)
+# core mode N=10000000 GOMAXPROCS=8 load1=2.93 4.31 3.60
+CORE load 10000000 rows (tx of 5000, view following): commit 38063.7 ms => 262718 rows/s; view caught up 38266.1 ms after start
+heap after load (core + current view, GC'd): 2075 MB => 208 B/row for BOTH (core versions+indexes+view)
+VIEW(current) count(*) WHERE category/price filter: median of 7 = 15.8 ms, result [[1000026]] (scanned_rows 10000000)
+VIEW(current) GROUP BY tel count,max(store_rate) same filter: median of 7 = 12.7 ms, [[A 300008 10] [B 500010 10] [C 200008 10]]
+VIEW(current) count(*) filter workers=1: 101.6 ms
+VIEW(current) count(*) filter workers=4: 25.0 ms
+A K=1000: core commit 10.5 ms; log scan for keys 0.2 ms (2 records, 1000 distinct keys); GetAt x1000 (900 live) median of 3 = 2.0 ms => 1.96 us/key; A read-time overhead = 2.2 ms
+A K=100000: core commit 613.1 ms; log scan for keys 39.5 ms (105 records, 100000 distinct keys); GetAt x100000 (90000 live) median of 3 = 265.7 ms => 2.66 us/key; A read-time overhead = 305.2 ms
+A K=1000000: core commit 5849.3 ms; log scan for keys 458.0 ms (1050 records, 1000000 distinct keys); GetAt x1000000 (900000 live) median of 3 = 2470.6 ms => 2.47 us/key; A read-time overhead = 2928.6 ms
+core GetAt random key over 10000000 rows: 3.14 us/key (median of 7 x100k)
+INTERF A(current view) writer=false: 136 scans (count by tel w=1) p50 74.0 ms p99 74.5 ms max 74.8 ms
+INTERF A(current view) writer=true: 208 scans (count by tel w=1) p50 94.7 ms p99 137.8 ms max 176.7 ms; core wrote 989500 ops (49475 ops/s); view lag p50 135.5 ms p99 208.4 ms max 246.7 ms; max LSN gap durable-applied 21
+COMPACT A start: view positions 11978955, dead 10001687
+COMPACT A end: view positions 10867424, dead 10090160
+COMPACT A(current view): 9M updates over 60011.7 ms; reader scans 326 p50 142.1 ms p99 294.2 ms max 11428.6 ms; scans > 300 ms: [{26465058807 334859273} {40433021242 354843284} {56872411559 11428613817}]; view lag p50 6971.1 ms p99 19867.2 ms max 19924.2 ms
+## page diff vs PG16: all 15 files (base sorted/unsorted, delta, dimC2, dimBoff x pages 1-3) identical row for row

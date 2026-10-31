@@ -236,8 +236,27 @@ func (s *Session) hyContract(tx *core.Tx, rep *hyReport) (*proj.SegState, string
 }
 
 func hyCols(p *hyPlan) []Column {
-	cols := make([]Column, len(p.outs))
-	for i, o := range p.outs {
+	if p.post != nil {
+		base := hyColsOf(p, p.outs)
+		cols := make([]Column, len(p.post.items))
+		for i, it := range p.post.items {
+			if it.join < 0 {
+				cols[i] = base[it.idx]
+			} else {
+				t := p.post.joins[it.join].rel.t
+				// a column of a table joined outside keeps its source table, as in the row executor
+				cols[i] = itemCol(SelItem{X: &ColRef{Name: t.Columns[it.idx].Name}}, &scope{t: t}, nil)
+			}
+			cols[i].Name = it.name
+		}
+		return cols
+	}
+	return hyColsOf(p, p.outs)
+}
+
+func hyColsOf(p *hyPlan, outs []hyOut) []Column {
+	cols := make([]Column, len(outs))
+	for i, o := range outs {
 		switch o.kind {
 		case hyRank:
 			cols[i] = Column{Name: o.name, Kind: KInt, OID: 20, Mod: -1}
@@ -335,6 +354,39 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	}
 	rep.groupsN = len(groups)
 
+	// dimensions joined outside the derived table (same snapshot)
+	var postDims []map[string]schema.Row
+	if p.post != nil {
+		for _, j := range p.post.joins {
+			m := map[string]schema.Row{}
+			n := 0
+			over := false
+			err := e.ScanSnapshot(j.rel.t.Name, R, func(key string, r schema.Row, _ *core.Version) bool {
+				n++
+				if n > h.DimMaxRows {
+					over = true
+					return false
+				}
+				if !r[j.keyCol].Null {
+					m[hyValStr(j.keyInt, r[j.keyCol])] = r
+				}
+				return true
+			})
+			rep.dimRows += n
+			switch {
+			case errors.Is(err, core.ErrInterrupted):
+				return nil, "", err
+			case errors.Is(err, core.ErrSnapshotTooOld):
+				return nil, fmt.Sprintf("dimension %s cannot be read at snapshot %d (too old)", j.name, R), nil
+			case err != nil:
+				return nil, "", err
+			case over:
+				return nil, fmt.Sprintf("dimension %s has more than %d rows (broadcast join budget)", j.name, h.DimMaxRows), nil
+			}
+			postDims = append(postDims, m)
+		}
+	}
+
 	workers := 1 + max(0, min(ScanWorkers-1, int(scanHelpers.Load())))
 	q := &proj.SegR2{Filters: p.filters, Group: p.groupCol, Groups: groups, Score: p.scoreCol, Desc: p.desc, Md5: p.md5,
 		Md5Suffix: p.suffix, Workers: workers, Interrupted: s.interrupted}
@@ -360,6 +412,7 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	// page rows from the core at the read snapshot; the state is checked
 	// against them: a mismatch is a broken invariant, never an answer
 	cols := hyCols(p)
+	full := hyColsOf(p, p.outs)
 	res := &Result{HasRows: true, Cols: cols, Rows: make([][]Datum, 0, len(hits))}
 	ft := p.fact.t
 	for _, hit := range hits {
@@ -375,7 +428,7 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 			return nil, "", errf("XX000", "hybrid invariant violated: key %q of segment state lsn %d is not in %s at snapshot %d", hit.Key, state.LSN, ft.Name, R)
 		}
 		rep.coreByte += rowSize(row)
-		if row[p.groupCol].Null || row[p.groupCol].S != hit.Group || row[p.scoreCol].Null || row[p.scoreCol].I != int64(hit.Score) {
+		if row[p.groupCol].Null || hyGroupStr(p, row[p.groupCol]) != hit.Group || row[p.scoreCol].Null || row[p.scoreCol].I != int64(hit.Score) {
 			return nil, "", errf("XX000", "hybrid invariant violated: key %q differs between segment state lsn %d and %s at snapshot %d", hit.Key, state.LSN, ft.Name, R)
 		}
 		for i := range p.filters {
@@ -401,7 +454,43 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 				out[i] = IntD(int64(hit.Rank))
 			}
 		}
-		res.Rows = append(res.Rows, conform(out, cols))
+		if p.post == nil {
+			res.Rows = append(res.Rows, conform(out, cols))
+			continue
+		}
+		out = conform(out, full)
+		drows := make([]schema.Row, len(p.post.joins))
+		miss := false
+		for ji, j := range p.post.joins {
+			d := out[j.tIdx]
+			if d.IsNull() {
+				miss = true
+				break
+			}
+			var k string
+			if j.keyInt {
+				k = strconv.FormatInt(d.I, 10)
+			} else {
+				k = d.S
+			}
+			if drows[ji] = postDims[ji][k]; drows[ji] == nil {
+				miss = true // INNER JOIN: no dimension row, no output row
+				break
+			}
+		}
+		if miss {
+			continue
+		}
+		pr := make([]Datum, len(p.post.items))
+		for i, it := range p.post.items {
+			if it.join < 0 {
+				pr[i] = out[it.idx]
+			} else {
+				dt := p.post.joins[it.join].rel.t
+				pr[i] = fromCol(&dt.Columns[it.idx], drows[it.join][it.idx])
+			}
+		}
+		res.Rows = append(res.Rows, conform(pr, cols))
 	}
 	res.Tag = fmt.Sprintf("SELECT %d", len(res.Rows))
 	if err := s.checkInterrupt(); err != nil {
@@ -417,3 +506,12 @@ func rowSize(r schema.Row) int {
 	}
 	return n
 }
+
+func hyValStr(isInt bool, v schema.Value) string {
+	if isInt {
+		return strconv.FormatInt(v.I, 10)
+	}
+	return v.S
+}
+
+func hyGroupStr(p *hyPlan, v schema.Value) string { return hyValStr(p.groupInt, v) }

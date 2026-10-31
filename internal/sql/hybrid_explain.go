@@ -84,6 +84,11 @@ func (s *Session) hyLines(rep *hyReport, q *Select, analyze bool) []string {
 			y.node(1, "Hash Join (DENSE-BROADCAST build=%s, at most %d rows, read at snapshot %d; %s)", p.dim.name, s.Hybrid.DimMaxRows, rep.readSnap, strings.Join(p.dimOnConj, " AND "))
 		}
 	}
+	if p.post != nil {
+		for _, j := range p.post.joins {
+			y.node(1, "Hash Join (DENSE-BROADCAST build=%s, at most %d rows, read at snapshot %d; %s; applied to the page after the ranks)", j.name, s.Hybrid.DimMaxRows, rep.readSnap, deparse(j.on, nil))
+		}
+	}
 	if analyze && rep.used {
 		y.detail(1, "Read core:  %d rows fetched by key at snapshot %d (%s), each checked against the state", rep.coreRows, rep.readSnap, hyBytes(int64(rep.coreByte)))
 	} else {

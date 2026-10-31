@@ -47,6 +47,8 @@ func (s *Session) objDDL(st Stmt) (*Result, error) {
 			} else {
 				res, err = s.createEnum(st)
 			}
+		case "event trigger create", "event trigger drop", "event trigger alter":
+			res, err = s.eventTriggerDDL(st)
 		case "type drop", "domain drop":
 			res, err = s.dropTypes(st)
 		case "type alter":

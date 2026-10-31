@@ -119,7 +119,7 @@ func (s *Session) retComposite(d *funcDef) []Column {
 		return outColumns(outs)
 	case len(outs) == 1 && d.Args != nil && outs[0].Mode == "t":
 		return outColumns(outs)
-	case len(outs) == 0 && d.Ret != "" && d.Ret != "void" && d.Ret != "trigger":
+	case len(outs) == 0 && d.Ret != "" && d.Ret != "void" && d.Ret != "trigger" && d.Ret != "event_trigger":
 		if t, err := s.E.UserTable(d.Ret); err == nil {
 			return tableColumns(t.Schema())
 		}

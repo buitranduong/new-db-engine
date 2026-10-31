@@ -179,6 +179,8 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 				c.Def.Ret = "void"
 			case p.acceptKw("trigger"):
 				c.Def.Ret = "trigger"
+			case p.acceptKw("event_trigger"):
+				c.Def.Ret = "event_trigger"
 			default:
 				if c.Def.Ret, err = p.funcTypeName(); err != nil {
 					return nil, true, err

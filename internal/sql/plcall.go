@@ -50,7 +50,7 @@ func (s *Session) endFnTx(err error) error {
 
 // invoke runs d with its bound input values.
 func (s *Session) invoke(d *funcDef, args []Datum) (*fnResult, error) {
-	if d.Ret == "trigger" {
+	if d.Ret == "trigger" || d.Ret == "event_trigger" {
 		return nil, errf(codeFeature, "trigger functions cannot be called directly")
 	}
 	if s.plDepth >= maxPLDepth {

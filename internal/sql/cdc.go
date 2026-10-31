@@ -88,6 +88,9 @@ func slotErr(err error) error {
 
 // sessionTableFunc returns the rows of a session table function.
 func (s *Session) sessionTableFunc(name string, args []Datum) ([][]Datum, error) {
+	if rows, ok, err := s.eventFunc(name); ok {
+		return rows, err
+	}
 	str := func(i int) string {
 		if i < len(args) && !args[i].IsNull() {
 			return args[i].String()

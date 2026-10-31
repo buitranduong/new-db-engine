@@ -244,6 +244,8 @@ func objKinds(class string) []string {
 		return []string{"schema"}
 	case "extension":
 		return []string{"ext"}
+	case "event trigger":
+		return []string{"evtrig"}
 	}
 	return nil
 }

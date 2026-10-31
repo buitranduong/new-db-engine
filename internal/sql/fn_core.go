@@ -63,7 +63,8 @@ func fnKindOf(name string, args []Kind) (Kind, bool) {
 		return KNull, false
 	}
 	if s.kindFn != nil {
-		return s.kindFn(args), true
+		k := s.kindFn(args)
+		return k, k != kUnhandled
 	}
 	return s.kind, true
 }
@@ -137,3 +138,27 @@ func init() {
 	regFn("pg_typeof", &fnSig{min: 1, nonStrict: true, kind: KText, ty: tyOf(tyRegtype),
 		impl: func(c *evalCtx, a []Datum) (Datum, error) { return Null, errFnFall }})
 }
+
+// addOrdinality appends the WITH ORDINALITY column to set-returning function rows.
+func addOrdinality(rows [][]Datum, ord bool) [][]Datum {
+	if !ord {
+		return rows
+	}
+	for i := range rows {
+		rows[i] = append(rows[i], IntD(int64(i+1)))
+	}
+	return rows
+}
+
+// likeOpAt returns the LIKE operator spelled at the start of s (~~, ~~*, !~~, !~~*), else "".
+func likeOpAt(s string) string {
+	for _, op := range []string{"!~~*", "!~~", "~~*", "~~"} {
+		if strings.HasPrefix(s, op) {
+			return op
+		}
+	}
+	return ""
+}
+
+// kUnhandled, returned by a kindFn, sends the lookup on to the built-in rules.
+const kUnhandled Kind = 255

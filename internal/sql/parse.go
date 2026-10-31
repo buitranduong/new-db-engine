@@ -1423,6 +1423,13 @@ func (p *parser) predicate() (Expr, error) {
 			}
 			l = bin
 			lcoll = nil
+		case t.k == tOp && (t.s == "~~" || t.s == "!~~" || t.s == "~~*" || t.s == "!~~*"):
+			p.next()
+			r, err := p.bitExpr()
+			if err != nil {
+				return nil, err
+			}
+			l = &Like{X: l, Pat: r, Not: strings.HasPrefix(t.s, "!"), ICase: strings.HasSuffix(t.s, "*")}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
 			r, err := p.bitExpr()
@@ -1918,11 +1925,35 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			return &Func{Name: "overlay", Args: args}, p.expectOp(")")
 		}
 		p.i = save
+	case "normalize": // normalize(x [, NFC|NFD|NFKC|NFKD])
+		x, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		args := []Expr{x}
+		if p.acceptOp(",") {
+			args = append(args, &Lit{TextD(strings.ToUpper(p.next().s))})
+		}
+		return &Func{Name: "normalize", Args: args}, p.expectOp(")")
 	case "substring", "substr":
 		disp := name
 		x, err := p.expr()
 		if err != nil {
 			return nil, err
+		}
+		if p.acceptKw("similar") { // substring(x similar pattern escape e)
+			pat, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectKw("escape"); err != nil {
+				return nil, err
+			}
+			esc, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			return &Func{Name: "substr", Disp: disp, Args: []Expr{x, pat, esc}}, p.expectOp(")")
 		}
 		if p.isKw("from") || p.isKw("for") {
 			args := []Expr{x, &Lit{IntD(1)}}

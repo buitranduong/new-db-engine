@@ -101,8 +101,9 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			for i, a := range e.Args {
 				kinds[i] = typeOf(a, sc, pk)
 			}
-			k, _ := fnKindOf(e.Name, kinds)
-			return k
+			if k, ok := fnKindOf(e.Name, kinds); ok {
+				return k
+			}
 		}
 		switch e.Name {
 		case "count", "length", "char_length":

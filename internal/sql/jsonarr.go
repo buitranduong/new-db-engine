@@ -737,6 +737,9 @@ func isJSONArrSRF(name string) bool {
 }
 
 func srfRows(name string, args []Datum, ord bool) ([][]Datum, error) {
+	if rows, ok, err := fnSRFRows(name, args); ok {
+		return addOrdinality(rows, ord), err
+	}
 	var out [][]Datum
 	add := func(r ...Datum) {
 		if ord {

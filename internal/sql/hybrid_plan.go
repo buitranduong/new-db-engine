@@ -48,6 +48,10 @@ type hyPlan struct {
 	dimJoinCol int // dimension column the group column is joined to (its key)
 	dimPreds   []Expr
 	filters    []proj.SegFilter
+	keyLo      *string // primary key range (bytewise); the bound is inclusive unless keyLoEx
+	keyHi      *string
+	keyLoEx    bool
+	keyHiEx    bool
 	filterText []string
 	groupCol   int
 	scoreCol   int
@@ -424,6 +428,13 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 				return fail("constant false predicate")
 			}
 		case used[0] && !used[1]:
+			if ok, why := s.hyKeyRange(p, rels, c, params); ok || why != "" {
+				if why != "" {
+					return fail("%s", why)
+				}
+				p.filterText = append(p.filterText, deparse(c, nil))
+				continue
+			}
 			f, txt, why := s.hyFilter(p, rels, c, params)
 			if why != "" {
 				return fail("%s", why)
@@ -948,4 +959,88 @@ func (s *Session) hyFilter(p *hyPlan, rels []*hyRel, c Expr, params []Datum) (pr
 		return build(ci, "between", []Datum{lo, hi})
 	}
 	return no()
+}
+
+// hyKeyRange takes a conjunct "key <op> const" / "key BETWEEN a AND b" on the primary key (text) of the fact table
+// into p's key range. ok=false, why="" : not a key predicate.
+func (s *Session) hyKeyRange(p *hyPlan, rels []*hyRel, c Expr, params []Datum) (bool, string) {
+	keyCol := p.fact.t.KeyIndex()
+	isKey := func(x Expr) bool {
+		cr, ok := x.(*ColRef)
+		if !ok {
+			return false
+		}
+		ri, ci, ok := p.relOf(rels, cr)
+		return ok && ri == 0 && ci == keyCol
+	}
+	if kindOfCol(p.fact.t.Columns[keyCol]) != KText {
+		return false, ""
+	}
+	setLo := func(v string, ex bool) {
+		if p.keyLo == nil || v > *p.keyLo || (v == *p.keyLo && ex) {
+			p.keyLo, p.keyLoEx = &v, ex
+		}
+	}
+	setHi := func(v string, ex bool) {
+		if p.keyHi == nil || v < *p.keyHi || (v == *p.keyHi && ex) {
+			p.keyHi, p.keyHiEx = &v, ex
+		}
+	}
+	str := func(x Expr) (string, bool) {
+		d, ok := s.hyConst(x, params)
+		return d.S, ok && d.K == KText
+	}
+	switch x := c.(type) {
+	case *Binary:
+		op, l, r := x.Op, x.L, x.R
+		if !isKey(l) {
+			l, r = r, l
+			switch op {
+			case "<":
+				op = ">"
+			case "<=":
+				op = ">="
+			case ">":
+				op = "<"
+			case ">=":
+				op = "<="
+			}
+		}
+		if !isKey(l) {
+			return false, ""
+		}
+		v, ok := str(r)
+		if !ok {
+			return false, ""
+		}
+		switch op {
+		case "=":
+			setLo(v, false)
+			setHi(v, false)
+		case ">=":
+			setLo(v, false)
+		case ">":
+			setLo(v, true)
+		case "<=":
+			setHi(v, false)
+		case "<":
+			setHi(v, true)
+		default:
+			return false, ""
+		}
+		return true, ""
+	case *Between:
+		if x.Not || !isKey(x.X) {
+			return false, ""
+		}
+		lo, ok1 := str(x.Lo)
+		hi, ok2 := str(x.Hi)
+		if !ok1 || !ok2 {
+			return false, ""
+		}
+		setLo(lo, false)
+		setHi(hi, false)
+		return true, ""
+	}
+	return false, ""
 }

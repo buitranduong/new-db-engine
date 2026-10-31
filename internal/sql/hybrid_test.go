@@ -510,4 +510,14 @@ func TestHybridIntGroupOuterJoins(t *testing.T) {
 	check("after dimension delete")
 	mustq(t, rs, `UPDATE carriers SET code = 'VTX' WHERE id = 1`)
 	check("after dimension rename")
+	// a primary key range (the frozen sub-population of the harness), also over tail changes
+	for _, kr := range []string{"AND number >= '090000015000'", "AND number > '090000010000' AND number <= '090000012000'", "AND number BETWEEN '090000005000' AND '090000007000'"} {
+		q := strings.Replace(hyOuterQuery(1), "AND carrier_id IN (1,2,3))", "AND carrier_id IN (1,2,3) "+kr+")", 1)
+		if q == hyOuterQuery(1) {
+			t.Fatal("test query not rewritten")
+		}
+		v.cmp("key range "+kr, q)
+		mustq(t, rs, `UPDATE sims SET store_rate = 10 WHERE number IN ('090000015001','090000015002','090000011000','090000006000')`)
+		v.cmp("key range after tail "+kr, q)
+	}
 }

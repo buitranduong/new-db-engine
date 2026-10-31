@@ -397,6 +397,12 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	workers := 1 + max(0, min(ScanWorkers-1, int(scanHelpers.Load())))
 	q := &proj.SegR2{Filters: p.filters, Group: p.groupCol, Groups: groups, Score: p.scoreCol, Desc: p.desc, Md5: p.md5,
 		Md5Suffix: p.suffix, Workers: workers, Interrupted: s.interrupted}
+	if p.keyLo != nil {
+		q.HasLo, q.KeyLo, q.LoEx = true, *p.keyLo, p.keyLoEx
+	}
+	if p.keyHi != nil {
+		q.HasHi, q.KeyHi, q.HiEx = true, *p.keyHi, p.keyHiEx
+	}
 	hits, stats, err := tb.TopNPerGroup(q)
 	rep.stats = stats
 	maxCap := 0
@@ -437,6 +443,9 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 		rep.coreByte += rowSize(row)
 		if row[p.groupCol].Null || hyGroupStr(p, row[p.groupCol]) != hit.Group || row[p.scoreCol].Null || row[p.scoreCol].I != int64(hit.Score) {
 			return nil, "", errf("XX000", "hybrid invariant violated: key %q differs between segment state lsn %d and %s at snapshot %d", hit.Key, state.LSN, ft.Name, R)
+		}
+		if (p.keyLo != nil && (hit.Key < *p.keyLo || (hit.Key == *p.keyLo && p.keyLoEx))) || (p.keyHi != nil && (hit.Key > *p.keyHi || (hit.Key == *p.keyHi && p.keyHiEx))) {
+			return nil, "", errf("XX000", "hybrid invariant violated: key %q is outside the key range of the statement", hit.Key)
 		}
 		for i := range p.filters {
 			if !p.filters[i].Match(row[p.filters[i].Col]) {

@@ -86,15 +86,19 @@ type SegGroup struct {
 
 // SegR2 is one top-N-per-group query on one table.
 type SegR2 struct {
-	Filters     []SegFilter
-	Group       int
-	Groups      []SegGroup
-	Score       int
-	Desc        bool
-	Md5         bool
-	Md5Suffix   string
-	Workers     int
-	Interrupted func() bool
+	Filters   []SegFilter
+	Group     int
+	Groups    []SegGroup
+	Score     int
+	Desc      bool
+	Md5       bool
+	Md5Suffix string
+	// optional range on the primary key (bytewise), applied to the rows that pass the other filters
+	KeyLo, KeyHi string
+	HasLo, HasHi bool
+	LoEx, HiEx   bool
+	Workers      int
+	Interrupted  func() bool
 }
 
 type SegHit struct {
@@ -468,6 +472,23 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 	}
 	var md5Evals atomic.Int64
 	rc := &r2ctx{t: t, md5: q.Md5, suffix: q.Md5Suffix, md5Evals: &md5Evals}
+	keyOK := func(id uint32) bool {
+		if !q.HasLo && !q.HasHi {
+			return true
+		}
+		k := rc.key(id)
+		if q.HasLo {
+			if c := bytes.Compare(k, []byte(q.KeyLo)); c < 0 || (c == 0 && q.LoEx) {
+				return false
+			}
+		}
+		if q.HasHi {
+			if c := bytes.Compare(k, []byte(q.KeyHi)); c > 0 || (c == 0 && q.HiEx) {
+				return false
+			}
+		}
+		return true
+	}
 	b := t.Base
 	nz := 0
 	if b.n > 0 {
@@ -558,7 +579,7 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 					} else {
 						gi = gidx[groupCol[i]]
 					}
-					if gi < 0 {
+					if gi < 0 || !keyOK(uint32(i)) {
 						continue
 					}
 					sc := scoreCol[i]
@@ -612,7 +633,7 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 			} else {
 				gi = gidx[groupCol[i]]
 			}
-			if gi < 0 {
+			if gi < 0 || !keyOK(uint32(b.n+int(i))) {
 				continue
 			}
 			sc := scoreCol[i]

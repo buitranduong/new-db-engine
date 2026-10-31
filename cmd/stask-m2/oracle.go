@@ -260,6 +260,22 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
 		} else if ctx.Err() == nil {
 			rd.Drop()
 		}
+		// R2 page shape (quota pages over the carriers, filters identical to R2 plus store_rate = val): the form the
+		// hybrid path recognises; the probe sim must be among the rows with the value it just wrote
+		rows, err = QueryText(ctx, c, fmt.Sprintf(`SELECT t.number, t.store_rate FROM (
+  SELECT number, carrier_id, store_rate, row_number() OVER (PARTITION BY carrier_id ORDER BY store_rate DESC, md5(number || '42'), number) AS rn
+  FROM sims WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND status = 'available' AND carrier_id IN (1,2,3) AND store_rate = %d) t
+WHERE (t.carrier_id = 1 AND t.rn BETWEEN 1 AND 100) OR (t.carrier_id = 2 AND t.rn BETWEEN 1 AND 100) OR (t.carrier_id = 3 AND t.rn BETWEEN 1 AND 100)
+ORDER BY t.store_rate DESC, md5(t.number || '42'), t.number`, val))
+		if err == nil {
+			seen := false
+			for _, row := range rows {
+				seen = seen || (row[0] == sim.Number && row[1] == strconv.Itoa(val))
+			}
+			r.Check("read_your_writes_r2_page", seen, "probe %d sim %s wrote store_rate=%d, the R2 page with store_rate = %d has %d rows without it", i, sim.Number, val, val, len(rows))
+		} else if ctx.Err() == nil {
+			rd.Drop()
+		}
 		r.Count("probes_done", 1)
 		sleepCtx(ctx, gap)
 	}

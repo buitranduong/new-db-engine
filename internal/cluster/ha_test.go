@@ -571,8 +571,6 @@ func TestHAClusterBackup(t *testing.T) {
 	if err := RestoreNode(bdir, c2.nodes[0].dir); err == nil {
 		t.Error("RestoreNode accepted a node directory that is in use")
 	}
-	_ = os.Stdout
-	_ = net.IPv4len
 }
 
 // createTableIfMissing is a no-op for the restored cluster: the HTTP table t
@@ -612,4 +610,64 @@ func TestHAClusterBackupCLI(t *testing.T) {
 		t.Fatalf("verify output: %s", vb)
 	}
 	t.Logf("%s", vb)
+}
+
+// TestHALibpqDocker: the real libpq (psql of the postgres:16 image, the
+// library psycopg2 and most drivers wrap) finds the leader with
+// target_session_attrs=read-write, finds a follower with standby, and follows
+// the leader to its successor after kill -9. Skipped unless STASK_LIBPQ_DOCKER=1.
+func TestHALibpqDocker(t *testing.T) {
+	if os.Getenv("STASK_LIBPQ_DOCKER") != "1" {
+		t.Skip("set STASK_LIBPQ_DOCKER=1 (needs docker and the postgres:16 image)")
+	}
+	c := newCluster(t, 3)
+	c.createTable()
+	c.waitLeader(40 * time.Second)
+	c.pgExecRW("CREATE TABLE ha (id text PRIMARY KEY, v int)")
+	var hosts, ports []string
+	for _, nd := range c.nodes {
+		h, p, _ := net.SplitHostPort(nd.pg)
+		hosts, ports = append(hosts, h), append(ports, p)
+	}
+	conn := func(attrs string) string {
+		return fmt.Sprintf("host=%s port=%s dbname=stask user=app sslmode=disable connect_timeout=3 target_session_attrs=%s",
+			strings.Join(hosts, ","), strings.Join(ports, ","), attrs)
+	}
+	psql := func(attrs, sql string) (string, error) {
+		out, err := exec.Command("docker", "run", "--rm", "--network", "host", "postgres:16", "psql", "-X", "-At", "-d", conn(attrs), "-c", sql).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	port := func(i int) string { _, p, _ := net.SplitHostPort(c.nodes[i].pg); return p }
+	li, _ := c.waitLeader(20 * time.Second)
+	if out, err := psql("read-write", "select pg_is_in_recovery()"); err != nil || out != "f" {
+		t.Fatalf("read-write: %q %v", out, err)
+	}
+	if out, err := psql("standby", "select pg_is_in_recovery()"); err != nil || out != "t" {
+		t.Fatalf("standby: %q %v", out, err)
+	}
+	if out, err := psql("read-write", "insert into ha values ('libpq', 1)"); err != nil {
+		t.Fatalf("insert: %q %v", out, err)
+	}
+	c.kill(c.nodes[li])
+	c.waitLeader(40 * time.Second)
+	var out string
+	var err error
+	for i := 0; i < 30; i++ {
+		if out, err = psql("read-write", "insert into ha values ('libpq-after', 2)"); err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("after kill -9 of the leader: %q %v", out, err)
+	}
+	ni, _ := c.waitLeader(20 * time.Second)
+	if ni == li {
+		t.Fatal("the killed leader is still the leader")
+	}
+	rows, err := c.pgRows(ni)
+	if err != nil || rows["libpq-after"] != 2 || rows["libpq"] != 1 {
+		t.Fatalf("new leader (port %s) holds %v (%v)", port(ni), rows, err)
+	}
+	t.Logf("libpq: read-write -> leader (port %s); standby -> follower; after kill -9 of the leader -> new leader (port %s) took both writes", port(li), port(ni))
 }

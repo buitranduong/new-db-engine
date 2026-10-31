@@ -970,6 +970,8 @@ func (c *conn) parse(body []byte) {
 			if ps.params[i] == 0 || ps.params[i] == oidUnknown {
 				if i < len(desc.ParamElem) && desc.ParamElem[i] != 0 && sql.ArrayOIDOfKind(desc.ParamElem[i]) != 0 {
 					ps.params[i] = sql.ArrayOIDOfKind(desc.ParamElem[i])
+				} else if i < len(desc.ParamOID) && desc.ParamOID[i] != 0 {
+					ps.params[i] = desc.ParamOID[i]
 				} else if i < len(desc.Params) {
 					ps.params[i] = oidOf(desc.Params[i])
 				} else {
@@ -1250,6 +1252,9 @@ func (c *conn) dataRow(row []sql.Datum, formats []int16, cols []sql.Column) erro
 		if i < len(cols) && cols[i].OID == oidFloat4 && d.K == sql.KFloat {
 			s = sql.FormatFloat4(d.F)
 		}
+		if d.K == sql.KInterval {
+			s = c.sess.IntervalString(d) // IntervalStyle
+		}
 		m.int32(len(s)).bytes([]byte(s))
 	}
 	return c.send(m)
@@ -1302,6 +1307,9 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 	case oidText, oidVarchar, oidUnknown, oidName, oidBpchar:
 		return sql.TextD(string(raw)), nil
 	default:
+		if d, ok, err := sql.ExtParamBinary(oid, raw); ok {
+			return d, err
+		}
 		if sql.IsArrayOID(oid) {
 			return decodeArrayParam(oid, raw)
 		}

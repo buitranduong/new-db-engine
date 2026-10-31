@@ -14,10 +14,10 @@ import (
 )
 
 func TestSpillCodecCoversDatum(t *testing.T) {
-	if n := reflect.TypeOf(Datum{}).NumField(); n != 4 {
+	if n := reflect.TypeOf(Datum{}).NumField(); n != 5 {
 		t.Fatalf("Datum has %d fields: update encodeRow/decodeRow in spillexec.go", n)
 	}
-	rows := [][]Datum{{}, {Null, IntD(-5), FloatD(1.5), TextD("héllo"), BoolD(true), TimeD(1 << 50), {K: KArray, S: "{1,2}"}, FloatD(-0.0), TextD("")}}
+	rows := [][]Datum{{}, {Null, IntD(-5), FloatD(1.5), TextD("héllo"), BoolD(true), TimeD(1 << 50), {K: KArray, S: "{1,2}"}, FloatD(-0.0), TextD(""), IntervalFull(14, -3, 5), {K: KText, D: 2, S: "[1,2)"}}}
 	for _, r := range rows {
 		got, err := decodeRow(encodeRow(nil, r))
 		if err != nil || len(got) != len(r) {

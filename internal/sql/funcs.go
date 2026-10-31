@@ -787,6 +787,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		default:
 			u := intervalUnits[unit]
 			iv = IntervalD(u[0]*n, u[1]*n)
+			if u[1] >= usPerDay && u[1]%usPerDay == 0 { // day and week units are days
+				iv = IntervalFull(0, u[1]/usPerDay*n, 0)
+			}
 		}
 		v, ok, err := timeArith("+", args[0], iv)
 		if !ok && err == nil {
@@ -889,6 +892,9 @@ func pgKindName(k Kind) string {
 // (seconds 6 digits, milliseconds 3, epoch 6; the other fields are whole
 // numbers), exact to the microsecond.
 func extractNumeric(field string, v Datum) (Datum, error) {
+	if v.K == KInterval {
+		return intervalPartNumeric(field, v)
+	}
 	if isTime(v.K) || v.K == KText || v.K == KDate {
 		t, err := coerce(v, KTime)
 		if err != nil {
@@ -941,22 +947,12 @@ func extractNumeric(field string, v Datum) (Datum, error) {
 // datePart is PostgreSQL's date_part / EXTRACT.
 func datePart(field string, v Datum) (Datum, error) {
 	if v.K == KInterval {
-		ms := intervalMs(v)
-		switch field {
-		case "epoch":
-			return FloatD(float64(ms) / usPerSec), nil
-		case "day", "days":
-			return FloatD(float64(v.I / usPerDay)), nil
-		case "hour":
-			return FloatD(float64(v.I % usPerDay / (3600 * usPerSec))), nil
-		case "minute":
-			return FloatD(float64(v.I % (3600 * usPerSec) / (60 * usPerSec))), nil
-		case "month":
-			return FloatD(float64(int64(v.F) % 12)), nil
-		case "year":
-			return FloatD(float64(int64(v.F) / 12)), nil
+		s, err := intervalPart(field, v)
+		if err != nil {
+			return Null, err
 		}
-		return Null, errf(codeInvalidParameter, "unit %q not supported for interval", field)
+		f, _ := strconv.ParseFloat(s, 64)
+		return FloatD(f), nil
 	}
 	t, err := coerce(v, KTime)
 	if err != nil {
@@ -1437,6 +1433,9 @@ func funcKind(name string, args []Kind) Kind {
 	if k, ok := extFuncKinds[name]; ok {
 		return k
 	}
+	if k, ok := typesFuncKind(name, args); ok {
+		return k
+	}
 	switch name {
 	case "count", "length", "char_length", "strpos", "position", "locate", "ascii", "octet_length", "lengthutf8", "bit_length",
 		"toyear", "tomonth", "todayofmonth", "tohour", "tominute", "tosecond", "todayofweek", "todayofyear",
@@ -1457,6 +1456,9 @@ func funcKind(name string, args []Kind) Kind {
 		}
 		if (arg(0) == KInt || arg(0) == KBool) && (name == "avg") {
 			return KNumeric
+		}
+		if arg(0) == KInterval && name == "avg" {
+			return KInterval
 		}
 		if (name == "power" || name == "pow") && len(args) == 2 && (arg(0) == KNumeric || arg(1) == KNumeric) &&
 			(arg(0) == KNumeric || arg(0) == KInt) && (arg(1) == KNumeric || arg(1) == KInt) {

@@ -107,6 +107,10 @@ func init() {
 				if p, sc, ok := schema.NumericMod(col.Type); ok {
 					prec, radix, scale = IntD(int64(p)), IntD(10), IntD(int64(sc))
 				}
+				ivType := Null
+				if ct := colTy(&col); extIsSpec(col.PG) {
+					dt, ivType, charLen = extInfoSchema(ct, dt, charLen) // interval fields and precision, bit lengths
+				}
 				def := Null
 				if hasDef(col) && col.Generated == "" {
 					def = TextD(defaultText(c.s, col))
@@ -131,7 +135,7 @@ func init() {
 				}
 				rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD(col.Name), IntD(int64(col.Num)), def,
 					TextD(boolStr(!(col.NotNull || col.Name == t.Key))), TextD(dataType), charLen, octet, prec, radix, scale, dt,
-					Null, Null, Null, Null, Null, collCat, collSch, collName, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
+					ivType, Null, Null, Null, Null, collCat, collSch, collName, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
 					Null, Null, Null, Null, TextD(itoa(int64(col.Num))), TextD("NO"), TextD(isID), gen, idStart, idInc,
 					idMax, idMin, idCycle, TextD(isGen), genExpr, TextD("YES")})
 			}

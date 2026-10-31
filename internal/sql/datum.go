@@ -41,6 +41,7 @@ func (k Kind) String() string {
 // Datum is one SQL value. The zero value is NULL.
 type Datum struct {
 	K Kind
+	D int32 // KInterval: days; KText: PostgreSQL type tag of the added types (ranges, bit strings; exttypes.go)
 	I int64 // KInt, KBool (0/1), KTime
 	F float64
 	S string
@@ -150,6 +151,9 @@ func fromCol(c *schema.Column, v schema.Value) Datum {
 	if c.PG == "float4" && d.K == KFloat {
 		d.S = f4Mark
 	}
+	if d.K == KText && extIsSpec(c.PG) {
+		d = extDecode(c.PG, d)
+	}
 	if len(c.PG) > 5 && c.PG[:5] == "enum:" { // carries its sort position (ddlobjs_types.go)
 		d = markEnum(c.PG, d)
 	}
@@ -202,6 +206,9 @@ func toValueCol(c *schema.Column, d Datum) (schema.Value, error) {
 		return schema.Value{F: cd.F}, nil
 	case KText, KNumeric, KUUID, KBytea, KJSON, KJSONB, KArray:
 		return schema.Value{S: cd.S}, nil
+	}
+	if extIsSpec(c.PG) {
+		return schema.Value{S: extEncode(c.PG, cd)}, nil
 	}
 	if c.T == schema.TTime { // legacy milliseconds
 		return schema.Value{I: floorDiv(cd.I, 1000)}, nil
@@ -358,10 +365,7 @@ func coerce(d Datum, k Kind) (Datum, error) {
 		}
 	case KInterval:
 		if d.K == KText {
-			if iv, ok := parseInterval(d.S); ok {
-				return iv, nil
-			}
-			return Null, errf("22007", "invalid input syntax for type interval: %q", d.S)
+			return decodeIntervalPG(d.S)
 		}
 	case KUUID:
 		if d.K == KText {
@@ -533,6 +537,11 @@ func compare(a, b Datum) (int, error) {
 			return c, err
 		}
 	}
+	if a.K == KText && b.K == KText && (a.D|b.D) != 0 { // a range or other added type (exttypes.go)
+		if c, ok, err := typesCompare(a, b); ok {
+			return c, err
+		}
+	}
 	if a.K != b.K {
 		switch {
 		case (isTime(a.K) || a.K == KDate) && (isTime(b.K) || b.K == KDate):
@@ -578,7 +587,7 @@ func compare(a, b Datum) (int, error) {
 	case KNumeric:
 		return pgnum.Cmp(numOf(a), numOf(b)), nil
 	case KInterval:
-		a.I, b.I = intervalMs(a), intervalMs(b)
+		return ivCmp(a, b), nil
 	}
 	switch {
 	case a.I < b.I:
@@ -593,7 +602,7 @@ func compare(a, b Datum) (int, error) {
 // the collation c (nil: the database default). Equality uses compare, which
 // is bytewise.
 func compareOrd(a, b Datum, c *Collation) (int, error) {
-	if a.K == KText && b.K == KText && (a.I|b.I) == 0 {
+	if a.K == KText && b.K == KText && (a.I|b.I|int64(a.D|b.D)) == 0 {
 		return CollateCompare(c, a.S, b.S), nil
 	}
 	return compare(a, b)

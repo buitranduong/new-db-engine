@@ -120,7 +120,8 @@ type colBounds struct {
 // boundsOf collects, for each column of t, what the conjuncts of where fix.
 func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[string]*colBounds {
 	out := map[string]*colBounds{}
-	types := map[string]schema.ColType{} // bound key -> type of the indexed value
+	types := map[string]schema.ColType{}  // bound key -> type of the indexed value
+	pgcols := map[string]*schema.Column{} // columns of the added types (exttypes.go): constants go through the column's spec
 	colOf := func(x Expr) (string, bool) {
 		fn := ""
 		if f, ok := x.(*Func); ok {
@@ -139,8 +140,17 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 			return "", false
 		}
 		if fn == "" {
+			if extIsSpec(t.Columns[i].PG) {
+				if !extIndexLookup(t.Columns[i].PG) {
+					return "", false
+				}
+				pgcols[c.Name] = &t.Columns[i]
+			}
 			types[c.Name] = t.Columns[i].T
 			return c.Name, true
+		}
+		if extIsSpec(t.Columns[i].PG) {
+			return "", false
 		}
 		ct, ok := schema.ExprResultType(fn, t.Columns[i].T)
 		if !ok {
@@ -170,6 +180,16 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 		}
 		if d.IsNull() {
 			return v, true, true
+		}
+		if pc := pgcols[col]; pc != nil {
+			if d.K != KText {
+				return v, false, false
+			}
+			sv, err := toValueCol(pc, d)
+			if err != nil || sv.Null {
+				return v, false, false
+			}
+			return sv, true, false
 		}
 		v, ok = indexValue(types[col], d)
 		return
@@ -212,7 +232,7 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 				continue
 			}
 			col, ok := colOf(e.X)
-			if !ok || kindOf(types[col]) != KText {
+			if !ok || kindOf(types[col]) != KText || pgcols[col] != nil {
 				continue
 			}
 			pv, ok, null := val(col, e.Pat)

@@ -47,6 +47,11 @@ func lex(src string) ([]token, error) {
 				return nil, syntaxErr(i, "unterminated comment")
 			}
 			i += end + 4
+		case (c == 'b' || c == 'B' || c == 'x' || c == 'X') && i+1 < len(src) && src[i+1] == '\'' && bitLitEnd(src, i+2) > 0:
+			// B'0101' and X'1F' bit string literals: a marker identifier, then the letter and digits as a string
+			end := bitLitEnd(src, i+2)
+			out = append(out, token{tIdent, "stask_bitlit", i}, token{tString, strings.ToLower(src[i:i+1]) + src[i+2:end], i})
+			i = end + 1
 		case c == '\'' || (c == 'E' || c == 'e') && i+1 < len(src) && src[i+1] == '\'':
 			start := i
 			escapes := c != '\''
@@ -185,9 +190,14 @@ func lex(src string) ([]token, error) {
 				i += 3
 				continue
 			}
+			if strings.HasPrefix(src[i:], "-|-") || strings.HasPrefix(src[i:], "<->") {
+				out = append(out, token{tOp, src[i : i+3], start})
+				i += 3
+				continue
+			}
 			switch two {
 			case "<=", ">=", "<>", "!=", "||", "::", "!~", "~*", "->", "==", "<<", ">>", "^@",
-				"#>", "#-", "@>", "<@", "@?", "@@", "?|", "?&", "&&":
+				"#>", "#-", "@>", "<@", "@?", "@@", "?|", "?&", "&&", "&<", "&>", "!!":
 				out = append(out, token{tOp, two, start})
 				i += 2
 				continue

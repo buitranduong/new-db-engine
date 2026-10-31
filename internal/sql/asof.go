@@ -191,8 +191,8 @@ func (p *tablePlan) runAsOf(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	var cerr error
 	emit := func(r schema.Row) bool {
 		out := make([]Datum, len(cols))
-		for i, c := range cols {
-			out[i] = fromValue(c.T, r[i])
+		for i := range cols {
+			out[i] = fromCol(&cols[i], r[i])
 		}
 		rows = append(rows, out)
 		if cerr = qx.charge(out); cerr != nil {
@@ -313,9 +313,9 @@ func (s *Session) historyRows(args []Datum) ([][]Datum, error) {
 	for _, v := range h {
 		out := make([]Datum, 3+len(t.Columns))
 		out[0], out[1], out[2] = Datum{K: KInt, I: int64(v.LSN)}, TimeD(nanosToMicros(v.TS)), BoolD(v.Deleted)
-		for i, c := range t.Columns {
+		for i := range t.Columns {
 			if v.Row != nil {
-				out[3+i] = fromValue(c.T, v.Row[i])
+				out[3+i] = fromCol(&t.Columns[i], v.Row[i])
 			} else {
 				out[3+i] = Null
 			}

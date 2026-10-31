@@ -166,6 +166,9 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return BoolD(v.I == 0), nil
 		}
 		if e.Op == "~" {
+			if d, ok, err := typesUnary("~", v); ok { // bit strings, macaddr (exttypes.go)
+				return d, err
+			}
 			if v.K != KInt {
 				return Null, errf(codeUndefinedFunction, "operator does not exist: ~ %s", v.K)
 			}
@@ -179,7 +182,7 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		case KNumeric:
 			return NumericD(numOf(v).Neg()), nil
 		case KInterval:
-			return IntervalD(-int64(v.F), -v.I), nil
+			return ivNeg(v)
 		case KText:
 			if f, err := coerce(v, KFloat); err == nil {
 				return FloatD(-f.F), nil
@@ -293,12 +296,20 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if strings.HasPrefix(e.PG, "ut:") { // a cast to an enum or domain
 			return c.castUser(e, v)
 		}
+		if d, ok, err := extCast(v, e); ok { // bit string <-> integer (exttypes.go)
+			return d, err
+		}
 		if d, ok, err := c.castCatalog(v, e.Type); ok {
 			return d, err
 		}
 		if loc := c.sessLoc(); loc != time.UTC {
 			if d, ok := tzCast(v, e.Type, loc); ok {
 				return d, nil
+			}
+		}
+		if v.K == KInterval && (e.Type == "text" || e.Type == "string") {
+			if s := c.session(); s != nil {
+				return TextD(s.IntervalString(v)), nil
 			}
 		}
 		k := kindOfType(e.Type)
@@ -464,6 +475,9 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	}
 	if l.IsNull() || r.IsNull() {
 		return Null, nil
+	}
+	if d, ok, err := typesBinary(e.Op, l, r); ok { // ranges, bit strings, macaddr8 (exttypes.go)
+		return d, err
 	}
 	if (e.Op == "<<" || e.Op == ">>") && l.K == KText {
 		if d, ok := inetOp(e.Op, l, r); ok {
@@ -704,6 +718,11 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		k, _ := strconv.Atoi(f.Name[len(fieldFn):])
 		v, err := callField(Kind(k), args)
 		return v, err
+	}
+	if typesFuncNames[f.Name] { // interval, range and bit-string functions (typesfuncs.go)
+		if v, ok, err := c.typesCall(f, args); ok {
+			return v, err
+		}
 	}
 	if v, ok, err := c.callJSONArr(f, args); ok {
 		return v, err

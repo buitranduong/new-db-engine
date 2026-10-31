@@ -180,3 +180,28 @@ Run against the same postgres:16.15 image, `staskd` of the branch on a free port
 | 18_dml_more (new file `scripts/suite/18_dml_more.sql`) | 289 | n/a | **289** |
 
 What moved: 04 and 05 are now equal to PostgreSQL in every statement (two-phase commit, `ON CONFLICT` on a unique index, MERGE, COPY through `search_path`, `FORCE_QUOTE`, SET TRANSACTION rules, `EXECUTE` arity, `pg_prepared_statements`). 14 gained 26 (SET/SHOW unknown parameters, bad values, maintenance on unknown relations, OFFSET, DISTINCT/ORDER BY, window in WHERE, duplicate alias, numeric lexing, has_table_privilege). Statements still different in 14 are functions, types and regproc casts (other branches) and COPY from server files. No statement that passed before fails now (checked by comparing the two reports). Group 18 covers what the brief lists as new cases: conflict arbiters, DML forms, MERGE, USING joins, GROUP BY key, ~50 error codes, SET/GUC, maintenance commands, 2PC, cursors, locks, EXPLAIN shape.
+
+## 11. Kiểu dữ liệu: interval làm cột, range, macaddr/macaddr8, bit/varbit, tsvector/tsquery (nhánh `compat-types`, từ `main` cd42af1)
+
+Chỉ làm phần KIỂU của backlog F1 (mục 6). Không đụng nhóm 01-14 (người khác sửa); ca mới nằm ở tệp mới `scripts/suite/15_types_more.sql` (nhóm `15_types_more`, 493 câu, mọi câu lấy kết quả từ postgres:16.15 qua `pgdiff`). Tiền lệ PostgreSQL và quyết định thiết kế: `docs/14` Phụ lục T.
+
+Đo trước/sau trên cùng VM, cùng postgres:16.15 (`SUITE_N=100`, `staskd` dựng từ `main` cd42af1 và từ nhánh này):
+
+| Nhóm | Trước | Sau |
+|---|---|---|
+| 01_ddl_types | 207 | 222 |
+| 02_indexes | 72 | 78 |
+| 06_select_basics | 159 | 160 |
+| 08_aggregates | 87 | 88 |
+| 11_analytics | 89 | 90 |
+| 12_text_search | 29 | 31 |
+| 14_errors | 311 | 314 |
+| 03, 04, 05, 07, 09, 10, 13 | không đổi | không đổi |
+| **Tổng nhóm 01-14 (2196 câu)** | **1711** | **1740** |
+| **15_types_more (493 câu, mới)** | n/a | **493** |
+
+Không câu nào của nhóm 01-14 từ PASS thành DIFF/ERR (so từng dòng `summary.txt`); bảy câu của `02_indexes/unique-partial-expression:62-68` đổi từ ERR sang DIFF (bảng `docs` nay tạo được, `INSERT` vẫn thiếu `to_tsvector`). Phần còn lại của nhóm 01/12 liên quan kiểu mà KHÔNG làm: `timetz`, `xml`, `money` (bảng `misc`, `dt` không tạo được kéo theo lỗi dây chuyền), multirange (`int4multirange`, `unnest`), mảng kiểu composite, `enum_first/enum_last/enum_range`, và toàn bộ hàm tìm kiếm văn bản của nhóm 12 (`to_tsvector`... thuộc nhánh compat-funcs; cấu hình `english` cần bộ tách gốc, xem Phụ lục T).
+
+Các phiên của nhóm 15: `interval-input` (82 dạng nhập), `interval-column` (cột, ORDER BY, chỉ mục, PK, CTAS, UPDATE, typmod), `interval-arith` (cộng/trừ/nhân/chia, `justify_*`, `make_interval`, date/timestamp ± interval, `generate_series`, sum/avg/min/max), `interval-extract`, `interval-cast-text`, `interval-style` (bốn `IntervalStyle`), `interval-binary` (COPY text/binary, tham số), `interval-aggregates` (20000 dòng: sum/avg/min/max/DISTINCT/GROUP BY/join/cửa sổ), `range-literals`, `range-ops`, `range-column` (sáu kiểu, sắp xếp, GROUP BY, join, chỉ mục, PK), `range-binary`, `macaddr-input`, `macaddr-ops`, `macaddr-column`, `bit-literals`, `bit-column`, `bit-binary`, `tsvector-input`, `tsquery-input`, `tsearch-match`, `tsearch-column`, `tsearch-binary`, `types-catalog` (`information_schema.columns`, `pg_attribute`, `pg_type`). Ca Go (pgx nhị phân, COPY, sắp xếp, chỉ mục, khoá chính, đối chiếu byte tsquery): `internal/pgwire/exttypes_wire_test.go`, `internal/sql/exttypes_test.go`.
+
+Giới hạn đã biết (đều có trong docs/14 Phụ lục T): `to_char(interval, ...)`; `interval` nhập kiểu `sql_standard` với dấu `-` đầu; `0.0000015 sec` làm tròn 2 micro giây (PostgreSQL 1); `IntervalStyle` không áp dụng cho COPY TO text; so sánh/UNIQUE trên cột interval coi `1 month` và `30 days` là khác nhau (so sánh trong biểu thức thì bằng nhau); multirange; `min/max` trên range/bit/macaddr/tsvector được chấp nhận.

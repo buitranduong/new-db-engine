@@ -165,9 +165,7 @@ func BinaryValue(d Datum) ([]byte, bool) {
 		}
 		return binary.BigEndian.AppendUint32(nil, uint32(int32((d.I-PgEpochUs)/usPerDay))), true
 	case KInterval:
-		b := binary.BigEndian.AppendUint64(nil, uint64(d.I))
-		b = binary.BigEndian.AppendUint32(b, 0)
-		return binary.BigEndian.AppendUint32(b, uint32(int32(d.F))), true
+		return ivBinary(d), true
 	case KNumeric:
 		return NumericBinary(numOf(d)), true
 	case KUUID:
@@ -197,13 +195,11 @@ func ValueFromBinary(k Kind, raw []byte) (Datum, error) {
 		}
 		return tsD(k, int64(binary.BigEndian.Uint64(raw))+PgEpochUs), nil
 	case KInterval: // microseconds, days, months
-		if len(raw) != 16 {
+		iv, ok := ivFromBinary(raw)
+		if !ok {
 			return Null, bad
 		}
-		us := int64(binary.BigEndian.Uint64(raw))
-		days := int64(int32(binary.BigEndian.Uint32(raw[8:])))
-		months := int64(int32(binary.BigEndian.Uint32(raw[12:])))
-		return IntervalD(months, us+days*usPerDay), nil
+		return iv, nil
 	case KDate:
 		if len(raw) != 4 {
 			return Null, bad
@@ -287,6 +283,9 @@ func ArrayBinary(a Datum, ek Kind, eoid uint32) ([]byte, bool) {
 // and reals of the narrow types (int2, int4, float4) and time of day have
 // their own widths; everything else is BinaryValue.
 func BinaryValueFor(oid uint32, d Datum) ([]byte, bool) {
+	if b, ok := extBinary(oid, d); ok { // ranges (exttypes.go)
+		return b, true
+	}
 	switch oid {
 	case tyInt4:
 		if d.K == KInt {

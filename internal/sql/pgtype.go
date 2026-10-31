@@ -67,6 +67,9 @@ func specTy(spec string) pgTy {
 		name = spec[:i]
 		n, _ = strconv.Atoi(spec[i+1 : len(spec)-1])
 	}
+	if t, ok := extSpecTy(spec); ok {
+		return t
+	}
 	switch name {
 	case "oid":
 		return pgTy{oid: 26, mod: -1}
@@ -121,6 +124,9 @@ func colKind(c *schema.Column) Kind {
 	if c.PG == "date" {
 		return KDate
 	}
+	if k, ok := extColKind(c.PG); ok {
+		return k
+	}
 	return kindOf(c.T)
 }
 
@@ -138,6 +144,11 @@ func (t pgTy) family() Kind {
 		return KText
 	case tyDate:
 		return KDate
+	case tyInterval:
+		return KInterval
+	}
+	if k, ok := extFamily(t.oid); ok {
+		return k
 	}
 	if isUserOID(t.oid) {
 		return KText
@@ -151,6 +162,12 @@ func (t pgTy) isInt() bool { return t.oid == tyInt2 || t.oid == tyInt4 || t.oid 
 // else none.
 func (t pgTy) forKind(k Kind) pgTy {
 	if t.oid != 0 && t.family() == k {
+		return t
+	}
+	if t.oid != 0 && k == KText && extResultTy(t.oid) { // lower(range) is a text-kinded expression of the subtype
+		return t
+	}
+	if t.oid == 3615 { // tsquery operators (&&) whose generic function is typed bool
 		return t
 	}
 	return pgTy{}
@@ -220,9 +237,16 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		}
 	case *Unary:
 		if e.Op == "-" || e.Op == "+" || e.Op == "~" {
-			return inferTy(e.X, leaf)
+			t := inferTy(e.X, leaf)
+			if e.Op == "~" && isBitOID(t.oid) { // ~varbit is a bit
+				t = pgTy{oid: 1560, mod: -1}
+			}
+			return t
 		}
 	case *Binary:
+		if t, ok := extBinaryTy(e, inferTy(e.L, leaf), inferTy(e.R, leaf)); ok {
+			return t
+		}
 		switch e.Op {
 		case "+", "-", "*", "/", "%", "&", "|", "#", "<<", ">>":
 			l, r := inferTy(e.L, leaf), inferTy(e.R, leaf)
@@ -253,6 +277,9 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		return commonTy(ts, as)
 	case *Func:
 		if t, ok := userFuncTy(e.Name); ok {
+			return t
+		}
+		if t, ok := extFuncTy(e, func(i int) pgTy { return inferTy(e.Args[i], leaf) }); ok {
 			return t
 		}
 		if t, ok := supfixFuncTy(e); ok {
@@ -404,6 +431,9 @@ func pgTyName(t pgTy) string {
 	case tyJSONB:
 		return "jsonb"
 	}
+	if n, ok := extTyName(t.oid); ok {
+		return n
+	}
 	if n, ok := userTypeFormat(int64(t.oid)); ok {
 		return n
 	}
@@ -413,6 +443,9 @@ func pgTyName(t pgTy) string {
 // formatType is format_type(oid, typmod).
 func formatType(oid uint32, mod int32) string {
 	n := pgTyName(pgTy{oid: oid})
+	if s, ok := extFormatType(oid, mod); ok {
+		return s
+	}
 	switch {
 	case n == "":
 		return ""
@@ -428,6 +461,9 @@ func formatType(oid uint32, mod int32) string {
 
 // castName is the name PostgreSQL gives an unnamed cast column: the type.
 func castName(c *Cast) string {
+	if c.Type == "bitlit" { // B'101' is an unnamed column
+		return "?column?"
+	}
 	if n := arrayCastName(c); n != "" {
 		return n
 	}
@@ -446,13 +482,21 @@ func castName(c *Cast) string {
 		case tyTime:
 			return "time"
 		}
+		if n, ok := extTyName(t.oid); ok {
+			if t.oid == 1562 {
+				return "varbit"
+			}
+			return n
+		}
 		return map[uint32]string{tyInt2: "int2", tyInt4: "int4", tyFloat4: "float4", tyName: "name", tyDate: "date", 26: "oid",
-			tyInet: "inet", tyCidr: "cidr", tyMacaddr: "macaddr"}[t.oid]
+			tyInet: "inet", tyCidr: "cidr", tyMacaddr: "macaddr", tyInterval: "interval"}[t.oid]
 	}
 	if _, _, ok := schema.NumericMod(c.Type); ok {
 		return "numeric"
 	}
 	switch c.Type {
+	case "bitlit": // B'101' is an unnamed column
+		return "?column?"
 	case "int":
 		return "int8"
 	case "float":
@@ -597,6 +641,9 @@ func applyPG(pg string, d Datum, explicit bool) (Datum, error) {
 	}
 	if strings.HasPrefix(pg, "enum:") || strings.HasPrefix(pg, "ut:") {
 		return applyUserPG(pg, d, explicit)
+	}
+	if extIsSpec(pg) {
+		return extApply(pg, d, explicit)
 	}
 	switch name := specName(pg); name {
 	case "int2", "int4":

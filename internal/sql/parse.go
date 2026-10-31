@@ -704,7 +704,9 @@ func (p *parser) colDef() (ColDef, error) {
 		cd.Type = "timestamp"
 	case "oid": // Liquibase BLOB: an integer column that reports the type oid
 		cd.Type, cd.PG = "int", "oid"
-	case "interval", "array":
+	case "interval":
+		cd.Type, cd.PG = "string", p.pgSpec
+	case "array":
 		return cd, errf(codeFeature, "columns of type %s are not supported", cd.Type)
 	}
 	for {
@@ -870,13 +872,8 @@ func (p *parser) typeName() (string, error) {
 	case "date32":
 		out = "date"
 	case "interval":
-		for p.peek().k == tIdent && intervalUnits[p.peek().s] != [2]int64{} {
-			p.next() // INTERVAL DAY TO SECOND etc.
-			if p.acceptKw("to") {
-				p.next()
-			}
-		}
 		out = "interval"
+		p.pgSpec = p.intervalTypmod()
 	case "float", "float4", "float8", "real":
 		skipMods()
 		out = "float"
@@ -959,6 +956,10 @@ func (p *parser) typeName() (string, error) {
 	case "bool", "boolean":
 		out = "bool"
 	default:
+		if spec, ok := p.extTypeSpec(t.s); ok { // ranges, macaddr8, bit strings (exttypes.go)
+			out, p.pgSpec = "string", spec
+			break
+		}
 		if unsupportedTypes[t.s] {
 			return "", errf(codeFeature, "type %q is not supported", t.s)
 		}
@@ -1680,6 +1681,10 @@ func (p *parser) unary() (Expr, error) {
 		x, err := p.unary()
 		return &Unary{"~", x}, err
 	}
+	if p.acceptOp("!!") { // tsquery NOT
+		x, err := p.unary()
+		return &Func{Name: "stask_tsnot", Disp: "?column?", Args: []Expr{x}}, err
+	}
 	x, err := p.primary()
 	for err == nil {
 		switch {
@@ -1832,9 +1837,26 @@ func (p *parser) primary() (Expr, error) {
 				}
 				return &Subquery{Q: q, Array: true}, p.expectOp(")")
 			}
+		case "stask_bitlit":
+			if p.peekN(1).k == tString {
+				p.next()
+				return bitLiteral(p.next().s), nil
+			}
 		case "interval":
 			// INTERVAL '1 day', INTERVAL '2' HOUR, ClickHouse INTERVAL 2 HOUR
-			if k := p.peekN(1).k; k == tString || k == tNumber {
+			if p.peekN(1).k == tString {
+				p.next()
+				v := p.next().s
+				spec := p.intervalTypmod()
+				if tm, _ := ivSpecParse(spec); tm.mask != ivFAll && ivBareNumber(v) { // INTERVAL '2' HOUR: the unit of the last field
+					v += " " + ivLastUnit(tm.mask)
+				}
+				if spec == "interval" {
+					spec = ""
+				}
+				return &Cast{&Lit{TextD(v)}, "interval", spec}, nil
+			}
+			if k := p.peekN(1).k; k == tNumber {
 				p.next()
 				v := p.next().s
 				if u := p.peek(); u.k == tIdent && intervalUnits[u.s] != [2]int64{} || u.k == tIdent && (u.s == "microsecond" || u.s == "microseconds") {

@@ -145,10 +145,11 @@ type Server struct {
 	RolesOnly bool
 	// HBA, if set, is an allow list (pg_hba.conf style, hba.go): a
 	// connection no rule admits is refused before authentication.
-	HBA   *HBA
-	fail  failTracker
-	Logf  func(string, ...any)
-	Views sql.Views // derived views SELECT aggregates may be answered from
+	HBA    *HBA
+	fail   failTracker
+	Logf   func(string, ...any)
+	Views  sql.Views   // derived views SELECT aggregates may be answered from
+	Hybrid *sql.Hybrid // nil: the hybrid R2 path is off (staskd -hybrid)
 
 	// Session defaults of statement_timeout,
 	// idle_in_transaction_session_timeout and idle_session_timeout
@@ -288,6 +289,7 @@ func (s *Server) handle(nc net.Conn) {
 	}
 	c.sess = sql.NewSession(s.E)
 	c.sess.Views = s.Views
+	c.sess.Hybrid = s.Hybrid
 	c.sess.WirePrepared = func() []sql.PreparedInfo {
 		var out []sql.PreparedInfo
 		for name, ps := range c.stmts {

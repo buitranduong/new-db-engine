@@ -312,6 +312,11 @@ func (x *explainer) stmt(depth int, st Stmt) error {
 	s := x.s
 	switch q := st.(type) {
 	case *Select:
+		if done, note := x.hybrid(depth, q); done { // hybrid_explain.go
+			return nil
+		} else if note != "" {
+			defer x.detail(depth, "%s", note)
+		}
 		if q.From != "" && q.Rel == nil && !needsGeneral(q) && !s.isSequence(q.From) && !s.isView(q.From) {
 			t, err := s.table(q.From)
 			if err != nil {
@@ -679,6 +684,7 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 				rows, _ = strconv.Atoi(f[len(f)-1])
 			}
 		}
+		x.hybridAnalyzed(e.Stmt)
 		ms = float64(el.Microseconds()) / 1000
 		if e.Opts.Timing {
 			x.lines[0] += fmt.Sprintf(" (actual time=%.3f rows=%d loops=1)", ms, rows)

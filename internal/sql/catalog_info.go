@@ -90,6 +90,9 @@ func init() {
 		}
 		var rows [][]Datum
 		for _, t := range c.tables {
+			if t.MatView != "" { // materialized views are not in information_schema.columns
+				continue
+			}
 			for _, col := range t.Columns {
 				dataType, udt, ty := colTypeInfo(col)
 				prec, radix, scale, dt := numericInfo(ty.oid)

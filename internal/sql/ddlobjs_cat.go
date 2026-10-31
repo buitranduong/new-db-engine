@@ -155,6 +155,9 @@ func init() {
 		// enum columns say USER-DEFINED, domain columns name their domain
 		i := 0
 		for _, t := range c.tables {
+			if t.MatView != "" {
+				continue
+			}
 			for _, col := range t.Columns {
 				if i >= len(rows) {
 					return rows

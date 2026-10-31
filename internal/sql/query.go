@@ -656,7 +656,7 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		case *OuterRef:
 			return e.Ty, true
 		case *groupingFn:
-			return pgTy{}, true
+			return pgTy{oid: tyInt4, mod: -1}, true // GROUPING() is an integer
 		}
 		return pgTy{}, false
 	}
@@ -889,7 +889,11 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				ak = []Kind{staticKind(a.order[0].x, sk[:p.nFrom])}
 			}
 			sk = append(sk, supfixAggKind(f.Name, a.args, ak, funcKind(f.Name, ak), slotTy))
-			st2 = append(st2, inferTy(&Func{Name: f.Name, Args: a.args}, slotTy).forKind(sk[len(sk)-1]))
+			tf := &Func{Name: f.Name, Args: a.args}
+			if len(a.order) > 0 && (f.Name == "mode" || f.Name == "percentile_disc") {
+				tf.Within = []OrderItem{{X: a.order[0].x}}
+			}
+			st2 = append(st2, inferTy(tf, slotTy).forKind(sk[len(sk)-1]))
 			if sk[len(sk)-1] == KArray {
 				if at := arrTyFor(&Func{Name: f.Name, Args: a.args}, func(x Expr) Kind { return staticKind(x, sk[:p.nFrom]) }, slotTy); at.oid != 0 {
 					st2[len(st2)-1] = at
@@ -1169,7 +1173,28 @@ func (p *selPlan) run(qx *qexec, outer *evalCtx) (*relation, error) {
 	}
 	var rows [][]Datum
 	var err error
-	if p.from != nil {
+	// LIMIT 0 returns no rows without running the FROM list (the Limit node of PostgreSQL does
+	// not pull a row either); a bare set-returning function with LIMIT n is asked for OFFSET+n
+	// rows only, so generate_series(1, 1e12) LIMIT 5 does not materialise the series.
+	rowCap := int64(-1)
+	if p.limit != nil && p.lock == nil {
+		lim, off, err := limitValues(qx.ctx(outer), p.limit, p.offset)
+		if err != nil {
+			return nil, err
+		}
+		if lim == 0 {
+			return &relation{cols: append([]relCol(nil), p.cols...)}, nil
+		}
+		if lim > 0 && p.where == nil && !p.grouped && len(p.wins) == 0 && len(p.srfs) == 0 && len(p.order) == 0 &&
+			!p.distinct && p.distinctOn == nil && p.lbBy == nil && off >= 0 && lim <= 1<<40 && off <= 1<<40 {
+			rowCap = off + lim
+		}
+	}
+	if fp, ok := p.from.(*funcPlan); ok && rowCap >= 0 {
+		if rows, err = fp.runCap(qx, outer, rowCap); err != nil {
+			return nil, err
+		}
+	} else if p.from != nil {
 		if rows, err = p.from.run(qx, outer); err != nil {
 			return nil, err
 		}
@@ -1537,6 +1562,12 @@ func staticKind(x Expr, kinds []Kind) Kind {
 		}
 		l, r := staticKind(e.L, kinds), staticKind(e.R, kinds)
 		switch {
+		case e.Op == "-" && l == KTimestamp && (r == KTimestamp || r == KTime || r == KDate) ||
+			e.Op == "-" && r == KTimestamp && (l == KTime || l == KDate):
+			return KInterval // timestamp - timestamp is an interval (also over window results)
+		case e.Op == "-" && l == KTimestamp && r == KInterval, e.Op == "+" && l == KTimestamp && r == KInterval,
+			e.Op == "+" && l == KInterval && r == KTimestamp:
+			return KTimestamp
 		case (l == KTime || l == KDate) && (r == KTime || r == KDate):
 			if l == KDate && r == KDate {
 				return KInt
@@ -1735,6 +1766,28 @@ type setPlan struct {
 }
 
 func (p *setPlan) outCols() []relCol { return p.cols }
+
+// unifySetCol is the column of a UNION / INTERSECT / EXCEPT whose two sides differ in type
+// (PostgreSQL select_common_type): an untyped NULL side takes the other side's type, integer
+// widths widen to the larger one, anything else falls back to the unified kind.
+func unifySetCol(l, r relCol) relCol {
+	rc := relCol{name: l.name, kind: l.kind, ty: l.ty}
+	isInt := func(c relCol) bool { return c.kind == KInt && (c.ty.oid == 0 || c.ty.isInt()) }
+	switch {
+	case r.kind == KNull && r.ty.oid == 0:
+		return rc
+	case l.kind == KNull && l.ty.oid == 0:
+		rc.kind, rc.ty = r.kind, r.ty
+		return rc
+	case isInt(l) && isInt(r):
+		rc.kind = KInt
+		rc.ty = intTy(max(intWidth(l.ty), intWidth(r.ty)))
+		return rc
+	}
+	rc.ty = pgTy{}
+	rc.kind = unifyBranchKinds([]Kind{l.kind, r.kind}, KNull)
+	return rc
+}
 func (p *setPlan) isCorrelated() bool {
 	return p.l.isCorrelated() || p.r != nil && p.r.isCorrelated() || p.sc.lvl.correlated
 }
@@ -1761,8 +1814,7 @@ func (c *compiler) compileSetOp(so *SetOp, outer *qscope) (qplan, error) {
 		rc := relCol{name: col.name, kind: col.kind, ty: col.ty}
 		if so.R != nil && p.r != nil {
 			if rcs := p.r.outCols(); len(p.cols) < len(rcs) && rcs[len(p.cols)].ty != col.ty {
-				rc.ty = pgTy{}
-				rc.kind = unifyBranchKinds([]Kind{col.kind, rcs[len(p.cols)].kind}, KNull)
+				rc = unifySetCol(col, rcs[len(p.cols)])
 			}
 		}
 		p.cols = append(p.cols, rc)
@@ -2063,6 +2115,38 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 				br = append(br, bx)
 			}
 			vp.rows = append(vp.rows, br)
+		}
+		// PostgreSQL resolves one type per VALUES column across all rows (select_common_type: in
+		// the numeric category integer < numeric < float8); a column that mixes them is cast.
+		for i := range vp.rows[0] {
+			ks := make([]Kind, len(vp.rows))
+			mixed, allNum := false, true
+			for ri, r := range vp.rows {
+				if l, ok := r[i].(*Lit); ok && l.V.IsNull() {
+					ks[ri] = KNull
+					continue
+				}
+				ks[ri] = staticKind(r[i], nil)
+				if ks[ri] != KInt && ks[ri] != KFloat && ks[ri] != KNumeric {
+					allNum = false
+				}
+				if ks[ri] != staticKind(vp.rows[0][i], nil) {
+					mixed = true
+				}
+			}
+			if !mixed || !allNum {
+				continue
+			}
+			uk := unifyBranchKinds(ks, KNull)
+			ty := "numeric"
+			if uk == KFloat {
+				ty = "float"
+			}
+			for ri, r := range vp.rows {
+				if ks[ri] != KNull && ks[ri] != uk {
+					r[i] = &Cast{X: r[i], Type: ty}
+				}
+			}
 		}
 		qual := f.Alias
 		if qual == "" {
@@ -2596,6 +2680,11 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 }
 
 func (p *funcPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
+	return p.runCap(qx, outer, -1)
+}
+
+// runCap is run asking for at most rowCap rows (rowCap < 0: all) from the generating functions.
+func (p *funcPlan) runCap(qx *qexec, outer *evalCtx, rowCap int64) ([][]Datum, error) {
 	ctx := qx.ctx(outer)
 	args := make([]Datum, len(p.args))
 	for i, a := range p.args {
@@ -2627,7 +2716,7 @@ func (p *funcPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	// every few thousand rows: poll for cancel/timeout and charge the memory
 	// budget, so a huge series stops early instead of filling memory first
 	charged := 0
-	rows, err := tableFuncRows(p.name, args, func(out [][]Datum) error {
+	rows, err := tableFuncRowsCap(p.name, args, rowCap, func(out [][]Datum) error {
 		if qx.s.interrupted() {
 			return core.ErrInterrupted
 		}
@@ -2648,10 +2737,18 @@ const funcTickEvery = 4096
 
 // tableFuncRows is the rows of a set-returning function over its arguments.
 func tableFuncRows(name string, args []Datum, tick funcTick) ([][]Datum, error) {
+	return tableFuncRowsCap(name, args, -1, tick)
+}
+
+// tableFuncRowsCap stops the series generators after rowCap rows (rowCap < 0: no cap).
+func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([][]Datum, error) {
 	if name == "stask_srf" {
 		return srfSelect(args)
 	}
-	const maxRows = 100_000_000
+	maxRows := 100_000_000
+	if rowCap >= 0 && rowCap < int64(maxRows) {
+		maxRows = int(rowCap)
+	}
 	var out [][]Datum
 	// emit appends a row and ticks every funcTickEvery rows
 	emit := func(r []Datum) error {
@@ -2688,7 +2785,7 @@ func tableFuncRows(name string, args []Datum, tick funcTick) ([][]Datum, error) 
 			if intervalMs(step) <= 0 {
 				return nil, errf(codeInvalidParameter, "step size cannot be zero or negative")
 			}
-			for t, n := start.I, int64(0); t <= stop.I && n < maxRows; n++ {
+			for t, n := start.I, int64(0); t <= stop.I && n < int64(maxRows); n++ {
 				if err := emit([]Datum{TimeD(t)}); err != nil {
 					return nil, err
 				}
@@ -2738,7 +2835,7 @@ func tableFuncRows(name string, args []Datum, tick funcTick) ([][]Datum, error) 
 		default:
 			return nil, errf(codeUndefinedFunction, "%s takes 1 or 2 arguments", name)
 		}
-		for i := int64(0); i < n && i < maxRows; i++ {
+		for i := int64(0); i < n && i < int64(maxRows); i++ {
 			if err := emit([]Datum{IntD(lo + i)}); err != nil {
 				return nil, err
 			}

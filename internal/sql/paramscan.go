@@ -274,7 +274,7 @@ func (s *Session) kindsStmt(st Stmt, outer []scopeTable, pk map[int]Kind) {
 			s.kindsStmt(q.Query, outer, pk)
 		}
 		ts := []scopeTable{{t, ""}}
-		merge(paramKinds(&Insert{Table: q.Table, Cols: q.Cols, Rows: q.Rows, OnConflict: q.OnConflict, Returning: q.Returning}, &scope{t: t}))
+		merge(paramKinds(&Insert{Table: q.Table, Alias: q.Alias, Cols: q.Cols, Rows: q.Rows, OnConflict: q.OnConflict, Returning: q.Returning}, &scope{t: t, alias: q.Alias}))
 		merge(paramKinds(&Select{Items: q.Returning}, mergedScope(ts)))
 	case *Update:
 		t, err := s.table(q.Table)

@@ -54,7 +54,9 @@ func vecElems(d Datum) (el []Datum, zero bool) {
 var settingDefaults = map[string]string{"server_version_num": "160000", "max_index_keys": "32",
 	"max_identifier_length": "63", "block_size": "8192", "lc_collate": "C.UTF-8", "lc_ctype": "C.UTF-8", // SetDefaultCollation replaces the two
 	"is_superuser": "on", "session_authorization": roleName, "in_hot_standby": "off", "wal_level": "logical",
-	"default_with_oids": "off", "transaction_read_only": "off", "extra_float_digits": "1"}
+	"default_with_oids": "off", "transaction_read_only": "off", "extra_float_digits": "1",
+	// pg_recvlogical and pg_basebackup of PostgreSQL 11+ ask for it right after connecting
+	"data_directory_mode": "0700"}
 
 func init() {
 	for n := range catalogFuncKinds {
@@ -284,7 +286,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 			return TextD(t.sqlName), nil
 		}
 		if n, ok := userTypeFormat(oid.I); ok {
-			return TextD(n), nil
+			return TextD(s.relDisplay(n)), nil
 		}
 		return TextD("???"), nil
 	case "to_regclass", "to_regtype":
@@ -414,7 +416,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 					}
 					return TextD(""), nil
 				}
-				return TextD(indexDef(t)), nil
+				return TextD(s.prettyIndexDef(indexDef(t), t, len(args) > 2 && args[2].Bool())), nil
 			}
 		}
 		if t, ix := s.catSnap().secIndexByOID(oid); ix != nil {
@@ -424,7 +426,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 				}
 				return TextD(""), nil
 			}
-			return TextD(secIndexDef(t, *ix)), nil
+			return TextD(s.prettyIndexDef(secIndexDef(t, *ix), t, len(args) > 2 && args[2].Bool())), nil
 		}
 		return Null, nil
 	case "pg_get_constraintdef":
@@ -451,7 +453,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		cn := arg(1).String()
 		for _, q := range s.E.Sequences() {
 			if q.Owner == tn+"."+cn {
-				return TextD("public." + quoteIdent(q.Name)), nil
+				return TextD(qualified(q.Name)), nil
 			}
 		}
 		return Null, nil

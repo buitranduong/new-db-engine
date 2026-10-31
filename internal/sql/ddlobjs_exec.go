@@ -576,6 +576,20 @@ func (s *Session) dropSchemas(st *ObjDDL) (*Result, error) {
 			}
 		}
 		seqs = slices.DeleteFunc(seqs, func(q string) bool { return owned[q] })
+		// A partition is a view here. DROP TABLE of its partitioned parent drops it too, so a
+		// partition whose parent is dropped with the schema must not be dropped a second time
+		// (that failed with: view "s.part" does not exist and left the schema behind); a
+		// partition of a parent in another schema is dropped as a table, like PostgreSQL does.
+		views = slices.DeleteFunc(views, func(v string) bool {
+			parent, _, _, ok := s.partChildOf(v)
+			if !ok {
+				return false
+			}
+			if schemaOfName(parent) != n {
+				tables = append(tables, v)
+			}
+			return true
+		})
 		if len(tables)+len(views)+len(seqs)+len(types) > 0 && !st.Cascade {
 			return nil, errf("2BP01", "cannot drop schema %s because other objects depend on it", n)
 		}

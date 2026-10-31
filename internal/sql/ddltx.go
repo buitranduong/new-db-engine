@@ -283,7 +283,7 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		return s.djRenameIndex(st, run)
 	case *CreateRole, *AlterRole, *DropRole, *Grant:
 		return s.djRoles(run)
-	case *CreatePublication, *DropPublication, *AlterReplicaIdentity:
+	case *CreatePublication, *AlterPublication, *DropPublication, *AlterReplicaIdentity:
 		return s.djCDC(run)
 	}
 	return nil, false, nil

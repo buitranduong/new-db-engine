@@ -134,7 +134,9 @@ var reserved = map[string]bool{
 
 func (p *parser) ident() (string, error) {
 	t := p.peek()
-	if t.k == tQuoted || t.k == tIdent && !reserved[t.s] {
+	// NULLS is reserved only so it is not taken as a bare alias before NULLS FIRST/LAST;
+	// PostgreSQL treats it as an unreserved keyword, so it is a valid table/column name.
+	if t.k == tQuoted || t.k == tIdent && (!reserved[t.s] || t.s == "nulls") {
 		p.next()
 		return t.s, nil
 	}
@@ -384,6 +386,9 @@ func (p *parser) statement() (Stmt, error) {
 		}
 		if p.acceptKw("role") || p.acceptKw("user") {
 			return p.alterRole()
+		}
+		if p.acceptKw("publication") {
+			return p.alterPublication()
 		}
 		if p.acceptKw("index") {
 			a := &AlterIndex{IfExists: p.acceptKw("if", "exists")}
@@ -957,9 +962,11 @@ func (p *parser) insertStmt() (Stmt, error) {
 		return nil, err
 	}
 	if p.acceptKw("as") {
-		if _, err := p.ident(); err != nil {
+		if ins.Alias, err = p.ident(); err != nil {
 			return nil, err
 		}
+	} else if sch, b, ok := splitSchema(ins.Table); ok && sch != "" {
+		ins.Alias = b // INSERT INTO s.t ... ON CONFLICT ... t.col
 	}
 	if p.acceptOp("(") {
 		for {
@@ -1161,6 +1168,9 @@ func (p *parser) tableAlias() (string, string, error) {
 		}
 	} else if t := p.peek(); t.k == tIdent && !reserved[t.s] || t.k == tQuoted {
 		alias = p.next().s
+	}
+	if sch, b, ok := splitSchema(name); ok && alias == "" && sch != "" {
+		alias = b // UPDATE s.t ... t.col: the table is referred to as t, as in FROM
 	}
 	return name, alias, nil
 }
@@ -2108,6 +2118,75 @@ func (p *parser) caseExpr() (Expr, error) {
 		}
 	}
 	return c, p.expectKw("end")
+}
+
+// alterPublication parses what follows ALTER PUBLICATION.
+func (p *parser) alterPublication() (Stmt, error) {
+	a := &AlterPublication{}
+	var err error
+	if a.Name, err = p.ident(); err != nil {
+		return nil, err
+	}
+	tables := func() error {
+		if err := p.expectKw("table"); err != nil {
+			return err
+		}
+		for {
+			p.acceptKw("only")
+			t, err := p.qualifiedName()
+			if err != nil {
+				return err
+			}
+			a.Tables = append(a.Tables, t)
+			if !p.acceptOp(",") {
+				return nil
+			}
+		}
+	}
+	switch {
+	case p.acceptKw("add"):
+		a.Action = "add"
+		err = tables()
+	case p.acceptKw("drop"):
+		a.Action = "drop"
+		err = tables()
+	case p.acceptKw("set"):
+		if p.acceptOp("(") {
+			a.Action = "options"
+			for {
+				k, err := p.ident()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp("="); err != nil {
+					return nil, err
+				}
+				v := p.next()
+				switch k {
+				case "publish":
+					a.Publish = v.s
+				case "publish_via_partition_root":
+				default:
+					return nil, errf(codeSyntax, "unrecognized publication parameter: %q", k)
+				}
+				if !p.acceptOp(",") {
+					break
+				}
+			}
+			err = p.expectOp(")")
+		} else {
+			a.Action = "set"
+			err = tables()
+		}
+	case p.acceptKw("rename"):
+		a.Action = "rename"
+		if err = p.expectKw("to"); err == nil {
+			a.RenameTo, err = p.ident()
+		}
+	default:
+		return nil, p.errHere("syntax error at or near %q", p.peek().s)
+	}
+	return a, err
 }
 
 func (p *parser) createPublication() (Stmt, error) {

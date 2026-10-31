@@ -305,3 +305,106 @@ func TestCursorSnapshotRefresh(t *testing.T) {
 	run(t, s, "CLOSE c")
 	run(t, s, "COMMIT")
 }
+
+// INSERT .. ON CONFLICT DO UPDATE waits for the writer of the conflicting
+// row and updates its newest version (PostgreSQL READ COMMITTED: the
+// conflicting row is locked, no serialization failure).
+func TestUpsertWaitsAndReevaluates(t *testing.T) {
+	a, b, c := rowLockEngine(t)
+	run(t, a, "BEGIN")
+	run(t, a, "UPDATE acct SET bal = bal + 1 WHERE id = 1")
+	ch := blocked(t, b, "INSERT INTO acct VALUES (1, 10, 'x'), (9, 5, 'new') ON CONFLICT (id) DO UPDATE SET bal = acct.bal + excluded.bal", 150*time.Millisecond)
+	run(t, a, "COMMIT")
+	if err := waitDone(t, ch); err != nil {
+		t.Fatalf("upsert after the writer committed: %v", err)
+	}
+	for id, want := range map[int]string{1: "111", 9: "5"} { // 100 + 1 + 10; the new row
+		if got := render(run(t, c, fmt.Sprintf("SELECT bal FROM acct WHERE id = %d", id))); got != want {
+			t.Fatalf("id %d: balance %s, want %s", id, got, want)
+		}
+	}
+	// the row was deleted while the upsert waited: it inserts
+	run(t, a, "BEGIN")
+	run(t, a, "DELETE FROM acct WHERE id = 2")
+	ch = blocked(t, b, "INSERT INTO acct SELECT 2, 7, 'again' ON CONFLICT (id) DO UPDATE SET bal = acct.bal + excluded.bal", 150*time.Millisecond)
+	run(t, a, "COMMIT")
+	if err := waitDone(t, ch); err != nil {
+		t.Fatal(err)
+	}
+	if got := render(run(t, c, "SELECT bal FROM acct WHERE id = 2")); got != "7" {
+		t.Fatalf("balance %s, want 7", got)
+	}
+}
+
+// REPEATABLE READ keeps the serialization failure, as PostgreSQL.
+func TestUpsertRepeatableReadFails(t *testing.T) {
+	a, b, _ := rowLockEngine(t)
+	run(t, b, "BEGIN ISOLATION LEVEL REPEATABLE READ")
+	run(t, b, "SELECT bal FROM acct WHERE id = 1")
+	run(t, a, "UPDATE acct SET bal = bal + 1 WHERE id = 1")
+	_, err := tryRun(b, "INSERT INTO acct VALUES (1, 10, 'x') ON CONFLICT (id) DO UPDATE SET bal = acct.bal + excluded.bal")
+	if sqlCode(err) != "40001" {
+		t.Fatalf("err %v, want 40001", err)
+	}
+}
+
+// Concurrent upserts of the same rows lose no increment and never fail.
+func TestUpsertConcurrentCounters(t *testing.T) {
+	a, _, _ := rowLockEngine(t)
+	e := a.E
+	const workers, iters = 6, 40
+	var wg sync.WaitGroup
+	errs := make(chan error, workers*iters)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			s := NewSession(e)
+			for i := 0; i < iters; i++ {
+				q := "INSERT INTO acct VALUES (1, 1, 'a'), (2, 1, 'a'), (50, 1, 'a') ON CONFLICT (id) DO UPDATE SET bal = acct.bal + excluded.bal"
+				if w%2 == 1 { // reverse order and inside a READ COMMITTED block
+					q = "INSERT INTO acct VALUES (50, 1, 'a'), (2, 1, 'a'), (1, 1, 'a') ON CONFLICT (id) DO UPDATE SET bal = acct.bal + excluded.bal"
+					if _, err := tryRun(s, "BEGIN"); err != nil {
+						errs <- err
+						return
+					}
+				}
+				_, err := tryRun(s, q)
+				if w%2 == 1 {
+					if err == nil {
+						_, err = tryRun(s, "COMMIT")
+					} else {
+						tryRun(s, "ROLLBACK")
+					}
+				}
+				if err != nil && sqlCode(err) != "40P01" { // a real deadlock may be reported, retried by clients
+					errs <- err
+					return
+				}
+				if err != nil {
+					i-- // retry the deadlock victim
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	for id, want := range map[int]string{1: "340", 2: "440", 50: "240"} {
+		if got := render(run(t, a, fmt.Sprintf("SELECT bal FROM acct WHERE id = %d", id))); got != want {
+			t.Fatalf("id %d: %s, want %s", id, got, want)
+		}
+	}
+}
+
+// locklessWrite runs f with the row locks of writes off: it stands in for a
+// writer that takes none (INSERT, MERGE, COPY ...), to test the commit-time
+// conflict check against a transaction that holds a row lock.
+func locklessWrite(f func()) {
+	old := writeLocksOff
+	writeLocksOff = true
+	defer func() { writeLocksOff = old }()
+	f()
+}

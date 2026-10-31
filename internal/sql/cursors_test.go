@@ -63,6 +63,9 @@ func TestCursorBasics(t *testing.T) {
 	if _, err := tryRun(s, "FETCH 1 FROM c"); code(err) != "34000" {
 		t.Fatal(err)
 	}
+	// the failed FETCH aborted the block (as in PostgreSQL): start a new one
+	run(t, s, "ROLLBACK")
+	run(t, s, "BEGIN")
 	run(t, s, "DECLARE d NO SCROLL CURSOR FOR SELECT id FROM nums")
 	if _, err := tryRun(s, "FETCH PRIOR FROM d"); code(err) != "55000" {
 		t.Fatalf("no scroll: %v", err)
@@ -149,7 +152,9 @@ func TestForUpdateConflict(t *testing.T) {
 	run(t, a, "SELECT * FROM nums WHERE id = 1 FOR UPDATE")
 	// b writes the row without a row lock (an UPDATE would now wait for a, as in
 	// PostgreSQL) and commits: a's commit must fail
-	run(t, b, "INSERT INTO nums VALUES (1, 'changed', 'free') ON CONFLICT (id) DO UPDATE SET v = excluded.v")
+	locklessWrite(func() {
+		run(t, b, "INSERT INTO nums VALUES (1, 'changed', 'free') ON CONFLICT (id) DO UPDATE SET v = excluded.v")
+	})
 	if _, err := tryRun(a, "COMMIT"); code(err) != "40001" {
 		t.Fatalf("commit after concurrent write: %v", err)
 	}

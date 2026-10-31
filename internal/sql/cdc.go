@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ func parseLSN(s string) (wal.Pos, error) {
 
 // sessionFuncs need the session (and run on the general executor).
 var sessionFuncs = map[string]bool{
-	"pg_notify": true, "pg_create_logical_replication_slot": true, "pg_drop_replication_slot": true,
+	"pg_notify": true, "pg_listening_channels": true, "pg_create_logical_replication_slot": true, "pg_drop_replication_slot": true,
 	"pg_replication_slot_advance": true, "pg_current_wal_lsn": true,
 	"pg_logical_slot_get_changes": true, "pg_logical_slot_peek_changes": true,
 }
@@ -61,6 +62,7 @@ var tableFuncCols = map[string][]relCol{
 	"pg_drop_replication_slot":           {{name: "pg_drop_replication_slot", kind: KText}},
 	"pg_current_wal_lsn":                 {{name: "pg_current_wal_lsn", kind: KText}},
 	"pg_notify":                          {{name: "pg_notify", kind: KText}},
+	"pg_listening_channels":              {{name: "pg_listening_channels", kind: KText}},
 	"pg_replication_slots": {{name: "slot_name", kind: KText}, {name: "plugin", kind: KText}, {name: "slot_type", kind: KText},
 		{name: "database", kind: KText}, {name: "temporary", kind: KBool}, {name: "active", kind: KBool},
 		{name: "restart_lsn", kind: KText}, {name: "confirmed_flush_lsn", kind: KText}, {name: "wal_status", kind: KText},
@@ -112,6 +114,22 @@ func (s *Session) sessionTableFunc(name string, args []Datum) ([][]Datum, error)
 			return nil, err
 		}
 		return [][]Datum{{Null}}, s.notify(str(0), str(1))
+	case "pg_listening_channels":
+		// the channels this session listens on (LISTENs of the open transaction not yet counted)
+		var rows [][]Datum
+		if s.listener != nil {
+			s.listener.mu.Lock()
+			var cs []string
+			for c := range s.listener.chans {
+				cs = append(cs, c)
+			}
+			s.listener.mu.Unlock()
+			slices.Sort(cs)
+			for _, c := range cs {
+				rows = append(rows, []Datum{TextD(c)})
+			}
+		}
+		return rows, nil
 	case "pg_current_wal_lsn":
 		_, pos, _ := s.E.DurablePoint()
 		return [][]Datum{{TextD(pgLSN(pos))}}, nil
@@ -905,26 +923,51 @@ func (s *Session) cdcDDL(st Stmt) (*Result, error) {
 	case *CreatePublication:
 		p := core.Publication{Name: st.Name, AllTables: st.AllTables, Tables: st.Tables, Insert: true, Update: true, Delete: true}
 		if st.Publish != "" {
-			p.Insert, p.Update, p.Delete, p.NoTruncate = false, false, false, true
-			for _, op := range strings.Split(st.Publish, ",") {
-				switch strings.ToLower(strings.TrimSpace(op)) {
-				case "insert":
-					p.Insert = true
-				case "update":
-					p.Update = true
-				case "delete":
-					p.Delete = true
-				case "truncate":
-					p.NoTruncate = false
-				default:
-					return nil, errf(codeSyntax, "unrecognized \"publish\" value: %q", op)
-				}
+			if err := setPublish(&p, st.Publish); err != nil {
+				return nil, err
 			}
 		}
 		if err := s.E.CreatePublication(p); err != nil {
 			return nil, cdcErr(err)
 		}
 		return &Result{Tag: "CREATE PUBLICATION"}, nil
+	case *AlterPublication:
+		err := s.E.AlterPublication(st.Name, func(p *core.Publication) error {
+			switch st.Action {
+			case "add", "set", "drop":
+				if p.AllTables {
+					return errf("22023", "publication %q is defined as FOR ALL TABLES", p.Name)
+				}
+				switch st.Action {
+				case "add":
+					p.Tables = append(p.Tables, st.Tables...)
+				case "set":
+					p.Tables = st.Tables
+				case "drop":
+					var keep []string
+					for _, t := range p.Tables {
+						if !slices.Contains(st.Tables, t) {
+							keep = append(keep, t)
+						}
+					}
+					for _, t := range st.Tables {
+						if !slices.Contains(p.Tables, t) {
+							return errf("42704", "relation %q is not part of the publication", t)
+						}
+					}
+					p.Tables = keep
+				}
+			case "options":
+				return setPublish(p, st.Publish)
+			case "rename":
+				p.Name = st.RenameTo
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, cdcErr(err)
+		}
+		return &Result{Tag: "ALTER PUBLICATION"}, nil
 	case *DropPublication:
 		err := s.E.DropPublication(st.Name)
 		if errors.Is(err, core.ErrNoPublication) && st.IfExists {
@@ -941,6 +984,26 @@ func (s *Session) cdcDDL(st Stmt) (*Result, error) {
 		return &Result{Tag: "ALTER TABLE"}, nil
 	}
 	return nil, fmt.Errorf("cdcDDL: %T", st)
+}
+
+// setPublish applies a publish = 'insert, update, ...' list.
+func setPublish(p *core.Publication, list string) error {
+	p.Insert, p.Update, p.Delete, p.NoTruncate = false, false, false, true
+	for _, op := range strings.Split(list, ",") {
+		switch strings.ToLower(strings.TrimSpace(op)) {
+		case "insert":
+			p.Insert = true
+		case "update":
+			p.Update = true
+		case "delete":
+			p.Delete = true
+		case "truncate":
+			p.NoTruncate = false
+		default:
+			return errf(codeSyntax, "unrecognized \"publish\" value: %q", op)
+		}
+	}
+	return nil
 }
 
 func cdcErr(err error) error {

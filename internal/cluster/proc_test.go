@@ -198,16 +198,27 @@ func TestProcSnapshot(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	w.finish()
+	// Compaction runs in the background after entries are applied, so a fast
+	// machine can finish the writes before it has run: wait for it (up to 60 s)
+	// and keep feeding entries, which is what triggers it.
 	var first uint64
-	for i, nd := range c.nodes {
-		if i != f {
-			if s, ok := c.status(nd); ok && s.First > first {
-				first = s.First
+	for i, end := 0, time.Now().Add(60*time.Second); ; i++ {
+		first = 0
+		for j, nd := range c.nodes {
+			if j != f {
+				if s, ok := c.status(nd); ok && s.First > first {
+					first = s.First
+				}
 			}
 		}
-	}
-	if first < 100 {
-		t.Fatalf("the leader's Raft log was not compacted (first index %d)", first)
+		if first >= 100 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the leader's Raft log was not compacted (first index %d)", first)
+		}
+		c.write(fmt.Sprintf("extra-%d", i), i, 5*time.Second)
+		time.Sleep(200 * time.Millisecond)
 	}
 	c.start(c.nodes[f])
 	c.settle()

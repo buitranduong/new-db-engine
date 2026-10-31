@@ -105,7 +105,7 @@ func init() {
 				}
 				def := Null
 				if hasDef(col) {
-					def = TextD(defaultText(col))
+					def = TextD(defaultText(c.s, col))
 				}
 				isID, gen := "NO", Null
 				idStart, idInc, idMax, idMin, idCycle := Null, Null, Null, Null, Null

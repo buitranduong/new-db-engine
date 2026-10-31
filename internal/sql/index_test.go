@@ -192,7 +192,7 @@ func TestSQLUniqueAndForeignKeys(t *testing.T) {
 	wantErr(`INSERT INTO org VALUES (3, 'A', 'three')`, codeUniqueViolation)
 	run(t, s, `INSERT INTO org VALUES (3, NULL, 'x'), (4, NULL, 'y')`) // NULLs repeat
 	_, err := tryRun(s, `INSERT INTO org VALUES (5, 'B', 'dup')`)
-	if err == nil || !strings.Contains(err.Error(), `"org_code_key"`) || !strings.Contains(err.Error(), "(code)=(B)") {
+	if err == nil || !strings.Contains(errText(err), `"org_code_key"`) || !strings.Contains(errText(err), "(code)=(B)") {
 		t.Fatalf("unique violation message: %v", err)
 	}
 	wantErr(`INSERT INTO emp VALUES (1, 99, 'a@x', NULL)`, codeForeignKeyViolation)

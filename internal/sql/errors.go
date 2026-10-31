@@ -50,6 +50,9 @@ type Error struct {
 	Pos  int // 1-based character position in the query, 0 = unknown
 	// Detail and Hint are the D and H fields of the ErrorResponse (RAISE ... USING DETAIL / HINT).
 	Detail, Hint string
+	// Schema, Table, Column, DataType and Constraint are the s, t, c, d and n fields of the ErrorResponse
+	// (constraint violations, 22xxx data errors): pgjdbc, Hibernate and psycopg read them (errfields.go).
+	Schema, Table, Column, DataType, Constraint string
 	// Routine is the R field of the ErrorResponse; pgjdbc retries a statement transparently when the server
 	// answers 0A000 from RevalidateCachedQuery (cached plan must not change result type).
 	Routine string
@@ -91,7 +94,7 @@ func AsError(err error) *Error {
 		if ke.Constraint != "" {
 			con = ke.Constraint
 		}
-		return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s\": Key (%s)=(%s) already exists", con, ke.Column, ke.Key)
+		return uniqueViolation(ke.Table, con, ke.Column, ke.Key)
 	case errors.Is(err, core.ErrExists):
 		return errf(codeUniqueViolation, "duplicate key value violates unique constraint: %v", err)
 	case errors.As(err, new(*core.CodedError)):

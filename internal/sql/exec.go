@@ -2085,7 +2085,7 @@ func checkRow(t *schema.Table, r schema.Row) error {
 	}
 	for i, c := range t.Columns {
 		if r[i].Null && (c.NotNull || i == t.KeyIndex()) && !(c.Hidden && t.Composite()) {
-			return errf(codeNotNullViolation, "null value in column %q of relation %q violates not-null constraint", c.Name, t.Name)
+			return notNullViolation(t, c.Name, r)
 		}
 	}
 	if len(t.Checks) > 0 {
@@ -2177,8 +2177,9 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
+	var arb *arbiter
 	if st.OnConflict != nil {
-		if err := checkConflictTarget(t, st.OnConflict.Target); err != nil {
+		if arb, err = resolveArbiter(t, st.OnConflict); err != nil {
 			return nil, err
 		}
 	}
@@ -2208,14 +2209,15 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			if built[ri], err = s.buildInsertRow(t, cols, exprs, ctx, defaults, st); err != nil {
 				return nil, err
 			}
-			key := t.KeyOf(built[ri])
+			key, old, ok, err := arb.find(tx, t, built[ri])
+			if err != nil {
+				return nil, err
+			}
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			if old, ok, err := tx.Get(t.Name, key); err != nil {
-				return nil, err
-			} else if ok {
+			if ok {
 				existing = append(existing, old)
 			}
 		}
@@ -2263,15 +2265,22 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			}
 			continue
 		}
-		existing, exists, err := tx.Get(t.Name, key)
+		var existing schema.Row
+		var exists bool
+		ekey := key // the key of the row this statement affects: the conflicting row, when there is one
+		if arb != nil {
+			ekey, existing, exists, err = arb.find(tx, t, row)
+		} else {
+			existing, exists, err = tx.Get(t.Name, key)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if exists {
 			switch {
-			case st.OnConflict == nil || inserted[key] && st.OnConflict.Set != nil:
-				if inserted[key] && st.OnConflict != nil {
-					return nil, errf("21000", "ON CONFLICT DO UPDATE command cannot affect row a second time")
+			case st.OnConflict == nil || inserted[ekey] && st.OnConflict.Set != nil:
+				if inserted[ekey] && st.OnConflict != nil {
+					return nil, secondTimeErr("ON CONFLICT DO UPDATE", "rows proposed for insertion within the same command have duplicate constrained values")
 				}
 				return nil, dupKeyErr(t, key)
 			case st.OnConflict.DoNothing:
@@ -2291,7 +2300,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			if err != nil {
 				return nil, err
 			}
-			if t.KeyOf(upd) != key {
+			if t.KeyOf(upd) != ekey {
 				return nil, errf(codeFeature, "ON CONFLICT DO UPDATE cannot change the primary key")
 			}
 			restore := s.pushSetCols(assignCols(st.OnConflict.Set))
@@ -2311,7 +2320,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 				return nil, err
 			}
 		}
-		inserted[key] = true
+		inserted[ekey] = true
 		n++
 		ctx.excluded = nil
 		if err := s.returning(sc, ctx, st.Returning, row, res); err != nil {

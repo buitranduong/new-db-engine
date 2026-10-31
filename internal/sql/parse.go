@@ -1032,8 +1032,8 @@ func (p *parser) insertStmt() (Stmt, error) {
 					oc.Target = append(oc.Target, "") // an expression target: never matches
 				}
 			}
-		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
-			if _, err := p.ident(); err != nil {
+		} else if p.acceptKw("on", "constraint") {
+			if oc.Constraint, err = p.ident(); err != nil {
 				return nil, err
 			}
 		}
@@ -1179,6 +1179,7 @@ func (p *parser) updateStmt() (Stmt, error) {
 	p.next()
 	u := &Update{}
 	var err error
+	p.acceptKw("only") // no inheritance children to leave out
 	if u.Table, u.Alias, err = p.tableAlias(); err != nil {
 		return nil, err
 	}
@@ -1209,6 +1210,7 @@ func (p *parser) deleteStmt() (Stmt, error) {
 	}
 	d := &Delete{}
 	var err error
+	p.acceptKw("only")
 	if d.Table, d.Alias, err = p.tableAlias(); err != nil {
 		return nil, err
 	}

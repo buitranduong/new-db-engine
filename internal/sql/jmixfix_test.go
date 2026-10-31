@@ -196,7 +196,7 @@ func TestJmixUniqueFK(t *testing.T) {
 	}
 	run(t, s, `INSERT INTO ord VALUES ('00000000-0000-0000-0000-0000000000aa', '00000000-0000-0000-0000-000000000001')`)
 	_, err = tryRun(s, `INSERT INTO ord VALUES ('00000000-0000-0000-0000-0000000000ab', '00000000-0000-0000-0000-000000000009')`)
-	if code(err) != "23503" || !strings.Contains(err.Error(), "00000000-0000-0000-0000-000000000009") {
+	if code(err) != "23503" || !strings.Contains(errText(err), "00000000-0000-0000-0000-000000000009") {
 		t.Fatalf("fk violation shows the uuid: %v", err)
 	}
 	if _, err = tryRun(s, `DELETE FROM sim`); code(err) != "23503" {

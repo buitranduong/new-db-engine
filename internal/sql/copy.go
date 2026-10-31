@@ -19,17 +19,18 @@ import (
 
 // CopyStmt is a parsed COPY statement.
 type CopyStmt struct {
-	Table  string   // empty for COPY (query)
-	Cols   []string // nil: all columns
-	Query  Stmt     // COPY (query) TO STDOUT
-	From   bool     // FROM STDIN (else TO STDOUT)
-	CSV    bool
-	Header bool
-	Delim  byte
-	Null   string
-	Quote  byte
-	Escape byte
-	Binary bool // FORMAT binary (FROM STDIN only; copybin.go)
+	Table    string   // empty for COPY (query)
+	QuerySrc string   // COPY (query): the query text, parsed again per session (search_path)
+	Cols     []string // nil: all columns
+	Query    Stmt     // COPY (query) TO STDOUT
+	From     bool     // FROM STDIN (else TO STDOUT)
+	CSV      bool
+	Header   bool
+	Delim    byte
+	Null     string
+	Quote    byte
+	Escape   byte
+	Binary   bool // FORMAT binary (FROM STDIN only; copybin.go)
 }
 
 type copyTok struct {
@@ -187,6 +188,7 @@ func (p *copyParser) parse() (*CopyStmt, error) {
 			return nil, errf(codeFeature, "COPY (query) supports SELECT only")
 		}
 		cs.Query = stmts[0]
+		cs.QuerySrc = p.src[start:end]
 	} else {
 		name, err := p.ident()
 		if err != nil {
@@ -505,6 +507,7 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	if !cs.From || cs.Query != nil {
 		return nil, errf(codeFeature, "not a COPY FROM")
 	}
+	cs.Table = s.resolveRel(cs.Table)
 	if err := s.checkNeeds([]need{{cs.Table, core.PrivInsert}}, ""); s.role != "" && err != nil {
 		return nil, s.copyFail(err)
 	}
@@ -1046,7 +1049,13 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 		return 0, errf(codeFeature, "not a COPY TO")
 	}
 	if cs.Query != nil {
-		res, err := s.Exec(cs.Query, nil)
+		q := cs.Query
+		if cs.QuerySrc != "" {
+			if q2, err := s.ParseOne(cs.QuerySrc); err == nil && q2 != nil {
+				q = q2
+			}
+		}
+		res, err := s.Exec(q, nil)
 		if err != nil {
 			return 0, err
 		}
@@ -1094,6 +1103,7 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	if s.failed {
 		return 0, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 	}
+	cs.Table = s.resolveRel(cs.Table)
 	if s.role != "" {
 		if err := s.checkNeeds([]need{{cs.Table, core.PrivSelect}}, ""); err != nil {
 			s.markFailed()

@@ -113,10 +113,11 @@ type Assign struct {
 }
 
 type OnConflict struct {
-	Target    []string // ON CONFLICT (cols); nil: none given
-	DoNothing bool
-	Set       []Assign
-	Where     Expr
+	Target     []string // ON CONFLICT (cols); nil: none given
+	Constraint string   // ON CONFLICT ON CONSTRAINT name
+	DoNothing  bool
+	Set        []Assign
+	Where      Expr
 }
 
 type Insert struct {

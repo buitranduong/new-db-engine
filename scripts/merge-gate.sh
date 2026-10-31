@@ -39,7 +39,7 @@ claim() {
   local D="$W/claim" PORT
   mkdir -p "$D"
   for _ in $(seq 50); do
-    PORT=$((30000 + RANDOM % 2000))
+    PORT=$((28000 + RANDOM % 900))   # 28000-28999 is reserved from the ephemeral range (ip_local_reserved_ports)
     ss -ltn 2>/dev/null | grep -qE ":($PORT|$((PORT+1)))\b" || break
   done
   ./bin-main/staskd -dir "$D/data" -addr 127.0.0.1:$PORT -pg-addr 127.0.0.1:$((PORT+1)) > "$D/server.log" 2>&1 &

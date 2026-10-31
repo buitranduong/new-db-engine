@@ -291,7 +291,7 @@ func (s *Session) createAs(tx *core.Tx, st *CreateAs, params []Datum) (*Result, 
 		for _, d := range defs {
 			ins.Cols = append(ins.Cols, d.Name)
 		}
-		if _, err := s.insert(tx, ins, params); err != nil {
+		if _, err := s.insertRelock(tx, ins, params); err != nil {
 			return fail(err)
 		}
 	}
@@ -602,7 +602,7 @@ func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Resu
 		for _, ci := range vis {
 			ins.Cols = append(ins.Cols, t.Columns[ci].Name)
 		}
-		if _, err := s.insert(tx, ins, params); err != nil {
+		if _, err := s.insertRelock(tx, ins, params); err != nil {
 			return nil, err
 		}
 	}

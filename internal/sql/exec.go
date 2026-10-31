@@ -837,7 +837,7 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 		if err := s.rejectMatWrite(st.Table); err != nil {
 			return nil, err
 		}
-		return s.withStmtTriggers(tx, st.Table, "insert", func() (*Result, error) { return s.insert(tx, st, params) })
+		return s.withStmtTriggers(tx, st.Table, "insert", func() (*Result, error) { return s.insertRelock(tx, st, params) })
 	case *Update:
 		if err := s.rejectMatWrite(st.Table); err != nil {
 			return nil, err
@@ -2196,35 +2196,40 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if rec != nil && len(st.Rows) < repairMinRows {
 		rec = nil
 	}
-	for ri, exprs := range st.Rows {
-		if len(exprs) > len(cols) {
-			return nil, errf(codeSyntax, "INSERT has more expressions than target columns")
-		}
-		if len(exprs) < len(cols) && st.Cols != nil {
-			return nil, errf(codeSyntax, "INSERT has more target columns than expressions")
-		}
-		rc := cols[:len(exprs)]
-		var vals []Datum
-		slow := defaults
-		for _, x := range exprs {
-			if _, ok := x.(*DefaultExpr); ok {
-				slow = true
-			}
-		}
-		if slow {
-			if rc, vals, err = s.rowValues(t, cols, exprs, ctx, st.Overriding); err != nil {
+	// INSERT .. ON CONFLICT DO UPDATE locks the rows it will update before it
+	// writes anything (writelock.go), so a concurrent writer is waited for and
+	// the statement is computed again on the newer version (READ COMMITTED).
+	var built []schema.Row
+	if st.OnConflict != nil && len(st.OnConflict.Set) > 0 && tgs == nil && !writeLocksOff && len(st.Rows) <= writeLockMaxRows {
+		built = make([]schema.Row, len(st.Rows))
+		var existing []schema.Row
+		seen := make(map[string]bool, len(st.Rows))
+		for ri, exprs := range st.Rows {
+			if built[ri], err = s.buildInsertRow(t, cols, exprs, ctx, defaults, st); err != nil {
 				return nil, err
 			}
-		} else {
-			vals = make([]Datum, len(exprs))
-			for i, x := range exprs {
-				if vals[i], err = ctx.eval(x); err != nil {
-					return nil, err
-				}
+			key := t.KeyOf(built[ri])
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if old, ok, err := tx.Get(t.Name, key); err != nil {
+				return nil, err
+			} else if ok {
+				existing = append(existing, old)
 			}
 		}
-		row, err := s.buildRow(t, rc, vals)
-		if err != nil {
+		if retry, err := s.lockWriteRows(tx, t, existing, updateLockMode(t, st.OnConflict.Set)); err != nil {
+			return nil, err
+		} else if retry {
+			return nil, errRelock
+		}
+	}
+	for ri, exprs := range st.Rows {
+		var row schema.Row
+		if built != nil {
+			row = built[ri]
+		} else if row, err = s.buildInsertRow(t, cols, exprs, ctx, defaults, st); err != nil {
 			return nil, err
 		}
 		if tgs != nil {
@@ -2315,6 +2320,38 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	}
 	res.Tag = fmt.Sprintf("INSERT 0 %d", n)
 	return res, nil
+}
+
+// buildInsertRow evaluates one row of an INSERT .. VALUES into a table row.
+func (s *Session) buildInsertRow(t *schema.Table, cols []int, exprs []Expr, ctx *evalCtx, defaults bool, st *Insert) (schema.Row, error) {
+	if len(exprs) > len(cols) {
+		return nil, errf(codeSyntax, "INSERT has more expressions than target columns")
+	}
+	if len(exprs) < len(cols) && st.Cols != nil {
+		return nil, errf(codeSyntax, "INSERT has more target columns than expressions")
+	}
+	rc := cols[:len(exprs)]
+	var vals []Datum
+	slow := defaults
+	for _, x := range exprs {
+		if _, ok := x.(*DefaultExpr); ok {
+			slow = true
+		}
+	}
+	var err error
+	if slow {
+		if rc, vals, err = s.rowValues(t, cols, exprs, ctx, st.Overriding); err != nil {
+			return nil, err
+		}
+	} else {
+		vals = make([]Datum, len(exprs))
+		for i, x := range exprs {
+			if vals[i], err = ctx.eval(x); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return s.buildRow(t, rc, vals)
 }
 
 func (s *Session) applySet(t *schema.Table, ctx *evalCtx, old schema.Row, set []Assign) (schema.Row, error) {

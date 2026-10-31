@@ -625,7 +625,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		from = &FromTable{Name: st.From, Alias: st.Alias}
 	}
 	fs := &qscope{outer: sc, row: true, lvl: lvl}
+	var starRank map[string]int
 	if from != nil {
+		from, starRank = reorderCrossFrom(from, st.Where) // comma list written in a join-hostile order (joinorder.go)
 		if p.from, err = c.compileFrom(from, sc, lvl, nil); err != nil {
 			return nil, err
 		}
@@ -684,7 +686,8 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 				return nil, errf(codeUndefinedTable, "missing FROM-clause entry for table %q", qual)
 			}
 		}
-		for _, col := range fs.cols {
+		for _, ci := range starOrder(fs.cols, starRank) {
+			col := fs.cols[ci]
 			if col.hidden || col.sys || qual != "" && col.qual != qual {
 				continue
 			}

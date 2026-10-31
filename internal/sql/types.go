@@ -491,3 +491,24 @@ func paramElems(pk map[int]Kind, n int) []Kind {
 
 // ArrayOIDOfKind is the array type OID whose elements are of kind k (0 = none).
 func ArrayOIDOfKind(k Kind) uint32 { return arrayOfOID[defaultTyOfKind(k).oid] }
+
+// SchemaEpoch changes whenever any table is created, altered or dropped (see core.Engine.SchemaEpoch).
+func (s *Session) SchemaEpoch() uint64 { return s.E.SchemaEpoch() }
+
+// DescribedColsChanged reports whether the result columns of st differ from before (name, type, modifier).
+func (s *Session) DescribedColsChanged(st Stmt, old *Description) (bool, error) {
+	d, err := s.Describe(st)
+	if err != nil {
+		return false, err
+	}
+	if d.HasRows != old.HasRows || len(d.Cols) != len(old.Cols) {
+		return true, nil
+	}
+	for i := range d.Cols {
+		a, b := d.Cols[i], old.Cols[i]
+		if a.Name != b.Name || a.Kind != b.Kind || a.OID != b.OID || a.Mod != b.Mod {
+			return true, nil
+		}
+	}
+	return false, nil
+}

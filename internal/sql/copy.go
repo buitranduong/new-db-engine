@@ -2,6 +2,7 @@ package sql
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
@@ -372,9 +373,6 @@ func (p *copyParser) parse() (*CopyStmt, error) {
 				return nil, errf("22023", "cannot specify %s in BINARY mode", c.what)
 			}
 		}
-		if !cs.From {
-			return nil, errf(codeFeature, "COPY TO in BINARY format is not supported; use FORMAT text or csv")
-		}
 	}
 	// defaults and checks (PostgreSQL's)
 	if !delimSet {
@@ -689,7 +687,7 @@ func (ci *CopyIn) store(f []copyField) error {
 		} else {
 			d = TextD(f[i].s)
 		}
-		v, err := toValueCol(&t.Columns[ci2], d)
+		v, err := ci.s.valCol(&t.Columns[ci2], d)
 		if err != nil {
 			e := AsError(err)
 			return ci.lineErr(e.Code, e.Msg, i)
@@ -704,7 +702,7 @@ func (ci *CopyIn) store(f []copyField) error {
 			if err != nil {
 				return err
 			}
-			if row[c], err = toValueCol(&t.Columns[c], d); err != nil {
+			if row[c], err = ci.s.valCol(&t.Columns[c], d); err != nil {
 				return err
 			}
 		}
@@ -1056,6 +1054,24 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 			return 0, err
 		}
 		w := &copyWriter{cs: cs, emit: emit}
+		if cs.Binary {
+			oids := make([]uint32, len(res.Cols))
+			for i, c := range res.Cols {
+				oids[i] = c.OID
+			}
+			if err := w.binHeader(); err != nil {
+				return 0, err
+			}
+			for i, r := range res.Rows {
+				if i&1023 == 0 && s.interrupted() {
+					return 0, interruptError(InterruptCancel)
+				}
+				if err := w.binRow(oids, r); err != nil {
+					return 0, err
+				}
+			}
+			return len(res.Rows), w.binTrailer()
+		}
 		if cs.Header {
 			names := make([]string, len(res.Cols))
 			for i, c := range res.Cols {
@@ -1125,6 +1141,42 @@ func (s *Session) copyScan(tx *core.Tx, t *schema.Table, cols []int, cs *CopyStm
 		return 0, err
 	}
 	w := &copyWriter{cs: cs, emit: emit}
+	if cs.Binary {
+		oids := make([]uint32, len(cols))
+		for i, c := range cols {
+			oids[i] = PgTypeOID(t.Columns[c])
+		}
+		if err := w.binHeader(); err != nil {
+			return 0, err
+		}
+		n, vals := 0, make([]Datum, len(cols))
+		var werr error
+		err := tx.ScanAll(t.Name, func(_ string, r schema.Row) bool {
+			if n&1023 == 0 && s.interrupted() {
+				werr = core.ErrInterrupted
+				return false
+			}
+			for i, c := range cols {
+				if r[c].Null {
+					vals[i] = Null
+				} else {
+					vals[i] = fromCol(&t.Columns[c], r[c])
+				}
+			}
+			if werr = w.binRow(oids, vals); werr != nil {
+				return false
+			}
+			n++
+			return true
+		})
+		if werr != nil {
+			return 0, werr
+		}
+		if err != nil {
+			return 0, err
+		}
+		return n, w.binTrailer()
+	}
 	if cs.Header {
 		names := make([]string, len(cols))
 		for i, c := range cols {
@@ -1265,4 +1317,45 @@ func (w *copyWriter) datumRow(r []Datum) error {
 		}
 	}
 	return w.end()
+}
+
+// ---- COPY TO ... (FORMAT binary) ----
+
+// binHeader emits the PGCOPY signature, the flags field and the (empty) header extension.
+func (w *copyWriter) binHeader() error {
+	return w.emit([]byte("PGCOPY\n\xff\r\n\x00\x00\x00\x00\x00\x00\x00\x00\x00"))
+}
+
+func (w *copyWriter) binTrailer() error { return w.emit([]byte{0xff, 0xff}) }
+
+// binRow emits one tuple: the field count, then for each field its length (-1 for NULL) and its binary send form.
+func (w *copyWriter) binRow(oids []uint32, vals []Datum) error {
+	b := binary.BigEndian.AppendUint16(w.b[:0], uint16(len(vals)))
+	for i, d := range vals {
+		if d.IsNull() {
+			b = binary.BigEndian.AppendUint32(b, 0xffffffff)
+			continue
+		}
+		var v []byte
+		var ok bool
+		var oid uint32
+		if i < len(oids) {
+			oid = oids[i]
+		}
+		if d.K == KArray {
+			if !IsArrayOID(oid) {
+				oid = 1009 // text[]
+			}
+			v, ok = ArrayResultBinary(d, oid)
+		} else {
+			v, ok = BinaryValueFor(oid, d)
+		}
+		if !ok {
+			return errf(codeFeature, "COPY (FORMAT binary): no binary output for a value of type oid %d", oid)
+		}
+		b = binary.BigEndian.AppendUint32(b, uint32(len(v)))
+		b = append(b, v...)
+	}
+	w.b = b
+	return w.emit(b)
 }

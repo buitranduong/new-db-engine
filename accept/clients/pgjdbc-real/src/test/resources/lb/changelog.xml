@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="1-parent" author="stask">
+        <createTable tableName="lb_p">
+            <column name="id" type="uuid"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="name" type="varchar(100)"><constraints nullable="false" unique="true" uniqueConstraintName="lb_p_name_uq"/></column>
+            <column name="created" type="timestamp with time zone" defaultValueComputed="now()"/>
+        </createTable>
+    </changeSet>
+    <changeSet id="2-child" author="stask">
+        <createTable tableName="lb_c">
+            <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="p_id" type="uuid"/>
+            <column name="qty" type="int" defaultValueNumeric="0"/>
+        </createTable>
+        <addForeignKeyConstraint baseTableName="lb_c" baseColumnNames="p_id" constraintName="lb_c_p_fk" referencedTableName="lb_p" referencedColumnNames="id" onDelete="CASCADE"/>
+    </changeSet>
+    <changeSet id="3-seed" author="stask">
+        <createTable tableName="lb_seed"><column name="k" type="varchar(20)"><constraints primaryKey="true"/></column><column name="v" type="int"/></createTable>
+        <insert tableName="lb_seed"><column name="k" value="a"/><column name="v" valueNumeric="1"/></insert>
+        <insert tableName="lb_seed"><column name="k" value="b"/><column name="v" valueNumeric="2"/></insert>
+        <insert tableName="lb_seed"><column name="k" value="c"/><column name="v" valueNumeric="3"/></insert>
+    </changeSet>
+    <changeSet id="4-tag" author="stask"><tagDatabase tag="v1"/></changeSet>
+    <changeSet id="5-addcol-index" author="stask">
+        <addColumn tableName="lb_c"><column name="extra" type="varchar(30)" defaultValue="x"/></addColumn>
+        <createIndex tableName="lb_c" indexName="lb_c_extra_idx"><column name="extra"/></createIndex>
+    </changeSet>
+    <changeSet id="6-x" author="stask">
+        <createTable tableName="lb_x"><column name="id" type="int"><constraints primaryKey="true"/></column></createTable>
+        <rollback><dropTable tableName="lb_x"/></rollback>
+    </changeSet>
+    <changeSet id="7-sql-explicit-rollback" author="stask">
+        <sql>create table lb_loaded(id int primary key, label text); insert into lb_loaded values (1,'a'),(2,'b')</sql>
+        <rollback><sql>drop table lb_loaded</sql></rollback>
+    </changeSet>
+    <changeSet id="fn-always" author="stask" runAlways="true" failOnError="true">
+        <sql splitStatements="false">select 1</sql>
+        <rollback/>
+    </changeSet>
+</databaseChangeLog>

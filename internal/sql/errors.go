@@ -50,6 +50,9 @@ type Error struct {
 	Pos  int // 1-based character position in the query, 0 = unknown
 	// Detail and Hint are the D and H fields of the ErrorResponse (RAISE ... USING DETAIL / HINT).
 	Detail, Hint string
+	// Routine is the R field of the ErrorResponse; pgjdbc retries a statement transparently when the server
+	// answers 0A000 from RevalidateCachedQuery (cached plan must not change result type).
+	Routine string
 }
 
 // Notice is one NoticeResponse the session queues while a statement runs (RAISE NOTICE,

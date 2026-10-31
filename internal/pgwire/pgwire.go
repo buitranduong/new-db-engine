@@ -17,6 +17,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -218,6 +219,8 @@ type prepared struct {
 	stmt   sql.Stmt
 	params []uint32 // parameter OIDs
 	desc   *sql.Description
+	epoch  uint64 // schema epoch at the last Parse / revalidation
+	at     time.Time
 }
 
 type portal struct {
@@ -230,6 +233,7 @@ type portal struct {
 }
 
 type conn struct {
+	reportedTZ  string // TimeZone last announced to the client (ParameterStatus)
 	s           *Server
 	lastFatal   string // text of the last FATAL sent (the audit trail gives it as the reason)
 	auditedConn bool   // connect.ok was logged
@@ -284,6 +288,27 @@ func (s *Server) handle(nc net.Conn) {
 	}
 	c.sess = sql.NewSession(s.E)
 	c.sess.Views = s.Views
+	c.sess.WirePrepared = func() []sql.PreparedInfo {
+		var out []sql.PreparedInfo
+		for name, ps := range c.stmts {
+			if name == "" {
+				continue
+			}
+			pi := sql.PreparedInfo{Name: name, Statement: ps.query, At: ps.at}
+			for _, o := range ps.params {
+				pi.ParamTypes = append(pi.ParamTypes, sql.TypeNameOfOID(o))
+			}
+			if ps.desc != nil {
+				for _, col := range ps.desc.Cols {
+					pi.ResultTypes = append(pi.ResultTypes, sql.TypeNameOfOID(colOID(col)))
+				}
+			}
+			out = append(out, pi)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		return out
+	}
+	c.sess.SetStartupTimeZone(c.reportedTZ)
 	c.sess.PID = c.pid
 	c.sess.SetRole(c.role)
 	host, port, _ := net.SplitHostPort(nc.RemoteAddr().String())
@@ -574,6 +599,17 @@ func (c *conn) startup() error {
 				return errors.New("permission denied to start WAL sender")
 			}
 		}
+		// a TimeZone startup parameter (pgjdbc sends the JVM zone) sets the session zone; an unknown zone is FATAL 22023
+		c.reportedTZ = "UTC"
+		if tz := params["TimeZone"]; tz != "" {
+			n, err := sql.NormTimeZone(tz)
+			if err != nil {
+				c.sendFatal("22023", sql.AsError(err).Msg)
+				c.w.Flush()
+				return err
+			}
+			c.reportedTZ = n
+		}
 		c.pid = c.s.nextPID.Add(1)
 		// the cancel key: unpredictable, so that only the client that
 		// received it can cancel the session's statements
@@ -594,7 +630,7 @@ func (c *conn) startup() error {
 		}
 		for _, kv := range [][2]string{
 			{"server_version", version}, {"server_encoding", "UTF8"}, {"client_encoding", "UTF8"},
-			{"DateStyle", "ISO, MDY"}, {"TimeZone", "UTC"}, {"integer_datetimes", "on"},
+			{"DateStyle", "ISO, MDY"}, {"TimeZone", c.reportedTZ}, {"integer_datetimes", "on"},
 			{"standard_conforming_strings", "on"}, {"application_name", params["application_name"]},
 			{"is_superuser", isSuper}, {"session_authorization", params["user"]}, {"IntervalStyle", "postgres"},
 			{"in_hot_standby", onOff(c.s.E.ReadOnly())}, {"default_transaction_read_only", onOff(c.s.E.ReadOnly())},
@@ -608,6 +644,11 @@ func (c *conn) startup() error {
 }
 
 func (c *conn) ready() {
+	// TimeZone is a GUC_REPORT parameter: the server announces a change made by SET / RESET (pgjdbc follows it)
+	if tz := c.sess.TimeZoneName(); tz != c.reportedTZ {
+		c.reportedTZ = tz
+		c.send(newMsg('S').str("TimeZone").str(tz))
+	}
 	if c.sess.TxStatus() == 'I' {
 		c.sendNotifications()
 	}
@@ -821,6 +862,9 @@ func (c *conn) sendError(e *sql.Error) {
 	if e.Pos > 0 {
 		m.byte1('P').str(strconv.Itoa(e.Pos))
 	}
+	if e.Routine != "" {
+		m.byte1('R').str(e.Routine)
+	}
 	c.send(m.byte1(0))
 }
 
@@ -902,7 +946,7 @@ func (c *conn) parse(body []byte) {
 		c.fail(err)
 		return
 	}
-	ps := &prepared{query: q, stmt: st, params: oids}
+	ps := &prepared{query: q, stmt: st, params: oids, epoch: c.sess.SchemaEpoch(), at: time.Now()}
 	if st != nil {
 		desc, err := c.sess.Describe(st)
 		if err != nil {
@@ -1030,6 +1074,22 @@ func (c *conn) execute(body []byte) {
 	if p.ps.stmt == nil {
 		c.send(newMsg('I'))
 		return
+	}
+	if !p.started && p.ps.desc != nil && p.ps.desc.HasRows && p.ps.epoch != c.sess.SchemaEpoch() {
+		// a table changed since Parse: PostgreSQL re-plans the cached statement and refuses to run it when the
+		// result row type changed (RevalidateCachedQuery); the driver re-prepares and retries. Running it anyway
+		// would send rows that do not match the RowDescription the client already holds.
+		ep := c.sess.SchemaEpoch()
+		changed, err := c.sess.DescribedColsChanged(p.ps.stmt, p.ps.desc)
+		if err != nil {
+			c.fail(err)
+			return
+		}
+		if changed {
+			c.fail(&sql.Error{Code: "0A000", Msg: "cached plan must not change result type", Routine: "RevalidateCachedQuery"})
+			return
+		}
+		p.ps.epoch = ep
 	}
 	if !p.started {
 		var t0 time.Time

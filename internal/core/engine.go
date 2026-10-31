@@ -274,9 +274,12 @@ type Engine struct {
 	// foreign keys (fk.go): the cache of who references whom, and the
 	// committer's record of the newest commit that shared or guarded a key
 	fkCache atomic.Pointer[fkIndex]
-	fkShare map[pk]uint64
-	fkGuard map[pk]uint64
-	fkSweep int
+	// schemaEpoch counts table schema changes (create, alter, drop, replay of them): a prepared statement
+	// planned at an older epoch may no longer describe its result the same way (pgwire, RevalidateCachedQuery).
+	schemaEpoch atomic.Uint64
+	fkShare     map[pk]uint64
+	fkGuard     map[pk]uint64
+	fkSweep     int
 
 	seqMu        sync.Mutex
 	seqs         map[string]*seqState // sequences in use (sequence.go)
@@ -528,6 +531,7 @@ func (e *Engine) addTable(t *schema.Table) (*TableState, error) {
 	ts.sch.Store(t)
 	ts.durable.Store(t)
 	e.fkCache.Store(nil)
+	e.schemaEpoch.Add(1)
 	ts.keys.Store(&keyArena{})
 	ts.idx.Store(newTree(ts.keys.Load()))
 	if t.DroppedLSN == 0 {
@@ -574,6 +578,7 @@ func (e *Engine) alterTable(ts *TableState, t *schema.Table) (*TableState, error
 	}
 	ts.durable.Store(t)
 	e.fkCache.Store(nil)
+	e.schemaEpoch.Add(1)
 	if err := e.reconcileSec(ts, t, nil); err != nil {
 		e.logf("alter table %s: indexes: %v", t.Name, err)
 	}
@@ -644,6 +649,7 @@ func (e *Engine) AlterTable(name string, f func(*schema.Table) error) error {
 // replayed. A TRUNCATE then registers the replacing table under the name.
 func (e *Engine) dropTable(t *TableState, lsn uint64) {
 	e.fkCache.Store(nil)
+	e.schemaEpoch.Add(1)
 	e.tmu.Lock()
 	t.dropping.Store(true)
 	t.droppedLSN.Store(lsn)
@@ -2525,3 +2531,6 @@ func (e *Engine) fail(cause error, batch, placed []*commitReq, current *commitRe
 		}
 	}
 }
+
+// SchemaEpoch changes whenever a table is created, altered or dropped.
+func (e *Engine) SchemaEpoch() uint64 { return e.schemaEpoch.Load() }

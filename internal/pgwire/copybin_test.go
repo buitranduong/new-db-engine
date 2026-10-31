@@ -139,12 +139,11 @@ func TestCopyBinaryFraming(t *testing.T) {
 			t.Errorf("%s: %d rows left", k, c)
 		}
 	}
-	// option conflicts and TO binary
+	// option conflicts (COPY TO binary is covered by TestCopyToBinaryRoundTrip)
 	for q, st := range map[string]string{
 		"COPY cbf FROM STDIN (FORMAT binary, DELIMITER ',')": "22023",
 		"COPY cbf FROM STDIN (FORMAT binary, NULL 'x')":      "22023",
 		"COPY cbf FROM STDIN (FORMAT binary, HEADER)":        "22023",
-		"COPY cbf TO STDOUT (FORMAT binary)":                 "0A000",
 	} {
 		_, err := conn.PgConn().CopyFrom(ctx, strings.NewReader(""), q)
 		if err == nil || !strings.Contains(err.Error(), st) {

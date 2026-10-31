@@ -36,7 +36,7 @@ func (c *conn) copyCommand(cs *sql.CopyStmt, perr error) (stop bool) {
 		return c.copyIn(cs)
 	}
 	n, err := c.sess.CopyTo(cs, func(ncols int) error {
-		return c.send(copyResponse('H', ncols, false))
+		return c.send(copyResponse('H', ncols, cs.Binary))
 	}, func(line []byte) error {
 		return c.send(newMsg('d').bytes(line))
 	})

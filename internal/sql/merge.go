@@ -153,7 +153,7 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 		case "update", "delete":
 			old := make(schema.Row, nt)
 			for i := range t.Columns {
-				if old[i], err = toValueCol(&t.Columns[i], r[i]); err != nil {
+				if old[i], err = s.valCol(&t.Columns[i], r[i]); err != nil {
 					return nil, err
 				}
 			}
@@ -182,7 +182,7 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 				} else {
 					d = r[mc.set[j]]
 				}
-				if upd[ci], err = toValueCol(&t.Columns[ci], d); err != nil {
+				if upd[ci], err = s.valCol(&t.Columns[ci], d); err != nil {
 					return nil, err
 				}
 			}

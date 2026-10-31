@@ -309,8 +309,15 @@ type kvModel struct {
 // the additive statements, so v = initial + acknowledged increments + the
 // statements' additions, each applied exactly once to every row it affects,
 // and a conditional statement skips the rows flagged before it started.
+//
+// The writers and the long statements take row locks (as the engine does:
+// writelock.go, INSERT .. ON CONFLICT DO UPDATE included), so the long
+// statements wait for / are waited for and finish under any scheduling. With
+// lock-less writers they would abort with 40001 after repairMaxRounds under
+// enough contention (docs/14 appendix); PostgreSQL does not fail there.
 func TestRepairPropertyAgainstModel(t *testing.T) {
 	lowRepairMin(t, 32)
+	writeLocksOff = false
 	seeds := 4
 	if slack > 1 {
 		seeds = 2

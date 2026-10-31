@@ -222,7 +222,7 @@ func (s *Session) redo(r *repairRec, tx *core.Tx, keys []string) (int, error) {
 		for j, i := range idx {
 			sub.Rows[j] = r.ins.Rows[i]
 		}
-		res, err = s.insert(tx, &sub, r.params)
+		res, err = s.insertRelock(tx, &sub, r.params)
 	case *Update, *Delete:
 		return s.redoWrite(r, tx, t, keys)
 	}

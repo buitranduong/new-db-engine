@@ -29,8 +29,12 @@ import (
 //   - the same for SELECT ... FOR UPDATE/SHARE, which used to fail with 40001
 //     when a selected row was written after its snapshot.
 //
-// Not covered, they stay optimistic (conflict at COMMIT, 40001): INSERT (also
-// ON CONFLICT DO UPDATE), MERGE, COPY, foreign-key and cascade writes, writes
+// INSERT ... ON CONFLICT DO UPDATE locks the rows that already exist (and
+// that it will update) the same way, before the first write; a conflicting row
+// inserted by another transaction after that point stays optimistic.
+//
+// Not covered, they stay optimistic (conflict at COMMIT, 40001): plain INSERT,
+// ON CONFLICT DO UPDATE with row triggers on the table, MERGE, COPY, foreign-key and cascade writes, writes
 // through views, statements on more than writeLockMaxRows rows (memory of the
 // lock table), and rows locked inside a savepoint that is rolled back stay
 // locked until the transaction ends.
@@ -164,6 +168,21 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 			return res, err
 		}
 		if n >= relockMax || !tx.Advance() {
+			return nil, serializeErr()
+		}
+	}
+}
+
+// insertRelock runs s.insert; an INSERT .. ON CONFLICT DO UPDATE that found a
+// row changed while it waited for the row lock (the snapshot has moved, nothing
+// written yet) is computed again.
+func (s *Session) insertRelock(tx *core.Tx, st *Insert, params []Datum) (*Result, error) {
+	for n := 0; ; n++ {
+		res, err := s.insert(tx, st, params)
+		if !errors.Is(err, errRelock) {
+			return res, err
+		}
+		if n >= relockMax {
 			return nil, serializeErr()
 		}
 	}

@@ -177,6 +177,9 @@ func (p *parser) queryStmt1() (Stmt, error) {
 		}
 	}
 done:
+	if _, isSet := q.(*SetOp); isSet && len(locks) > 0 {
+		return nil, errf(codeFeature, "FOR UPDATE is not allowed with UNION/INTERSECT/EXCEPT")
+	}
 	if sel, ok := q.(*Select); ok && sel.OrderBy == nil && sel.Limit == nil && sel.Offset == nil && sel.LimitBy == nil &&
 		(sel.With == nil || with == nil) {
 		sel.OrderBy, sel.Limit, sel.Offset, sel.LimitBy, sel.ForUpd = order, limit, offset, limitBy, forUpd
@@ -846,6 +849,9 @@ func (p *parser) fromItem() (FromNode, error) {
 			return nil, err
 		}
 		f, _ := x.(*Func)
+		if f != nil && isRecordFunc(f.Name) && len(f.Args) == 1 {
+			return p.recordFuncFrom(f)
+		}
 		ord := p.acceptKw("with", "ordinality")
 		alias, cols, err := p.aliasClause()
 		return &FromFunc{F: f, Alias: alias, ColAliases: cols, Ordinality: ord}, err

@@ -171,8 +171,8 @@ func TestExpressionIndexUnique(t *testing.T) {
 	run(t, s, `DELETE FROM u WHERE id=5`)
 	run(t, s, `CREATE UNIQUE INDEX u_em ON u (lower(email))`)
 	_, err := tryRun(s, `INSERT INTO u VALUES (6,'B@X.COM')`)
-	if err == nil || !strings.Contains(err.Error(), `duplicate key value violates unique constraint "u_em"`) ||
-		!strings.Contains(err.Error(), "lower(email)") {
+	if err == nil || !strings.Contains(errText(err), `duplicate key value violates unique constraint "u_em"`) ||
+		!strings.Contains(errText(err), "lower(email)") {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := tryRun(s, `UPDATE u SET email='b@X.com' WHERE id=1`); err == nil {

@@ -125,6 +125,9 @@ func (p *parser) searchRel(n string) string {
 	if s == nil || !s.customPath() {
 		return n
 	}
+	if _, ok := s.tempReal(n); ok { // pg_temp is searched first
+		return n
+	}
 	for _, c := range s.pathCandidates(n) {
 		if s.relationExists(c) {
 			return c
@@ -135,6 +138,12 @@ func (p *parser) searchRel(n string) string {
 
 // qualifiedNameNew is qualifiedName for the name a CREATE makes.
 func (p *parser) qualifiedNameNew() (string, error) {
+	if p.tempCreate {
+		if t := p.peekN(1); t.k == tOp && t.s == "." {
+			return p.qualifiedName()
+		}
+		return p.ident()
+	}
 	if t := p.peekN(1); t.k == tOp && t.s == "." {
 		n, err := p.qualifiedName()
 		if err == nil && p.sess != nil {

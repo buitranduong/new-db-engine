@@ -8,6 +8,7 @@ import (
 func TestPgcmdsMaintAndFuncs(t *testing.T) {
 	e := newEngine(t)
 	s := NewSession(e)
+	run(t, s, `CREATE TABLE x (id BIGINT PRIMARY KEY, v TEXT)`)
 	for _, c := range []struct{ q, tag string }{
 		{`CHECKPOINT`, "CHECKPOINT"}, {`REINDEX TABLE x`, "REINDEX"}, {`CLUSTER x USING x_pkey`, "CLUSTER"},
 		{`VACUUM (ANALYZE) x`, "VACUUM"}, {`START TRANSACTION`, "START TRANSACTION"}, {`COMMIT`, "COMMIT"},
@@ -17,7 +18,6 @@ func TestPgcmdsMaintAndFuncs(t *testing.T) {
 			t.Errorf("%s: tag %q want %q", c.q, r.Tag, c.tag)
 		}
 	}
-	run(t, s, `CREATE TABLE x (id BIGINT PRIMARY KEY, v TEXT)`)
 	run(t, s, `INSERT INTO x SELECT i, 'row' || i::text FROM generate_series(1, 1000) i`)
 	for q, want := range map[string]string{
 		`SELECT pg_size_pretty(1048576)`:                  "1024 kB",

@@ -2,6 +2,7 @@ package sql
 
 import (
 	"slices"
+	"strings"
 
 	"stask/internal/core"
 	"stask/internal/schema"
@@ -90,6 +91,9 @@ func init() {
 		}
 		var rows [][]Datum
 		for _, t := range c.tables {
+			if t.MatView != "" { // materialized views are not in information_schema.columns
+				continue
+			}
 			for _, col := range t.Columns {
 				dataType, udt, ty := colTypeInfo(col)
 				prec, radix, scale, dt := numericInfo(ty.oid)
@@ -103,9 +107,17 @@ func init() {
 				if p, sc, ok := schema.NumericMod(col.Type); ok {
 					prec, radix, scale = IntD(int64(p)), IntD(10), IntD(int64(sc))
 				}
+				ivType := Null
+				if ct := colTy(&col); extIsSpec(col.PG) {
+					dt, ivType, charLen = extInfoSchema(ct, dt, charLen) // interval fields and precision, bit lengths
+				}
 				def := Null
-				if hasDef(col) {
+				if hasDef(col) && col.Generated == "" {
 					def = TextD(defaultText(c.s, col))
+				}
+				isGen, genExpr := "NEVER", Null
+				if col.Generated != "" {
+					isGen, genExpr = "ALWAYS", TextD(defaultText(c.s, col))
 				}
 				isID, gen := "NO", Null
 				idStart, idInc, idMax, idMin, idCycle := Null, Null, Null, Null, Null
@@ -123,9 +135,9 @@ func init() {
 				}
 				rows = append(rows, []Datum{cat, pub, TextD(t.Name), TextD(col.Name), IntD(int64(col.Num)), def,
 					TextD(boolStr(!(col.NotNull || col.Name == t.Key))), TextD(dataType), charLen, octet, prec, radix, scale, dt,
-					Null, Null, Null, Null, Null, collCat, collSch, collName, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
+					ivType, Null, Null, Null, Null, collCat, collSch, collName, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
 					Null, Null, Null, Null, TextD(itoa(int64(col.Num))), TextD("NO"), TextD(isID), gen, idStart, idInc,
-					idMax, idMin, idCycle, TextD("NEVER"), Null, TextD("YES")})
+					idMax, idMin, idCycle, TextD(isGen), genExpr, TextD("YES")})
 			}
 		}
 		for _, v := range c.views { // the output types are not recorded: text
@@ -145,6 +157,13 @@ func init() {
 		"cycle_option:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, q := range c.seqs {
+			if i := strings.LastIndex(q.Owner, "."); i > 0 { // the sequence of an identity column is not listed
+				if t := c.tableNamed(q.Owner[:i]); t != nil {
+					if j := colIndex(t, q.Owner[i+1:]); j >= 0 && t.Columns[j].Identity != "" {
+						continue
+					}
+				}
+			}
 			prec, radix, scale, _ := numericInfo(seqTypeOID(q.Type))
 			rows = append(rows, []Datum{cat, pub, TextD(q.Name), TextD(q.Type), prec, radix, scale, TextD(itoa(q.Start)),
 				TextD(itoa(q.Min)), TextD(itoa(q.Max)), TextD(itoa(q.Inc)), TextD(boolStr(q.Cycle))})
@@ -285,11 +304,13 @@ func init() {
 						}
 					}
 				}
-				del := map[string]string{"restrict": "RESTRICT", "cascade": "CASCADE", "set null": "SET NULL"}[fk.OnDelete]
-				if del == "" {
-					del = "NO ACTION"
+				rule := func(a string) string {
+					if r := map[string]string{"restrict": "RESTRICT", "cascade": "CASCADE", "set null": "SET NULL", "set default": "SET DEFAULT"}[a]; r != "" {
+						return r
+					}
+					return "NO ACTION"
 				}
-				rows = append(rows, []Datum{cat, pub, TextD(fk.Name), cat, pub, uc, TextD("NONE"), TextD("NO ACTION"), TextD(del)})
+				rows = append(rows, []Datum{cat, pub, TextD(fk.Name), cat, pub, uc, TextD("NONE"), TextD(rule(fk.OnUpdate)), TextD(rule(fk.OnDelete))})
 			}
 		}
 		return rows
@@ -299,8 +320,16 @@ func init() {
 		"is_trigger_insertable_into:t", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		for _, v := range c.views {
-			rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD(" " + v.Query + ";"), TextD("NONE"), TextD("NO"),
-				TextD("NO"), TextD("NO"), TextD("NO"), TextD("NO")})
+			upd, opt := "NO", "NONE"
+			if _, ok := c.s.simpleViewOf(v.Name); ok {
+				upd = "YES"
+				opt = map[string]string{"cascaded": "CASCADED", "local": "LOCAL", "partition": "CASCADED"}[c.s.viewOption(v.Name)]
+				if opt == "" {
+					opt = "NONE"
+				}
+			}
+			rows = append(rows, []Datum{cat, pub, TextD(v.Name), TextD(" " + v.Query + ";"), TextD(opt), TextD(upd),
+				TextD(upd), TextD("NO"), TextD("NO"), TextD("NO")})
 		}
 		return rows
 	})

@@ -28,6 +28,7 @@ var otherOps = map[string]string{
 	"@>": "stask_contains", "<@": "stask_contained", "&&": "stask_overlap",
 	"?": "stask_jexists", "?|": "stask_jexists_any", "?&": "stask_jexists_all",
 	"@?": "stask_jpath_exists", "@@": "stask_jpath_match", "#-": "stask_jhash_minus",
+	"&<": "stask_rng_overleft", "&>": "stask_rng_overright", "-|-": "stask_rng_adjacent", "<->": "stask_tsphrase",
 }
 
 func (p *parser) otherExpr() (Expr, error) {
@@ -125,7 +126,7 @@ func init() {
 		stask_jarrow stask_jarrow2 stask_jhash stask_jhash2 json_extract_path jsonb_extract_path json_extract_path_text
 		jsonb_extract_path_text stask_jexists stask_jexists_any stask_jexists_all stask_jhash_minus to_json to_jsonb
 		json_build_object jsonb_build_object json_build_array jsonb_build_array jsonb_set jsonb_insert jsonb_set_lax
-		jsonb_typeof json_typeof jsonb_array_length json_array_length jsonb_strip_nulls json_strip_nulls jsonb_pretty
+		jsonb_typeof json_typeof jsonb_array_length json_array_length jsonb_strip_nulls jsonb_pretty
 		stask_jpath_exists stask_jpath_match jsonb_path_exists jsonb_path_match jsonb_path_query_first jsonb_path_query_array`) {
 		jsonarrNames[n] = true
 	}
@@ -148,7 +149,7 @@ func jsonarrFuncKind(name string, args []Kind) (Kind, bool) {
 	case "stask_contains", "stask_contained", "stask_overlap", "stask_jexists", "stask_jexists_any", "stask_jexists_all",
 		"stask_jpath_exists", "stask_jpath_match", "jsonb_path_exists", "jsonb_path_match":
 		return KBool, true
-	case "stask_jarrow", "stask_jhash", "jsonb_strip_nulls", "json_strip_nulls":
+	case "stask_jarrow", "stask_jhash", "jsonb_strip_nulls":
 		return jk, true
 	case "stask_jarrow2", "stask_jhash2", "json_extract_path_text", "jsonb_extract_path_text", "jsonb_typeof", "json_typeof",
 		"jsonb_pretty", "array_dims", "array_to_string":
@@ -469,7 +470,7 @@ func arrTyFor(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 			if len(e.Args) == 1 {
 				return arrayTy(elemTyOf(e.Args[0], kindOf, leaf))
 			}
-		case "array_append", "array_remove", "array_replace", "stask_slice", "array_cat":
+		case "array_append", "array_remove", "array_replace", "stask_slice", "array_cat", "trim_array":
 			if len(e.Args) >= 1 {
 				t := arrTyFor(e.Args[0], kindOf, leaf)
 				if e.Name == "array_cat" && len(e.Args) == 2 {
@@ -577,7 +578,7 @@ func newJSONArrAgg(a *aggCall) (aggImpl, bool, error) {
 		return nil, false, nil
 	}
 	if f.Distinct {
-		impl = &distinctAgg{inner: impl, seen: map[string]bool{}}
+		impl = &distinctAgg{inner: impl, seen: map[string]bool{}, sortIn: distinctSorted[a.f.Name]}
 	}
 	return impl, true, nil
 }
@@ -737,6 +738,9 @@ func isJSONArrSRF(name string) bool {
 }
 
 func srfRows(name string, args []Datum, ord bool) ([][]Datum, error) {
+	if rows, ok, err := fnSRFRows(name, args); ok {
+		return addOrdinality(rows, ord), err
+	}
 	var out [][]Datum
 	add := func(r ...Datum) {
 		if ord {

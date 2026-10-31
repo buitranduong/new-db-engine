@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -193,27 +194,12 @@ func (tx *Tx) postConstraints(op WriteOp, p *pendingOp, c *fkCtx) error {
 	}
 	sch := p.sch
 	if p.del {
+		if tx.fkx != nil && tx.fkx.keyChange {
+			return nil // ChangeKey: the row is not going away
+		}
 		return tx.onParentDelete(sch, c.old, c.refs, 0)
 	}
-	for _, ref := range c.refs {
-		changed := false
-		for _, col := range ref.FK.RefCols {
-			i, _ := sch.Col(col)
-			changed = changed || !valuesEqual(sch.Columns[i].T, c.old[i], op.Row[i])
-		}
-		if !changed {
-			continue
-		}
-		kids, err := tx.children(ref, sch, c.old)
-		if err != nil {
-			return err
-		}
-		if len(kids) > 0 {
-			return &ForeignKeyError{Table: ref.Child, Constraint: ref.FK.Name, Ref: sch.Name, Delete: true,
-				Detail: fmt.Sprintf("Key %s is still referenced from table %q.", describe(sch, ref.FK.RefCols, c.old), ref.Child)}
-		}
-	}
-	return nil
+	return tx.onParentUpdate(sch, c.old, op.Row, c.refs)
 }
 
 // probeUnique reports a violation of a unique index of the write against
@@ -279,6 +265,11 @@ func (tx *Tx) probeUnique(p *pendingOp) error {
 func (tx *Tx) checkParents(p *pendingOp, row schema.Row) error {
 	for _, fk := range p.sch.ForeignKeys {
 		if err := tx.checkParent(p.sch, fk, row); err != nil {
+			var fe *ForeignKeyError
+			if errors.As(err, &fe) && !fe.Delete && tx.fkDeferred(fk) {
+				tx.deferChild(p.sch, fk, p.key, row) // decided at COMMIT (fkmore.go)
+				continue
+			}
 			return err
 		}
 	}
@@ -351,6 +342,41 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 	if ixName == "" {
 		return "", false, coded("42830", "there is no unique constraint matching given keys for referenced table %q", psch.Name)
 	}
+	return tx.findByIndex(parent, ixName, refCols, vals)
+}
+
+// FindByUnique looks up the row of table whose columns cols (the columns of a plain unique index) equal
+// vals, as this transaction sees it (own writes first, then the snapshot): the conflicting row of
+// INSERT .. ON CONFLICT on a unique index that is not the primary key. A NULL value never conflicts.
+func (tx *Tx) FindByUnique(table, ixName string, vals []schema.Value) (key string, found bool, err error) {
+	if err := tx.check(); err != nil {
+		return "", false, err
+	}
+	t, err := tx.e.Table(table)
+	if err != nil {
+		return "", false, err
+	}
+	sch := t.Schema()
+	var cols []string
+	for _, ix := range sch.Indexes {
+		if ix.Name == ixName {
+			cols = ix.Columns
+		}
+	}
+	if cols == nil || len(cols) != len(vals) {
+		return "", false, coded("42P10", "there is no unique or exclusion constraint matching the ON CONFLICT specification")
+	}
+	for _, v := range vals {
+		if v.Null {
+			return "", false, nil
+		}
+	}
+	return tx.findByIndex(t, ixName, cols, vals)
+}
+
+// findByIndex is the lookup of findParent through unique index ixName over refCols.
+func (tx *Tx) findByIndex(parent *TableState, ixName string, refCols []string, vals []schema.Value) (key string, found bool, err error) {
+	psch := parent.Schema()
 	match := func(r schema.Row) bool {
 		for i, rc := range refCols {
 			pi, _ := psch.Col(rc)
@@ -511,30 +537,15 @@ func (tx *Tx) onParentDelete(psch *schema.Table, old schema.Row, refs []FKRef, d
 					return err
 				}
 			}
-		case "set null":
-			child, _ := tx.e.Table(ref.Child)
-			csch := child.Schema()
-			for _, k := range kids {
-				row, ok, err := tx.Get(ref.Child, k)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					continue
-				}
-				row = slices.Clone(row)
-				for _, c := range ref.FK.Columns {
-					j, _ := csch.Col(c)
-					if csch.Columns[j].NotNull || j == csch.KeyIndex() {
-						return &NotNullError{Table: csch.Name, Column: c}
-					}
-					row[j] = schema.Value{Null: true}
-				}
-				if err := tx.Put(ref.Child, row); err != nil {
-					return err
-				}
+		case "set null", "set default":
+			if err := tx.refAction(psch, ref, kids, ref.FK.OnDelete, nil, old); err != nil {
+				return err
 			}
 		default: // no action, restrict
+			if ref.FK.OnDelete != "restrict" && tx.fkDeferred(ref.FK) {
+				tx.deferParent(psch, ref, old)
+				continue
+			}
 			self := true
 			for _, k := range kids {
 				self = self && ref.Child == psch.Name && k == psch.KeyOf(old)
@@ -627,11 +638,13 @@ func (e *Engine) AddForeignKey(table string, fk schema.ForeignKey, idx *schema.I
 	tx := e.Begin(SnapshotIsolation)
 	defer tx.Abort()
 	var verr error
-	if err := tx.ScanAll(table, func(_ string, r schema.Row) bool {
-		verr = tx.checkParent(sch, fk, r)
-		return verr == nil
-	}); err != nil {
-		return err
+	if !fk.NotValid { // NOT VALID: the rows that exist are not checked (VALIDATE CONSTRAINT does)
+		if err := tx.ScanAll(table, func(_ string, r schema.Row) bool {
+			verr = tx.checkParent(sch, fk, r)
+			return verr == nil
+		}); err != nil {
+			return err
+		}
 	}
 	if verr != nil {
 		return verr

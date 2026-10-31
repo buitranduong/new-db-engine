@@ -36,7 +36,7 @@ func TestPGTypesOIDs(t *testing.T) {
 		{`SELECT id FROM ty UNION SELECT id FROM ty`, "23/-1"},
 		{`SELECT row_number() OVER (ORDER BY id), lag(id) OVER (ORDER BY id) FROM ty`, "20/0 23/-1"},
 		{`SELECT avg(id) FROM ty`, "1700/0"},
-		{`SELECT pg_typeof(id), pg_typeof(1), pg_typeof(s + 1) FROM ty`, "25/0 25/0 25/0"},
+		{`SELECT pg_typeof(id), pg_typeof(1), pg_typeof(s + 1) FROM ty`, "2206/-1 2206/-1 2206/-1"}, // PostgreSQL: pg_typeof returns regtype (2206)
 		{`INSERT INTO ty (id) VALUES (9) RETURNING id, v`, "23/-1 1043/14"},
 	}
 	for _, c := range cases {

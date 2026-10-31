@@ -161,6 +161,9 @@ type Column struct {
 	// Identity is "always" or "by default" for an IDENTITY column.
 	Default  string `json:"default,omitempty"`
 	Identity string `json:"identity,omitempty"`
+	// Generated is the expression of a GENERATED ALWAYS AS (expr) STORED column
+	// (additive: older schemas have none).
+	Generated string `json:"generated,omitempty"`
 	// AddedLSN is the LSN of the ALTER TABLE ADD COLUMN that added the
 	// column (0: created with the table). Rows stored before it are
 	// encoded without the column and read it as Missing, or NULL.
@@ -194,6 +197,9 @@ type Column struct {
 type Check struct {
 	Name string `json:"name"`
 	Expr string `json:"expr"`
+	// NotValid: ADD CONSTRAINT ... CHECK ... NOT VALID; new writes are checked, rows that existed were not
+	// (until VALIDATE CONSTRAINT). Additive.
+	NotValid bool `json:"not_valid,omitempty"`
 }
 
 // Table is a logical table. Physical representations are declared, not
@@ -247,9 +253,14 @@ type Table struct {
 	// MatView is the SQL of a materialized view's query (the table holds its
 	// rows); MatUnpopulated: created or refreshed WITH NO DATA. Unlogged:
 	// CREATE UNLOGGED TABLE (kept for the catalogs; rows are logged like any).
-	MatView        string `json:"matview,omitempty"`
-	MatUnpopulated bool   `json:"mat_unpopulated,omitempty"`
-	Unlogged       bool   `json:"unlogged,omitempty"`
+	// Partitioned: a table declared PARTITION BY; PartPreds are the conditions of its partitions (a row must
+	// satisfy one) and PartDefault says a DEFAULT partition takes the rest (partition.go). Additive.
+	Partitioned    bool     `json:"partitioned,omitempty"`
+	PartPreds      []string `json:"part_preds,omitempty"`
+	PartDefault    bool     `json:"part_default,omitempty"`
+	MatView        string   `json:"matview,omitempty"`
+	MatUnpopulated bool     `json:"mat_unpopulated,omitempty"`
+	Unlogged       bool     `json:"unlogged,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN

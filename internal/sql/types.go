@@ -40,8 +40,8 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if k, ok := jsonarrBinKind("-", typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)); ok {
 				return k
 			}
-		case "<<", ">>":
-			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText { // inet containment (inet.go)
+		case "<<", ">>", "%": // inet containment (inet.go); pg_trgm similarity (fn_trgm.go)
+			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText {
 				return KBool
 			}
 		case "^":
@@ -72,6 +72,8 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			return KNumeric
 		case l == KInt && r == KInt:
 			return KInt
+		case l == KText && (r == KText || r == KInt): // ranges, bit strings and macaddr8 (exttypes.go)
+			return KText
 		case l == KInt || r == KInt:
 			return KInt
 		}
@@ -96,10 +98,25 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			}
 			return typeOf(e.Args[0], sc, pk)
 		}
+		if _, reg := fnReg[e.Name]; reg {
+			kinds := make([]Kind, len(e.Args))
+			for i, a := range e.Args {
+				kinds[i] = typeOf(a, sc, pk)
+			}
+			if k, ok := fnKindOf(e.Name, kinds); ok {
+				return k
+			}
+		}
 		switch e.Name {
 		case "count", "length", "char_length":
 			return KInt
 		case "avg", "round", "floor", "ceil", "ceiling", "trunc", "extract_epoch", "epoch":
+			if e.Name == "avg" && arg() == KInterval {
+				return KInterval
+			}
+			if e.Name == "trunc" && arg() == KText { // trunc(macaddr)
+				return KText
+			}
 			if e.Name == "round" && len(e.Args) == 1 && arg() == KInt {
 				return KInt
 			}
@@ -108,6 +125,9 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			}
 			return KFloat
 		case "sum":
+			if arg() == KInterval {
+				return KInterval
+			}
 			if arg() == KInt {
 				return KInt
 			}
@@ -350,8 +370,11 @@ type Description struct {
 	// ParamElem[i] is the element kind of array parameter $i+1 (0 = not
 	// known to be an array of a typed element).
 	ParamElem []Kind
-	Cols      []Column // result columns
-	HasRows   bool
+	// ParamOID[i] is the PostgreSQL type of parameter $i+1 when it stands for a value of a type a Kind cannot name
+	// (ranges, bit strings, macaddr8: extparams.go); 0 = the Kind's type. Nil when no parameter has one.
+	ParamOID []uint32
+	Cols     []Column // result columns
+	HasRows  bool
 }
 
 // Describe types a statement without running it.
@@ -391,6 +414,9 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	case *Explain:
 		d.HasRows = true
 		d.Cols = []Column{{Name: "QUERY PLAN", Kind: KText}}
+		if st.Opts.Format == "json" {
+			d.Cols[0] = Column{Name: "QUERY PLAN", Kind: KJSON, OID: 114}
+		}
 		pk := s.deepKinds(st.Stmt)
 		d.Params = make([]Kind, maxParamAny(st))
 		for i := range d.Params {
@@ -451,6 +477,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		}
 	}
 	d.ParamElem = paramElems(pk, n)
+	d.ParamOID = extParamOIDs(st, sc.t, n)
 	if sel, ok := st.(*Select); ok {
 		for _, it := range sel.Items {
 			if it.Star {

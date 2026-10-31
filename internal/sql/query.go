@@ -20,9 +20,11 @@ import (
 type relCol struct {
 	qual, name string
 	kind       Kind
-	ty         pgTy // PostgreSQL type when finer than kind (pgtype.go)
-	hidden     bool // the right-hand copy of a USING column: not visible unqualified or in *
-	sys        bool // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
+	ty         pgTy   // PostgreSQL type when finer than kind (pgtype.go)
+	hidden     bool   // the right-hand copy of a USING column: not visible unqualified or in *
+	raw        bool   // RIGHT/FULL JOIN .. USING: the left table's own value of the column (the merged column is the unqualified one)
+	rawQ       string // on a merged USING column: the qualifier of the raw left copy, which `q.*` and `q.col` use
+	sys        bool   // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
 	// table OID and attribute number of a column read straight from a table (RowDescription)
 	src uint32
 	an  int16
@@ -135,6 +137,9 @@ func (c *compiler) compile(st Stmt, sc *qscope) (qplan, error) {
 	case *Select:
 		return c.compileSelect(q, sc)
 	case *SetOp:
+		if setOpLocks(q) {
+			return nil, errf(codeFeature, "FOR UPDATE/SHARE is not allowed with UNION/INTERSECT/EXCEPT")
+		}
 		return c.compileSetOp(q, sc)
 	}
 	return nil, errf(codeFeature, "unsupported query %T", st)
@@ -283,7 +288,13 @@ func (b *binder) resolve(cr *ColRef) (Expr, error) {
 			cur = sc.lvl
 		}
 		idx, n := -1, 0
+		if cr.Pos > 0 && cr.Pos <= len(sc.cols) && sc.cols[cr.Pos-1].name == cr.Name && depth == 0 {
+			idx, n = cr.Pos-1, 1
+		}
 		for i, col := range sc.cols {
+			if n == 1 && cr.Pos > 0 {
+				break
+			}
 			if cr.Table != "" {
 				if col.qual == cr.Table && col.name == cr.Name {
 					idx, n = i, n+1
@@ -688,10 +699,27 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		}
 		for _, ci := range starOrder(fs.cols, starRank) {
 			col := fs.cols[ci]
-			if col.hidden || col.sys || qual != "" && col.qual != qual {
+			if col.sys || col.raw {
 				continue
 			}
-			items = append(items, SelItem{X: &ColRef{Table: col.qual, Name: col.name}, Alias: col.name})
+			if qual != "" && col.qual != qual && col.rawQ != qual {
+				continue
+			}
+			if col.hidden && (qual == "" || col.qual != qual) {
+				continue
+			}
+			if qual != "" && col.rawQ == qual { // the merged column stands for the left table's own value in q.*
+				items = append(items, SelItem{X: &ColRef{Table: qual, Name: col.name}, Alias: col.name})
+				continue
+			}
+			cr := &ColRef{Table: col.qual, Name: col.name}
+			for cj, o := range fs.cols { // the same name twice (a derived table SELECT 1, 1): SELECT * keeps both
+				if cj != ci && !o.hidden && !o.sys && o.qual == col.qual && o.name == col.name {
+					cr.Pos = ci + 1
+					break
+				}
+			}
+			items = append(items, SelItem{X: cr, Alias: col.name})
 		}
 	}
 	aliases := map[string]Expr{}
@@ -724,8 +752,8 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	}
 	subst := func(x Expr) Expr { return substDepth(x, 0) }
 	if st.Where != nil {
-		if hasAggOrWin(st.Where) {
-			return nil, errf(codeGrouping, "aggregate functions are not allowed in WHERE")
+		if err := whereFuncErr(st.Where); err != nil {
+			return nil, err
 		}
 		if p.where, err = pre.bind(subst(st.Where)); err != nil {
 			return nil, err
@@ -995,6 +1023,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 						}
 					}
 				}
+				if f.Name == "generate_series" && len(f.Args) >= 2 && seriesColKind(f.Args) == KNumeric {
+					k, t = KNumeric, pgTy{}
+				}
 				if f.Name == "generate_subscripts" {
 					k = KInt
 				}
@@ -1012,13 +1043,13 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
 				if p, ok := f.Args[0].(*Param); ok {
 					if n := paramCastTypeName(st, p.N); n != "" {
-						return &Lit{TextD(n)}, true
+						return &Func{Name: "stask_regtype", Args: []Expr{&Lit{TextD(n)}}}, true
 					}
 				}
 				ptk, ptt := staticKind(f.Args[0], sk), inferTy(f.Args[0], slotTy)
 				ptk, ptt = jsonarrCol(f.Args[0], ptk, ptt, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
 				if n := staticTypeName(f.Args[0], ptt, ptk); n != "" {
-					return &Lit{TextD(n)}, true
+					return &Func{Name: "stask_regtype", Args: []Expr{&Lit{TextD(n)}}}, true
 				}
 			}
 			return nil, false
@@ -1051,6 +1082,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			}
 		}
 		if s.out < 0 {
+			if err := distinctOrderErr(st, items, o.X); err != nil {
+				return nil, err
+			}
 			if s.x, err = post.bind(subst(o.X)); err != nil {
 				return nil, err
 			}
@@ -1431,6 +1465,9 @@ func limitValues(ctx *evalCtx, lx, ox Expr) (limit, offset int64, err error) {
 				return 0, 0, err
 			}
 			offset = v.I
+			if offset < 0 && !ctx.dialectCH() {
+				return 0, 0, errf("2201X", "OFFSET must not be negative")
+			}
 		}
 	}
 	return limit, offset, nil
@@ -1550,8 +1587,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			if k, ok := jsonarrBinKind("-", staticKind(e.L, kinds), staticKind(e.R, kinds)); ok {
 				return k
 			}
-		case "<<", ">>":
-			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText { // inet containment (inet.go)
+		case "<<", ">>", "%": // inet containment (inet.go); pg_trgm similarity (fn_trgm.go)
+			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText {
 				return KBool
 			}
 		case "^":
@@ -1587,6 +1624,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			return KInt
 		case l == KNull || r == KNull:
 			return KNull
+		case l == KText && (r == KText || r == KInt): // ranges, bit strings and macaddr8 (exttypes.go)
+			return KText
 		}
 		return KFloat
 	case *IsNull, *InList, *Between, *Like:
@@ -2191,6 +2230,19 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 		if sp, ok := r.(*subPlan); ok && sp.lateral {
 			sp.lscope = lscope
 		}
+		if f.Kind == "cross" || f.Kind == "inner" || f.Kind == "left" || f.Kind == "right" || f.Kind == "full" {
+			lq := map[string]bool{}
+			for _, lc := range l.cols() {
+				if lc.qual != "" {
+					lq[lc.qual] = true
+				}
+			}
+			for _, rc := range r.cols() {
+				if rc.qual != "" && lq[rc.qual] {
+					return nil, errf("42712", "table name %q specified more than once", rc.qual)
+				}
+			}
+		}
 		jp := &joinPlan{kind: f.Kind, any: f.Any, l: l, r: r, nl: len(l.cols())}
 		jp.c = append(append([]relCol(nil), l.cols()...), r.cols()...)
 		using := f.Using
@@ -2224,6 +2276,14 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			conds = append(conds, &Binary{Op: "=", L: &Slot{I: li}, R: &Slot{I: jp.nl + ri}})
 			jp.c[jp.nl+ri].hidden = true
 			if f.Kind == "right" || f.Kind == "full" {
+				// PostgreSQL: l.id keeps the left value (NULL for a right-only row); the unqualified id is
+				// COALESCE(l.id, r.id). The left slot becomes the unqualified merged column and a hidden
+				// copy at the end of the row keeps the left table's own value.
+				raw := jp.c[li]
+				raw.hidden, raw.raw = true, true
+				jp.c[li].rawQ, jp.c[li].qual = raw.qual, ""
+				jp.c = append(jp.c, raw)
+				js.cols = jp.c
 				jp.merge = append(jp.merge, [2]int{li, jp.nl + ri})
 			}
 		}
@@ -2513,6 +2573,9 @@ func (p *joinPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 		} else {
 			row = append(row, r...)
 		}
+		for _, m := range p.merge { // the raw left copies (see compileFrom), before any merge
+			row = append(row, row[m[0]])
+		}
 		return row
 	}
 	steps := 0 // join pairs visited: polls for cancel every few thousand
@@ -2635,7 +2698,14 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 		}
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
 		if f.F.Name == "generate_series" {
-			fp.c[0].ty = seriesTy(fp.args)
+			if k := seriesTimeKind(f.F.Args); k != KNull { // generate_series(timestamp, timestamp, interval)
+				fp.c[0].ty = seriesTy(fp.args)
+				fp.c[0].kind = k
+			} else if k := seriesColKind(f.F.Args); k != KInt {
+				fp.c[0].kind = k
+			} else {
+				fp.c[0].ty = seriesTy(fp.args)
+			}
 		}
 	case "stask_history":
 		cols, err := c.historyCols(f.F.Args)
@@ -2769,7 +2839,11 @@ func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([
 		if args[0].IsNull() || args[1].IsNull() {
 			return nil, nil
 		}
-		if args[0].K == KTime || args[0].K == KDate || args[0].K == KText && len(args) == 3 {
+		if args[0].K == KTime || args[0].K == KTimestamp || args[0].K == KDate || args[0].K == KText && len(args) == 3 {
+			rk := KTime
+			if args[0].K == KTimestamp {
+				rk = KTimestamp
+			}
 			start, err := coerce(args[0], KTime)
 			if err != nil {
 				return nil, err
@@ -2782,16 +2856,20 @@ func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([
 			if err != nil {
 				return nil, err
 			}
-			if intervalMs(step) <= 0 {
-				return nil, errf(codeInvalidParameter, "step size cannot be zero or negative")
+			if step.F == 0 && step.D == 0 && step.I == 0 {
+				return nil, errf(codeInvalidParameter, "step size cannot equal zero")
 			}
-			for t, n := start.I, int64(0); t <= stop.I && n < int64(maxRows); n++ {
-				if err := emit([]Datum{TimeD(t)}); err != nil {
+			down := intervalMs(step) < 0
+			for t, n := start.I, int64(0); (!down && t <= stop.I || down && t >= stop.I) && n < int64(maxRows); n++ {
+				if err := emit([]Datum{tsD(rk, t)}); err != nil {
 					return nil, err
 				}
-				t = addInterval(start.I, step, n+1)
+				t = addIntervalTS(t, step, 1)
 			}
 			return out, nil
+		}
+		if done, err := fnGenSeries(args, maxRows, emit); done { // numeric, float and the rest (fn_*.go)
+			return out, err
 		}
 		var vals [3]int64
 		vals[2] = 1
@@ -3244,7 +3322,7 @@ func (b *binder) wholeRowJSON(x Expr, fn string) (Expr, bool, error) {
 	if len(cols) == 0 {
 		return nil, false, nil
 	}
-	build := "json_build_object"
+	build := "stask_json_row"
 	if fn == "to_jsonb" || fn == "jsonb_agg" {
 		build = "jsonb_build_object"
 	}

@@ -270,10 +270,7 @@ func writesStatement(st Stmt) (bool, string) {
 		if st.forUpdate {
 			return true, "DECLARE CURSOR FOR UPDATE/SHARE"
 		}
-	case *LockTable:
-		if st.Mode > tmRowExclusive {
-			return true, "LOCK TABLE"
-		}
+	case *LockTable: // PostgreSQL 16 allows every lock mode in a read-only transaction
 	case *WithDML:
 		return true, "WITH"
 	case *Insert:
@@ -314,6 +311,7 @@ func (s *Session) noteLocal(name string) {
 // endTx forgets the state that lasts to the end of a transaction.
 func (s *Session) endTx() {
 	s.savepoints, s.readOnly = nil, false
+	s.txQueried, s.txRU = false, false
 	for i := len(s.localUndo) - 1; i >= 0; i-- {
 		u := s.localUndo[i]
 		if !u.had {

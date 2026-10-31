@@ -1,8 +1,8 @@
 package sql
 
 import (
+	"fmt"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -10,8 +10,9 @@ import (
 // no-ops (STASK keeps no planner statistics and reclaims space in its own GC).
 
 type PrepareStmt struct {
-	Name string
-	Stmt Stmt
+	Name       string
+	Stmt       Stmt
+	ParamTypes []string // the declared types, as written
 }
 type ExecuteStmt struct {
 	Name string
@@ -21,7 +22,10 @@ type DeallocateStmt struct {
 	Name string // "" with All
 	All  bool
 }
-type MaintStmt struct{ Tag string } // ANALYZE, VACUUM
+type MaintStmt struct {
+	Tag, Word, Kind, Index string
+	Rels                   []string
+} // ANALYZE, VACUUM, CLUSTER, REINDEX, CHECKPOINT (maint.go)
 
 func (*PrepareStmt) stmt()    {}
 func (*ExecuteStmt) stmt()    {}
@@ -36,19 +40,35 @@ func (p *parser) prepareStatements(word string) (Stmt, bool, error) {
 		if err != nil {
 			return nil, true, err
 		}
+		var ptypes []string
 		if p.acceptOp("(") { // parameter types: $n types come from use
-			for !p.acceptOp(")") {
+			cur := ""
+			for {
 				if p.peek().k == tEOF {
 					return nil, true, p.errHere("syntax error in PREPARE")
 				}
-				p.next()
+				if p.acceptOp(")") {
+					break
+				}
+				if p.acceptOp(",") {
+					ptypes = append(ptypes, cur)
+					cur = ""
+					continue
+				}
+				if cur != "" {
+					cur += " "
+				}
+				cur += p.next().s
+			}
+			if cur != "" {
+				ptypes = append(ptypes, cur)
 			}
 		}
 		if err := p.expectKw("as"); err != nil {
 			return nil, true, err
 		}
 		inner, err := p.statement()
-		return &PrepareStmt{Name: name, Stmt: inner}, true, err
+		return &PrepareStmt{Name: name, Stmt: inner, ParamTypes: ptypes}, true, err
 	case "execute":
 		p.next()
 		name, err := p.ident()
@@ -71,11 +91,8 @@ func (p *parser) prepareStatements(word string) (Stmt, bool, error) {
 		name, err := p.ident()
 		return &DeallocateStmt{Name: name}, true, err
 	case "analyze", "vacuum", "analyse", "checkpoint", "reindex", "cluster":
-		p.next()
-		for p.peek().k != tEOF && !p.isOp(";") { // options and table names are ignored
-			p.next()
-		}
-		return &MaintStmt{Tag: strings.ToUpper(strings.Replace(word, "analyse", "analyze", 1))}, true, nil
+		st, err := p.maintStatement(word)
+		return st, true, err
 	}
 	return nil, false, nil
 }
@@ -90,15 +107,28 @@ func (s *Session) execPrepare(st Stmt, params []Datum) (*Result, error) {
 			s.prepared = map[string]Stmt{}
 		}
 		s.prepared[st.Name] = st.Stmt
+		if s.prepNParams == nil {
+			s.prepNParams = map[string]prepSig{}
+		}
+		n := maxParamAny(st.Stmt)
+		if len(st.ParamTypes) > n {
+			n = len(st.ParamTypes)
+		}
+		s.prepNParams[st.Name] = prepSig{n: n, types: st.ParamTypes}
 		if s.preparedQ == nil {
 			s.preparedQ = map[string]prepInfo{}
 		}
-		s.preparedQ[st.Name] = prepInfo{text: s.pendingQ, at: time.Now()}
+		s.preparedQ[st.Name] = prepInfo{text: s.lastQ, at: time.Now()}
 		return &Result{Tag: "PREPARE"}, nil
 	case *ExecuteStmt:
 		inner, ok := s.prepared[st.Name]
 		if !ok {
 			return nil, errf("26000", "prepared statement %q does not exist", st.Name)
+		}
+		if sig, ok := s.prepNParams[st.Name]; ok && len(st.Args) != sig.n {
+			e := errf(codeSyntax, "wrong number of parameters for prepared statement %q", st.Name)
+			e.Detail = fmt.Sprintf("Expected %d parameters but got %d.", sig.n, len(st.Args))
+			return nil, e
 		}
 		ctx := &evalCtx{sc: &scope{}, params: params, now: nowMicros(), sess: s}
 		args := make([]Datum, len(st.Args))
@@ -113,17 +143,24 @@ func (s *Session) execPrepare(st Stmt, params []Datum) (*Result, error) {
 	case *DeallocateStmt:
 		if st.All {
 			s.prepared = nil
+			s.prepNParams = nil
 			return &Result{Tag: "DEALLOCATE ALL"}, nil
 		}
 		if _, ok := s.prepared[st.Name]; !ok {
 			return nil, errf("26000", "prepared statement %q does not exist", st.Name)
 		}
 		delete(s.prepared, st.Name)
+		delete(s.prepNParams, st.Name)
 		return &Result{Tag: "DEALLOCATE"}, nil
 	case *MaintStmt:
-		return &Result{Tag: st.Tag}, nil
+		return s.execMaint(st)
 	}
 	return nil, errf(codeInternal, "unexpected statement %T", st)
+}
+
+type prepSig struct {
+	n     int
+	types []string
 }
 
 type prepInfo struct {
@@ -161,7 +198,7 @@ func init() {
 			sort.Strings(names)
 			for _, n := range names {
 				pi := c.s.preparedQ[n]
-				rows = append(rows, []Datum{TextD(n), TextD(pi.text), TimeD(pi.at.UnixMicro()), regtypeArray(nil), regtypeArray(nil), BoolD(true), IntD(0), IntD(0)})
+				rows = append(rows, []Datum{TextD(n), TextD(pi.text), TimeD(pi.at.UnixMicro()), regtypeArray(regtypeNames(c.s.prepNParams[n].types)), regtypeArray(nil), BoolD(true), IntD(0), IntD(0)})
 			}
 			if c.s.WirePrepared != nil {
 				for _, w := range c.s.WirePrepared() {

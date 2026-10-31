@@ -131,7 +131,8 @@ func (s *Session) createIndex(c *CreateIndex) (*Result, error) {
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", c.Name)
-			e.Msg += fmt.Sprintf(": Key (%s)=(%s) is duplicated.", strings.Join(ue.Columns, ", "), strings.Join(ue.Values, ", "))
+			e.Detail = fmt.Sprintf("Key (%s)=(%s) is duplicated.", strings.Join(ue.Columns, ", "), strings.Join(ue.Values, ", "))
+			e.at(t.Name)
 			return nil, e
 		}
 		return nil, AsError(err)
@@ -163,6 +164,11 @@ func (s *Session) dropIndex(d *DropIndex) (*Result, error) {
 			}
 		}
 		if def == nil {
+			for _, ts := range s.E.UserTables() { // the index of a primary key belongs to its constraint
+				if t := ts.Schema(); t.HasPK() && stripOwnSchema(pkeyName(t), schemaOfName(t.Name)) == bareName(name) {
+					return nil, errf(codeDependentObjects, "cannot drop index %s because constraint %s on table %s requires it", name, name, t.Name)
+				}
+			}
 			if d.IfExists {
 				res.Notice = fmt.Sprintf("index %q does not exist, skipping", name)
 				continue
@@ -243,7 +249,11 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	} else if slices.ContainsFunc(child.ForeignKeys, func(f schema.ForeignKey) bool { return f.Name == name }) {
 		return fk, nil, errf(codeDuplicateObject, "constraint %q for relation %q already exists", name, child.Name)
 	}
-	fk = schema.ForeignKey{Name: name, Columns: c.Cols, RefTable: parent.Name, RefCols: refCols, OnDelete: c.OnDelete}
+	fk = schema.ForeignKey{Name: name, Columns: c.Cols, RefTable: parent.Name, RefCols: refCols, OnDelete: c.OnDelete,
+		Deferrable: c.Deferrable, InitiallyDeferred: c.InitiallyDeferred, NotValid: c.NotValid}
+	if c.OnUpdate != "no action" {
+		fk.OnUpdate = c.OnUpdate
+	}
 	// an index on the referencing columns makes the checks on the parent's delete cheap
 	var idx *schema.IndexDef
 	covered := false
@@ -285,7 +295,7 @@ func (s *Session) constraintsOf(c *CreateTable, t *schema.Table) error {
 		if t.Index(name) != nil {
 			return errf(codeDuplicateTable, "relation %q already exists", name)
 		}
-		t.Indexes = append(t.Indexes, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name})
+		t.Indexes = append(t.Indexes, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name, NullsNotDistinct: k.NullsNotDistinct})
 		uniques = append(uniques, k.Cols)
 	}
 	for _, k := range c.Constraints {
@@ -325,11 +335,12 @@ func (s *Session) addConstraint(table string, k *ConstraintDef) error {
 		} else if _, taken := s.E.IndexNameTaken(name); taken || s.relationExists(name) {
 			return errf(codeDuplicateTable, "relation %q already exists", name)
 		}
-		err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name})
+		err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name, NullsNotDistinct: k.NullsNotDistinct})
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", name)
-			e.Msg += fmt.Sprintf(": Key (%s)=(%s) is duplicated.", strings.Join(ue.Columns, ", "), strings.Join(ue.Values, ", "))
+			e.Detail = fmt.Sprintf("Key (%s)=(%s) is duplicated.", strings.Join(ue.Columns, ", "), strings.Join(ue.Values, ", "))
+			e.at(t.Name)
 			return e
 		}
 		return err
@@ -385,19 +396,27 @@ func fkErrorOf(err error) *Error {
 	var ne *core.NotNullError
 	switch {
 	case errors.As(err, &ue):
-		e := errf(codeUniqueViolation, "duplicate key value violates unique constraint %q", ue.Constraint)
+		cols, vals := "", ""
 		if len(ue.Values) > 0 {
-			e.Msg += fmt.Sprintf(": Key (%s)=(%s) already exists.", strings.Join(ue.Columns, ", "), strings.Join(ue.Values, ", "))
+			cols, vals = strings.Join(ue.Columns, ", "), strings.Join(ue.Values, ", ")
 		}
-		return e
+		return uniqueViolation(ue.Table, ue.Constraint, cols, vals)
 	case errors.As(err, &fe):
-		e := errf(codeForeignKeyViolation, "%s", fe.Error())
-		if fe.Detail != "" {
-			e.Msg += ": " + fe.Detail
+		var e *Error
+		if fe.Delete { // PostgreSQL: table_name is the referenced table of a delete, the child table of an insert
+			e = errf(codeForeignKeyViolation, "update or delete on table %q violates foreign key constraint %q on table %q",
+				bareName(fe.Ref), bareName(fe.Constraint), bareName(fe.Table)).at(fe.Ref)
+		} else {
+			e = errf(codeForeignKeyViolation, "insert or update on table %q violates foreign key constraint %q",
+				bareName(fe.Table), bareName(fe.Constraint)).at(fe.Table)
 		}
+		e.Constraint = bareName(fe.Constraint)
+		e.Detail = tableNameRE.ReplaceAllStringFunc(fe.Detail, func(m string) string { return `table "` + bareName(m[7:len(m)-1]) + `"` })
 		return e
 	case errors.As(err, &ne):
-		return errf(codeNotNullViolation, "%s", ne.Error())
+		e := errf(codeNotNullViolation, "null value in column %q of relation %q violates not-null constraint", ne.Column, bareName(ne.Table)).at(ne.Table)
+		e.Column = ne.Column
+		return e
 	}
 	return nil
 }
@@ -436,6 +455,11 @@ func (s *Session) alterConstraints(st *AlterTable) (*Result, error) {
 			continue
 		case "rename_constraint":
 			if err := s.renameConstraint(name, a.Column, a.NewName); err != nil {
+				return nil, AsError(err)
+			}
+			continue
+		case "validate_constraint":
+			if err := s.validateConstraint(name, a.Column); err != nil {
 				return nil, AsError(err)
 			}
 			continue

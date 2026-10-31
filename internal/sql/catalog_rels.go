@@ -66,7 +66,7 @@ func init() {
 		"attacl:a attoptions:a attfdwoptions:a attmissingval:a", func(c *catSnap) [][]Datum {
 		var rows [][]Datum
 		mod := int64(-1) // atttypmod of the column being added
-		curColl := ""
+		curColl, curGen := "", ""
 		att := func(rel int64, name string, typ int64, num int, notNull, def bool, ident string, missing, dropped bool) {
 			ty := typeByOID(typ)
 			coll := int64(0)
@@ -81,7 +81,7 @@ func init() {
 			}
 			rows = append(rows, []Datum{IntD(rel), TextD(name), IntD(typ), IntD(-1), IntD(ty.len), IntD(int64(num)),
 				IntD(0), IntD(-1), IntD(mod), BoolD(ty.len > 0 && ty.len <= 8), TextD("d"), TextD("p"), TextD(""),
-				BoolD(notNull), BoolD(def), BoolD(missing), TextD(ident), TextD(""), BoolD(dropped), BoolD(true), IntD(0),
+				BoolD(notNull), BoolD(def), BoolD(missing), TextD(ident), TextD(curGen), BoolD(dropped), BoolD(true), IntD(0),
 				IntD(coll), Null, Null, Null, Null})
 		}
 		for _, t := range c.tables {
@@ -101,11 +101,14 @@ func init() {
 			for _, a := range all {
 				col := a.col
 				mod = typmodOf(col)
-				curColl = col.Collation
+				curColl, curGen = col.Collation, ""
+				if col.Generated != "" {
+					curGen = "s"
+				}
 				att(tableOID(t), col.Name, colTypeOID(col), col.Num, col.NotNull || col.Name == t.Key, hasDef(col),
 					identityChar(col), col.Missing != nil, a.dropped)
 			}
-			mod, curColl = -1, ""
+			mod, curColl, curGen = -1, "", ""
 			for i, name := range t.PKCols() {
 				j, _ := t.Col(name)
 				att(indexOID(t), name, colTypeOID(t.Columns[j]), i+1, false, false, "", false, false)
@@ -157,7 +160,7 @@ func init() {
 					align = "d"
 				}
 				rows = append(rows, []Datum{IntD(t.oid), TextD(t.name), IntD(nsPgCatalog), IntD(ownerOID), IntD(t.len),
-					BoolD(t.len > 0 && t.len <= 8), TextD("b"), TextD(t.cat), BoolD(false), BoolD(true), TextD(","), IntD(0),
+					BoolD(t.len > 0 && t.len <= 8), TextD(typtypeOf(t.cat)), TextD(t.cat), BoolD(false), BoolD(true), TextD(","), IntD(0),
 					IntD(0), IntD(t.elem), IntD(t.array), TextD(typInput(t)), TextD(t.name + "out"), TextD(t.name + "recv"),
 					TextD(t.name + "send"), TextD("-"), TextD("-"), TextD("-"), TextD(align), TextD("p"), BoolD(false),
 					IntD(0), IntD(-1), IntD(0), IntD(coll), Null, Null, Null})

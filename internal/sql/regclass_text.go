@@ -71,6 +71,11 @@ func (c *evalCtx) regOtherText(in *Cast) (Datum, bool, error) {
 		case nsInfoSchema:
 			return TextD("information_schema"), true, nil
 		}
+		for _, o := range s.E.Objs("schema") {
+			if schemaOID(o.Name) == v.I {
+				return TextD(quoteIdent(o.Name)), true, nil
+			}
+		}
 	case "regproc", "regprocedure":
 		for _, d := range allFuncs(s.E) {
 			if d.oid() == v.I {

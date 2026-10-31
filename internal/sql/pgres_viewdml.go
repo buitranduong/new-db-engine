@@ -23,14 +23,27 @@ func (s *Session) simpleViewOf(name string) (*simpleView, bool) {
 	if !ok || v == nil {
 		return nil, false
 	}
-	st, err := ParseOne(v.Query)
+	st, err := s.parseOwned(name, v.Query)
 	if err != nil {
 		return nil, false
 	}
 	q, ok := st.(*Select)
 	if !ok || q.Distinct || len(q.DistinctOn) > 0 || len(q.GroupBy) > 0 || q.Having != nil || q.Rel != nil ||
 		q.From == "" || q.Limit != nil || q.Offset != nil || len(q.With) > 0 || len(q.Windows) > 0 ||
-		q.Into != nil || len(q.Items) != len(v.Cols) {
+		q.Into != nil {
+		return nil, false
+	}
+	if len(q.Items) == 1 && q.Items[0].Star && q.Items[0].X == nil { // SELECT * FROM base: every column keeps its name
+		sv := &simpleView{base: q.From, where: q.Where, cols: map[string]string{}, ident: true, colSeq: v.Cols}
+		if q.Where != nil && (hasAggOrWin(q.Where) || hasSubquery(q.Where)) {
+			return nil, false
+		}
+		for _, c := range v.Cols {
+			sv.cols[c] = c
+		}
+		return sv, true
+	}
+	if len(q.Items) != len(v.Cols) {
 		return nil, false
 	}
 	if q.Where != nil && (hasAggOrWin(q.Where) || hasSubquery(q.Where)) {
@@ -78,6 +91,9 @@ func (s *Session) viewDML(st Stmt) (Stmt, error) {
 	sv, ok := s.simpleViewOf(name)
 	if !ok {
 		return st, nil
+	}
+	if _, isDelete := st.(*Delete); !isDelete {
+		s.noteViewCheck(name, sv)
 	}
 	switch q := st.(type) {
 	case *Insert:

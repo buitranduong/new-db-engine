@@ -66,6 +66,8 @@ type parser struct {
 	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
 	// when the schema type says it all.
 	pgSpec string
+	// tempCreate: parsing CREATE TEMP TABLE: the name is not placed in a schema (it lives in pg_temp)
+	tempCreate bool
 }
 
 func (p *parser) peek() token { return p.toks[p.i] }
@@ -190,6 +192,12 @@ func (p *parser) statement() (Stmt, error) {
 		return nil, p.errHere("syntax error at or near %q", t.s)
 	}
 	switch t.s {
+	case "prepare", "commit", "end", "rollback", "abort":
+		if st, ok, err := p.parseTwoPhase(); ok {
+			return st, err
+		}
+	}
+	switch t.s {
 	case "select", "with", "values", "table":
 		return intoWrap(p.queryStmt())
 	case "insert":
@@ -299,7 +307,7 @@ func (p *parser) statement() (Stmt, error) {
 				case p.acceptKw("read", "committed"):
 					b.Iso = "read committed"
 				case p.acceptKw("read", "uncommitted"):
-					b.Iso = "read committed"
+					b.Iso = "read uncommitted"
 				default:
 					return nil, p.errHere("unknown isolation level %q", p.peek().s)
 				}
@@ -328,6 +336,9 @@ func (p *parser) statement() (Stmt, error) {
 		return &Rollback{}, nil
 	case "set":
 		p.next()
+		if p.acceptKw("constraints") {
+			return p.setConstraints()
+		}
 		p.acceptKw("session")
 		local := p.acceptKw("local")
 		var name []string
@@ -382,6 +393,9 @@ func (p *parser) statement() (Stmt, error) {
 	case "alter":
 		p.next()
 		if st, ok, err := p.alterObj(); ok {
+			return st, err
+		}
+		if st, ok, err := p.alterView(); ok {
 			return st, err
 		}
 		if p.acceptKw("role") || p.acceptKw("user") {
@@ -560,13 +574,16 @@ func (p *parser) createStmt() (Stmt, error) {
 				return nil, err
 			}
 			if c.Key != "" || c.KeyCols != nil {
-				return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
+				return nil, errf("42P16", "multiple primary keys for table %q are not allowed", c.Name)
 			}
 			c.PKName = cname
 			if len(cols) == 1 {
 				c.Key = cols[0]
 			} else {
 				c.KeyCols = cols
+			}
+			if err := p.skipConstraintAttrs(); err != nil {
+				return nil, err
 			}
 		} else {
 			cd, err := p.colDef()
@@ -575,7 +592,7 @@ func (p *parser) createStmt() (Stmt, error) {
 			}
 			if cd.Primary {
 				if c.Key != "" || c.KeyCols != nil {
-					return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
+					return nil, errf("42P16", "multiple primary keys for table %q are not allowed", c.Name)
 				}
 				c.Key = cd.Name
 				c.PKName = cd.PKName
@@ -687,13 +704,18 @@ func (p *parser) colDef() (ColDef, error) {
 		cd.Type = "timestamp"
 	case "oid": // Liquibase BLOB: an integer column that reports the type oid
 		cd.Type, cd.PG = "int", "oid"
-	case "interval", "array":
+	case "interval":
+		cd.Type, cd.PG = "string", p.pgSpec
+	case "array":
 		return cd, errf(codeFeature, "columns of type %s are not supported", cd.Type)
 	}
 	for {
 		switch {
 		case p.acceptKw("primary", "key"):
 			cd.Primary, cd.NotNull = true, true
+			if err := p.skipConstraintAttrs(); err != nil {
+				return cd, err
+			}
 		case p.acceptKw("not", "null"):
 			cd.NotNull = true
 		case p.acceptKw("null"):
@@ -714,8 +736,16 @@ func (p *parser) colDef() (ColDef, error) {
 			default:
 				return cd, p.errHere("syntax error at or near %q", p.peek().s)
 			}
+			if cd.Identity == "always" && p.isKw("as") && p.peekN(1).s == "(" {
+				// GENERATED ALWAYS AS (expr) STORED (PostgreSQL 16 has no VIRTUAL; genstored.go)
+				cd.Identity = ""
+				if err := p.generatedExpr(&cd); err != nil {
+					return cd, err
+				}
+				continue
+			}
 			if !p.acceptKw("as", "identity") {
-				return cd, errf(codeFeature, "generated columns are not supported")
+				return cd, p.errHere("syntax error at or near %q", p.peek().s)
 			}
 			if cd.IntType == "" {
 				return cd, errf("22023", "identity column type must be smallint, integer, or bigint")
@@ -749,7 +779,16 @@ func (p *parser) colDef() (ColDef, error) {
 			}
 			switch {
 			case p.acceptKw("unique"):
-				cd.Constraints = append(cd.Constraints, &ConstraintDef{Kind: "unique", Name: name})
+				k := &ConstraintDef{Kind: "unique", Name: name}
+				if p.acceptKw("nulls") {
+					if k.NullsNotDistinct = p.acceptKw("not", "distinct"); !k.NullsNotDistinct {
+						p.acceptKw("distinct")
+					}
+				}
+				if err := p.skipConstraintAttrs(); err != nil {
+					return cd, err
+				}
+				cd.Constraints = append(cd.Constraints, k)
 			case p.acceptKw("references"):
 				k, err := p.referencesDef(name, nil)
 				if err != nil {
@@ -833,13 +872,8 @@ func (p *parser) typeName() (string, error) {
 	case "date32":
 		out = "date"
 	case "interval":
-		for p.peek().k == tIdent && intervalUnits[p.peek().s] != [2]int64{} {
-			p.next() // INTERVAL DAY TO SECOND etc.
-			if p.acceptKw("to") {
-				p.next()
-			}
-		}
 		out = "interval"
+		p.pgSpec = p.intervalTypmod()
 	case "float", "float4", "float8", "real":
 		skipMods()
 		out = "float"
@@ -922,6 +956,10 @@ func (p *parser) typeName() (string, error) {
 	case "bool", "boolean":
 		out = "bool"
 	default:
+		if spec, ok := p.extTypeSpec(t.s); ok { // ranges, macaddr8, bit strings (exttypes.go)
+			out, p.pgSpec = "string", spec
+			break
+		}
 		if unsupportedTypes[t.s] {
 			return "", errf(codeFeature, "type %q is not supported", t.s)
 		}
@@ -1032,8 +1070,8 @@ func (p *parser) insertStmt() (Stmt, error) {
 					oc.Target = append(oc.Target, "") // an expression target: never matches
 				}
 			}
-		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
-			if _, err := p.ident(); err != nil {
+		} else if p.acceptKw("on", "constraint") {
+			if oc.Constraint, err = p.ident(); err != nil {
 				return nil, err
 			}
 		}
@@ -1179,6 +1217,7 @@ func (p *parser) updateStmt() (Stmt, error) {
 	p.next()
 	u := &Update{}
 	var err error
+	p.acceptKw("only") // no inheritance children to leave out
 	if u.Table, u.Alias, err = p.tableAlias(); err != nil {
 		return nil, err
 	}
@@ -1209,6 +1248,7 @@ func (p *parser) deleteStmt() (Stmt, error) {
 	}
 	d := &Delete{}
 	var err error
+	p.acceptKw("only")
 	if d.Table, d.Alias, err = p.tableAlias(); err != nil {
 		return nil, err
 	}
@@ -1423,6 +1463,37 @@ func (p *parser) predicate() (Expr, error) {
 			}
 			l = bin
 			lcoll = nil
+		case p.isKw("overlaps"):
+			p.next()
+			r, err := p.bitExpr()
+			if err != nil {
+				return nil, err
+			}
+			lr, ok1 := l.(*RowExpr)
+			rr, ok2 := r.(*RowExpr)
+			if !ok1 || !ok2 || len(lr.Items) != 2 || len(rr.Items) != 2 {
+				return nil, p.errHere("syntax error at or near \"overlaps\"")
+			}
+			l = &Func{Name: "stask_overlaps", Disp: "overlaps", Args: []Expr{lr.Items[0], lr.Items[1], rr.Items[0], rr.Items[1]}}
+		case t.k == tOp && (t.s == "~~" || t.s == "!~~" || t.s == "~~*" || t.s == "!~~*"):
+			p.next()
+			r, err := p.bitExpr()
+			if err != nil {
+				return nil, err
+			}
+			l = &Like{X: l, Pat: r, Not: strings.HasPrefix(t.s, "!"), ICase: strings.HasSuffix(t.s, "*")}
+		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*") && (p.peekN(1).s == "any" || p.peekN(1).s == "some" || p.peekN(1).s == "all") && p.peekN(2).s == "(":
+			p.next()
+			all := p.next().s == "all"
+			p.next()
+			arr, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(")"); err != nil {
+				return nil, err
+			}
+			l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(t.s)}, &Lit{BoolD(all)}}}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
 			r, err := p.bitExpr()
@@ -1537,6 +1608,23 @@ func (p *parser) predicate() (Expr, error) {
 				}
 			case p.acceptKw("like"), p.acceptKw("ilike"):
 				ic := p.toks[p.i-1].s == "ilike"
+				if (p.isKw("any") || p.isKw("some") || p.isKw("all")) && p.peekN(1).s == "(" { // x LIKE ANY (array)
+					all := p.next().s == "all"
+					p.next()
+					arr, err := p.expr()
+					if err != nil {
+						return nil, err
+					}
+					if err := p.expectOp(")"); err != nil {
+						return nil, err
+					}
+					op := map[bool]string{true: "ilike", false: "like"}[ic]
+					if not {
+						op = "not " + op
+					}
+					l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(op)}, &Lit{BoolD(all)}}}
+					continue
+				}
 				pat, err := p.bitExpr()
 				if err != nil {
 					return nil, err
@@ -1600,6 +1688,10 @@ func (p *parser) mulExpr() (Expr, error) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.powExpr(); err == nil {
+			if op == "%" && (isTextLit(l) || isTextLit(r) || isAnyTextLit(l) && isAnyTextLit(r)) { // pg_trgm similarity: text % text
+				l = &Func{Name: "stask_trgm_sim", Disp: "?column?", Args: []Expr{l, r}}
+				continue
+			}
 			l = &Binary{Op: op, L: l, R: r}
 		}
 	}
@@ -1640,6 +1732,10 @@ func (p *parser) unary() (Expr, error) {
 	if p.acceptOp("~") { // bitwise NOT
 		x, err := p.unary()
 		return &Unary{"~", x}, err
+	}
+	if p.acceptOp("!!") { // tsquery NOT
+		x, err := p.unary()
+		return &Func{Name: "stask_tsnot", Disp: "?column?", Args: []Expr{x}}, err
 	}
 	x, err := p.primary()
 	for err == nil {
@@ -1793,9 +1889,26 @@ func (p *parser) primary() (Expr, error) {
 				}
 				return &Subquery{Q: q, Array: true}, p.expectOp(")")
 			}
+		case "stask_bitlit":
+			if p.peekN(1).k == tString {
+				p.next()
+				return bitLiteral(p.next().s), nil
+			}
 		case "interval":
 			// INTERVAL '1 day', INTERVAL '2' HOUR, ClickHouse INTERVAL 2 HOUR
-			if k := p.peekN(1).k; k == tString || k == tNumber {
+			if p.peekN(1).k == tString {
+				p.next()
+				v := p.next().s
+				spec := p.intervalTypmod()
+				if tm, _ := ivSpecParse(spec); tm.mask != ivFAll && ivBareNumber(v) { // INTERVAL '2' HOUR: the unit of the last field
+					v += " " + ivLastUnit(tm.mask)
+				}
+				if spec == "interval" {
+					spec = ""
+				}
+				return &Cast{&Lit{TextD(v)}, "interval", spec}, nil
+			}
+			if k := p.peekN(1).k; k == tNumber {
 				p.next()
 				v := p.next().s
 				if u := p.peek(); u.k == tIdent && intervalUnits[u.s] != [2]int64{} || u.k == tIdent && (u.s == "microsecond" || u.s == "microseconds") {
@@ -1817,6 +1930,20 @@ func (p *parser) primary() (Expr, error) {
 				s := p.next()
 				return &Cast{&Lit{TextD(s.s)}, ty, pg}, nil
 			}
+		case "current_time", "localtime":
+			p.next()
+			var targs []Expr
+			if p.acceptOp("(") {
+				if p.peek().k != tNumber {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+				targs = append(targs, &Lit{IntD(0)})
+				targs[0].(*Lit).V, _ = coerce(TextD(p.next().s), KInt)
+				if err := p.expectOp(")"); err != nil {
+					return nil, err
+				}
+			}
+			return &Func{Name: t.s, Args: targs}, nil
 		case "current_timestamp", "localtimestamp":
 			p.next()
 			if p.acceptOp("(") { // current_timestamp(3): the precision is accepted; values keep microseconds
@@ -1827,6 +1954,9 @@ func (p *parser) primary() (Expr, error) {
 				if err := p.expectOp(")"); err != nil {
 					return nil, err
 				}
+			}
+			if t.s == "localtimestamp" {
+				return &Cast{&Func{Name: "now"}, "timestamp", "timestamp"}, nil
 			}
 			return &Func{Name: "now"}, nil
 		}
@@ -1918,11 +2048,35 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			return &Func{Name: "overlay", Args: args}, p.expectOp(")")
 		}
 		p.i = save
+	case "normalize": // normalize(x [, NFC|NFD|NFKC|NFKD])
+		x, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		args := []Expr{x}
+		if p.acceptOp(",") {
+			args = append(args, &Lit{TextD(strings.ToUpper(p.next().s))})
+		}
+		return &Func{Name: "normalize", Args: args}, p.expectOp(")")
 	case "substring", "substr":
 		disp := name
 		x, err := p.expr()
 		if err != nil {
 			return nil, err
+		}
+		if p.acceptKw("similar") { // substring(x similar pattern escape e)
+			pat, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectKw("escape"); err != nil {
+				return nil, err
+			}
+			esc, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			return &Func{Name: "substr", Disp: disp, Args: []Expr{x, pat, esc}}, p.expectOp(")")
 		}
 		if p.isKw("from") || p.isKw("for") {
 			args := []Expr{x, &Lit{IntD(1)}}
@@ -2353,6 +2507,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				if act.Check, err = p.checkDef(cname); err != nil {
 					return nil, err
 				}
+				act.Check.NotValid = p.acceptKw("not", "valid")
 				break
 			}
 			if p.acceptKw("unique") {
@@ -2384,6 +2539,34 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 			if act.Col, err = p.colDef(); err != nil {
 				return nil, err
 			}
+		case p.acceptKw("validate", "constraint"):
+			act.Kind = "validate_constraint"
+			if act.Column, err = p.ident(); err != nil {
+				return nil, err
+			}
+		case p.acceptKw("disable"), p.acceptKw("enable"):
+			// ALTER TABLE .. DISABLE|ENABLE [REPLICA|ALWAYS] TRIGGER {name|ALL|USER}: accepted, no effect
+			p.acceptKw("replica")
+			p.acceptKw("always")
+			if p.acceptKw("row", "level", "security") {
+				return nil, errf(codeFeature, "row level security is not supported")
+			}
+			if !p.acceptKw("trigger") && !p.acceptKw("rule") {
+				return nil, p.errHere("syntax error at or near %q", p.peek().s)
+			}
+			p.next() // a name, ALL or USER
+			act.Kind = "noop"
+		case p.acceptKw("cluster", "on"), p.acceptKw("set", "without", "cluster"), p.acceptKw("set", "without", "oids"):
+			if p.peek().k == tIdent && !p.isOp(",") && p.peek().k != tEOF {
+				if _, err := p.ident(); err != nil {
+					return nil, err
+				}
+			}
+			act.Kind = "noop"
+		case p.acceptKw("set", "logged"):
+			act.Kind = "set_logged"
+		case p.acceptKw("set", "unlogged"):
+			act.Kind = "set_unlogged"
 		case p.acceptKw("drop"):
 			if p.acceptKw("constraint") {
 				act.Kind, act.IfExists = "drop_constraint", p.acceptKw("if", "exists")
@@ -2397,7 +2580,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 					return nil, err
 				}
 			}
-			if !p.acceptKw("cascade") {
+			if act.Cascade = p.acceptKw("cascade"); !act.Cascade {
 				p.acceptKw("restrict")
 			}
 		case p.acceptKw("rename"):
@@ -2456,6 +2639,54 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				return &AlterColRestart{Table: name, Col: act.Column, Opts: o}, nil
 			case p.acceptKw("drop", "default"):
 				act.Kind = "drop_default"
+			case p.acceptKw("set", "generated"):
+				act.Kind = "set_identity"
+				if p.acceptKw("always") {
+					act.Expr = "always"
+				} else if p.acceptKw("by", "default") {
+					act.Expr = "by default"
+				} else {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+			case p.acceptKw("add", "generated"):
+				act.Kind = "add_identity"
+				if p.acceptKw("always") {
+					act.Expr = "always"
+				} else if p.acceptKw("by", "default") {
+					act.Expr = "by default"
+				} else {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+				if err := p.expectKw("as"); err != nil {
+					return nil, err
+				}
+				if err := p.expectKw("identity"); err != nil {
+					return nil, err
+				}
+				if p.acceptOp("(") {
+					o, err := p.seqOpts(false)
+					if err != nil {
+						return nil, err
+					}
+					act.Col.SeqOpts = &o
+					if err := p.expectOp(")"); err != nil {
+						return nil, err
+					}
+				}
+			case p.acceptKw("drop", "identity"):
+				act.Kind, act.IfExists = "drop_identity", p.acceptKw("if", "exists")
+			case p.acceptKw("set", "storage"), p.acceptKw("set", "compression"), p.acceptKw("set", "statistics"):
+				// per-column storage hints: accepted, no effect (rows are not stored as heap tuples)
+				p.next()
+				act.Kind = "noop"
+			case p.isKw("set") && p.peekN(1).k == tOp && p.peekN(1).s == "(", p.isKw("reset") && p.peekN(1).k == tOp && p.peekN(1).s == "(":
+				p.next()
+				if _, err := p.parseOptions(); err != nil {
+					return nil, err
+				}
+				act.Kind = "noop"
+			case p.acceptKw("drop", "expression"): // generated columns (genstored.go)
+				act.Kind, act.IfExists = "drop_expression", p.acceptKw("if", "exists")
 			case p.acceptKw("set", "not", "null"):
 				act.Kind = "set_not_null"
 			case p.acceptKw("drop", "not", "null"):

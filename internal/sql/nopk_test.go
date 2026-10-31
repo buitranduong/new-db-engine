@@ -59,7 +59,7 @@ func TestNoPrimaryKey(t *testing.T) {
 	if got := cell(t, s, `SELECT count(*) FROM pg_class WHERE relname LIKE '%rowid%'`); got != "0" {
 		t.Fatalf("hidden sequence listed: %s", got)
 	}
-	if got := cell(t, s, `SELECT count(*) FROM information_schema.table_constraints WHERE table_name = 'databasechangelog'`); got != "0" {
+	if got := cell(t, s, `SELECT count(*) FROM information_schema.table_constraints WHERE table_name = 'databasechangelog' AND constraint_name NOT LIKE '%not_null'`); got != "0" {
 		t.Fatalf("table_constraints: %s", got)
 	}
 	// TRUNCATE and DROP
@@ -78,7 +78,7 @@ func TestCompositePrimaryKey(t *testing.T) {
 	s := NewSession(e)
 	run(t, s, `CREATE TABLE ck (a INT, b TEXT, v TEXT, PRIMARY KEY (a, b))`)
 	run(t, s, `INSERT INTO ck VALUES (1, 'x', 'p'), (1, 'y', 'q'), (2, 'x', 'r')`)
-	if _, err := tryRun(s, `INSERT INTO ck VALUES (1, 'x', 'dup')`); code(err) != "23505" || !strings.Contains(err.Error(), "Key (a, b)=(1, x)") {
+	if _, err := tryRun(s, `INSERT INTO ck VALUES (1, 'x', 'dup')`); code(err) != "23505" || !strings.Contains(errText(err), "Key (a, b)=(1, x)") {
 		t.Fatalf("duplicate: %v", err)
 	}
 	if _, err := tryRun(s, `INSERT INTO ck (a, v) VALUES (5, 'nb')`); code(err) != "23502" {

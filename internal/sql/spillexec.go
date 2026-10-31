@@ -90,7 +90,7 @@ func (qx *qexec) hold(n int64) (func(), error) {
 
 // ---- row codec ----
 
-// The codec writes the four fields of Datum. A new field there must be
+// The codec writes the five fields of Datum. A new field there must be
 // added here (TestSpillCodecCoversDatum fails otherwise).
 func encodeRow(dst []byte, r []Datum) []byte {
 	dst = binary.AppendUvarint(dst, uint64(len(r)))
@@ -106,6 +106,9 @@ func encodeRow(dst []byte, r []Datum) []byte {
 		if d.S != "" {
 			m |= 4
 		}
+		if d.D != 0 {
+			m |= 8
+		}
 		dst = append(dst, byte(d.K), m)
 		if m&1 != 0 {
 			dst = binary.AppendVarint(dst, d.I)
@@ -116,6 +119,9 @@ func encodeRow(dst []byte, r []Datum) []byte {
 		if m&4 != 0 {
 			dst = binary.AppendUvarint(dst, uint64(len(d.S)))
 			dst = append(dst, d.S...)
+		}
+		if m&8 != 0 {
+			dst = binary.AppendVarint(dst, int64(d.D))
 		}
 	}
 	return dst
@@ -155,6 +161,13 @@ func decodeRow(b []byte) ([]Datum, error) {
 				return nil, bad
 			}
 			r[i].S, b = string(b[k:k+int(l)]), b[k+int(l):]
+		}
+		if m&8 != 0 {
+			v, k := binary.Varint(b)
+			if k <= 0 {
+				return nil, bad
+			}
+			r[i].D, b = int32(v), b[k:]
 		}
 	}
 	return r, nil
@@ -495,8 +508,8 @@ func (sp *spillState) fromSource(qx *qexec, outer *evalCtx, fp fromPlan) rowSour
 			var err error
 			serr := qx.tx.ScanAll(f.t.Name, func(_ string, r schema.Row) bool {
 				d := make([]Datum, len(cols))
-				for i, c := range cols {
-					d[i] = fromValue(c.T, r[i])
+				for i := range cols {
+					d[i] = fromCol(&cols[i], r[i])
 				}
 				err = yield(d)
 				return err == nil

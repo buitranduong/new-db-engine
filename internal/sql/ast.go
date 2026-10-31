@@ -18,10 +18,11 @@ type ColDef struct {
 	Default   string // SQL text of DEFAULT
 	Checks    []CheckDef
 	// a SERIAL type or an IDENTITY column owns a sequence of IntType
-	Serial   bool
-	Identity string   // "always" or "by default"
-	IntType  string   // smallint, integer or bigint
-	SeqOpts  *SeqOpts // IDENTITY (sequence options)
+	Serial    bool
+	Identity  string   // "always" or "by default"
+	Generated string   // GENERATED ALWAYS AS (expr) STORED: the expression text (genstored.go)
+	IntType   string   // smallint, integer or bigint
+	SeqOpts   *SeqOpts // IDENTITY (sequence options)
 	// column constraints UNIQUE and REFERENCES (parse_index.go)
 	Constraints []*ConstraintDef
 }
@@ -84,6 +85,7 @@ type AlterAction struct {
 	Check      CheckDef
 	Constraint *ConstraintDef    // add_constraint (UNIQUE, FOREIGN KEY)
 	IfExists   bool              // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
+	Cascade    bool              // DROP COLUMN ... CASCADE
 	Opts       map[string]string // set_options: SET (name = value, ...)
 }
 
@@ -91,7 +93,10 @@ type AlterAction struct {
 type DefaultExpr struct{}
 
 // CheckDef is a CHECK constraint: Expr is its SQL text, Name may be empty.
-type CheckDef struct{ Name, Expr string }
+type CheckDef struct {
+	Name, Expr string
+	NotValid   bool // ADD CONSTRAINT .. CHECK .. NOT VALID
+}
 
 type CreateTable struct {
 	Name        string
@@ -113,10 +118,11 @@ type Assign struct {
 }
 
 type OnConflict struct {
-	Target    []string // ON CONFLICT (cols); nil: none given
-	DoNothing bool
-	Set       []Assign
-	Where     Expr
+	Target     []string // ON CONFLICT (cols); nil: none given
+	Constraint string   // ON CONFLICT ON CONSTRAINT name
+	DoNothing  bool
+	Set        []Assign
+	Where      Expr
 }
 
 type Insert struct {
@@ -280,7 +286,10 @@ type Expr interface{ expr() }
 
 type Lit struct{ V Datum }
 type Param struct{ N int } // 1-based
-type ColRef struct{ Table, Name string }
+type ColRef struct {
+	Table, Name string
+	Pos         int // 1-based slot of the FROM row, set by SELECT * for a column name that occurs twice (query.go)
+}
 type Unary struct {
 	Op string // "-", "not"
 	X  Expr

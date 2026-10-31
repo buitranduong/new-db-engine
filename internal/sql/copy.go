@@ -19,17 +19,20 @@ import (
 
 // CopyStmt is a parsed COPY statement.
 type CopyStmt struct {
-	Table  string   // empty for COPY (query)
-	Cols   []string // nil: all columns
-	Query  Stmt     // COPY (query) TO STDOUT
-	From   bool     // FROM STDIN (else TO STDOUT)
-	CSV    bool
-	Header bool
-	Delim  byte
-	Null   string
-	Quote  byte
-	Escape byte
-	Binary bool // FORMAT binary (FROM STDIN only; copybin.go)
+	Table         string   // empty for COPY (query)
+	ForceQuote    []string // FORCE_QUOTE (cols), csv TO
+	ForceQuoteAll bool     // FORCE_QUOTE *
+	QuerySrc      string   // COPY (query): the query text, parsed again per session (search_path)
+	Cols          []string // nil: all columns
+	Query         Stmt     // COPY (query) TO STDOUT
+	From          bool     // FROM STDIN (else TO STDOUT)
+	CSV           bool
+	Header        bool
+	Delim         byte
+	Null          string
+	Quote         byte
+	Escape        byte
+	Binary        bool // FORMAT binary (FROM STDIN only; copybin.go)
 }
 
 type copyTok struct {
@@ -187,6 +190,7 @@ func (p *copyParser) parse() (*CopyStmt, error) {
 			return nil, errf(codeFeature, "COPY (query) supports SELECT only")
 		}
 		cs.Query = stmts[0]
+		cs.QuerySrc = p.src[start:end]
 	} else {
 		name, err := p.ident()
 		if err != nil {
@@ -320,6 +324,28 @@ func (p *copyParser) parse() (*CopyStmt, error) {
 			t := p.next()
 			if e := strings.ToLower(strings.NewReplacer("-", "", "_", "").Replace(t.s)); e != "utf8" && e != "unicode" {
 				return errf(codeFeature, "COPY ENCODING %q is not supported (UTF8 only)", t.s)
+			}
+		case "force_quote":
+			if p.punct("*") {
+				cs.ForceQuoteAll = true
+				break
+			}
+			if !p.punct("(") {
+				return p.bad()
+			}
+			for {
+				c, err := p.ident()
+				if err != nil {
+					return err
+				}
+				cs.ForceQuote = append(cs.ForceQuote, c)
+				if p.punct(",") {
+					continue
+				}
+				if !p.punct(")") {
+					return p.bad()
+				}
+				break
 			}
 		case "freeze":
 			if t := p.peek(); t.k == 'w' && (t.s == "true" || t.s == "false" || t.s == "on" || t.s == "off") {
@@ -505,6 +531,7 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	if !cs.From || cs.Query != nil {
 		return nil, errf(codeFeature, "not a COPY FROM")
 	}
+	cs.Table = s.resolveRel(cs.Table) // along the search path
 	if err := s.checkNeeds([]need{{cs.Table, core.PrivInsert}}, ""); s.role != "" && err != nil {
 		return nil, s.copyFail(err)
 	}
@@ -516,6 +543,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	given := make([]bool, len(t.Columns))
 	if cs.Cols == nil {
 		for _, i := range t.VisibleCols() {
+			if t.Columns[i].Generated != "" { // computed, not copied
+				continue
+			}
 			ci.cols = append(ci.cols, i)
 			given[i] = true
 		}
@@ -524,6 +554,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 			i, ok := t.Col(c)
 			if !ok {
 				return nil, s.copyFail(errf(codeUndefinedColumn, "column %q of relation %q does not exist", c, t.Name))
+			}
+			if t.Columns[i].Generated != "" {
+				return nil, s.copyFail(errf("42P10", "column %q is a generated column", c))
 			}
 			if given[i] {
 				return nil, s.copyFail(errf("42701", "column %q specified more than once", c))
@@ -1046,7 +1079,13 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 		return 0, errf(codeFeature, "not a COPY TO")
 	}
 	if cs.Query != nil {
-		res, err := s.Exec(cs.Query, nil)
+		q := cs.Query
+		if cs.QuerySrc != "" {
+			if q2, err := s.ParseOne(cs.QuerySrc); err == nil && q2 != nil {
+				q = q2
+			}
+		}
+		res, err := s.Exec(q, nil)
 		if err != nil {
 			return 0, err
 		}
@@ -1054,6 +1093,11 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 			return 0, err
 		}
 		w := &copyWriter{cs: cs, emit: emit}
+		qn := make([]string, len(res.Cols))
+		for i, c := range res.Cols {
+			qn[i] = c.Name
+		}
+		w.forceQuote(qn)
 		if cs.Binary {
 			oids := make([]uint32, len(res.Cols))
 			for i, c := range res.Cols {
@@ -1094,6 +1138,7 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	if s.failed {
 		return 0, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 	}
+	cs.Table = s.resolveRel(cs.Table)
 	if s.role != "" {
 		if err := s.checkNeeds([]need{{cs.Table, core.PrivSelect}}, ""); err != nil {
 			s.markFailed()
@@ -1141,6 +1186,11 @@ func (s *Session) copyScan(tx *core.Tx, t *schema.Table, cols []int, cs *CopyStm
 		return 0, err
 	}
 	w := &copyWriter{cs: cs, emit: emit}
+	tn := make([]string, len(cols))
+	for i, c := range cols {
+		tn[i] = t.Columns[c].Name
+	}
+	w.forceQuote(tn)
 	if cs.Binary {
 		oids := make([]uint32, len(cols))
 		for i, c := range cols {
@@ -1223,6 +1273,22 @@ type copyWriter struct {
 	cs   *CopyStmt
 	emit func([]byte) error
 	b    []byte
+	fq   []bool // FORCE_QUOTE per output column
+}
+
+// forceQuote marks the output columns named by FORCE_QUOTE.
+func (w *copyWriter) forceQuote(names []string) {
+	cs := w.cs
+	if !cs.ForceQuoteAll && len(cs.ForceQuote) == 0 {
+		return
+	}
+	w.fq = make([]bool, len(names))
+	for i, n := range names {
+		w.fq[i] = cs.ForceQuoteAll
+		for _, q := range cs.ForceQuote {
+			w.fq[i] = w.fq[i] || q == n
+		}
+	}
 }
 
 func (w *copyWriter) start() { w.b = w.b[:0] }
@@ -1242,7 +1308,7 @@ func (w *copyWriter) value(i int, s string, ncols int) {
 	w.sep(i)
 	cs := w.cs
 	if cs.CSV {
-		need := s == cs.Null || s == "" || ncols == 1 && s == `\.`
+		need := w.fq != nil && w.fq[i] || s == cs.Null || s == "" || ncols == 1 && s == `\.`
 		if !need {
 			for j := 0; j < len(s); j++ {
 				if c := s[j]; c == cs.Delim || c == cs.Quote || c == '\n' || c == '\r' {
@@ -1273,12 +1339,8 @@ func (w *copyWriter) value(i int, s string, ncols int) {
 			w.b = append(w.b, '\\', 'n')
 		case '\r':
 			w.b = append(w.b, '\\', 'r')
-		case '\t':
-			if cs.Delim == '\t' {
-				w.b = append(w.b, '\\', 't')
-			} else {
-				w.b = append(w.b, c)
-			}
+		case '\t': // PostgreSQL escapes every control character, whatever the delimiter
+			w.b = append(w.b, '\\', 't')
 		case '\b':
 			w.b = append(w.b, '\\', 'b')
 		case '\f':

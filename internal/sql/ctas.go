@@ -52,9 +52,9 @@ type tableExt struct {
 
 // likeDef is one (LIKE source ...) element, spliced in at column At.
 type likeDef struct {
-	Table                                string
-	At                                   int
-	Defaults, Constraints, Indexes, Iden bool
+	Table                                     string
+	At                                        int
+	Defaults, Constraints, Indexes, Iden, Gen bool
 }
 
 // IntoClause is SELECT ... INTO [TEMP|UNLOGGED] [TABLE] name.
@@ -119,7 +119,7 @@ loop:
 			return nil, true, errf(codeFeature, "materialized views cannot be temporary or unlogged")
 		}
 		c := &CreateAs{Mat: true, IfNotExists: p.acceptKw("if", "not", "exists")}
-		if c.Name, err = p.qualifiedName(); err != nil {
+		if c.Name, err = p.qualifiedNameNew(); err != nil {
 			return nil, true, err
 		}
 		if err = p.ctasRest(c); err != nil {
@@ -133,7 +133,11 @@ loop:
 		return nil, false, nil
 	}
 	c := &CreateAs{Temp: temp, Unlogged: unlogged, IfNotExists: p.acceptKw("if", "not", "exists")}
-	if c.Name, err = p.qualifiedName(); err != nil {
+	prevTemp := p.tempCreate
+	p.tempCreate = p.tempCreate || temp
+	c.Name, err = p.qualifiedNameNew()
+	p.tempCreate = prevTemp
+	if err != nil {
 		return nil, true, err
 	}
 	isAs := p.isKw("as") || p.isKw("on") && p.peekN(1).s == "commit"
@@ -176,7 +180,9 @@ loop:
 	// plain CREATE TEMP|UNLOGGED TABLE: let createStmt parse it again from TABLE
 	p.toks[tpos-1] = token{k: tIdent, s: "create", pos: p.toks[tpos-1].pos}
 	p.i = tpos - 1
+	p.tempCreate = temp
 	st, err = p.createStmt()
+	p.tempCreate = prevTemp
 	if err != nil {
 		return nil, true, err
 	}
@@ -279,7 +285,7 @@ func (p *parser) likeElem(c *CreateTable) (ok bool, err error) {
 		}
 		switch t.s {
 		case "all":
-			l.Defaults, l.Constraints, l.Indexes, l.Iden = inc, inc, inc, inc
+			l.Defaults, l.Constraints, l.Indexes, l.Iden, l.Gen = inc, inc, inc, inc, inc
 		case "defaults":
 			l.Defaults = inc
 		case "constraints":
@@ -288,7 +294,9 @@ func (p *parser) likeElem(c *CreateTable) (ok bool, err error) {
 			l.Indexes = inc
 		case "identity":
 			l.Iden = inc
-		case "comments", "compression", "generated", "statistics", "storage":
+		case "generated":
+			l.Gen = inc
+		case "comments", "compression", "statistics", "storage":
 		default:
 			return true, p.errHere("syntax error at or near %q", t.s)
 		}
@@ -404,7 +412,7 @@ func (p *parser) mergeStmt() (Stmt, error) {
 		w := MergeWhen{}
 		if p.acceptKw("not", "matched") {
 			if p.acceptKw("by", "source") {
-				return nil, errf(codeFeature, "WHEN NOT MATCHED BY SOURCE is not supported (PostgreSQL 17)")
+				return nil, errf(codeSyntax, "syntax error at or near \"BY\" (WHEN NOT MATCHED BY SOURCE is PostgreSQL 17)")
 			}
 			p.acceptKw("by", "target")
 		} else if p.acceptKw("matched") {

@@ -192,7 +192,7 @@ func TestSQLUniqueAndForeignKeys(t *testing.T) {
 	wantErr(`INSERT INTO org VALUES (3, 'A', 'three')`, codeUniqueViolation)
 	run(t, s, `INSERT INTO org VALUES (3, NULL, 'x'), (4, NULL, 'y')`) // NULLs repeat
 	_, err := tryRun(s, `INSERT INTO org VALUES (5, 'B', 'dup')`)
-	if err == nil || !strings.Contains(err.Error(), `"org_code_key"`) || !strings.Contains(err.Error(), "(code)=(B)") {
+	if err == nil || !strings.Contains(errText(err), `"org_code_key"`) || !strings.Contains(errText(err), "(code)=(B)") {
 		t.Fatalf("unique violation message: %v", err)
 	}
 	wantErr(`INSERT INTO emp VALUES (1, 99, 'a@x', NULL)`, codeForeignKeyViolation)
@@ -330,7 +330,7 @@ func TestSQLIndexCatalog(t *testing.T) {
 		"FOREIGN KEY (org_id) REFERENCES org(id) ON DELETE CASCADE;UNIQUE (code)")
 	expectRows(t, s, `SELECT pg_get_indexdef('emp_age_idx'::regclass), pg_get_indexdef('emp_age_idx'::regclass, 2, false)`,
 		"CREATE INDEX emp_age_idx ON public.emp USING btree (age, org_id),org_id")
-	expectRows(t, s, `SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'emp' ORDER BY constraint_name`,
+	expectRows(t, s, `SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'emp' AND constraint_name NOT LIKE '%not_null' ORDER BY constraint_name`,
 		"emp_org_id_fkey,FOREIGN KEY;emp_pkey,PRIMARY KEY")
 	expectRows(t, s, `SELECT constraint_name, update_rule, delete_rule FROM information_schema.referential_constraints`,
 		"emp_org_id_fkey,NO ACTION,CASCADE")

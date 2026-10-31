@@ -137,3 +137,131 @@ Chỉ sửa các lỗi "sai kết quả hoặc hành vi nguy hiểm" (mục 6, S
 | T1 int4 so với int8 | đã sửa phần ảnh hưởng driver | `VALUES` và `UNION/INTERSECT/EXCEPT` với số nguyên/NULL, `grouping()`, `mode()`, `percentile_disc()` nay trả int4 như PG (pgjdbc `getObject` trả `Integer`); các mục T1 còn lại (sum(real), avg(interval), min/max mảng, bytea) chưa đụng tới |
 
 PASS theo nhóm sau sửa: 01 198, 02 72, 03 43, 04 115, 05 253, 06 159, 07 99, 08 87, 09 50, 10 99, 11 89 (hết DIFF), 12 29, 13 95, 14 310.
+
+
+## 9. Nhánh `compat-ddl` (từ `main` cd42af1): nhóm DDL và ràng buộc
+
+Chạy lại trên `staskd` của nhánh với PostgreSQL 16.15 (`scripts/suite/run.sh`, N=100). Nhóm mới `16_ddl_more` (tệp `scripts/suite/16_ddl_more.sql`, 281 câu). Chi tiết từng mục và tiền lệ: `docs/14` Phụ lục CD.
+
+| Nhóm | PASS trước | PASS sau |
+|---|---|---|
+| 01_ddl_types | 207 | 259 |
+| 02_indexes | 72 | 73 |
+| 03_views | 43 | 92 |
+| 04_dml | 117 | 135 |
+| 05_transactions | 254 | 254 |
+| 13_catalog | 95 | 104 |
+| 14_errors | 310 | 312 |
+| 16_ddl_more (mới) | không chạy được (0 trên 281 trước các sửa) | 281 / 281 |
+
+Các nhóm khác không đổi (06 159, 07 99, 08 87, 09 50, 10 99, 11 89, 12 29). Hai nguyên nhân gốc đã sửa: phân vùng không thực thi biên (A1) và tên trong view/COPY/bảng tạm không theo `search_path` (49 câu lớp B của G1). Còn lại ở các nhóm này là kiểu dữ liệu, hàm, cú pháp toán tử (nhánh khác) và: `pg_indexes.indexdef` không in `DESC`, kiểu cột của view trong `information_schema.columns` (text), `pg_am`/`pg_type` thiếu dòng, `table_privileges` theo `current_user`, INHERITS, `tableoid`.
+
+## 10. DML, transactions and error codes (branch `compat-dml`, from main cd42af1)
+
+Run against the same postgres:16.15 image, `staskd` of the branch on a free port, N=100. PASS includes PASS-MSG. "Before" is `main` cd42af1 re-run the same day (the figures in section 8 are from `suitefix`); "after" is the branch head.
+
+| Group | Statements | PASS before | PASS after |
+|---|---|---|---|
+| 01_ddl_types | 332 | 207 | 207 |
+| 02_indexes | 99 | 72 | 72 |
+| 03_views | 95 | 43 | 43 |
+| 04_dml | 145 | 117 | **145** |
+| 05_transactions | 272 | 254 | **272** |
+| 06_select_basics | 192 | 159 | 159 |
+| 07_joins | 103 | 99 | 101 |
+| 08_aggregates | 101 | 87 | 87 |
+| 09_window | 61 | 50 | 52 |
+| 10_cte_subquery | 115 | 99 | 99 |
+| 11_analytics | 96 | 89 | 89 |
+| 12_text_search | 68 | 29 | 29 |
+| 13_catalog | 123 | 95 | 97 |
+| 14_errors | 394 | 311 | 337 |
+| **Old total** | 2196 | **1711** | **1789** |
+| 18_dml_more (new file `scripts/suite/18_dml_more.sql`) | 289 | n/a | **289** |
+
+What moved: 04 and 05 are now equal to PostgreSQL in every statement (two-phase commit, `ON CONFLICT` on a unique index, MERGE, COPY through `search_path`, `FORCE_QUOTE`, SET TRANSACTION rules, `EXECUTE` arity, `pg_prepared_statements`). 14 gained 26 (SET/SHOW unknown parameters, bad values, maintenance on unknown relations, OFFSET, DISTINCT/ORDER BY, window in WHERE, duplicate alias, numeric lexing, has_table_privilege). Statements still different in 14 are functions, types and regproc casts (other branches) and COPY from server files. No statement that passed before fails now (checked by comparing the two reports). Group 18 covers what the brief lists as new cases: conflict arbiters, DML forms, MERGE, USING joins, GROUP BY key, ~50 error codes, SET/GUC, maintenance commands, 2PC, cursors, locks, EXPLAIN shape.
+
+## 11. Kiểu dữ liệu: interval làm cột, range, macaddr/macaddr8, bit/varbit, tsvector/tsquery (nhánh `compat-types`, từ `main` cd42af1)
+
+Chỉ làm phần KIỂU của backlog F1 (mục 6). Không đụng nhóm 01-14 (người khác sửa); ca mới nằm ở tệp mới `scripts/suite/15_types_more.sql` (nhóm `15_types_more`, 493 câu, mọi câu lấy kết quả từ postgres:16.15 qua `pgdiff`). Tiền lệ PostgreSQL và quyết định thiết kế: `docs/14` Phụ lục T.
+
+Đo trước/sau trên cùng VM, cùng postgres:16.15 (`SUITE_N=100`, `staskd` dựng từ `main` cd42af1 và từ nhánh này):
+
+| Nhóm | Trước | Sau |
+|---|---|---|
+| 01_ddl_types | 207 | 222 |
+| 02_indexes | 72 | 78 |
+| 06_select_basics | 159 | 160 |
+| 08_aggregates | 87 | 88 |
+| 11_analytics | 89 | 90 |
+| 12_text_search | 29 | 31 |
+| 14_errors | 311 | 314 |
+| 03, 04, 05, 07, 09, 10, 13 | không đổi | không đổi |
+| **Tổng nhóm 01-14 (2196 câu)** | **1711** | **1740** |
+| **15_types_more (493 câu, mới)** | n/a | **493** |
+
+Không câu nào của nhóm 01-14 từ PASS thành DIFF/ERR (so từng dòng `summary.txt`); bảy câu của `02_indexes/unique-partial-expression:62-68` đổi từ ERR sang DIFF (bảng `docs` nay tạo được, `INSERT` vẫn thiếu `to_tsvector`). Phần còn lại của nhóm 01/12 liên quan kiểu mà KHÔNG làm: `timetz`, `xml`, `money` (bảng `misc`, `dt` không tạo được kéo theo lỗi dây chuyền), multirange (`int4multirange`, `unnest`), mảng kiểu composite, `enum_first/enum_last/enum_range`, và toàn bộ hàm tìm kiếm văn bản của nhóm 12 (`to_tsvector`... thuộc nhánh compat-funcs; cấu hình `english` cần bộ tách gốc, xem Phụ lục T).
+
+Các phiên của nhóm 15: `interval-input` (82 dạng nhập), `interval-column` (cột, ORDER BY, chỉ mục, PK, CTAS, UPDATE, typmod), `interval-arith` (cộng/trừ/nhân/chia, `justify_*`, `make_interval`, date/timestamp ± interval, `generate_series`, sum/avg/min/max), `interval-extract`, `interval-cast-text`, `interval-style` (bốn `IntervalStyle`), `interval-binary` (COPY text/binary, tham số), `interval-aggregates` (20000 dòng: sum/avg/min/max/DISTINCT/GROUP BY/join/cửa sổ), `range-literals`, `range-ops`, `range-column` (sáu kiểu, sắp xếp, GROUP BY, join, chỉ mục, PK), `range-binary`, `macaddr-input`, `macaddr-ops`, `macaddr-column`, `bit-literals`, `bit-column`, `bit-binary`, `tsvector-input`, `tsquery-input`, `tsearch-match`, `tsearch-column`, `tsearch-binary`, `types-catalog` (`information_schema.columns`, `pg_attribute`, `pg_type`). Ca Go (pgx nhị phân, COPY, sắp xếp, chỉ mục, khoá chính, đối chiếu byte tsquery): `internal/pgwire/exttypes_wire_test.go`, `internal/sql/exttypes_test.go`.
+
+Giới hạn đã biết (đều có trong docs/14 Phụ lục T): `to_char(interval, ...)`; `interval` nhập kiểu `sql_standard` với dấu `-` đầu; `0.0000015 sec` làm tròn 2 micro giây (PostgreSQL 1); `IntervalStyle` không áp dụng cho COPY TO text; so sánh/UNIQUE trên cột interval coi `1 month` và `30 days` là khác nhau (so sánh trong biểu thức thì bằng nhau); multirange; `min/max` trên range/bit/macaddr/tsvector được chấp nhận.
+
+## 12. Hàm và toán tử dựng sẵn (nhánh `compat-funcs`, từ `main` cd42af1)
+
+Mục tiêu (quyết định của người dùng): làm xong cú pháp SQL của PostgreSQL 16 cho **hàm và toán tử dựng sẵn** thường dùng, kết quả khớp `postgres:16` (giá trị, kiểu OID mà pgjdbc nhìn thấy, NULL, SQLSTATE). Không thuộc phạm vi: hàm do người dùng định nghĩa, `xml`, hình học, hàm của phần mở rộng ngoài `pg_trgm`.
+
+### 9.1 Cách lập ma trận
+
+Nhóm mới `scripts/suite/17_funcs_more.sql` (tệp mới, không sửa các nhóm cũ): mỗi **lời gọi hàm hoặc toán tử là một câu `SELECT` riêng** (sinh từ danh sách trong tài liệu PostgreSQL 16 chương 9: chuỗi, regexp, định dạng, toán, ngày giờ, mảng, json/jsonb và jsonpath, tổng hợp, cửa sổ, thông tin hệ thống) để một lỗi không che các lời gọi khác. Các phiên: `string format numfmt math datetime array json jsonpath agg window system trgm fts`. `pgdiff` chạy từng câu trên `postgres:16` và STASK; "chạy được" nghĩa là PASS/PASS-MSG (khớp kết quả hoặc cùng SQLSTATE). Danh sách còn lệch: `docs/25_funcs_matrix.txt` (phiên:dòng, lớp lỗi, câu lệnh, chỗ khác).
+
+| Họ | Số lời gọi | Chạy được trước (main) | Chạy được sau |
+|---|---|---|---|
+| chuỗi và regexp (`string`) | 215 | 142 | 209 |
+| định dạng `to_char/to_number/to_date/to_timestamp` (`format`) | 47 | 24 | 44 |
+| `to_char(số)` mọi mẫu (`numfmt`, 5 giá trị x 29 mẫu...) | 430 | 107 | 430 |
+| toán (`math`) | 255 | 129 | 234 |
+| ngày giờ (`datetime`) | 246 | 131 | 186 |
+| mảng (`array`) | 130 | 108 | 125 |
+| json/jsonb (`json`) | 205 | 170 | 200 |
+| jsonpath (`jsonpath`) | 86 | 36 | 84 |
+| tổng hợp (`agg`) | 29 | 18 | 23 |
+| cửa sổ (`window`) | 12 | 5 | 9 |
+| hệ thống (`system`) | 311 | 136 | 196 |
+| pg_trgm (`trgm`) | 113 | 3 | 112 |
+| tìm kiếm toàn văn (`fts`) | 343 | 1 | 342 |
+| **Tổng** | **2422** | **1010** | **2194** |
+
+Một phần của "chạy được" là các ca cả hai bên cùng báo lỗi có chủ ý (SQLSTATE khớp). Số còn lệch (228) là việc tồn đọng thật, xem 9.4.
+
+Chạy lại các nhóm cũ bằng cùng bộ chạy (PASS + PASS-MSG, N=100, PostgreSQL 16 thật; trước = binary build từ `main` cd42af1, sau = nhánh này; không câu nào từ PASS thành lệch, 69 câu từ lệch thành PASS):
+
+| Nhóm | 01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | 11 | 12 | 13 | 14 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Trước | 207 | 72 | 43 | 117 | 254 | 159 | 99 | 87 | 50 | 99 | 89 | 29 | 95 | 311 |
+| Sau | 211 | 75 | 43 | 117 | 255 | 173 | 99 | 90 | 52 | 99 | 93 | 56 | 96 | 321 |
+
+### 9.2 Đã làm (tệp mới `internal/sql/fn_*.go`; sửa tệp chung chỉ vài dòng móc nối)
+
+- Hạ tầng `fn_core.go`: bảng đăng ký hàm (`regFn`: số đối số, Kind kết quả, kiểu OID tĩnh, xử lý NULL) và ba móc nối nhỏ (`call` trong eval.go, `funcKind`/`typeOf` và `inferTy`). `pg_typeof` trả `regtype` (OID 2206) đúng như PostgreSQL (trước là text).
+- Toán `fn_math.go`: asin/acos/atan/atan2/cot, sinh/cosh/tanh/asinh/acosh/atanh, sind/cosd/tand/cotd/asind/acosd/atand/atan2d (đúng thuật toán float.c), gcd/lcm (int và numeric), factorial, scale/min_scale/trim_scale, width_bucket (numeric, float8, mảng; mọi lỗi 2201G), sign đúng kiểu, `round/trunc/floor/ceil` đúng kiểu PostgreSQL (`round(float8)` làm tròn chẵn, `round(int)` là double, `round(int, n)` là numeric), random_normal.
+- Chuỗi `fn_str.go`, `fn_regex.go`: regexp_replace đủ dạng (start, N, cờ `g i n p w x q`, `\1 \& \\`), regexp_match (nhóm không khớp là NULL), regexp_matches, regexp_split_to_table/array, regexp_count/instr/substr/like, string_to_table, character_length, to_hex, unistr, parse_ident, convert/convert_from/convert_to (UTF8, LATIN1, WIN1252, LATIN9), get/set_byte, get/set_bit, bit_count, overlay/position/trim và decode `escape` cho bytea, normalize, `substring(x from 'regex')`, `substring(x similar p escape e)`, `~~ ~~* !~~ !~~*`, `LIKE|~ ANY|ALL (mảng)`. Regexp ARE dịch sang RE2: `.` khớp xuống dòng mặc định, `\y \Y \m \M`, `\w` Unicode, nhúng `(?i)` ở đầu.
+- Định dạng `fn_tochar.go`: `to_char(số, mẫu)` đủ `9 0 . , D G S MI PL SG PR L TH th RN rn V EEEE B FM` (430 ca khớp PostgreSQL, gồm các điểm lạ như `.00` cho 0 và `###` tràn) và `to_number` theo cách PostgreSQL tiêu thụ từng phần tử mẫu.
+- Ngày giờ `fn_time.go`: make_time, make_timestamp(tz) có kiểm tra miền và múi giờ, date_trunc thêm millisecond/microsecond/century/millennium và dạng ba đối số, date_part/extract julian, date_bin, date_add/date_subtract, timeofday, date(), localtime/current_time(p), OVERLAPS, `localtimestamp` là timestamp, generate_series cho timestamp/timestamptz với bước âm/tháng (cộng dồn như PostgreSQL) và numeric (`generate_series(0.5, 2.5, 0.5)`).
+- Mảng/json/tổng hợp: trim_array, hàm dạng gọi của toán tử jsonb (jsonb_exists*, jsonb_contains, jsonb_concat, jsonb_delete*), jsonb_object/json_object, array_to_json, json_strip_nulls (json), ép jsonb sang số/boolean, `json(b)_to_record(set)` với danh sách cột `AS r(a int, ...)`, row_to_json/to_json(bản ghi) gọn, jsonpath (biến `$x`, số học, `last`, `like_regex`, `starts with`, `.**`, `.keyvalue()`, `_tz`), bit_and/bit_or/bit_xor, any_value, rank/dense_rank/percent_rank/cume_dist `WITHIN GROUP`, percentile_cont/disc với mảng phân vị, DISTINCT của aggregate nhạy thứ tự được sắp như PostgreSQL, ntile/nth_value đúng SQLSTATE.
+- Hệ thống `fn_sys.go`, `fn_settings.go`: pg_sleep_for/until, pg_size_bytes, txid_current_snapshot và họ hàng, pg_input_is_valid, pg_input_error_info, num_nulls/num_nonnulls, pg_collation_for, 276 tham số `current_setting` mặc định của PostgreSQL 16.
+- `pg_trgm` `fn_trgm.go` (cần `CREATE EXTENSION pg_trgm`): show_trgm, word_similarity, strict_word_similarity, toán tử `% <% %> <<% %>> <-> <<-> <->> <<<-> <->>>`, set_limit/show_limit và các GUC `pg_trgm.*_threshold`; 112 trên 113 ca khớp (còn lệch: `show_trgm` của chữ không phải ASCII, PostgreSQL in băm CRC).
+- Tìm kiếm toàn văn `fn_fts.go`, `fn_stem.go`: to_tsvector, to_tsquery, plainto/phraseto/websearch_to_tsquery, `@@`, ts_rank, ts_rank_cd, ts_headline (tuỳ chọn thường dùng), setweight, strip, length, numnode, tsvector_to_array, array_to_tsvector, ts_lexize, `tsvector || tsvector`. Cấu hình `simple` và `english` (stop words của `english.stop` và bộ stem Snowball English/Porter2 **tự viết, không thêm thư viện**; kiểm bằng `testdata/english_stem.golden`: 11 968 từ so với `ts_lexize('english_stem', ...)` của postgres:16, khớp hết). Cấu hình ngôn ngữ khác báo 42704. Giá trị tsvector/tsquery đi dưới dạng văn bản (Datum text mang cờ), kiểu thật do nhánh `compat-types` làm.
+
+### 9.3 Tiền lệ và kiểm chứng
+
+Tiền lệ PostgreSQL từng nhóm nằm ở đầu mỗi tệp `fn_*.go` và ở dòng docs/14 Phụ lục CF. Kiểm chứng: (1) `17_funcs_more` so với postgres:16 bằng `scripts/suite/run.sh`/`pgdiff`; (2) `internal/sql/fn_pg16_test.go` chạy trong tiến trình 1892 biểu thức với kết quả lấy từ `SELECT (biểu_thức)::text` trên postgres:16 (`testdata/fn_pg16.golden`; việc còn lệch ghi ở `testdata/fn_pg16.known`, test lỗi nếu một mục bắt đầu khớp để danh sách chỉ co lại; `STASK_FN_UPDATE=1` ghi lại); (3) `TestEnglishStem`.
+
+### 9.4 Còn lại (không thuộc nhánh này hoặc chưa làm)
+
+- Cần nhánh `compat-types`: các hàm trả `interval` (make_interval, justify_*, date_trunc/extract trên interval, to_char(interval)), kiểu `time/timetz` thật (nay `make_time`, `localtime`, `current_time` trả văn bản với OID 1083/1266), chuỗi bit, range, kiểu `regclass/regtype/oid` thật, `char(n)` đệm, `float4 + float4` kiểu real, NaN lớn hơn mọi số, `'epoch'/'today'/'allballs'` và các dạng nhập ngày giờ lạ (`20240305`, `March 5, 2024`, `10:00 PM`), `ROW(...) IS NULL`, toán tử tsquery (`&& || !!`) và ép `::tsvector/::tsquery`.
+- Regexp: tham chiếu ngược `\1` và lookahead/lookbehind không biểu diễn được trong RE2 (báo 2201B); cần bộ khớp quay lui riêng. `\m \M` là `\b`.
+- Numeric: `sqrt/exp/ln/log/power` trên numeric vẫn trả double (PostgreSQL trả numeric với số chữ số riêng, ví dụ `sqrt(2.0)` = 1.414213562373095); `2.5 ^ 2`; `power(10, 400::numeric)` (docs/28 A6).
+- Toán tử tiền tố `|/ ||/ @`; `IS NFC NORMALIZED`; `array_fill` với cận dưới, mảng `[0:2]={..}`; `a[1:2][2]` lát cắt nhiều chiều; `num_nulls(VARIADIC ..)`; `pg_column_size`; `to_regproc/to_regnamespace/to_regrole/to_regprocedure`; `pg_cancel_backend/pg_terminate_backend` (cần bảng phiên của lớp pgwire); `WITH ORDINALITY` trên `generate_series`; FILTER và EXCLUDE trong hàm cửa sổ (0A000); `ts_debug`, `ts_parse`, `pg_ts_config`; `to_timestamp(.. TZH)` và năm BC; `.datetime()` của jsonpath; `jsonb_populate_record` với kiểu bảng.
+- Tìm kiếm toàn văn: bộ phân tích mặc định rút gọn (từ, số, từ ghép có gạch nối, host, e-mail, phiên bản, số có dấu; **không** có URL, đường dẫn tệp); `ts_headline` chỉ khớp ở các ca thử (chọn đoạn theo "cover ngắn nhất" rồi mở rộng, không phải thuật toán đầy đủ của PostgreSQL); chỉ `simple` và `english`. Ứng viên thêm ngôn ngữ khác nếu người dùng muốn: `github.com/kljensen/snowball` (MIT, vài trăm KB mã, nhiều ngôn ngữ), **chưa thêm vào go.mod**.
+- `pg_trgm`: chỉ mục `gin_trgm_ops` đã tăng tốc `LIKE/ILIKE/~` (substr.go) nhưng **chưa** tăng tốc `%`/`<->`: cần yêu cầu "chia sẻ ít nhất k trigram" ở lớp `proj.SubstrReq`; hiện `%` quét bảng (đúng kết quả).
+- Cách tránh trùng việc: `regexp_replace` cờ `i` và kiểm tra miền của `make_date` (A3, A4) đã sửa ở nhánh `g1` (c8b665d, `g1fix_test.go`). Nhánh này chỉ ghi đè `regexp_replace` (cài đặt `fn_regex.go` có cờ `i` đúng và đủ dạng start/N); `make_date` không đụng tới (vẫn lệch ở nhánh này cho tới khi gộp `g1`).

@@ -170,6 +170,9 @@ func (c *evalCtx) castCatalog(v Datum, typ string) (Datum, bool, error) {
 		case "information_schema":
 			return IntD(nsInfoSchema), true, nil
 		}
+		if s := c.session(); s != nil && s.schemaExists(strings.Trim(v.S, `"`)) {
+			return IntD(schemaOID(strings.Trim(v.S, `"`))), true, nil
+		}
 		return Null, true, errf(codeUndefinedObject, "schema %q does not exist", v.S)
 	}
 	d, err := coerce(v, KInt)
@@ -210,6 +213,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	switch name {
 	case "has_table_privilege", "has_schema_privilege", "has_database_privilege", "has_sequence_privilege",
 		"has_column_privilege", "has_any_column_privilege":
+		if err := s.hasPrivilegeErrors(name, args); err != nil {
+			return Null, err
+		}
 		return s.hasPrivilege(name, args), nil
 	case "current_user", "session_user", "current_role":
 		return TextD(s.sqlUser(name)), nil
@@ -263,6 +269,13 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		oid, _ := coerce(args[0], KInt)
 		if oid.I == 0 {
 			return TextD("-"), nil
+		}
+		if len(args) > 1 && !args[1].IsNull() {
+			if m, err := coerce(args[1], KInt); err == nil && m.I >= 0 {
+				if s, ok := extFormatType(uint32(oid.I), int32(m.I)); ok {
+					return TextD(s), nil
+				}
+			}
 		}
 		if t, ok := pgTypeByOID[oid.I]; ok {
 			if oid.I == 1700 && len(args) > 1 && !args[1].IsNull() {
@@ -370,7 +383,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return Null, nil
 	case "pg_database_size":
 		return s.pgcmdsDatabaseSize(), nil
-	case "txid_current", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
+	case "txid_current", "pg_current_xact_id", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
 		return s.pgcmdsScalar(name, args)
 	case "pg_is_other_temp_schema":
 		return BoolD(false), nil

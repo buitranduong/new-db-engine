@@ -1,0 +1,579 @@
+# docs/28: every failing statement of the G1 run on main 3971e83, one class each (A wrong result / B not supported / C harmless).
+# columns: suite <TAB> group/session:line (suite) or group/session:line (pgdiff) <TAB> class <TAB> root cause
+pgdiff	h/not-done-partition:303	A	A1 partition bound not enforced
+suite	01_ddl_types/partitioned-temp-unlogged:285	A	A1 partition bound not enforced
+suite	01_ddl_types/partitioned-temp-unlogged:290	A	A1 partition bound not enforced
+suite	01_ddl_types/partitioned-temp-unlogged:291	A	A1 partition bound not enforced
+suite	01_ddl_types/partitioned-temp-unlogged:299	A	A1 partition bound not enforced
+suite	01_ddl_types/partitioned-temp-unlogged:301	A	A1 partition bound not enforced
+suite	01_ddl_types/bool-text:55	A	A10 char(n) not blank-padded
+suite	06_select_basics/date-json-array-ops:190	A	A11 jsonb ->> on scalar, numeric equality 1.0 = 1
+suite	06_select_basics/date-json-array-ops:191	A	A11 jsonb ->> on scalar, numeric equality 1.0 = 1
+suite	01_ddl_types/ranges-enums-domains:166	A	A12 enum_range(NULL::enum) returns NULL
+suite	13_catalog/pg-catalog:57	A	A13 to_regtype(x)::text returns the OID number
+suite	06_select_basics/string-math-functions:166	A	A2 generate_series with numeric args truncates to integers
+suite	06_select_basics/like-regex:81	A	A3 regexp_replace flag i ignored [FIXED in g1]
+suite	14_errors/runtime:284	A	A4 make_date accepts out-of-range and normalises [FIXED in g1]
+suite	14_errors/runtime:285	A	A4 make_date accepts out-of-range and normalises [FIXED in g1]
+suite	10_cte_subquery/set-operations:112	A	A5 UNION of DATE and TIMESTAMP keeps column type date
+suite	14_errors/runtime:226	A	A6 power(numeric) large result is 99..9 instead of 10^n
+suite	07_joins/using-natural-self:59	A	A7 FULL JOIN USING: qualified ja.id returns the merged value
+suite	01_ddl_types/numeric-float:41	A	A8 NaN comparison and ordering
+suite	08_aggregates/statistical:105	A	A8 NaN comparison and ordering
+suite	01_ddl_types/bytea:73	A	A9 bytea || / substring / position treated as text
+suite	01_ddl_types/partitioned-temp-unlogged:318	B	ALTER TABLE ... SET LOGGED
+suite	01_ddl_types/partitioned-temp-unlogged:319	B	ALTER TABLE ... SET LOGGED
+suite	01_ddl_types/alter-rename-drop:340	B	ALTER TABLE gaps (TYPE ... USING expression, ADD PRIMARY KEY on a table with rows)
+suite	01_ddl_types/alter-rename-drop:341	B	ALTER TABLE gaps (TYPE ... USING expression, ADD PRIMARY KEY on a table with rows)
+suite	01_ddl_types/alter-rename-drop:349	B	ALTER TABLE gaps (TYPE ... USING expression, ADD PRIMARY KEY on a table with rows)
+suite	04_dml/copy-text-csv:108	B	COPY options (FORCE_QUOTE)
+suite	04_dml/upsert:68	B	ON CONFLICT on a non-primary-key unique index
+suite	04_dml/upsert:75	B	ON CONFLICT on a non-primary-key unique index
+pgdiff	g/ss-reflect-keys:121	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+pgdiff	h/tc-proc:19	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	03_views/materialized:86	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	03_views/materialized:96	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	03_views/plain:24	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/driver-queries:102	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/driver-queries:103	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/information-schema:26	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/information-schema:27	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/information-schema:28	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/information-schema:29	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/information-schema:33	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/information-schema:34	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:45	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:47	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:48	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:53	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:66	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:68	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:70	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	13_catalog/pg-catalog:71	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	14_errors/runtime:339	B	catalog completeness (information_schema constraint views, pg_proc, pg_am, pg_sequences, pg_matviews, pg_stats, regnamespace of user schemas)
+suite	01_ddl_types/ranges-enums-domains:168	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:169	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:170	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:171	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:172	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:173	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:174	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/ranges-enums-domains:176	B	composite type gaps (arrays of composite, SET col.field, (x).*)
+suite	01_ddl_types/constraints:220	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:222	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:226	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:227	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:228	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:229	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:232	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:234	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:236	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:238	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:239	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:240	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:241	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:242	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:255	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:257	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:260	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:262	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	01_ddl_types/constraints:264	B	constraint features (ON UPDATE CASCADE, DEFERRABLE, NULLS NOT DISTINCT, EXCLUDE)
+suite	02_indexes/unique-partial-expression:54	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:13	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:14	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:15	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:16	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:17	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:18	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:19	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:20	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:21	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:22	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:23	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:24	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:25	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:26	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:27	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:28	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:29	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:30	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:31	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:32	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:33	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:34	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:35	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:36	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:37	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:38	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:39	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:40	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:43	B	full-text search (tsvector, tsquery, ts_*)
+suite	12_text_search/fts:44	B	full-text search (tsvector, tsquery, ts_*)
+suite	06_select_basics/string-math-functions:164	B	generate_series over timestamp/date with interval step
+suite	01_ddl_types/generated-identity-defaults:182	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:183	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:184	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:185	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:186	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:187	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:188	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:189	B	generated columns (GENERATED ALWAYS AS ... STORED)
+suite	01_ddl_types/generated-identity-defaults:190	B	generated columns (GENERATED ALWAYS AS ... STORED)
+pgdiff	h/not-done:292	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+pgdiff	h/not-done:293	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+pgdiff	h/not-done:294	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+pgdiff	h/not-done:295	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+pgdiff	h/not-done:296	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	02_indexes/trigram:76	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	02_indexes/trigram:81	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	02_indexes/trigram:82	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	02_indexes/trigram:83	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	02_indexes/unique-partial-expression:40	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	02_indexes/unique-partial-expression:53	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:49	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:67	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:68	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:71	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:72	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:73	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	12_text_search/trigram-and-patterns:74	B	index and trigram gaps (expression indexes on several columns/functions, spgist, gist_trgm, pg_trgm functions/operators)
+suite	01_ddl_types/datetime:82	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:83	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:84	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:85	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:86	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:87	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:88	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:89	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:90	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:91	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	01_ddl_types/datetime:97	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	06_select_basics/date-json-array-ops:175	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	06_select_basics/nulls-case-casts:132	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	08_aggregates/statistical:79	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	11_analytics/time-buckets-gaps:56	B	interval as column type / ISO-8601 input / IntervalStyle
+suite	06_select_basics/date-json-array-ops:186	B	json function gaps (jsonb_to_record, populate_record, json_each in select list)
+suite	06_select_basics/date-json-array-ops:187	B	json function gaps (jsonb_to_record, populate_record, json_each in select list)
+suite	06_select_basics/date-json-array-ops:192	B	json function gaps (jsonb_to_record, populate_record, json_each in select list)
+suite	01_ddl_types/bytea:74	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	01_ddl_types/integers:26	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	01_ddl_types/numeric-float:42	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	01_ddl_types/numeric-float:46	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	01_ddl_types/numeric-float:47	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	01_ddl_types/ranges-enums-domains:163	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	05_transactions/commit-rollback:77	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	06_select_basics/date-json-array-ops:184	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	06_select_basics/string-math-functions:146	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	06_select_basics/string-math-functions:149	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	06_select_basics/string-math-functions:157	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	06_select_basics/string-math-functions:167	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	06_select_basics/string-math-functions:168	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	08_aggregates/basic-group-by:47	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	08_aggregates/statistical:104	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	09_window/ranking:30	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	11_analytics/time-buckets-gaps:52	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	11_analytics/topk-quantiles-histograms:81	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	11_analytics/topk-quantiles-histograms:83	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	13_catalog/pg-catalog:73	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	14_errors/runtime:225	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	14_errors/syntax-names:191	B	missing scalar/aggregate functions and operators (gcd, lcm, width_bucket, factorial, atan2, make_time, date_bin, bit_and, any_value, row_to_json, ...)
+suite	01_ddl_types/uuid-json-net:119	B	network address functions and operators
+suite	01_ddl_types/partitioned-temp-unlogged:304	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	01_ddl_types/partitioned-temp-unlogged:305	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	01_ddl_types/partitioned-temp-unlogged:310	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	01_ddl_types/partitioned-temp-unlogged:311	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	01_ddl_types/partitioned-temp-unlogged:313	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	02_indexes/maintenance:108	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	02_indexes/maintenance:109	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/materialized:78	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/materialized:79	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/materialized:82	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/materialized:83	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/materialized:84	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/materialized:92	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:19	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:20	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:21	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:22	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:23	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:27	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:28	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:29	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:30	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:31	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:35	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:36	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/plain:38	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/recursive:105	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	03_views/recursive:106	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-binary:135	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:100	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:101	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:102	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:103	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:104	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:105	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:106	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:107	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:109	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:111	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:113	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:114	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:116	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:118	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:120	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:121	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:123	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:125	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	04_dml/copy-text-csv:126	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	14_errors/syntax-names:174	B	non-public schema: stored view/matview query, COPY, TEMP table, regnamespace do not resolve via search_path
+suite	08_aggregates/statistical:76	B	ordered-set aggregates with array fractions / hypothetical-set
+suite	08_aggregates/statistical:85	B	ordered-set aggregates with array fractions / hypothetical-set
+suite	11_analytics/topk-quantiles-histograms:76	B	ordered-set aggregates with array fractions / hypothetical-set
+suite	11_analytics/topk-quantiles-histograms:77	B	ordered-set aggregates with array fractions / hypothetical-set
+pgdiff	h/not-done-partition:304	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+pgdiff	h/not-done:289	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+pgdiff	h/not-done:290	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+pgdiff	h/not-done:291	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:273	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:278	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:280	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:282	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:292	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:293	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:294	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:295	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:296	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:297	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:302	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:322	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:324	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:325	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	01_ddl_types/partitioned-temp-unlogged:326	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	04_dml/update-delete:58	B	partitioning/inheritance gaps (HASH, DEFAULT partition, INHERITS, ONLY, tableoid, ctid)
+suite	07_joins/lateral-semi-anti:86	B	query-shape gaps (LATERAL function/VALUES referring to earlier FROM item, row-value = subquery, functional-dependency GROUP BY, duplicate derived column names)
+suite	07_joins/lateral-semi-anti:87	B	query-shape gaps (LATERAL function/VALUES referring to earlier FROM item, row-value = subquery, functional-dependency GROUP BY, duplicate derived column names)
+suite	10_cte_subquery/subqueries:65	B	query-shape gaps (LATERAL function/VALUES referring to earlier FROM item, row-value = subquery, functional-dependency GROUP BY, duplicate derived column names)
+suite	11_analytics/argmax-pivot-arrayjoin:112	B	query-shape gaps (LATERAL function/VALUES referring to earlier FROM item, row-value = subquery, functional-dependency GROUP BY, duplicate derived column names)
+suite	14_errors/syntax-names:145	B	query-shape gaps (LATERAL function/VALUES referring to earlier FROM item, row-value = subquery, functional-dependency GROUP BY, duplicate derived column names)
+suite	14_errors/syntax-names:156	B	query-shape gaps (LATERAL function/VALUES referring to earlier FROM item, row-value = subquery, functional-dependency GROUP BY, duplicate derived column names)
+pgdiff	b/casts:144	B	range and multirange types
+pgdiff	h/not-done:287	B	range and multirange types
+suite	01_ddl_types/constraints:243	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:152	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:153	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:154	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:155	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:156	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:157	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:158	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:159	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:160	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:161	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:162	B	range and multirange types
+suite	01_ddl_types/ranges-enums-domains:164	B	range and multirange types
+suite	02_indexes/unique-partial-expression:55	B	range and multirange types
+suite	02_indexes/unique-partial-expression:56	B	range and multirange types
+suite	02_indexes/unique-partial-expression:57	B	range and multirange types
+suite	02_indexes/unique-partial-expression:58	B	range and multirange types
+suite	02_indexes/unique-partial-expression:59	B	range and multirange types
+suite	02_indexes/unique-partial-expression:60	B	range and multirange types
+suite	02_indexes/unique-partial-expression:62	B	range and multirange types
+suite	02_indexes/unique-partial-expression:63	B	range and multirange types
+suite	02_indexes/unique-partial-expression:64	B	range and multirange types
+suite	02_indexes/unique-partial-expression:65	B	range and multirange types
+suite	02_indexes/unique-partial-expression:66	B	range and multirange types
+suite	02_indexes/unique-partial-expression:67	B	range and multirange types
+suite	02_indexes/unique-partial-expression:68	B	range and multirange types
+suite	02_indexes/unique-partial-expression:70	B	range and multirange types
+suite	14_errors/runtime:263	B	range and multirange types
+pgdiff	b/casts:141	B	rare types (money, bit/varbit, xml, macaddr8, point)
+pgdiff	b/casts:143	B	rare types (money, bit/varbit, xml, macaddr8, point)
+pgdiff	h/not-done:284	B	rare types (money, bit/varbit, xml, macaddr8, point)
+pgdiff	h/not-done:285	B	rare types (money, bit/varbit, xml, macaddr8, point)
+pgdiff	h/not-done:286	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:113	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:114	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:115	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:116	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:117	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:118	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:120	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:124	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	01_ddl_types/uuid-json-net:125	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	06_select_basics/like-regex:85	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	08_aggregates/statistical:107	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	14_errors/runtime:265	B	rare types (money, bit/varbit, xml, macaddr8, point)
+suite	10_cte_subquery/with:33	B	recursive CTE gaps (CYCLE, SEARCH, LIMIT-bounded infinite recursion)
+suite	10_cte_subquery/with:40	B	recursive CTE gaps (CYCLE, SEARCH, LIMIT-bounded infinite recursion)
+suite	10_cte_subquery/with:41	B	recursive CTE gaps (CYCLE, SEARCH, LIMIT-bounded infinite recursion)
+suite	06_select_basics/like-regex:73	B	regular-expression and pattern gaps (regexp_*, substring from pattern, lookahead, ~~ operators)
+suite	06_select_basics/like-regex:78	B	regular-expression and pattern gaps (regexp_*, substring from pattern, lookahead, ~~ operators)
+suite	06_select_basics/like-regex:80	B	regular-expression and pattern gaps (regexp_*, substring from pattern, lookahead, ~~ operators)
+suite	06_select_basics/like-regex:83	B	regular-expression and pattern gaps (regexp_*, substring from pattern, lookahead, ~~ operators)
+suite	06_select_basics/like-regex:84	B	regular-expression and pattern gaps (regexp_*, substring from pattern, lookahead, ~~ operators)
+pgdiff	b/strings:49	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	01_ddl_types/bool-text:65	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	01_ddl_types/datetime:105	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	01_ddl_types/datetime:96	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	01_ddl_types/datetime:99	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	06_select_basics/filters-order:56	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	06_select_basics/nulls-case-casts:124	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	14_errors/syntax-names:195	B	syntax and literal gaps (U& strings, typed literals int4 '5, ORDER BY USING, OVERLAPS, hex/epoch/ISO-8601 input)
+suite	05_transactions/two-phase:243	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:244	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:245	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:246	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:250	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:251	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:252	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:255	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:257	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:258	B	two-phase commit (PREPARE TRANSACTION)
+suite	05_transactions/two-phase:259	B	two-phase commit (PREPARE TRANSACTION)
+suite	02_indexes/unique-partial-expression:61	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/materialized:89	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/materialized:90	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/materialized:91	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/materialized:93	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/materialized:94	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/plain:32	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/plain:33	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/plain:34	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/plain:41	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/plain:42	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/recursive:100	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/recursive:101	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:51	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:52	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:53	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:54	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:55	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:56	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:57	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:58	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:59	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:60	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:61	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:65	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:67	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:68	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	03_views/updatable:69	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	13_catalog/pg-catalog:60	B	view features (writes through views, CHECK OPTION, ALTER VIEW, RECURSIVE VIEW)
+suite	09_window/frames:54	B	window frame EXCLUDE and FILTER on window functions
+suite	09_window/frames:64	B	window frame EXCLUDE and FILTER on window functions
+pgdiff	c/permissions-and-ddl-misc:263	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:77	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:79	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:81	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:83	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:85	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:87	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:89	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	f/explain:92	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	g/ss-sqllab:328	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	g/ss-sqllab:329	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	g/ss-sqllab:330	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	g/ss-sqllab:331	C	C1 EXPLAIN text differs (plans are not PG plans)
+suite	13_catalog/explain-shape:135	C	C1 EXPLAIN text differs (plans are not PG plans)
+suite	13_catalog/explain-shape:149	C	C1 EXPLAIN text differs (plans are not PG plans)
+pgdiff	a/insert-returning:84	C	C10 follow-on or cosmetic (see notes)
+pgdiff	h/cat-psql:277	C	C10 follow-on or cosmetic (see notes)
+pgdiff	h/cat-psql:298	C	C10 follow-on or cosmetic (see notes)
+suite	02_indexes/btree:29	C	C10 follow-on or cosmetic (see notes)
+suite	02_indexes/maintenance:110	C	C10 follow-on or cosmetic (see notes)
+suite	04_dml/merge:94	C	C10 follow-on or cosmetic (see notes)
+suite	10_cte_subquery/with:29	C	C10 follow-on or cosmetic (see notes)
+suite	10_cte_subquery/with:30	C	C10 follow-on or cosmetic (see notes)
+suite	14_errors/runtime:275	C	C10 follow-on or cosmetic (see notes)
+pgdiff	b/like-in-exists:164	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+pgdiff	b/strings:45	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+pgdiff	h/co-column:10	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+pgdiff	h/co-column:16	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+pgdiff	h/co-index:36	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+pgdiff	h/co-index:37	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+suite	06_select_basics/filters-order:54	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+suite	06_select_basics/string-math-functions:144	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+suite	08_aggregates/statistical:97	C	C2 default collation C (known; -collation en_US.utf8 option fixes)
+pgdiff	b/functions-misc:294	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-connect:31	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-connect:32	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-connect:37	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-connect:38	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-connect:39	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-connect:40	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-reflect-columns:91	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-reflect-keys:122	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-reflect-keys:123	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-reflect-tables:73	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-reflect-tables:79	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-reflect-tables:82	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-sqllab:377	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-sqllab:378	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-sqllab:379	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	g/ss-sqllab:380	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	h/cat-psql:104	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	h/cat-psql:188	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	h/cat-psql:29	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	h/cat-psql:316	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	h/cat-psql:74	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+suite	13_catalog/driver-queries:113	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+suite	13_catalog/pg-catalog:61	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+suite	13_catalog/pg-catalog:62	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+suite	13_catalog/pg-catalog:82	C	C3 environment identity (version, db/user names, OIDs, pids, sizes)
+pgdiff	c/arith-and-types:114	C	C4 both fail, different SQLSTATE (error path only)
+pgdiff	c/arith-and-types:116	C	C4 both fail, different SQLSTATE (error path only)
+pgdiff	c/arith-and-types:155	C	C4 both fail, different SQLSTATE (error path only)
+pgdiff	c/arith-and-types:170	C	C4 both fail, different SQLSTATE (error path only)
+pgdiff	c/arith-and-types:172	C	C4 both fail, different SQLSTATE (error path only)
+pgdiff	h/pt-truncate:115	C	C4 both fail, different SQLSTATE (error path only)
+suite	01_ddl_types/bytea:76	C	C4 both fail, different SQLSTATE (error path only)
+suite	01_ddl_types/datetime:95	C	C4 both fail, different SQLSTATE (error path only)
+suite	02_indexes/unique-partial-expression:69	C	C4 both fail, different SQLSTATE (error path only)
+suite	04_dml/merge:88	C	C4 both fail, different SQLSTATE (error path only)
+suite	04_dml/upsert:69	C	C4 both fail, different SQLSTATE (error path only)
+suite	05_transactions/prepared-statements:273	C	C4 both fail, different SQLSTATE (error path only)
+suite	05_transactions/two-phase:253	C	C4 both fail, different SQLSTATE (error path only)
+suite	05_transactions/two-phase:254	C	C4 both fail, different SQLSTATE (error path only)
+suite	07_joins/using-natural-self:72	C	C4 both fail, different SQLSTATE (error path only)
+suite	08_aggregates/statistical:78	C	C4 both fail, different SQLSTATE (error path only)
+suite	08_aggregates/statistical:82	C	C4 both fail, different SQLSTATE (error path only)
+suite	09_window/ranking:26	C	C4 both fail, different SQLSTATE (error path only)
+suite	09_window/ranking:28	C	C4 both fail, different SQLSTATE (error path only)
+suite	09_window/ranking:29	C	C4 both fail, different SQLSTATE (error path only)
+suite	09_window/value-functions:41	C	C4 both fail, different SQLSTATE (error path only)
+suite	10_cte_subquery/with:43	C	C4 both fail, different SQLSTATE (error path only)
+suite	10_cte_subquery/with:44	C	C4 both fail, different SQLSTATE (error path only)
+suite	10_cte_subquery/with:45	C	C4 both fail, different SQLSTATE (error path only)
+suite	12_text_search/fts:41	C	C4 both fail, different SQLSTATE (error path only)
+suite	12_text_search/fts:42	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:232	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:233	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:245	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:253	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:254	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:261	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:262	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:264	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:268	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:279	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:286	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:287	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:290	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:291	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:292	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:293	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:308	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:314	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:340	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:351	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/runtime:352	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:140	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:143	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:152	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:154	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:160	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:176	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:177	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:189	C	C4 both fail, different SQLSTATE (error path only)
+suite	14_errors/syntax-names:65	C	C4 both fail, different SQLSTATE (error path only)
+pgdiff	b/case-coalesce:71	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	b/case-coalesce:75	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	b/casts:134	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	b/joins-setops:200	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	b/strings:26	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:141	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:153	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:156	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:163	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:164	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:166	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:173	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:174	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	c/arith-and-types:175	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/constraints:230	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/constraints:233	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/constraints:237	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/constraints:263	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/ranges-enums-domains:175	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/ranges-enums-domains:177	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	01_ddl_types/ranges-enums-domains:178	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	03_views/plain:37	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	04_dml/merge:93	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	05_transactions/isolation:110	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	06_select_basics/like-regex:88	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	06_select_basics/like-regex:89	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	06_select_basics/nulls-case-casts:117	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	06_select_basics/string-math-functions:156	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	08_aggregates/basic-group-by:53	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	09_window/frames:62	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	09_window/frames:65	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	09_window/value-functions:45	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	10_cte_subquery/set-operations:107	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	10_cte_subquery/set-operations:114	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	10_cte_subquery/with:25	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:218	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:222	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:258	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:317	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:318	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:319	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:321	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:322	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:323	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:329	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:331	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:338	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:342	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:345	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:346	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:347	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/runtime:353	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:101	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:103	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:117	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:119	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:120	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:122	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:123	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:138	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:141	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:142	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:158	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:162	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:180	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:181	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:182	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:183	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:196	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:197	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:198	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:86	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:96	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/syntax-names:99	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+suite	14_errors/transaction-state:394	C	C5 lenient: STASK accepts SQL that PG rejects (no valid query affected)
+pgdiff	b/casts:138	C	C6 same value, different result type OID/name
+pgdiff	b/casts:139	C	C6 same value, different result type OID/name
+pgdiff	b/strings:48	C	C6 same value, different result type OID/name
+pgdiff	c/arith-and-types:158	C	C6 same value, different result type OID/name
+pgdiff	h/metadata-functions:100	C	C6 same value, different result type OID/name
+pgdiff	h/metadata-functions:98	C	C6 same value, different result type OID/name
+pgdiff	h/metadata-functions:99	C	C6 same value, different result type OID/name
+pgdiff	h/not-done:288	C	C6 same value, different result type OID/name
+suite	06_select_basics/nulls-case-casts:110	C	C6 same value, different result type OID/name
+suite	06_select_basics/string-math-functions:147	C	C6 same value, different result type OID/name
+suite	08_aggregates/statistical:93	C	C6 same value, different result type OID/name
+suite	08_aggregates/statistical:94	C	C6 same value, different result type OID/name
+suite	08_aggregates/statistical:98	C	C6 same value, different result type OID/name
+suite	09_window/frames:57	C	C6 same value, different result type OID/name
+suite	10_cte_subquery/set-operations:109	C	C6 same value, different result type OID/name
+suite	10_cte_subquery/set-operations:110	C	C6 same value, different result type OID/name
+suite	13_catalog/information-schema:38	C	C6 same value, different result type OID/name
+suite	06_select_basics/string-math-functions:155	C	C7 format only
+suite	01_ddl_types/datetime:102	C	C8 timestamptz printed in UTC, intervalstyle ignored (instants correct)
+suite	01_ddl_types/datetime:108	C	C8 timestamptz printed in UTC, intervalstyle ignored (instants correct)
+suite	05_transactions/isolation:95	C	C9 catalog/session cosmetics (transaction_isolation text, pg_prepared_statements.statement, extra sequences, column label)
+suite	05_transactions/prepared-statements:274	C	C9 catalog/session cosmetics (transaction_isolation text, pg_prepared_statements.statement, extra sequences, column label)
+suite	10_cte_subquery/subqueries:73	C	C9 catalog/session cosmetics (transaction_isolation text, pg_prepared_statements.statement, extra sequences, column label)
+suite	13_catalog/information-schema:31	C	C9 catalog/session cosmetics (transaction_isolation text, pg_prepared_statements.statement, extra sequences, column label)
+suite	13_catalog/pg-catalog:77	C	C9 catalog/session cosmetics (transaction_isolation text, pg_prepared_statements.statement, extra sequences, column label)

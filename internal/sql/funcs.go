@@ -328,6 +328,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			start = !alnum
 		}
 		return TextD(b.String()), nil
+	case "stask_hash_part": // HASH partition membership (partition.go): the bound of a partition is a view condition
+		if err := nargs(3, 3); err != nil {
+			return Null, err
+		}
+		return BoolD(partHashMatch(args[0], args[1].I, args[2].I)), nil
 	case "md5":
 		if err := nargs(1, 1); err != nil {
 			return Null, err
@@ -391,7 +396,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err := nargs(3, 4); err != nil {
 			return Null, err
 		}
-		re, err := compileRegex(str(1))
+		pat := str(1)
+		if len(args) == 4 && strings.Contains(str(3), "i") {
+			pat = "(?i)" + pat // PostgreSQL flag i: case-insensitive
+		}
+		re, err := compileRegex(pat)
 		if err != nil {
 			return Null, err
 		}
@@ -623,6 +632,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err != nil {
 			return Null, err
 		}
+		if y == 0 || m < 1 || m > 12 || d < 1 || d > 31 || time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).Day() != int(d) {
+			return Null, errf("22008", "date field value out of range: %d-%d-%d", y, m, d) // PostgreSQL does not normalise
+		}
 		return DateD(time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).UnixMicro()), nil
 	case "make_timestamp", "make_timestamptz":
 		if err := nargs(6, 7); err != nil {
@@ -775,6 +787,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		default:
 			u := intervalUnits[unit]
 			iv = IntervalD(u[0]*n, u[1]*n)
+			if u[1] >= usPerDay && u[1]%usPerDay == 0 { // day and week units are days
+				iv = IntervalFull(0, u[1]/usPerDay*n, 0)
+			}
 		}
 		v, ok, err := timeArith("+", args[0], iv)
 		if !ok && err == nil {
@@ -835,7 +850,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 	if d, ok, err := c.callMore(f, args); ok {
 		return d, err
 	}
-	return Null, errf(codeUndefinedFunction, "function %s does not exist", f.Name)
+	return Null, noFunctionErr(f, args)
 }
 
 func sgn(x float64) float64 {
@@ -877,6 +892,9 @@ func pgKindName(k Kind) string {
 // (seconds 6 digits, milliseconds 3, epoch 6; the other fields are whole
 // numbers), exact to the microsecond.
 func extractNumeric(field string, v Datum) (Datum, error) {
+	if v.K == KInterval {
+		return intervalPartNumeric(field, v)
+	}
 	if isTime(v.K) || v.K == KText || v.K == KDate {
 		t, err := coerce(v, KTime)
 		if err != nil {
@@ -929,22 +947,12 @@ func extractNumeric(field string, v Datum) (Datum, error) {
 // datePart is PostgreSQL's date_part / EXTRACT.
 func datePart(field string, v Datum) (Datum, error) {
 	if v.K == KInterval {
-		ms := intervalMs(v)
-		switch field {
-		case "epoch":
-			return FloatD(float64(ms) / usPerSec), nil
-		case "day", "days":
-			return FloatD(float64(v.I / usPerDay)), nil
-		case "hour":
-			return FloatD(float64(v.I % usPerDay / (3600 * usPerSec))), nil
-		case "minute":
-			return FloatD(float64(v.I % (3600 * usPerSec) / (60 * usPerSec))), nil
-		case "month":
-			return FloatD(float64(int64(v.F) % 12)), nil
-		case "year":
-			return FloatD(float64(int64(v.F) / 12)), nil
+		s, err := intervalPart(field, v)
+		if err != nil {
+			return Null, err
 		}
-		return Null, errf(codeInvalidParameter, "unit %q not supported for interval", field)
+		f, _ := strconv.ParseFloat(s, 64)
+		return FloatD(f), nil
 	}
 	t, err := coerce(v, KTime)
 	if err != nil {
@@ -1413,6 +1421,9 @@ func funcKind(name string, args []Kind) Kind {
 	if k, ok := userFuncKind(name); ok {
 		return k
 	}
+	if k, ok := fnKindOf(name, args); ok {
+		return k
+	}
 	if k, ok := jsonarrFuncKind(name, args); ok {
 		return k
 	}
@@ -1423,6 +1434,9 @@ func funcKind(name string, args []Kind) Kind {
 		return k
 	}
 	if k, ok := extFuncKinds[name]; ok {
+		return k
+	}
+	if k, ok := typesFuncKind(name, args); ok {
 		return k
 	}
 	switch name {
@@ -1445,6 +1459,9 @@ func funcKind(name string, args []Kind) Kind {
 		}
 		if (arg(0) == KInt || arg(0) == KBool) && (name == "avg") {
 			return KNumeric
+		}
+		if arg(0) == KInterval && name == "avg" {
+			return KInterval
 		}
 		if (name == "power" || name == "pow") && len(args) == 2 && (arg(0) == KNumeric || arg(1) == KNumeric) &&
 			(arg(0) == KNumeric || arg(0) == KInt) && (arg(1) == KNumeric || arg(1) == KInt) {

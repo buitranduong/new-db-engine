@@ -120,14 +120,16 @@ type colBounds struct {
 // boundsOf collects, for each column of t, what the conjuncts of where fix.
 func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[string]*colBounds {
 	out := map[string]*colBounds{}
-	types := map[string]schema.ColType{} // bound key -> type of the indexed value
+	types := map[string]schema.ColType{}  // bound key -> type of the indexed value
+	pgcols := map[string]*schema.Column{} // columns of the added types (exttypes.go): constants go through the column's spec
 	colOf := func(x Expr) (string, bool) {
 		fn := ""
-		if f, ok := x.(*Func); ok && len(f.Args) == 1 && !f.Star && !f.Distinct && f.Filter == nil && len(f.Order) == 0 && len(f.Within) == 0 {
-			if fn, ok = schema.CanonExprFunc(f.Name); !ok {
+		if f, ok := x.(*Func); ok {
+			canon, arg, ok := indexCall(f)
+			if !ok {
 				return "", false
 			}
-			x = f.Args[0]
+			fn, x = canon, arg
 		}
 		c, ok := x.(*ColRef)
 		if !ok || c.Table == "excluded" || c.Table != "" && c.Table != t.Name && c.Table != alias {
@@ -138,8 +140,17 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 			return "", false
 		}
 		if fn == "" {
+			if extIsSpec(t.Columns[i].PG) {
+				if !extIndexLookup(t.Columns[i].PG) {
+					return "", false
+				}
+				pgcols[c.Name] = &t.Columns[i]
+			}
 			types[c.Name] = t.Columns[i].T
 			return c.Name, true
+		}
+		if extIsSpec(t.Columns[i].PG) {
+			return "", false
 		}
 		ct, ok := schema.ExprResultType(fn, t.Columns[i].T)
 		if !ok {
@@ -169,6 +180,16 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 		}
 		if d.IsNull() {
 			return v, true, true
+		}
+		if pc := pgcols[col]; pc != nil {
+			if d.K != KText {
+				return v, false, false
+			}
+			sv, err := toValueCol(pc, d)
+			if err != nil || sv.Null {
+				return v, false, false
+			}
+			return sv, true, false
 		}
 		v, ok = indexValue(types[col], d)
 		return
@@ -211,7 +232,7 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 				continue
 			}
 			col, ok := colOf(e.X)
-			if !ok || kindOf(types[col]) != KText {
+			if !ok || kindOf(types[col]) != KText || pgcols[col] != nil {
 				continue
 			}
 			pv, ok, null := val(col, e.Pat)
@@ -501,12 +522,12 @@ func orderColumns(st *Select, items []SelItem, orderOut []int, t *schema.Table, 
 			x = items[orderOut[i]].X
 		}
 		fn := ""
-		if f, isFn := x.(*Func); isFn && len(f.Args) == 1 && f.Over == nil && f.Filter == nil { // ORDER BY lower(col): an expression index
-			canon, ok := schema.CanonExprFunc(f.Name)
+		if f, isFn := x.(*Func); isFn { // ORDER BY lower(col): an expression index
+			canon, arg, ok := indexCall(f)
 			if !ok {
 				return nil, false
 			}
-			fn, x = canon, f.Args[0]
+			fn, x = canon, arg
 		}
 		c, ok := x.(*ColRef)
 		if !ok || c.Table != "" && c.Table != t.Name && c.Table != alias {

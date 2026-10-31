@@ -53,11 +53,12 @@ func ageInterval(a, b int64) Datum {
 		year--
 	}
 	months := int64(year*12 + mon)
-	us := int64(day)*usPerDay + int64(hour)*3600*usPerSec + int64(min)*60*usPerSec + int64(sec)*usPerSec + int64(fsec)
+	us := int64(hour)*3600*usPerSec + int64(min)*60*usPerSec + int64(sec)*usPerSec + int64(fsec)
+	days := int64(day)
 	if neg {
-		months, us = -months, -us
+		months, days, us = -months, -days, -us
 	}
-	return IntervalD(months, us)
+	return IntervalFull(months, days, us)
 }
 
 // callMore is the last stop of function lookup.

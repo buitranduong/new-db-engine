@@ -3,6 +3,7 @@ package sql
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"stask/internal/core"
 )
@@ -54,6 +55,9 @@ func (s *Session) alterIndex(st *AlterIndex) (*Result, error) {
 		}
 		return nil, errf("42704", "relation %q does not exist", st.Name)
 	}
+	if _, has := st.Opts[indexStorageOpt]; !has && pgStorageParams(st.Opts) {
+		return res, nil // fillfactor, deduplicate_items, ...: accepted, no effect
+	}
 	v, err := storageFromOpts(st.Opts)
 	if err != nil {
 		return nil, err
@@ -93,4 +97,21 @@ func (s *Session) alterTableIndexStorage(st *AlterTable) (*Result, bool, error) 
 		return nil, true, storageErr(err)
 	}
 	return &Result{Tag: "ALTER TABLE"}, true, nil
+}
+
+// pgStorageParams reports whether every option is a PostgreSQL storage parameter that has no meaning
+// here (rows are not heap tuples and there is no autovacuum): ALTER TABLE/INDEX .. SET (..) accepts them.
+func pgStorageParams(opts map[string]string) bool {
+	for k := range opts {
+		k = strings.ToLower(k)
+		switch {
+		case k == "fillfactor", k == "parallel_workers", k == "user_catalog_table", k == "deduplicate_items",
+			k == "buffering", k == "fastupdate", k == "gin_pending_list_limit", k == "pages_per_range", k == "autosummarize",
+			k == "log_autovacuum_min_duration", k == "vacuum_truncate", k == "vacuum_index_cleanup", k == "toast_tuple_target",
+			strings.HasPrefix(k, "autovacuum_"), strings.HasPrefix(k, "toast."):
+		default:
+			return false
+		}
+	}
+	return len(opts) > 0
 }

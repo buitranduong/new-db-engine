@@ -140,3 +140,93 @@ Bước 1 cài đúng quyết định C (B làm đường chính) trong các t�
 5. **Hình dạng được nhận**: đúng khuôn mẫu ở đầu `hybrid_plan.go` (một bảng fact, tuỳ chọn INNER JOIN một bảng chiều theo khoá văn bản = cột PARTITION BY, lọc AND của `col op hằng`, `IN`, `BETWEEN`; cửa sổ `row_number() OVER (PARTITION BY g ORDER BY điểm[, md5(khoá || hằng)], khoá)`; lọc ngoài là OR của (g = hằng AND rn khoảng); ORDER BY ngoài đúng thứ tự cửa sổ). Mọi thứ khác: rơi về đường cũ với lý do (EXPLAIN in `Hybrid not used: ...`, nhật ký in mỗi lý do một lần, bộ đếm `Hybrid.Fallbacks`). Điểm NULL trong ứng viên, hạng vượt `SegMaxTopN` (100 000 mỗi nhóm): rơi về có lý do. Kiểm tra bất biến: mỗi dòng của trang được đọc từ core ở snapshot đọc và so với trạng thái đoạn (nhóm, điểm, mọi lọc); lệch thì lỗi `XX000 hybrid invariant violated` (không bao giờ trả sai).
 6. **Zone map** có (min/max số nguyên, mặt nạ văn bản mỗi 64K dòng) nhưng đoạn nền KHÔNG sắp, nên ở dữ liệu r2big chúng không cắt chunk nào (ChunksPruned=0), đúng như ADR dự báo ("chỉ 10-27%"); giữ cho đoạn sắp ở giai đoạn 4.
 7. Hợp đồng: `strong` và `session` (mặc định) đều chạy ở snapshot chính xác S (mạnh hơn `session` đòi hỏi); `bounded`/`eventual`/`stask.read_staleness` dùng trạng thái mới nhất (bounded chờ tới `stask.max_lag_ms`), và khi đó trang và chiều đọc ở LSN của trạng thái. SERIALIZABLE và giao dịch đã ghi: rơi về đường cũ có lý do.
+
+## 14. Kết quả chạy chuỗi lát dọc trên máy thật (`slice1c`, 2026-10-31, `staskd -hybrid -scrub-interval 0`)
+
+Mọi số là số đo của đúng lần chạy ghi bên cạnh, VM dùng chung, harness tự đánh `DIRTY` khi load1 > 1,0 lúc bắt đầu (hầu hết các lần dưới đây là DIRTY vì load1 còn dư của lần chạy trước hoặc của agent khác; chúng là số của LẦN ĐÓ, không phải số G3). Không ngoại suy.
+
+### 14.1 Kiểm vòng lặp (việc 0)
+
+Đã xét mọi vòng `for` trong `colseg.go coltail.go coldir.go colsnap.go colr2.go hybrid_*.go`. Vòng đáng xét:
+
+| vòng | kết luận |
+|---|---|
+| `segDir.Get/Put/grow` (dò tuyến tính, `coldir.go`) | dừng: `Put` tăng bảng khi `n*10 >= len*7` nên luôn còn ô trống; `grow` đi qua `old` hữu hạn. Test `TestSegDirProbeTerminates`. |
+| gộp nền: `wantMerge` -> `startMerge` -> `finishMerge` (`coltail.go`, gọi từ `publish`/`Apply`/`Flush`) | không có vòng thử lại; một gộp tại một thời điểm (`merging` CAS). Sau `finishMerge` đuôi chỉ còn phần mới hơn ảnh chụp gộp, nên không tự kích hoạt lại khi không có ghi: lượng đơn điệu là độ dài đuôi dư. Dưới ghi liên tục có thể gộp liền nhau nếu `tốc độ ghi x thời gian gộp >= max(65 536, nền/8)`: đó là đuổi theo, có chặn bởi tốc độ ghi, không giữ khoá/epoch (goroutine nền chỉ đọc dữ liệu bất biến). Test `TestSegMergeAndRingTerminate` (số lần gộp ổn định khi không ghi, không quá số commit). Chưa thấy ở thực tế: 1-3 lần gộp mỗi lần chạy. |
+| cắt vòng đệm trạng thái (`publish`, `colsnap.go`) | dừng: mỗi vòng bỏ một phần tử, điều kiện `len > SegRingMin`; kích thước <= `SegRingMax` (test). Lưu ý bộ nhớ, không phải vòng lặp: khi ngừng ghi, 32 trạng thái cuối được giữ vô thời hạn (có thể giữ nền cũ sau một lần gộp tới khi có thêm 32 lần công bố). |
+| `StateAt` (đi xích `prev`) | hữu hạn: xích bị cắt tại `chain[0]`. |
+| `hyWaitApplied` (nay `Hybrid.waitApplied`, `hybrid_exec.go`) | dừng nhờ hạn `Hybrid.Wait` = 2 s. LỖI TÌM THẤY (xem 14.3): bản cũ bỏ cuộc khi `applied` không nhúc nhích 200 ms. |
+| `bitsW.Set` (`for p >= len(pages)`), vòng heap `up/down`, vòng worker `next.Add` (`colr2.go`), `hyPeel` (đi xuống cây AST) | đơn điệu: chỉ số tăng tới hữu hạn / độ sâu cây / `nz` chunk. |
+
+Không có vòng nào giữ khoá hay epoch trong khi lặp ngoài `waitApplied` (phiên đọc giữ snapshot tối đa 2 s; không giữ khoá).
+
+### 14.2 Oracle trên máy thật (việc 1)
+
+Harness `cmd/stask-m2`, `-hybrid -scrub-interval 0`, T=4 P=4, nhập 1% SIM mỗi 5 s (nửa sau), 16 luồng thăm dò đọc-sau-ghi `-probe-gap 0`, các luồng "rách" bật.
+
+| lần chạy | quy mô / thời gian | tải | kết quả |
+|---|---|---|---|
+| 300k, R=2 | 900 s | DIRTY (load1 đầu 1,60; tối đa 10,08) | MỌI oracle đúng: 10 000 probe x 3 dạng (R1, R2 cửa sổ một SIM, trang R2) = 0 vi phạm; 6 oracle `tear_*` 563-564 snapshot, 0 vi phạm; `r2_pages_*_frozen` 226; barrier 15 truy vấn bằng postgres:16 sau phát lại 47 032 giao dịch (0 lệch kết cục) |
+| 1M, R=2 | 902 s | DIRTY (load1 đầu 1,42; tối đa 8,50) | mọi oracle đúng; probe 3 421 (CHỈ 3 421, không đủ 10 000: ở 1M probe chạy 3,8/s), tear 124, barrier 15 truy vấn bằng PG16 sau phát lại 14 229 giao dịch |
+| 1M, R=1, 1500 s | 1502 s | DIRTY (load1 đầu 2,98; tối đa 8,51) | mọi oracle đúng; probe 6 009 x 3 dạng, 0 vi phạm; tear 218-219; frozen 158; barrier đúng (phát lại 26 661 giao dịch) |
+
+Chưa đạt: 10 000 probe ở 1M (đạt 6 009 trong 25 phút; mỗi probe tốn ~0,25 s vì dạng R2 cửa sổ một SIM và R1 đi đường lõi, xem 14.6). Không so lại trên postgres:16 vì không oracle nào nghi ngờ.
+Đo thêm trong cùng các lần chạy 1M (R=2, DIRTY): `import` p50 31,8 s / max 58 s cho 10 000 dòng (hai lần chạm hạn 60 s của harness và báo `conn`/`unknown_commit`; oracle `import_history_match_journal_final` vẫn đúng), `r_join` p99 28,8 s (đường dòng, chiếm CPU).
+
+### 14.3 Lỗi tìm thấy và đã sửa
+
+1. **Đọc `strong` rơi về đường cũ khi CPU đầy (R phải chờ follower)**. Triệu chứng: ở 300k với 12 luồng probe, `fallbacks` ~ ngoài dạng không nhận diện còn các dòng "the segment state did not reach snapshot lsn S within 2s (applied S-k, durable >= S, waited 200ms)" (6-8 lần/200 s). Nguyên nhân gốc (đo bằng đồng hồ trong follower, đã gỡ sau đó): tám lõi bão hoà bởi truy vấn đọc (top: 98% user, đĩa nhàn rỗi); MỌI follower (columnar, substr, search, timeseries, segcolumnar) chờ 100-300 ms từ lúc được đánh thức tới bản ghi đầu tiên (`Apply` 0 ms, `advance` 0 ms), nên `applied` đứng yên > 200 ms, và `hyWaitApplied` coi đó là "follower đứng" và bỏ cuộc. Sửa: `Hybrid.waitApplied` chờ tới hạn `Wait`; chờ hết hạn được nhớ (giá trị `applied` + thời điểm) để các đọc sau rơi về ngay thay vì mỗi cái chờ 2 s. Test hồi quy `TestHybridWaitAppliedPatient` (cam kết tới sau 450 ms vẫn được phục vụ; chờ hết hạn rồi nhớ). Sau sửa: 0 dòng "did not reach" ở 300k/120 s cùng cấu hình; ở 1M 180 s với nhập: `fallbacks` = 0.
+2. **Báo động CRC giả ở mỗi lần khởi động** (F1fix): `restoreHistoryState` gọi `Log.ReadHeader(seg, 0)` trên đoạn rỗng; `VerifyFrame` nay báo "data corruption detected ... invalid frame length", tăng `stask_read_crc_errors_total` và ghi WARN ở MỌI lần khởi động DB mới (9/9 lần chạy). Sửa: `ReadHeader` thấy độ dài 0 (chưa có khung) thì trả `ErrTorn` im lặng như trước F1fix. Test `TestReadHeaderOfEmptySegmentIsNotCorruption`.
+3. Chỉ để chẩn đoán: lý do rơi về nay ghi `applied/durable/waited`; `SegColumnar.Apply` ghi "slow apply" khi > 50 ms.
+
+### 14.4 Cách ly khi nhập (việc 2)
+
+1M SIM, 180 s, T=4 P=4 R=2, nhập mỗi 5 s (chế độ `always`) hoặc không (`never`), `-probes 0 -no-ref`. Tất cả DIRTY (hybrid+nhập: load1 đầu 1,27; ba lần sau 8,1-8,2 do chính lần chạy trước). ms:
+
+| cấu hình | lớp | p50 | p95 | p99 | max | n |
+|---|---|---|---|---|---|---|
+| hybrid, không nhập | r1_point | 0,91 | 8,62 | 16,08 | 82,4 | 54 036 |
+| hybrid, nhập | r1_point | 1,46 | 11,36 | 21,31 | 256,6 | 47 248 |
+| hybrid, không nhập | r1_keyset | 4,72 | 13,92 | 25,46 | 100,1 | 54 215 |
+| hybrid, nhập | r1_keyset | 5,17 | 17,20 | 30,81 | 251,5 | 47 388 |
+| hybrid, không nhập | r2_page | 14,09 | 23,89 | 32,93 | 42,4 | 1 437 |
+| hybrid, nhập | r2_page | 15,81 | 29,81 | 39,04 | 114,3 | 1 326 |
+| không hybrid, không nhập | r1_point | 1,34 | 8,97 | 15,26 | 69,2 | 50 824 |
+| không hybrid, nhập | r1_point | 2,17 | 11,87 | 20,88 | 155,4 | 44 603 |
+| không hybrid, không nhập | r1_keyset | 5,24 | 14,52 | 23,02 | 77,5 | 50 926 |
+| không hybrid, nhập | r1_keyset | 5,67 | 17,00 | 29,05 | 155,2 | 44 728 |
+| không hybrid, không nhập | r2_page | 1300,19 | 1396,46 | 1429,26 | 1496,3 | 244 |
+| không hybrid, nhập | r2_page | 1352,49 | 1480,82 | 1560,69 | 1597,2 | 235 |
+
+Tỉ lệ p99 nhập / không nhập: hybrid r1_point 1,33; r1_keyset 1,21; r2_page 1,19. Không hybrid: r1_point 1,37; r1_keyset 1,26; r2_page 1,09. Tỉ lệ r2_page hybrid / không hybrid (cùng điều kiện nhập): p50 0,012 (15,8 / 1352), p99 0,025. Nhận xét có nhãn: (a) tỉ lệ p99 ở R1 (đường lõi, không hybrid) cũng 1,3: ảnh hưởng của nhập lên R1 cùng mức ở cả hai cấu hình, tức không do đường hybrid; (b) vượt 1,25 ở r1_point/r1_keyset, nhưng mỗi ô một lần chạy DIRTY, n lớn nhưng chưa lặp: không kết luận; (c) giao dịch T chậm đi khi nhập: `t_order` 105,4/s -> 60,7/s (hybrid), 97,4/s -> 57,2/s (không hybrid), max 16-18 s (T xin khoá hàng của SIM mà nhập đang giữ tới commit, 13-19 s cho 10 000 dòng); cả hai cấu hình như nhau, vi phạm tiêu chí §9.5 "T không chậm hơn" nhưng không do hybrid; (d) thời gian nhập 13,7 s (hybrid) vs 12,9 s (không hybrid).
+R có CHỜ nhập không? Không thấy: `Hybrid.Fallbacks` = 0 trong cả hai lần chạy hybrid (log chỉ có "slow apply" lúc nạp đầu), gộp nền 1 lần (nền 1M dựng trong 225-574 ms, người đọc không bị chặn). **Đường khoảng hở (bổ đề A): KHÔNG CẦN** ở 1M/180 s với nhập 1%/5 s (0 lần rơi về, lag_ms=0); chỉ cần xem lại nếu đo ở quy mô lớn thấy `fallbacks` do follower. Lưu ý: khi CPU bão hoà bởi đọc, follower bị đói CPU 100-300 ms (14.3); sửa bằng chờ, không bằng đường khoảng hở. Không có ưu tiên goroutine trong Go: đọc nặng làm chậm follower (chưa có cơ chế giảm số worker song song của R2 khi follower trễ).
+
+### 14.5 Diễn tập sập dưới tải (việc 3)
+
+`CRASH=10s DURATION=30s N=20000 -hybrid`, T=6 P=4 R=2, nhập mỗi 3 s (`always` lẻ, `alternate` chẵn), 300 probe, 22 vòng liên tiếp (DIRTY: load1 lên 5-8): **22/22 mã thoát 0, mọi oracle đúng** (`server_recovers_after_kill9`, `acked_txns_present_after_crash/_final`, `journal_seq_gapless`, `orders/order_items/history_match_journal`, `stock_invariant_q13`, `tear_*` ~111 snapshot, barrier 15 truy vấn bằng PG16 sau phát lại 12 800-13 100 giao dịch, 0 lệch kết cục). Trạng thái được dựng lại từ lõi ở mỗi lần khởi động (log: `segcolumnar: bootstrapped at lsn=4705`). Không còn triệu chứng "giao dịch dở".
+
+### 14.6 Chi phí trạng thái (việc 4)
+
+| số đo | giá trị | quy mô / tải |
+|---|---|---|
+| dựng `State` lúc khởi động (`segcolumnar: bootstrapped`) | 1,31 s; 1,36 s | 1M SIM (4,3M dòng tổng, chỉ `sims` columnar), load1 ~0, hai lần khởi động |
+| khởi động cả máy chủ (phát lại log 245 MB) | ~19 s, cả có và không `-hybrid` | cùng; phần lớn là phát lại, không phải hybrid |
+| RSS 20 s sau khởi động | hybrid 2 610 872 KB và 2 690 008 KB; không hybrid 2 402 192 KB | cùng dữ liệu; hiệu 208 680 và 287 816 KB (204 và 281 MiB) cho 1M dòng của `sims` (~205-295 B/dòng) gồm nền+đuôi+thư mục+từ điển+vòng đệm; là hiệu của RSS (heap Go có thể giữ), không phải đo chính xác từng cấu trúc |
+| 5M | KHÔNG CHẠY | lệnh bị hệ thống phân quyền từ chối; không lách |
+| tốc độ ghi bền: `t_*` tổng/giây, 16 luồng T, 300k, 60 s, không R/P/nhập | hybrid 594,5/s và 588,1/s; không hybrid 574,6/s và 568,3/s (tổng `t_order`+`t_pay`+`t_cancel` mỗi giây, 4 lần xen kẽ) | DIRTY; follower theo kịp (`applied` = `durable`, `lag_ms` 0 khi kết thúc): công bố một trạng thái mỗi bản ghi chưa làm bão hoà follower ở tốc độ này; KHÔNG đo tốc độ tối đa của follower |
+
+### 14.7 Câu lệnh KHÔNG đi đường hybrid (và vì sao)
+
+Điều kiện vào: bảng `WITH (columnar = on)`, câu có dạng "bảng dẫn xuất có `row_number()`" (hyCandidate). Mọi thứ còn lại chạy bằng đường cũ, không phải lỗi:
+- Mọi `INSERT/UPDATE/DELETE/COPY/DDL`, mọi câu không có bảng dẫn xuất với `row_number()`: R1 tra điểm và trang keyset (core + chỉ mục; harness `r1_point`, `r1_keyset`), q05-q15 (GROUP BY, join nhiều bảng, cửa sổ khác, `never ordered`...): không thuộc khuôn R2 của bước 1.
+- Dạng R2 cửa sổ một SIM của probe (`... AND number = '...') t WHERE rn <= 1`): lý do ghi trong log "an outer OR branch has no partition value or no upper rank bound" (một lần mỗi lý do; 957 / 2 375 / 10 001 / 3 419 / 6 010 lần rơi về = số probe, mọi lần chạy có probe).
+- Lý do theo `hybrid_plan.go`: DISTINCT/GROUP BY/HAVING/LIMIT/OFFSET/WITH/khoá ở câu ngoài hoặc trong; nhiều hơn một join hoặc join không phải INNER ... ON hai bảng; self join; bảng tạm hoặc view; `AS OF`; `SELECT *` trong bảng dẫn xuất; cột chọn không phải cột thường; cửa sổ không phải `PARTITION BY một cột ORDER BY điểm[, md5(khoá || hằng)], khoá` không khung; NULLS FIRST/LAST hoặc COLLATE; thứ tự ngoài khác thứ tự cửa sổ; lọc không phải `col op hằng`/`IN`/`BETWEEN` (kể cả subquery, hàm không ổn định); lọc ngoài không phải OR của (g = hằng AND rn khoảng); hạng > `SegMaxTopN`; điểm NULL trong ứng viên; collation mặc định không phải bytewise; cột lọc/nhóm/điểm không dùng được (từ điển > 65 535 giá trị, số ngoài int32); bảng đổi lược đồ sau khi dựng đoạn; bảng chiều lớn hơn 4 096 dòng.
+- Theo phiên: giao dịch tường minh đã ghi (trạng thái không có phần chưa commit); SERIALIZABLE; đọc `strong` mà follower chưa tới snapshot trong `Wait` (nay chỉ khi thật sự trễ, xem 14.3); `bounded` khi trễ hơn giới hạn.
+- Hậu quả cho phép đo hiệu năng: ở dạng probe R2 (cửa sổ một SIM) và R1, thời gian bị chi phối bởi đường lõi; chúng là lý do probe 1M chỉ đạt 3,8-4,0/s.
+
+### 14.8 Việc 3 (G3 sạch ở 10M và 30M) cần gì
+
+- VM rảnh (load1 < 1, không gate, không agent khác), `scripts/perf-run.sh`; đĩa >= 5 GB trống cho 10M (số liệu ở đây: 1M ~ 320 MB dữ liệu + log), nhiều hơn cho 30M; 5M/10M cần `flock /tmp/stask-bigdata.lock` và quyền chạy.
+- Quyết định về vòng đệm: giải phóng nền cũ khi rảnh (hiện giữ 32 trạng thái), vì RAM ở 10M-30M tính theo nền x 2 sau mỗi lần gộp.
+- Nhập 1% ở 10M = 100 000 dòng/giao dịch: ở 1M đã tốn 13-42 s và chặn T ~16 s; cần quyết định chia nhỏ giao dịch nhập (đổi workload) hay chấp nhận.
+- Thăm dò 10 000 ở quy mô lớn cần đường R1/dạng R2-một-SIM nhanh hơn hoặc nhiều thời gian (khoảng 0,25 s/probe ở 1M).

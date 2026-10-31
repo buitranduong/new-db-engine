@@ -218,7 +218,7 @@ func TestBitAndMacaddr(t *testing.T) {
 func TestTSVectorTSQuery(t *testing.T) {
 	for in, want := range map[string]string{
 		"b a  a": "'a' 'b'", "a:3,1,2B,1C": "'a':1C,2B,3", "a:1D": "'a':1", "Foo bar": "'Foo' 'bar'", "a:16384": "'a':16383",
-		"'a'':1B,1A,1D": "'a':1A", "foo:5 foo:3": "'foo':3,5", "": "",
+		"'a':1B,1A,1D": "'a':1A", "foo:5 foo:3": "'foo':3,5", "": "",
 	} {
 		v, err := tsvParse(in)
 		if err != nil || v.text() != want {

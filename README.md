@@ -26,56 +26,75 @@ path from the *consistency the query asked for* and reports which plan it used
 
 Direction: not "one database for everything", but a **tiered, tightly controlled engine** that gathers the best architectures of existing systems (log and MVCC core, derived columnar and search views, time-bounded history, archive), each tier with a declared role and freshness. See [docs/16](docs/16_tiered_engine_vision.md).
 
-> **Status: research prototype. Not for production use.** It is roughly a third of
-> the way to the feature set listed in [docs/11](docs/11_rust_criteria.md) (see the
-> [roadmap](#roadmap)). On-disk formats may still change. Do not keep data you
-> cannot lose in it.
+> **Status: research prototype, code phase closed, verification phase next.**
+> The feature set for the target workload is implemented and covered by tests;
+> nothing has been measured at scale yet, and no performance parity with
+> PostgreSQL, ClickHouse, Elasticsearch or Redis is claimed. Current state, known
+> gaps and the live work queue: [docs/STATUS.md](docs/STATUS.md) and
+> [docs/27_handoff.md](docs/27_handoff.md). Criteria for production use:
+> [docs/PROCESS.md](docs/PROCESS.md) D34 (seven criteria, none reached yet).
+> On-disk formats may still change (additive changes are recorded in D33). Do not
+> keep data you cannot lose in it.
 
 ## Features
 
 Working today. Every claim below is backed by a test or by a probe in
 [docs/14](docs/14_plan_target_actual.md), which records the plan, the target and
-what the code actually does for each task, including where the docs were wrong:
+what the code actually does for each task, including where the docs were wrong.
+`cmd/claimcheck` (603 of 604 probes pass at the last gate) and `cmd/pgdiff`
+(statement-by-statement comparison with a real PostgreSQL 16) are the
+reproducible evidence.
 
 - **Storage and transactions**: segmented WAL with CRC32C frames and pipelined
-  group commit; MVCC with Snapshot Isolation and Serializable for point reads;
-  checkpoints; crash recovery; log GC and compressed segments
+  group commit; MVCC with Snapshot Isolation, Serializable and READ COMMITTED
+  with re-evaluation; optimistic concurrency with repair; row locks (`SELECT ...
+  FOR UPDATE/SHARE [NOWAIT|SKIP LOCKED]`, `UPDATE`/`DELETE` that wait, deadlock
+  detection `40P01`, `lock_timeout`); transactional DDL; checkpoints; crash
+  recovery; log GC and compressed segments
   ([docs/03](docs/03_transaction_recovery.md), [docs/07](docs/07_storage.md)).
-- **SQL over the PostgreSQL protocol**: `SELECT`/`INSERT`/`UPDATE`/`DELETE`,
-  joins, subqueries, `ON CONFLICT`, transactions, sequences and `SERIAL`,
-  `DEFAULT`/`CHECK`/`NOT NULL`, `ALTER TABLE` (add, drop and rename column,
-  `SET DEFAULT`/`NOT NULL`, rename table; `ALTER COLUMN TYPE` is refused),
-  `DROP`/`TRUNCATE`, `COPY` (text and csv), `CREATE VIEW`, roles with
-  `GRANT`/`REVOKE` on tables, SQL-bodied row triggers (`CREATE TRIGGER ... BEGIN
-  ... END`; not the PostgreSQL `EXECUTE FUNCTION` form), and
-  `pg_catalog`/`information_schema` for `psql \d`, `\d+`, `\dt`, `\copy` and JDBC
-  metadata ([docs/05](docs/05_sql_pgwire.md)). Not supported: dollar-quoted
-  strings (`$$...$$`).
-- **Analytics**: aggregates served from a columnar view, with a clear
-  fall-back to the core path when the view lags
-  ([docs/08](docs/08_memory.md)).
+- **Indexes and larger-than-RAM data**: in-RAM primary index; secondary indexes
+  (btree, expression, partial, covering), `UNIQUE` and foreign keys; indexes can
+  live on disk (`pindex`, a B+tree with an `-index-mem-budget` and an online
+  `ALTER ... SET (index_storage)`), operators spill to disk under `work_mem`
+  ([docs/18](docs/18_disk_index.md)).
+- **SQL over the PostgreSQL protocol**: joins, subqueries, CTEs (including
+  recursive), window functions, `GROUPING SETS`, `ON CONFLICT`, `MERGE`, `COPY` (text,
+  csv and binary), views, sequences, `ALTER TABLE`, partitioned tables,
+  collations, composite types, arrays, `jsonb`, roles with `GRANT`/`REVOKE`,
+  triggers (PostgreSQL form, `INSTEAD OF`, transition tables, event triggers),
+  PL/pgSQL (a large subset), `pg_catalog`/`information_schema` for `psql`, JDBC
+  and ORM metadata ([docs/05](docs/05_sql_pgwire.md)). Row-level security
+  (`CREATE POLICY`) is not supported and fails loudly.
+- **Derived views**: a columnar view for aggregates and facets, a trigram view for
+  `LIKE`/`ILIKE`, suffix and substring search, time-series, and a time-bounded
+  history store (`AS OF`, TTL by whole segment). The planner reports which plan it
+  used and falls back to the core path when a view lags
+  ([docs/08](docs/08_memory.md), [docs/19](docs/19_history_retention.md)).
 - **Change data capture**: logical replication slots with `test_decoding`,
-  `wal2json` and `pgoutput`, publications, `LISTEN`/`NOTIFY`
-  ([docs/10](docs/10_interop.md)).
-- **Replication and recovery**: asynchronous replicas, base backup, continuous
-  WAL archiving and point-in-time recovery (to a time or an LSN; run end to end
-  over TLS/mTLS against a leader that is being written by `accept/pitr.sh`),
-  read-your-writes through replicas (LSN tokens, `staskroute`), slot and
-  publication state carried through the log ([docs/06](docs/06_cluster.md),
-  [docs/05 §14](docs/05_sql_pgwire.md)). `internal/raft` is a simulated package,
-  not wired into the engine.
-- **Security and operations**: TLS and SCRAM-SHA-256 on the SQL port, mutual
-  TLS and challenge-response authentication on the replication port, TLS and
-  bearer tokens on the HTTP API, cancellation of running statements and
-  `statement_timeout` (table scans, aggregates, sorts, set-returning functions such
-  as `generate_series`, windows, set operations, recursive CTEs), idle-session timeouts, per-query memory budget
+  `wal2json` and `pgoutput`, publications, an HTTP change stream,
+  `LISTEN`/`NOTIFY` ([docs/10](docs/10_interop.md)).
+- **Replication and recovery**: a 3-node Raft cluster (majority commit, leader
+  election, failover, runtime membership change; a follower refuses writes and
+  row locks with `25006`, clients find the leader with a multi-host DSN),
+  asynchronous replicas, base backup, continuous WAL archiving and point-in-time
+  recovery (single node and cluster), read-your-writes through replicas, and a
+  shadow mode (`stashadow`) to run next to an existing PostgreSQL
+  ([docs/06](docs/06_cluster.md), [docs/21](docs/21_operations.md)).
+- **Import**: `staskimport` loads xlsx/csv (resumable, binary `COPY` with fallback)
+  with history rows ([docs/20](docs/20_import_runbook.md)).
+- **Security and operations**: TLS and SCRAM-SHA-256 on the SQL port, `-pg-hba`,
+  mutual TLS and challenge-response on the replication port, TLS and bearer
+  tokens on the HTTP API, a hash-chained audit log
+  ([docs/22](docs/22_audit_log.md)), AES-256-GCM encrypted backups and archives
+  (volume encryption such as LUKS2 is the at-rest baseline,
+  [docs/23](docs/23_encryption.md)), statement cancellation, `statement_timeout`,
+  idle-session timeouts, per-query memory budget, `/metrics`, `/v1/ready`
   ([docs/13](docs/13_http_security.md)).
 
-Not there yet: secondary indexes, `UNIQUE` and foreign keys, exact
-`numeric`/`uuid`/`bytea`/array types and microsecond timestamps, column-level
-`GRANT`, `ALTER COLUMN TYPE`, PostgreSQL-form triggers and functions, views in
-`pg_class` (`psql \dv` is empty), data larger than RAM, and consensus-based
-replication. See the roadmap.
+Known gaps (listed with reasons in [docs/STATUS.md](docs/STATUS.md)): row-level
+security, Raft learner role and leader transfer, row locks for `INSERT`/`MERGE`/
+`COPY`, trigram posting-list compression, disk index files that never shrink,
+engine-level encryption at rest.
 
 ## Quick start
 
@@ -84,8 +103,8 @@ Requirements: Linux (the log uses `fdatasync` and `fallocate`), Go 1.25 or newer
 ```sh
 git clone https://github.com/buitranduong/new-db-engine.git
 cd new-db-engine
-go build -o bin/ ./cmd/...
-./bin/staskd -dir /var/lib/stask -addr 127.0.0.1:17070 -pg-addr 127.0.0.1:5432
+go build -o bin-main/ ./cmd/...
+./bin-main/staskd -dir /var/lib/stask -addr 127.0.0.1:17070 -pg-addr 127.0.0.1:5432
 psql "postgres://app@127.0.0.1:5432/stask?sslmode=disable"
 ```
 
@@ -105,7 +124,7 @@ the profiling endpoint and the replication port refuse to start on a non-loopbac
 address unless authentication is configured (`-pg-password`, `-http-token`,
 `-repl-secret`), or you pass the matching `-pg-insecure`, `-http-insecure`,
 `-pprof-insecure`, `-repl-insecure`. `accept/security.sh` exercises these
-refusals and the TLS, SCRAM, token and replication handshakes with psql, pgx and
+refusals, the TLS, SCRAM, token, audit, encrypted-backup and cluster handshakes with psql, pgx and
 curl. A JSON/HTTP API on `-addr`
 offers the same data with a per-query consistency contract (`strong`, `bounded`,
 `session`, `eventual`); see [docs/README.vi.md](docs/README.vi.md) for examples.
@@ -126,27 +145,42 @@ by row comparison), `kill9.sh` (acknowledged transactions survive `kill -9`),
 `security.sh` (refusals on the SQL, HTTP and replication ports), `psql.sh`
 (`\d`, `\copy`). Each prints OK/FAIL lines and exits non-zero on failure.
 
-Benchmarks and workloads (`staskbench`, `staskmix`, `aggbench`, `staskchaos`) are
-described in [docs/04](docs/04_results.md) and [docs/11 §5](docs/11_rust_criteria.md).
-Measurements follow fixed rules (pinned CPUs, at least three runs, client CPU
-recorded). Results that violate them are marked invalid in the docs.
+Changes reach `main` only through `scripts/merge-gate.sh` (`gofmt`, build, vet,
+tests, `-race` on the concurrent packages, and `claimcheck` must not drop below
+`docs/claimcheck_baseline.txt`). GitHub Actions (`.github/workflows/ci.yml`) runs
+the same checks on a clean machine. Acceptance suites that any agent or person can
+run against any PostgreSQL-wire server: `scripts/pgdiff-run.sh` (differential
+corpus against `postgres:16`), `scripts/suite/` ([docs/25](docs/25_acceptance_suite.md))
+and `scripts/suite-cdc/` ([docs/26](docs/26_cdc_events_suite.md)), when present.
+
+Performance is deliberately measured once, at the end, after the code is closed:
+the ordered plan, scale ladder and pass rule are in
+[docs/24_final_measurement.md](docs/24_final_measurement.md). Benchmark tools
+(`staskbench`, `staskmix`, `aggbench`, `simbench`, `memmap`, `staskchaos`) follow
+fixed rules (exclusive machine via `scripts/perf-run.sh`, at least three runs,
+client CPU recorded); results that violate them are marked invalid.
 
 ## Repository layout
 
 ```
-cmd/            staskd (server) and the benchmark, chaos and inspection tools
+cmd/            staskd (server), staskctl, staskimport, claimcheck, pgdiff, benchmark and chaos tools
 internal/wal    segmented log, CRC frames, group-commit I/O
-internal/core   engine: committer, MVCC, checkpoint, recovery, archive/PITR, replica
-internal/sql    parser, planner glue, executor, catalog, views, COPY
-internal/pgwire PostgreSQL wire protocol (simple and extended), TLS, SCRAM, COPY
-internal/proj   derived views: columnar, search (BM25), time-series
+internal/core   engine: committer, MVCC, checkpoint, recovery, archive/PITR, replica, disk secondary indexes
+internal/sql    parser, planner glue, executor, catalog, views, triggers, PL/pgSQL, COPY, row locks
+internal/pgwire PostgreSQL wire protocol (simple and extended), TLS, SCRAM, COPY, walsender
+internal/proj   derived views: columnar, search (trigram), time-series
+internal/histstore time-bucketed history store
+internal/pindex disk B+tree used for indexes larger than RAM
+internal/spill  spill-to-disk operators
 internal/repl   replication, base backup, logical decoding
-internal/raft   Raft (election, lease, majority commit), simulated, not wired in
+internal/raft, internal/cluster   Raft and the wired 3-node cluster (membership, PITR)
 internal/router read-your-writes HTTP router (cmd/staskroute)
 internal/server HTTP/JSON API and admin endpoints
-internal/planner, schema, conf, tune   consistency planner, catalog types, config file, auto-tuning
+internal/audit, internal/seccrypt   audit log and backup encryption
+internal/planner, schema, conf, tune, shadow   consistency planner, catalog types, config, auto-tuning, shadow mode
 accept/         system-level acceptance scripts (see Building and testing)
-docs/           design, measurements, specification and plan (mostly Vietnamese)
+scripts/        merge gate, differential and acceptance suites, measurement runners
+docs/           design, measurements, specification, plan and handoff (mostly Vietnamese)
 ```
 
 ## Documentation
@@ -160,40 +194,32 @@ docs/           design, measurements, specification and plan (mostly Vietnamese)
 | [docs/10_interop.md](docs/10_interop.md) | CDC and PostgreSQL ecosystem interoperability |
 | [docs/14_plan_target_actual.md](docs/14_plan_target_actual.md) | Plan vs target vs actual for every task, with the probe results (`cmd/claimcheck`) |
 | [docs/12_plan.md](docs/12_plan.md) | Detailed plan: every open item, size, dependency and exit test |
+| [docs/STATUS.md](docs/STATUS.md), [docs/PROCESS.md](docs/PROCESS.md) | Current state and known gaps; decision log (D1-D34) including the production criteria |
+| [docs/24_final_measurement.md](docs/24_final_measurement.md) | The single final measurement plan |
+| [docs/27_handoff.md](docs/27_handoff.md) | Standing rules, environment and live work queue for anyone continuing the work |
 
 Most documents are written in Vietnamese. English translations are welcome (see
 [Contributing](#contributing)).
 
 ## Roadmap
 
-The roadmap is public and mirrors [docs/12_plan.md](docs/12_plan.md), which has
-the sizing, dependencies and exit criteria for each item. Status as of
-2026-10-29: **done** = merged to `main` with tests; **in progress** = being
-built on a branch, not yet merged; **open** = not started. "Done" means the
-tests pass, not that the feature has been proven with real applications.
+The earlier phase table (P0-P8) is superseded: its code items are done or listed as
+known gaps in [docs/STATUS.md](docs/STATUS.md), and the detailed history stays in
+[docs/12_plan.md](docs/12_plan.md) and [docs/14](docs/14_plan_target_actual.md).
+What remains is, in order:
 
-| Phase | Goal | Status |
-|---|---|---|
-| **P0 Measurement** | Fair comparisons with PostgreSQL and Redis (same client, pinned CPUs); read priority under overload | Mostly done. Open: an unexplained read stall at 100M rows (P0.5), long-run GC test (P0.6), read priority at 2x load (P0.8, in progress) |
-| **P1 Types and schema** | `ALTER TABLE`, defaults, `CHECK`, sequences, `DROP`/`TRUNCATE`, `COPY`, `CREATE VIEW` | Done, except exact PostgreSQL data types: microsecond timestamps, exact `numeric`, `uuid`, `bytea`, `jsonb`, arrays (P1.1, in progress) |
-| **P2 Indexes and constraints** | Secondary indexes, `UNIQUE`, foreign keys; serializable scans (SSI); spill-to-disk joins and sorts | Secondary index, `UNIQUE`, foreign keys in progress. SSI scans and spilling open |
-| **P3 Data larger than RAM** | On-disk primary index; on-disk compressed columnar view; incremental checkpoint; time-series and search from SQL | Open. This is the largest remaining change to the storage format |
-| **P4 Ecosystem** | `pg_catalog` and `information_schema` (done, tested only against recorded client queries); acceptance with a real Jmix 2 / Hibernate / Liquibase application; Debezium; snapshot export for `copy_data` subscribers | Catalog done. Real-application acceptance, Debezium and snapshot export open |
-| **P5 Security and operations** | TLS, SCRAM, cancel and timeouts, PITR, HTTP auth (done); roles and `GRANT`, Prometheus metrics, `pg_stat_activity`, background CRC scrub (done, tested with pgx only) | Largely done. PITR and the port security are checked end to end by `accept/pitr.sh` and `accept/security.sh`; no JDBC run, and the PITR archive tested was a few GB, not tens of GB |
-| **P6 Cluster** | Read-your-writes through replicas; majority commit with leader election (Raft) and failover; replication slots that survive failover; multi-machine measurements | Asynchronous replicas exist. Majority commit with Raft, automatic failover and a leader-following router run as real processes (branch `raftwire`, `staskd -raft-id`; docs/06 section 5.2); membership change and replacing a failed node are not done. Measurements need separate machines |
-| **P7 Triggers** | SQL-bodied `BEFORE`/`AFTER` row triggers | Done for the SQL-body syntax; PostgreSQL `EXECUTE FUNCTION` triggers are not supported |
-| **P8 Language decision** | Re-run the full benchmark suite on the finished Go engine and decide whether a Rust port is justified (docs/11) | Open, after P0-P7 |
+1. Close the last code items and merge the acceptance suites (driver, SQL and CDC).
+2. One verification and measurement programme ([docs/24](docs/24_final_measurement.md)):
+   memory per structure, point lookups and aggregates against PostgreSQL 16 on the
+   same machine, daily import, lanes, disk index, history, durability, restore,
+   a long soak.
+3. Only then adjust the design from the results, run shadow mode next to the
+   existing system, and decide on production use against the criteria in
+   [docs/PROCESS.md](docs/PROCESS.md) D34.
 
-Explicitly **out of scope**: stored procedures and procedural languages,
-sharding and cross-shard transactions (decided after P8), streaming of in-flight
-transactions, DDL as CDC events.
-
-### What "complete" means
-
-The feature gate in [docs/11 §2](docs/11_rust_criteria.md) requires every item
-marked "yes" to be finished and covered by the acceptance suite. Today about 30%
-of that list is done; the remaining effort is dominated by the on-disk index,
-exact types and consensus replication.
+Out of scope for now: sharding and cross-shard transactions, streaming of
+in-flight transactions, DDL as CDC events, Superset and Jmix as requirements (a
+Jmix CRM is used only as one driver and data test case).
 
 ## Contributing
 

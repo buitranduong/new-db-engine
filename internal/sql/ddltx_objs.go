@@ -169,6 +169,13 @@ func (s *Session) restoreObjs(snaps []objSnap) error {
 		return err
 	}
 	loadUserTypes(s.E)
+	var fns []string
+	for _, op := range ops {
+		if op.O.Kind == "func" {
+			fns = append(fns, op.O.Name)
+		}
+	}
+	s.refreshFuncs(fns)
 	return nil
 }
 
@@ -281,12 +288,12 @@ func (s *Session) djObjs(st Stmt, run func() (*Result, error)) (*Result, bool, e
 		}
 		switch st.Class + " " + st.Op {
 		case "type alter":
-			if st.Action != "add_value" && st.Action != "owner" {
-				return nil, false, nil // RENAME and RENAME VALUE rewrite the columns
+			if st.Action == "rename" || st.Action == "rename_value" {
+				return s.djRenameType(st, run)
 			}
 		case "domain alter":
 			if st.Action == "rename" {
-				return nil, false, nil
+				return s.djRenameType(st, run)
 			}
 		case "schema alter":
 			return nil, false, nil // renames are refused; OWNER is a no-op

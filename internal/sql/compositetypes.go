@@ -1,7 +1,9 @@
 package sql
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -418,4 +420,44 @@ func recordRow(v Datum, cols []Column) ([]Datum, error) {
 		}
 	}
 	return row, nil
+}
+
+// compositeRefOps rewrites the references to composite type old in other
+// composite types and in function signatures when it is renamed to nw.
+func (s *Session) compositeRefOps(old, nw string) []core.ObjOp {
+	var ops []core.ObjOp
+	for _, o := range s.E.Objs("domain") {
+		var d objData
+		if json.Unmarshal([]byte(o.Data), &d) != nil || !d.Comp || o.Name == old {
+			continue
+		}
+		changed := false
+		for i := range d.Attrs {
+			if d.Attrs[i].PG == "ut:"+old {
+				d.Attrs[i].PG, changed = "ut:"+nw, true
+			}
+		}
+		if changed {
+			ops = append(ops, core.ObjOp{O: core.Obj{Kind: "domain", Name: o.Name, Data: jsonOf(d)}, Replace: true})
+		}
+	}
+	for _, o := range s.E.Objs("func") {
+		defs := slices.Clone(decodeFuncs(o.Data)) // the decoded slice is shared (cache)
+		changed := false
+		for i := range defs {
+			defs[i].Args = slices.Clone(defs[i].Args)
+			if defs[i].Ret == old {
+				defs[i].Ret, changed = nw, true
+			}
+			for j := range defs[i].Args {
+				if defs[i].Args[j].Type == old {
+					defs[i].Args[j].Type, changed = nw, true
+				}
+			}
+		}
+		if changed {
+			ops = append(ops, core.ObjOp{O: core.Obj{Kind: "func", Name: o.Name, Data: encodeFuncs(defs)}, Replace: true})
+		}
+	}
+	return ops
 }

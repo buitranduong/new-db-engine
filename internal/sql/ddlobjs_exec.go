@@ -338,6 +338,9 @@ func (s *Session) renameType(ut *userType, newBare string) error {
 				if d.Columns[i].PG == "enum:"+ut.Name {
 					d.Columns[i].PG = "enum:" + nn
 				}
+				if d.Columns[i].PG == "ut:"+ut.Name {
+					d.Columns[i].PG = "ut:" + nn
+				}
 			}
 			return nil
 		})
@@ -348,6 +351,9 @@ func (s *Session) renameType(ut *userType, newBare string) error {
 	old, _ := s.E.Obj(ut.Kind, ut.Name)
 	ops := []core.ObjOp{{O: core.Obj{Kind: ut.Kind, Name: nn, Data: old.Data}}, {O: core.Obj{Kind: ut.Kind, Name: ut.Name}, Delete: true}}
 	ops = append(ops, s.commentMoves("type:"+ut.Name, "type:"+nn)...)
+	if ut.isComposite() {
+		ops = append(ops, s.compositeRefOps(ut.Name, nn)...)
+	}
 	return s.E.WriteObjs(ops)
 }
 

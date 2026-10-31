@@ -40,8 +40,8 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if k, ok := jsonarrBinKind("-", typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)); ok {
 				return k
 			}
-		case "<<", ">>":
-			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText { // inet containment (inet.go)
+		case "<<", ">>", "%": // inet containment (inet.go); pg_trgm similarity (fn_trgm.go)
+			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText {
 				return KBool
 			}
 		case "^":

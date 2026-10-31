@@ -465,6 +465,9 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	if l.IsNull() || r.IsNull() {
 		return Null, nil
 	}
+	if e.Op == "%" && l.K == KText && r.K == KText {
+		return c.trgmPercent(l, r)
+	}
 	if (e.Op == "<<" || e.Op == ">>") && l.K == KText {
 		if d, ok := inetOp(e.Op, l, r); ok {
 			return d, nil

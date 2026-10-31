@@ -146,6 +146,11 @@ func lex(src string) ([]token, error) {
 			if i+1 < len(src) {
 				two = src[i : i+2]
 			}
+			if op := trgmOpAt(src[i:]); op != "" {
+				out = append(out, token{tOp, op, start})
+				i += len(op)
+				continue
+			}
 			if op := likeOpAt(src[i:]); op != "" {
 				out = append(out, token{tOp, op, start})
 				i += len(op)

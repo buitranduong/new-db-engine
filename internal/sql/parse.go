@@ -1619,6 +1619,10 @@ func (p *parser) mulExpr() (Expr, error) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.powExpr(); err == nil {
+			if op == "%" && (isTextLit(l) || isTextLit(r) || isAnyTextLit(l) && isAnyTextLit(r)) { // pg_trgm similarity: text % text
+				l = &Func{Name: "stask_trgm_sim", Disp: "?column?", Args: []Expr{l, r}}
+				continue
+			}
 			l = &Binary{Op: op, L: l, R: r}
 		}
 	}

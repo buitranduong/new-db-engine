@@ -1553,8 +1553,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			if k, ok := jsonarrBinKind("-", staticKind(e.L, kinds), staticKind(e.R, kinds)); ok {
 				return k
 			}
-		case "<<", ">>":
-			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText { // inet containment (inet.go)
+		case "<<", ">>", "%": // inet containment (inet.go); pg_trgm similarity (fn_trgm.go)
+			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText {
 				return KBool
 			}
 		case "^":

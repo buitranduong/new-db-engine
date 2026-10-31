@@ -243,7 +243,11 @@ func (s *Session) resolveFK(child *schema.Table, selfUnique [][]string, c *Const
 	} else if slices.ContainsFunc(child.ForeignKeys, func(f schema.ForeignKey) bool { return f.Name == name }) {
 		return fk, nil, errf(codeDuplicateObject, "constraint %q for relation %q already exists", name, child.Name)
 	}
-	fk = schema.ForeignKey{Name: name, Columns: c.Cols, RefTable: parent.Name, RefCols: refCols, OnDelete: c.OnDelete}
+	fk = schema.ForeignKey{Name: name, Columns: c.Cols, RefTable: parent.Name, RefCols: refCols, OnDelete: c.OnDelete,
+		Deferrable: c.Deferrable, InitiallyDeferred: c.InitiallyDeferred, NotValid: c.NotValid}
+	if c.OnUpdate != "no action" {
+		fk.OnUpdate = c.OnUpdate
+	}
 	// an index on the referencing columns makes the checks on the parent's delete cheap
 	var idx *schema.IndexDef
 	covered := false
@@ -285,7 +289,7 @@ func (s *Session) constraintsOf(c *CreateTable, t *schema.Table) error {
 		if t.Index(name) != nil {
 			return errf(codeDuplicateTable, "relation %q already exists", name)
 		}
-		t.Indexes = append(t.Indexes, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name})
+		t.Indexes = append(t.Indexes, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name, NullsNotDistinct: k.NullsNotDistinct})
 		uniques = append(uniques, k.Cols)
 	}
 	for _, k := range c.Constraints {
@@ -325,7 +329,7 @@ func (s *Session) addConstraint(table string, k *ConstraintDef) error {
 		} else if _, taken := s.E.IndexNameTaken(name); taken || s.relationExists(name) {
 			return errf(codeDuplicateTable, "relation %q already exists", name)
 		}
-		err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name})
+		err := s.E.CreateIndex(t.Name, schema.IndexDef{Name: name, Columns: k.Cols, Unique: true, Constraint: name, NullsNotDistinct: k.NullsNotDistinct})
 		var ue *core.UniqueViolationError
 		if errors.As(err, &ue) {
 			e := errf(codeUniqueViolation, "could not create unique index %q", name)

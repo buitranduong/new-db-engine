@@ -328,6 +328,9 @@ func (p *parser) statement() (Stmt, error) {
 		return &Rollback{}, nil
 	case "set":
 		p.next()
+		if p.acceptKw("constraints") {
+			return p.setConstraints()
+		}
 		p.acceptKw("session")
 		local := p.acceptKw("local")
 		var name []string
@@ -568,6 +571,9 @@ func (p *parser) createStmt() (Stmt, error) {
 			} else {
 				c.KeyCols = cols
 			}
+			if err := p.skipConstraintAttrs(); err != nil {
+				return nil, err
+			}
 		} else {
 			cd, err := p.colDef()
 			if err != nil {
@@ -694,6 +700,9 @@ func (p *parser) colDef() (ColDef, error) {
 		switch {
 		case p.acceptKw("primary", "key"):
 			cd.Primary, cd.NotNull = true, true
+			if err := p.skipConstraintAttrs(); err != nil {
+				return cd, err
+			}
 		case p.acceptKw("not", "null"):
 			cd.NotNull = true
 		case p.acceptKw("null"):
@@ -757,7 +766,16 @@ func (p *parser) colDef() (ColDef, error) {
 			}
 			switch {
 			case p.acceptKw("unique"):
-				cd.Constraints = append(cd.Constraints, &ConstraintDef{Kind: "unique", Name: name})
+				k := &ConstraintDef{Kind: "unique", Name: name}
+				if p.acceptKw("nulls") {
+					if k.NullsNotDistinct = p.acceptKw("not", "distinct"); !k.NullsNotDistinct {
+						p.acceptKw("distinct")
+					}
+				}
+				if err := p.skipConstraintAttrs(); err != nil {
+					return cd, err
+				}
+				cd.Constraints = append(cd.Constraints, k)
 			case p.acceptKw("references"):
 				k, err := p.referencesDef(name, nil)
 				if err != nil {

@@ -61,6 +61,7 @@ type Tx struct {
 	shares   map[pk]struct{}
 	uniq     map[string]string
 	implicit bool
+	fkx      *fkState      // deferred foreign key checks, SET CONSTRAINTS (fkmore.go)
 	scans    []*TableState // serializable: tables scanned, validated at commit (serscan.go)
 	rc       bool          // READ COMMITTED: Refresh moves the snapshot, writes remember theirs (readcommitted.go)
 }
@@ -410,6 +411,12 @@ func (tx *Tx) OnCommit(fn func(lsn uint64)) { tx.onCommit = fn }
 func (tx *Tx) Commit() (uint64, error) {
 	if tx.done {
 		return 0, ErrTxDone
+	}
+	if tx.fkx != nil {
+		if err := tx.runDeferred(nil); err != nil { // deferred foreign key checks (fkmore.go)
+			tx.finish()
+			return 0, err
+		}
 	}
 	tx.finish()
 	if tx.e.snapshotExpired(tx.snap) {

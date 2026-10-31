@@ -197,6 +197,9 @@ type Column struct {
 type Check struct {
 	Name string `json:"name"`
 	Expr string `json:"expr"`
+	// NotValid: ADD CONSTRAINT ... CHECK ... NOT VALID; new writes are checked, rows that existed were not
+	// (until VALIDATE CONSTRAINT). Additive.
+	NotValid bool `json:"not_valid,omitempty"`
 }
 
 // Table is a logical table. Physical representations are declared, not

@@ -398,6 +398,8 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
+	case *SetConstraints:
+		return s.setConstraints(st)
 	case *AlterTable:
 		// applied at once, like CREATE TABLE
 		res, err := s.alterTable(st)

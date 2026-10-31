@@ -22,7 +22,11 @@ type ConstraintDef struct {
 	Cols     []string
 	RefTable string
 	RefCols  []string // empty: the primary key of RefTable
-	OnDelete string   // "no action" (default), "restrict", "cascade", "set null"
+	OnDelete string   // "no action" (default), "restrict", "cascade", "set null", "set default"
+	OnUpdate string   // same, for a change of the referenced columns
+	// DEFERRABLE [INITIALLY DEFERRED], NOT VALID (foreign keys; fkattrs.go); NullsNotDistinct: UNIQUE NULLS NOT DISTINCT
+	Deferrable, InitiallyDeferred, NotValid, NullsNotDistinct bool
+	notDeferrable                                             bool
 }
 
 // CreateIndex is CREATE [UNIQUE] INDEX.
@@ -211,23 +215,27 @@ func (p *parser) identList() ([]string, error) {
 
 // uniqueDef parses the rest of a table constraint UNIQUE (cols).
 func (p *parser) uniqueDef(name string) (*ConstraintDef, error) {
+	nnd := false
 	if p.acceptKw("nulls") { // NULLS [NOT] DISTINCT
-		if p.acceptKw("not", "distinct") {
-			return nil, errf(codeFeature, "UNIQUE NULLS NOT DISTINCT is not supported")
+		nnd = p.acceptKw("not", "distinct")
+		if !nnd {
+			p.acceptKw("distinct")
 		}
-		p.acceptKw("distinct")
 	}
 	cols, err := p.identList()
 	if err != nil {
 		return nil, err
 	}
-	return &ConstraintDef{Kind: "unique", Name: name, Cols: cols}, nil
+	if err := p.skipConstraintAttrs(); err != nil {
+		return nil, err
+	}
+	return &ConstraintDef{Kind: "unique", Name: name, Cols: cols, NullsNotDistinct: nnd}, nil
 }
 
 // referencesDef parses REFERENCES tbl [(cols)] [options] after the keyword;
 // cols are the referencing columns.
 func (p *parser) referencesDef(name string, cols []string) (*ConstraintDef, error) {
-	c := &ConstraintDef{Kind: "foreign", Name: name, Cols: cols, OnDelete: "no action"}
+	c := &ConstraintDef{Kind: "foreign", Name: name, Cols: cols, OnDelete: "no action", OnUpdate: "no action"}
 	var err error
 	if c.RefTable, err = p.qualifiedName(); err != nil {
 		return nil, err
@@ -244,17 +252,11 @@ func (p *parser) referencesDef(name string, cols []string) (*ConstraintDef, erro
 		case p.acceptKw("restrict"):
 			return "restrict", nil
 		case p.acceptKw("cascade"):
-			if update {
-				return "", errf(codeFeature, "ON UPDATE CASCADE is not supported")
-			}
 			return "cascade", nil
 		case p.acceptKw("set", "null"):
-			if update {
-				return "", errf(codeFeature, "ON UPDATE SET NULL is not supported")
-			}
 			return "set null", nil
-		case p.isKw("set"):
-			return "", errf(codeFeature, "SET DEFAULT referential actions are not supported")
+		case p.acceptKw("set", "default"):
+			return "set default", nil
 		}
 		return "", p.errHere("syntax error at or near %q", p.peek().s)
 	}
@@ -268,14 +270,17 @@ func (p *parser) referencesDef(name string, cols []string) (*ConstraintDef, erro
 				return nil, err
 			}
 		case p.acceptKw("on", "update"):
-			if _, err = action(true); err != nil {
+			if c.OnUpdate, err = action(true); err != nil {
 				return nil, err
 			}
-		case p.acceptKw("not", "deferrable"), p.acceptKw("deferrable", "initially", "immediate"), p.acceptKw("initially", "immediate"):
-		case p.isKw("deferrable"), p.isKw("initially"):
-			return nil, errf(codeFeature, "deferrable constraints are not supported")
 		default:
-			return c, nil
+			ok, err := p.constraintAttr(c)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return c, nil
+			}
 		}
 	}
 }

@@ -146,11 +146,12 @@ type Indexer struct {
 	fns   []string
 	types []ColType
 	pred  []predTerm // partial index: rows outside it get a NULL-like key
+	nnd   bool       // NULLS NOT DISTINCT: NULL elements do not exempt the entry from uniqueness
 }
 
 // NewIndexer resolves def against t.
 func (t *Table) NewIndexer(def IndexDef) (*Indexer, error) {
-	x := &Indexer{}
+	x := &Indexer{nnd: def.NullsNotDistinct}
 	var err error
 	if x.pred, err = t.compilePred(def); err != nil {
 		return nil, err
@@ -182,7 +183,7 @@ func (x *Indexer) Key(dst []byte, r Row) (out []byte, hasNull bool) {
 		if x.fns[k] != "" {
 			v = ApplyExpr(x.fns[k], v)
 		}
-		if v.Null {
+		if v.Null && !x.nnd {
 			hasNull = true
 		}
 		dst = AppendKeyValue(dst, x.types[k], v)

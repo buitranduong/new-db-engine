@@ -289,11 +289,13 @@ func init() {
 						}
 					}
 				}
-				del := map[string]string{"restrict": "RESTRICT", "cascade": "CASCADE", "set null": "SET NULL"}[fk.OnDelete]
-				if del == "" {
-					del = "NO ACTION"
+				rule := func(a string) string {
+					if r := map[string]string{"restrict": "RESTRICT", "cascade": "CASCADE", "set null": "SET NULL", "set default": "SET DEFAULT"}[a]; r != "" {
+						return r
+					}
+					return "NO ACTION"
 				}
-				rows = append(rows, []Datum{cat, pub, TextD(fk.Name), cat, pub, uc, TextD("NONE"), TextD("NO ACTION"), TextD(del)})
+				rows = append(rows, []Datum{cat, pub, TextD(fk.Name), cat, pub, uc, TextD("NONE"), TextD(rule(fk.OnUpdate)), TextD(rule(fk.OnDelete))})
 			}
 		}
 		return rows

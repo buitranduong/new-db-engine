@@ -794,19 +794,12 @@ func (s *Session) updateRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, o
 		} else if exists {
 			return nil, dupKeyErr(t, nk)
 		}
-		if err := tx.CheckKeyChange(t, old, upd); err != nil {
+		// the old row goes, the new one comes, and the ON UPDATE actions of the foreign keys
+		// that reference the changed columns run (core/fkmore.go)
+		if err := tx.ChangeKey(t, old, upd); err != nil {
 			if fe := fkErrorOf(err); fe != nil {
 				return nil, fe
 			}
-			return nil, err
-		}
-		if err := s.keyChangeAllowed(t, old, upd); err != nil {
-			return nil, err
-		}
-		if err := tx.Delete(t.Name, ok); err != nil {
-			return nil, err
-		}
-		if err := tx.InsertAs(t, upd); err != nil {
 			return nil, err
 		}
 	} else if err := tx.PutAs(t, upd); err != nil {

@@ -727,10 +727,10 @@ func (e *Engine) createIndexBlocked(t *TableState, def schema.IndexDef) error {
 	for _, c := range def.Columns {
 		i, ok := sch.Col(c)
 		if !ok {
-			return fmt.Errorf("column %q of relation %q does not exist", c, sch.Name)
+			return coded("42703", "column %q of relation %q does not exist", c, sch.Name)
 		}
 		if !schema.IndexableType(sch.Columns[i].T) {
-			return fmt.Errorf("column %q cannot be indexed", c)
+			return coded("0A000", "column %q cannot be indexed", c)
 		}
 	}
 	if t.dropping.Load() {
@@ -747,7 +747,7 @@ func (e *Engine) createIndexBlocked(t *TableState, def schema.IndexDef) error {
 	err = e.AlterTable(sch.Name, func(d *schema.Table) error {
 		d.CloneConstraints()
 		if d.Index(def.Name) != nil {
-			return fmt.Errorf("index %q already exists", def.Name)
+			return coded("42P07", "index %q already exists", def.Name)
 		}
 		d.Indexes = append(d.Indexes, def)
 		return nil
@@ -765,7 +765,7 @@ func (e *Engine) DropIndex(table, name string) error {
 		n := len(d.Indexes)
 		d.Indexes = slices.DeleteFunc(d.Indexes, func(x schema.IndexDef) bool { return x.Name == name })
 		if len(d.Indexes) == n {
-			return fmt.Errorf("index %q does not exist", name)
+			return coded("42704", "index %q does not exist", name)
 		}
 		return nil
 	})

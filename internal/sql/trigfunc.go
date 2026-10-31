@@ -98,14 +98,22 @@ func triggerVars(t *schema.Table, tg *core.Trigger, timing, event string, old, n
 		v["tg_argv["+strconv.Itoa(i)+"]"] = TextD(a)
 	}
 	if !tg.Statement() {
+		var names []string
 		for _, ci := range t.VisibleCols() {
 			c := &t.Columns[ci]
+			names = append(names, strings.ToLower(c.Name))
 			if nw != nil {
 				v["new."+c.Name] = fromCol(c, nw[ci])
 			}
 			if old != nil {
 				v["old."+c.Name] = fromCol(c, old[ci])
 			}
+		}
+		if nw != nil {
+			v["new.*"] = TextD(strings.Join(names, ","))
+		}
+		if old != nil {
+			v["old.*"] = TextD(strings.Join(names, ","))
 		}
 	}
 	return v
@@ -177,30 +185,7 @@ func (s *Session) runTriggerFunc(tx *core.Tx, t *schema.Table, tg *core.Trigger,
 // withStmtTriggers runs f (an INSERT, UPDATE or DELETE statement on table) between the BEFORE
 // and AFTER statement-level triggers of that table.
 func (s *Session) withStmtTriggers(tx *core.Tx, table, event string, f func() (*Result, error)) (*Result, error) {
-	tgs := s.E.Triggers(table)
-	if tgs == nil || s.noTrig {
-		return f()
-	}
-	has := false
-	for _, tg := range tgs {
-		if tg.Statement() && slices.Contains(tg.Events, event) {
-			has = true
-		}
-	}
-	if !has {
-		return f()
-	}
-	if err := s.fireStmtTriggers(tx, table, tgs, "before", event); err != nil {
-		return nil, err
-	}
-	res, err := f()
-	if err != nil {
-		return nil, err
-	}
-	if err := s.fireStmtTriggers(tx, table, tgs, "after", event); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return s.withStmtEvents(tx, table, []string{event}, f)
 }
 
 func (s *Session) fireStmtTriggers(tx *core.Tx, table string, tgs []*core.Trigger, timing, event string) error {
@@ -222,7 +207,13 @@ func (s *Session) fireStmtTriggers(tx *core.Tx, table string, tgs []*core.Trigge
 			defer func() { s.trigDepth-- }()
 		}
 		if tg.Func != "" {
-			if _, _, err := s.runTriggerFunc(tx, t, tg, timing, event, nil, nil); err != nil {
+			restore := s.installTransition(t, tg)
+			saved := s.trans
+			s.trans = nil // writes of the trigger function are not part of the statement's transition tables
+			_, _, err := s.runTriggerFunc(tx, t, tg, timing, event, nil, nil)
+			s.trans = saved
+			restore()
+			if err != nil {
 				return err
 			}
 			continue
@@ -266,11 +257,20 @@ func (s *Session) validateTriggerFunc(name string) error {
 // triggerDef renders pg_get_triggerdef.
 func triggerDef(tg *core.Trigger) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CREATE TRIGGER %s %s ", tg.Name, strings.ToUpper(tg.Timing))
-	for i, e := range tg.Events {
-		if i > 0 {
+	timing := strings.ToUpper(tg.Timing)
+	if tg.Timing == "instead" {
+		timing = "INSTEAD OF"
+	}
+	fmt.Fprintf(&b, "CREATE TRIGGER %s %s ", tg.Name, timing)
+	first := true
+	for _, e := range []string{"insert", "delete", "update", "truncate"} { // PostgreSQL's order
+		if !slices.Contains(tg.Events, e) {
+			continue
+		}
+		if !first {
 			b.WriteString(" OR ")
 		}
+		first = false
 		b.WriteString(strings.ToUpper(e))
 		if e == "update" && len(tg.UpdateOf) > 0 {
 			b.WriteString(" OF " + strings.Join(tg.UpdateOf, ", "))
@@ -280,7 +280,17 @@ func triggerDef(tg *core.Trigger) string {
 	if tg.Statement() {
 		level = "STATEMENT"
 	}
-	fmt.Fprintf(&b, " ON public.%s FOR EACH %s", tg.Table, level)
+	fmt.Fprintf(&b, " ON public.%s", tg.Table)
+	if tg.TransOld != "" || tg.TransNew != "" {
+		b.WriteString(" REFERENCING")
+		if tg.TransOld != "" {
+			b.WriteString(" OLD TABLE AS " + tg.TransOld)
+		}
+		if tg.TransNew != "" {
+			b.WriteString(" NEW TABLE AS " + tg.TransNew)
+		}
+	}
+	fmt.Fprintf(&b, " FOR EACH %s", level)
 	if tg.When != "" {
 		fmt.Fprintf(&b, " WHEN (%s)", tg.When)
 	}

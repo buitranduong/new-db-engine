@@ -35,7 +35,7 @@ var (
 	ErrNoTable    = errors.New("no such table")
 	ErrAppendOnly = errors.New("table is append-only: only inserts are allowed")
 	ErrTxDone     = errors.New("transaction already finished")
-	ErrClosed     = errors.New("engine closed")
+	ErrClosed     = &CodedError{Code: "57P01", Msg: "engine closed"}
 	// ErrUnknownOutcome is returned when the log failed mid-commit: the
 	// transaction was not acknowledged and may or may not survive restart.
 	ErrUnknownOutcome = errors.New("storage failure during commit: outcome unknown, writes disabled until restart")
@@ -279,9 +279,10 @@ type Engine struct {
 	installNotify chan struct{}                  // closed when installed advances (posMu)
 
 	reqCh        chan *commitReq
-	commitExited chan struct{} // closed when the committer stops taking requests
-	syncEWMA     atomic.Int64  // smoothed fdatasync duration (ns)
-	installSeq   atomic.Uint64 // number of commit batches installed in the index
+	tabLast      map[*TableState]uint64 // committer only: LSN of the last commit that wrote each table (serializable scans, serscan.go)
+	commitExited chan struct{}          // closed when the committer stops taking requests
+	syncEWMA     atomic.Int64           // smoothed fdatasync duration (ns)
+	installSeq   atomic.Uint64          // number of commit batches installed in the index
 	gate         atomic.Pointer[WriteGate]
 	repairers    atomic.Int32   // occ_repair.go: open repairable transactions
 	rlogBase     atomic.Uint64  // batches with a greater seq are all in rlog (or not installed)
@@ -1263,7 +1264,8 @@ type commitReq struct {
 	acked       time.Time // LatDebug only
 	ops         []pendingOp
 	reads       []readKey
-	seenSeq     uint64 // installSeq read before the seen heads were looked up
+	scans       []*TableState // tables a serializable transaction scanned (serscan.go)
+	seenSeq     uint64        // installSeq read before the seen heads were looked up
 	hasSeen     bool
 	snap        uint64
 	checkWrites bool
@@ -1908,7 +1910,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 				pendingDDL = pendingDDL || x.ddlNames[r.ddl.Name]
 			}
 			if exists || b.ddlNames[r.ddl.Name] || pendingDDL {
-				finishReq(r, fmt.Errorf("table %q already exists", r.ddl.Name))
+				finishReq(r, coded("42P07", "table %q already exists", r.ddl.Name))
 				continue
 			}
 		}
@@ -1974,6 +1976,9 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 					}
 				}
 			}
+			if verr == nil && len(r.scans) > 0 {
+				verr = e.checkScans(r)
+			}
 			if verr == nil && r.checkWrites {
 				verr = e.checkFK(r)
 			}
@@ -2030,6 +2035,12 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 		pos := wal.Pos{Seg: e.log.WritePos().Seg, Off: e.log.WritePos().Off + int64(len(b.buf))}
 
 		r.lsn = lsn
+		if r.moves == nil && r.ddl == nil {
+			e.noteTableWrites(r.ops, lsn)
+		}
+		if r.drop != nil && e.tabLast != nil {
+			delete(e.tabLast, r.drop) // do not keep a dropped table alive
+		}
 		if r.moves != nil {
 			walOps = walOps[:0]
 			var mv []*moveOp

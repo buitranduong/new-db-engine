@@ -350,6 +350,11 @@ func (s *Session) dropViews(st *DropView) (*Result, error) {
 	if err := s.E.DropViews(append(names, cascaded...)); err != nil {
 		return nil, AsError(err)
 	}
+	for _, n := range append(names, cascaded...) { // their INSTEAD OF triggers go with them
+		if err := s.E.DropTableTriggers(n); err != nil {
+			return nil, AsError(err)
+		}
+	}
 	res.Notice = strings.Join(append(skipped, note), "; ")
 	res.Notice = strings.Trim(res.Notice, "; ")
 	return res, nil

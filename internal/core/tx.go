@@ -61,6 +61,8 @@ type Tx struct {
 	shares   map[pk]struct{}
 	uniq     map[string]string
 	implicit bool
+	scans    []*TableState // serializable: tables scanned, validated at commit (serscan.go)
+	rc       bool          // READ COMMITTED: Refresh moves the snapshot, writes remember theirs (readcommitted.go)
 }
 
 // SetImplicit marks the transaction as one statement that commits at once:
@@ -86,13 +88,11 @@ func (tx *Tx) IndexScan(table, idx, lo, hi string, desc bool, fn func(pk string,
 	if err := tx.check(); err != nil {
 		return false, err
 	}
-	if tx.iso == Serializable {
-		return false, ErrScanSerializable
-	}
 	t, err := tx.e.Table(table)
 	if err != nil {
 		return false, err
 	}
+	tx.noteScan(t)
 	n := 0
 	return tx.e.IndexScan(t, idx, tx.snap, lo, hi, desc, func(pk string, r schema.Row) bool {
 		if tx.intr != nil {
@@ -176,7 +176,11 @@ func (tx *Tx) Scan(table, start, end string, limit int) ([]schema.Row, error) {
 		return nil, err
 	}
 	if tx.iso == Serializable {
-		return nil, ErrScanSerializable
+		t, err := tx.e.Table(table)
+		if err != nil {
+			return nil, err
+		}
+		tx.noteScan(t)
 	}
 	// note: does not merge the transaction's own uncommitted writes
 	return tx.e.ScanRange(table, start, end, limit, tx.snap)
@@ -195,13 +199,11 @@ func (tx *Tx) ScanAll(table string, fn func(key string, r schema.Row) bool) erro
 	if err := tx.check(); err != nil {
 		return err
 	}
-	if tx.iso == Serializable {
-		return ErrScanSerializable
-	}
 	t, err := tx.e.Table(table)
 	if err != nil {
 		return err
 	}
+	tx.noteScan(t)
 	own := map[string]*pendingOp{}
 	for i := range tx.writes {
 		if w := &tx.writes[i]; w.t == t {
@@ -266,13 +268,11 @@ func (tx *Tx) ScanAllParallel(table string, need []bool, helpers int, spawn func
 	if err := tx.check(); err != nil {
 		return false, err
 	}
-	if tx.iso == Serializable {
-		return false, ErrScanSerializable
-	}
 	t, err := tx.e.Table(table)
 	if err != nil {
 		return false, err
 	}
+	tx.noteScan(t)
 	for i := range tx.writes {
 		if tx.writes[i].t == t {
 			return false, nil
@@ -286,7 +286,7 @@ func (tx *Tx) add(op WriteOp) error {
 		return ErrTxDone
 	}
 	if tx.unindexed {
-		return errors.New("tx: InsertUnique cannot be mixed with other writes")
+		return coded("0A000", "this statement cannot be mixed with other writes of the transaction")
 	}
 	p0, err := tx.e.pendingOf(op)
 	if err != nil {
@@ -309,8 +309,14 @@ func (tx *Tx) add(op WriteOp) error {
 		} else {
 			p[0].ifAbsent = p[0].ifAbsent || tx.writes[i].ifAbsent
 		}
+		if tx.rc {
+			p[0].base = tx.writes[i].base // the first statement that wrote the key decides what it conflicts with
+		}
 		tx.writes[i] = p[0]
 		return tx.postConstraints(op, &p[0], fc)
+	}
+	if tx.rc {
+		p[0].base = tx.snap
 	}
 	tx.widx[k] = len(tx.writes)
 	tx.writes = append(tx.writes, p[0])
@@ -370,6 +376,9 @@ func (tx *Tx) InsertUniqueAs(table string, sch *schema.Table, r schema.Row) erro
 			return err
 		}
 	}
+	if tx.rc {
+		p.base = tx.snap
+	}
 	tx.unindexed = true
 	tx.writes = append(tx.writes, p)
 	return nil
@@ -418,15 +427,27 @@ func (tx *Tx) Commit() (uint64, error) {
 		}
 		return tx.snap, nil
 	}
-	r := &commitReq{ops: tx.writes, reads: tx.reads, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
-		onCommit: tx.onCommit}
-	for k := range tx.shares {
-		r.shares = append(r.shares, k)
+	for try := 0; ; try++ {
+		// writes encoded before an ALTER TABLE / CREATE INDEX (of this
+		// transaction or of another session) are re-encoded (alterwrites.go)
+		n, rerr := tx.reencodeStale()
+		if rerr != nil {
+			return 0, rerr
+		}
+		r := &commitReq{ops: tx.writes, reads: tx.reads, scans: tx.scans, snap: tx.snap, checkWrites: true, seenSeq: tx.seq, hasSeen: true,
+			onCommit: tx.onCommit}
+		for k := range tx.shares {
+			r.shares = append(r.shares, k)
+		}
+		err := tx.e.submit(r)
+		if err == ErrConflict && try < 3 && (n > 0 || tx.hasStale()) {
+			continue // an ALTER came in between: encode again
+		}
+		if err != nil {
+			return 0, err
+		}
+		return r.lsn, nil
 	}
-	if err := tx.e.submit(r); err != nil {
-		return 0, err
-	}
-	return r.lsn, nil
 }
 
 // decodeOwn decodes a write of this transaction with the table's current

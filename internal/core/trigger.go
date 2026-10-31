@@ -48,6 +48,8 @@ type Trigger struct {
 	Args     []string
 	Level    string   // "row" (also when empty) or "statement"
 	UpdateOf []string // UPDATE OF col, ...: fire only if the statement assigns one of them
+	// REFERENCING OLD TABLE AS TransOld NEW TABLE AS TransNew (AFTER statement-level triggers)
+	TransOld, TransNew string
 
 	// Prog is the body compiled by the SQL layer. It lives as long as this
 	// cached definition: a replaced or dropped trigger gets a new one.
@@ -93,13 +95,15 @@ type trigMetaJSON struct {
 	Args     []string `json:"a,omitempty"`
 	Level    string   `json:"l,omitempty"`
 	UpdateOf []string `json:"o,omitempty"`
+	TransOld string   `json:"to,omitempty"`
+	TransNew string   `json:"tn,omitempty"`
 }
 
 func triggerRow(t *Trigger) schema.Row {
 	ev, _ := json.Marshal(t.Events)
 	body := t.Body
-	if t.Func != "" || t.Level == "statement" || len(t.UpdateOf) > 0 {
-		m, _ := json.Marshal(trigMetaJSON{t.Func, t.Args, t.Level, t.UpdateOf})
+	if t.Func != "" || t.Level == "statement" || len(t.UpdateOf) > 0 || t.TransOld != "" || t.TransNew != "" {
+		m, _ := json.Marshal(trigMetaJSON{t.Func, t.Args, t.Level, t.UpdateOf, t.TransOld, t.TransNew})
 		body = trigMeta + string(m) + "\x00" + body
 	}
 	return schema.Row{{S: triggerKey(t.Table, t.Name)}, {S: t.Table}, {S: t.Name}, {S: t.Timing},
@@ -114,6 +118,7 @@ func triggerOfRow(r schema.Row) *Trigger {
 			var m trigMetaJSON
 			if json.Unmarshal([]byte(js), &m) == nil {
 				t.Func, t.Args, t.Level, t.UpdateOf = m.Func, m.Args, m.Level, m.UpdateOf
+				t.TransOld, t.TransNew = m.TransOld, m.TransNew
 				t.Body = body
 			}
 		}

@@ -1048,7 +1048,7 @@ func (s *Session) createGinIndex(c *CreateSubstrIndex, t *schema.Table) (*Result
 			return nil, errf(codeDuplicateTable, "relation %q already exists", name)
 		}
 	}
-	if s.explicit {
+	if s.explicit && !s.djBypass { // inside the DDL journal it is undone with the transaction (ddltx.go)
 		return nil, errf("25001", "CREATE INDEX cannot run inside a transaction block")
 	}
 	err := s.E.AlterTable(c.Table, func(d *schema.Table) error {

@@ -273,7 +273,7 @@ func baseChecks() []check {
 		{"grant_select", "P5.2", "12 P5.2", []string{T, "GRANT SELECT ON cc_t TO PUBLIC"}, "ok", nil},
 		{"pg_stat_activity", "P5.5", "12 P5.5", []string{"SELECT count(*) FROM pg_stat_activity WHERE pid = pg_backend_pid()"}, "val:1", nil},
 		// ---- P7
-		{"create_trigger", "P7.1", "12 P7.1", []string{T, "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW EXECUTE FUNCTION cc_fn()"}, "ok", nil},
+		{"create_trigger", "P7.1", "12 P7.1", []string{T, "CREATE OR REPLACE FUNCTION cc_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$", "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW EXECUTE FUNCTION cc_fn()"}, "ok", nil},
 		{"trigger_sql_body_fires", "P7.1", "05 §18 (SQL-body syntax)", []string{T, "CREATE TABLE cc_p (id BIGINT PRIMARY KEY, w TEXT)", "CREATE TRIGGER cc_tr AFTER INSERT ON cc_t FOR EACH ROW BEGIN INSERT INTO cc_p VALUES (NEW.id, NEW.v); END", "INSERT INTO cc_t VALUES (1, 'z')", "SELECT w FROM cc_p WHERE id = 1"}, "val:z", nil},
 		{"trigger_raise_abort", "P7.1", "05 §18", []string{T, "CREATE TRIGGER cc_tr BEFORE INSERT ON cc_t FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'no'); END", "INSERT INTO cc_t VALUES (1, 'z')"}, "err:P0001", nil},
 		// ---- baseline SQL the README claims

@@ -46,7 +46,60 @@ type tempRel struct {
 type tempState struct {
 	id   int64
 	rels map[string]*tempRel
-	act  bool // some table has ON COMMIT DELETE ROWS / DROP
+	act  bool     // some table has ON COMMIT DELETE ROWS / DROP
+	log  []tempOp // creates and drops of the open transaction, to undo (savepoints, ROLLBACK)
+}
+
+// tempOp is a CREATE or DROP of a temporary table inside a transaction. A
+// DROP only hides the table (the name is unmapped) until COMMIT; ROLLBACK
+// and ROLLBACK TO map it again, and undo the CREATEs the same way.
+type tempOp struct {
+	drop bool
+	name string
+	rel  *tempRel
+}
+
+func (s *Session) tempMark() int {
+	if s.tmp == nil {
+		return 0
+	}
+	return len(s.tmp.log)
+}
+
+// tempRollbackTo undoes the creates and drops after mark m, newest first.
+func (s *Session) tempRollbackTo(m int) {
+	if s.tmp == nil {
+		return
+	}
+	for len(s.tmp.log) > m {
+		op := s.tmp.log[len(s.tmp.log)-1]
+		s.tmp.log = s.tmp.log[:len(s.tmp.log)-1]
+		if op.drop {
+			s.tmp.rels[op.name] = op.rel
+		} else {
+			s.dropTempNamed(op.name)
+		}
+	}
+}
+
+// tempCommit drops the tables the committed transaction dropped.
+func (s *Session) tempCommit() {
+	if s.tmp == nil {
+		return
+	}
+	for _, op := range s.tmp.log {
+		if op.drop {
+			s.dropReal(op.rel.real)
+		}
+	}
+	s.tmp.log = nil
+}
+
+// tempDeferDrop is DROP TABLE of temporary table name inside a transaction.
+func (s *Session) tempDeferDrop(name string) {
+	r := s.tmp.rels[name]
+	delete(s.tmp.rels, name)
+	s.tmp.log = append(s.tmp.log, tempOp{drop: true, name: name, rel: r})
 }
 
 func (s *Session) tempSt() *tempState {
@@ -139,13 +192,22 @@ func (s *Session) newTempName(name string) string {
 	s.sweepTemps()
 	st := s.tempSt()
 	liveTemps.Store(st.id, struct{}{})
-	return tempPrefix + strconv.FormatInt(st.id, 10) + "#" + name
+	real := tempPrefix + strconv.FormatInt(st.id, 10) + "#" + name
+	for n := 1; ; n++ { // a dropped table of this name may wait for COMMIT
+		if _, err := s.E.Table(real); err != nil {
+			return real
+		}
+		real = tempPrefix + strconv.FormatInt(st.id, 10) + "#" + name + "~" + strconv.Itoa(n)
+	}
 }
 
 // registerTemp makes name the session's temporary table real.
 func (s *Session) registerTemp(name, real, onCommit string) {
 	st := s.tempSt()
 	st.rels[name] = &tempRel{real: real, onCommit: onCommit, inTx: s.explicit}
+	if s.explicit {
+		st.log = append(st.log, tempOp{name: name})
+	}
 	if onCommit == "delete" || onCommit == "drop" {
 		st.act = true
 	}
@@ -170,6 +232,12 @@ func (s *Session) dropAllTemps() {
 	for n := range s.tmp.rels {
 		s.dropTempNamed(n)
 	}
+	for _, op := range s.tmp.log { // dropped inside a transaction that never ended
+		if op.drop {
+			s.dropReal(op.rel.real)
+		}
+	}
+	s.tmp.log = nil
 	liveTemps.Delete(s.tmp.id)
 }
 
@@ -188,7 +256,15 @@ func (s *Session) forgetDropped() {
 // afterTxEnd applies ON COMMIT actions (committed) and removes the temporary
 // tables a rolled back transaction created.
 func (s *Session) afterTxEnd(committed bool) {
-	if s.tmp == nil || len(s.tmp.rels) == 0 {
+	if s.tmp == nil {
+		return
+	}
+	if committed {
+		s.tempCommit()
+	} else {
+		s.tempRollbackTo(0)
+	}
+	if len(s.tmp.rels) == 0 {
 		return
 	}
 	for n, r := range s.tmp.rels {

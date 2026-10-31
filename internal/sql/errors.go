@@ -48,6 +48,14 @@ type Error struct {
 	Code string
 	Msg  string
 	Pos  int // 1-based character position in the query, 0 = unknown
+	// Detail and Hint are the D and H fields of the ErrorResponse (RAISE ... USING DETAIL / HINT).
+	Detail, Hint string
+}
+
+// Notice is one NoticeResponse the session queues while a statement runs (RAISE NOTICE,
+// WARNING, INFO inside a function): the wire layer sends them with TakeNotices.
+type Notice struct {
+	Sev, Code, Msg, Detail, Hint string
 }
 
 func (e *Error) Error() string { return e.Msg }
@@ -83,6 +91,9 @@ func AsError(err error) *Error {
 		return errf(codeUniqueViolation, "duplicate key value violates unique constraint \"%s\": Key (%s)=(%s) already exists", con, ke.Column, ke.Key)
 	case errors.Is(err, core.ErrExists):
 		return errf(codeUniqueViolation, "duplicate key value violates unique constraint: %v", err)
+	case errors.As(err, new(*core.CodedError)):
+		ce, _ := core.IsCoded(err)
+		return errf(ce.Code, "%s", ce.Msg)
 	case errors.Is(err, core.ErrNoSequence):
 		return errf(codeUndefinedTable, "%v", err)
 	case errors.Is(err, core.ErrSequenceExists):

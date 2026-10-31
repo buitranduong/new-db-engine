@@ -371,6 +371,8 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	switch st := st.(type) {
 	case *WithDML:
 		return s.describeWithDML(st)
+	case *CallStmt:
+		return s.describeCall(st)
 	case *SetOp:
 		return s.describeQuery(st)
 	case *Select:
@@ -415,6 +417,13 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		return d, nil
 	default:
 		return s.describeExt(st)
+	}
+	if table != "" && s.hasInsteadTriggers(table) { // INSERT / UPDATE / DELETE on a view with INSTEAD OF triggers
+		d.Params = make([]Kind, max(maxParam(st), maxParamAny(st)))
+		for i := range d.Params {
+			d.Params[i] = KText
+		}
+		return d, nil
 	}
 	if table != "" {
 		t, err := s.table(table)

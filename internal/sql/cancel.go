@@ -100,8 +100,14 @@ func (s *Session) Exec(st Stmt, params []Datum) (*Result, error) {
 	if d := s.ctl.timeouts[0]; d > 0 {
 		timer = time.AfterFunc(d, func() { s.ctl.interrupt(seq, InterruptTimeout) })
 	}
+	s.refreshSnapshot(st)
+	st = s.rewriteAnyParams(st, params)
 	t0 := s.beginStmt(st)
+	s.notices = s.notices[:0]
 	res, err := s.exec(st, params)
+	if s.fnTx {
+		err = s.endFnTx(err)
+	}
 	s.endStmt(st, t0, err)
 	if timer != nil {
 		timer.Stop()
@@ -200,4 +206,12 @@ func FormatTimeout(d time.Duration) string {
 		}
 	}
 	return strconv.FormatInt(ms, 10) + "ms"
+}
+
+// TakeNotices returns (and forgets) the notices the last statement queued: RAISE NOTICE, WARNING and
+// INFO inside functions. The wire layer sends them before the statement's result or error.
+func (s *Session) TakeNotices() []Notice {
+	n := s.notices
+	s.notices = nil
+	return n
 }

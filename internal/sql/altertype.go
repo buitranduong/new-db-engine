@@ -27,6 +27,15 @@ func (s *Session) alterColumnType(table string, d *schema.Table, i int, a AlterA
 		return errf(codeFeature, "type %q is not supported", a.Type)
 	}
 	from := c.T
+	if a.Collation != "" {
+		if kindOf(to) != KText {
+			return errf("42804", "collations are not supported by type %s", a.Type)
+		}
+		c.Collation = a.Collation
+		noteCollatedColumns(s.E)
+	} else if c.Collation != "" && kindOf(to) == KText {
+		c.Collation = "" // the new type without COLLATE takes the default collation back
+	}
 	if c.Type == a.Type {
 		c.PG = a.PG
 		return nil

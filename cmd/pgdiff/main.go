@@ -184,9 +184,9 @@ func parseFile(path string) ([]session, error) {
 				}
 			case c == '\'':
 				inStr = true
-			case c == '$' && strings.HasPrefix(line[i:], "$$"):
-				inDollar = "$$"
-				i++
+			case c == '$' && dollarTag(line[i:]) != "":
+				inDollar = dollarTag(line[i:])
+				i += len(inDollar) - 1
 			case c == '-' && strings.HasPrefix(line[i:], "--"):
 				i = len(line)
 			}
@@ -206,6 +206,23 @@ func parseFile(path string) ([]session, error) {
 		return nil, fmt.Errorf("%s:%d: unterminated statement", path, startLine)
 	}
 	return out, nil
+}
+
+// dollarTag returns the opening dollar quote ($$ or $tag$) at the start of s, or "".
+func dollarTag(s string) string {
+	if len(s) < 2 || s[0] != '$' {
+		return ""
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c == '$' {
+			return s[:i+1]
+		}
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' && i > 1) {
+			return ""
+		}
+	}
+	return ""
 }
 
 func stripComment(l string) string {

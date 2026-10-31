@@ -62,6 +62,7 @@ type DropSubstrIndex struct {
 type Explain struct {
 	Stmt    Stmt
 	Analyze bool
+	Opts    explainOpts // explainjson.go
 }
 
 func (*CreateSubstrIndex) stmt() {}
@@ -150,26 +151,15 @@ func (p *parser) dropSubstrIndex() (Stmt, bool, error) {
 
 func (p *parser) explainStmt() (Stmt, error) {
 	p.next()
-	e := &Explain{}
-	if p.acceptOp("(") { // EXPLAIN (ANALYZE [bool], VERBOSE, COSTS off, FORMAT text ...): only ANALYZE changes the output
-		for !p.acceptOp(")") {
-			t := p.next()
-			if t.k == tEOF {
-				return nil, p.errHere("syntax error in EXPLAIN")
-			}
-			if t.k == tIdent && (t.s == "analyze" || t.s == "analyse") {
-				e.Analyze = true
-				if n := p.peek(); n.k == tIdent && (n.s == "false" || n.s == "off") {
-					e.Analyze = false
-					p.next()
-				} else if n.k == tIdent && (n.s == "true" || n.s == "on") {
-					p.next()
-				}
-			}
+	e := &Explain{Opts: explainOpts{Format: "text", Costs: true, Timing: true, Summary: true}}
+	if p.acceptOp("(") { // EXPLAIN (ANALYZE, VERBOSE, COSTS, TIMING, SUMMARY, BUFFERS, FORMAT TEXT|JSON ...) (explainjson.go)
+		if err := p.parseExplainOptions(e); err != nil {
+			return nil, err
 		}
 	}
 	if p.acceptKw("analyze") || p.acceptKw("analyse") {
 		e.Analyze = true
+		e.Opts.Timing, e.Opts.Summary = true, true
 	}
 	p.acceptKw("verbose")
 	var err error

@@ -2,12 +2,16 @@ package sql
 
 import (
 	"strings"
+	"sync"
 )
 
 // VACUUM, ANALYZE, CLUSTER, REINDEX and CHECKPOINT are accepted as no-ops (nothing to reclaim or rebuild in an
 // engine that keeps versions in the log and indexes online) but the parts of PostgreSQL's behaviour that a
 // client can observe are kept: unknown relations are 42P01, VACUUM cannot run in a transaction block (25001),
 // CLUSTER needs a clustered index to repeat (55000) and REINDEX DATABASE must name the current database.
+
+// clustered remembers the tables CLUSTER ... USING has been run on (PostgreSQL keeps indisclustered).
+var clustered sync.Map
 
 func (p *parser) maintStatement(word string) (Stmt, error) {
 	p.next()
@@ -105,10 +109,14 @@ func (s *Session) execMaint(st *MaintStmt) (*Result, error) {
 		if st.Word == "cluster" && len(st.Rels) == 1 {
 			name := s.resolveRel(st.Rels[0])
 			if st.Index == "" {
-				return fail(errf("55000", "there is no previously clustered index for table %q", bareName(name)))
-			}
-			if _, ok := s.indexTable(st.Index); !ok {
-				return fail(errf(codeUndefinedObject, "index %q for table %q does not exist", st.Index, bareName(name)))
+				if _, done := clustered.Load(name); !done {
+					return fail(errf("55000", "there is no previously clustered index for table %q", bareName(name)))
+				}
+			} else {
+				if _, ok := s.indexTable(st.Index); !ok {
+					return fail(errf(codeUndefinedObject, "index %q for table %q does not exist", st.Index, bareName(name)))
+				}
+				clustered.Store(name, true)
 			}
 		}
 	case "reindex":

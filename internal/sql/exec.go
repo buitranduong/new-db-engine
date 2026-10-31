@@ -339,6 +339,9 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
 		}
+		if name == "work_mem" && (v == "" || v == "0") {
+			v = "4MB" // the PostgreSQL default; 0 here means "no per-statement budget set"
+		}
 		col := name
 		if c, ok := showNames[name]; ok {
 			col = c

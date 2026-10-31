@@ -655,9 +655,15 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 		return nil, err
 	}
 	x.lines = s.supfixAnnotate(x.lines)
+	if len(x.lines) > 0 && !e.Opts.Costs {
+		for i := range x.lines {
+			x.lines[i] = costRE.ReplaceAllString(x.lines[i], "")
+		}
+	}
 	if o := len(x.lines); o > 0 && (SpillDir != "" || s.simpleBudget() > 0) {
 		x.detail(0, "Memory: statement budget %s (work_mem %s); sort/join/aggregate spill to temp files when exceeded (spill %s)", memStr(s.simpleBudget()), s.vars[WorkMemVar], onOff(SpillDir != ""))
 	}
+	var ms float64
 	if e.Analyze {
 		spilledBefore := s.spilled
 		s.spilled = false
@@ -674,8 +680,12 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 				rows, _ = strconv.Atoi(f[len(f)-1])
 			}
 		}
-		ms := float64(el.Microseconds()) / 1000
-		x.lines[0] += fmt.Sprintf(" (actual time=%.3f rows=%d loops=1)", ms, rows)
+		ms = float64(el.Microseconds()) / 1000
+		if e.Opts.Timing {
+			x.lines[0] += fmt.Sprintf(" (actual time=%.3f rows=%d loops=1)", ms, rows)
+		} else {
+			x.lines[0] += fmt.Sprintf(" (actual rows=%d loops=1)", rows)
+		}
 		x.detail(0, "Statement: %s", res.Tag)
 		if n := ViewAggregates.Load() - views; n > 0 {
 			x.detail(0, "Columnar view: used for %d aggregate(s)", n)
@@ -684,9 +694,17 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 			x.detail(0, "Last search plan: %s", lp)
 		}
 		x.detail(0, "Spilled to disk: %v", s.spilled)
-		x.detail(0, "Execution Time: %.3f ms", ms)
+		if e.Opts.Summary {
+			x.detail(0, "Planning Time: 0.000 ms")
+			x.detail(0, "Execution Time: %.3f ms", ms)
+		}
 		s.spilled = spilledBefore || s.spilled
 	}
+	if e.Opts.Format == "json" {
+		doc := planJSON(x.lines, e.Opts, e.Analyze, ms)
+		return &Result{Cols: []Column{{Name: "QUERY PLAN", Kind: KJSON, OID: 114}}, Rows: [][]Datum{{{K: KJSON, S: doc}}}, Tag: "EXPLAIN", HasRows: true}, nil
+	}
+	x.lines = plainNames(x.lines)
 	out := &Result{Cols: []Column{{Name: "QUERY PLAN", Kind: KText}}, Tag: "EXPLAIN", HasRows: true}
 	for _, l := range x.lines {
 		out.Rows = append(out.Rows, []Datum{TextD(l)})

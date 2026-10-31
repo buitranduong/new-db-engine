@@ -566,7 +566,7 @@ func (p *parser) createStmt() (Stmt, error) {
 				return nil, err
 			}
 			if c.Key != "" || c.KeyCols != nil {
-				return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
+				return nil, errf("42P16", "multiple primary keys for table %q are not allowed", c.Name)
 			}
 			c.PKName = cname
 			if len(cols) == 1 {
@@ -581,7 +581,7 @@ func (p *parser) createStmt() (Stmt, error) {
 			}
 			if cd.Primary {
 				if c.Key != "" || c.KeyCols != nil {
-					return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
+					return nil, errf("42P16", "multiple primary keys for table %q are not allowed", c.Name)
 				}
 				c.Key = cd.Name
 				c.PKName = cd.PKName

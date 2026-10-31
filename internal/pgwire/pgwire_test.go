@@ -169,7 +169,7 @@ func TestPgxPoolConcurrentTransfers(t *testing.T) {
 						_, err := tx.Exec(ctx, `UPDATE acct SET bal = bal + 7 WHERE id = $1`, to)
 						return err
 					})
-					if sqlState(err) == "40001" {
+					if st := sqlState(err); st == "40001" || st == "40P01" { // a deadlock is retried like a serialization failure, as with PostgreSQL
 						mu.Lock()
 						retries++
 						mu.Unlock()

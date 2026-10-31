@@ -25,7 +25,7 @@ func (s *Session) refreshSnapshot(st Stmt) {
 	if !s.explicit || s.tx == nil || s.failed || !s.tx.ReadCommitted() {
 		return
 	}
-	if s.curs != nil && len(s.curs.byName) > 0 {
+	if s.sharedCursor() {
 		return
 	}
 	switch st.(type) {

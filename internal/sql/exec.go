@@ -741,7 +741,7 @@ func (s *Session) table(name string) (*schema.Table, error) {
 	return s.withTypes(ts.Schema()), nil
 }
 
-func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
+func (s *Session) run1(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 	if heavyQ != nil && s.heavy(st, params) {
 		var res *Result
 		var err error
@@ -2346,7 +2346,12 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 	}
 	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
-	rows, err := s.matching(tx, t, ctx, st.Where)
+	var rows []schema.Row
+	err = s.lockedRows(tx, t, updateLockMode(t, st.Set), func() ([]schema.Row, error) {
+		var e error
+		rows, e = s.matching(tx, t, ctx, st.Where)
+		return rows, e
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -2393,7 +2398,12 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 	}
 	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
-	rows, err := s.matching(tx, t, ctx, st.Where)
+	var rows []schema.Row
+	err = s.lockedRows(tx, t, lmUpdate, func() ([]schema.Row, error) {
+		var e error
+		rows, e = s.matching(tx, t, ctx, st.Where)
+		return rows, e
+	})
 	if err != nil {
 		return nil, err
 	}

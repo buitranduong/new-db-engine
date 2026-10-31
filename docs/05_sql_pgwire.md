@@ -1038,6 +1038,10 @@ Trước đây `FOR ...` được phân tích rồi bỏ. Ngữ nghĩa đúng ch
 
 **Kiểm chứng.** `go test -p 2 ./internal/sql ./internal/pgwire` (đủ gói, qua), `-race` cho các test mới (`-count=3`, sạch). `pgdiff` nhóm `h`: **256 câu, PASS 254, PASS-MSG 2 (thông điệp), DIFF 0**. `claimcheck`: 32 probe `cursors` đều qua. pgx (ba chế độ), psycopg2 `stream_results`/`scrollable`/`withhold`, SQLAlchemy `stream_results`, pgjdbc `setFetchSize(500)` + `DECLARE` + `SKIP LOCKED`/`NOWAIT` giữa hai kết nối: `bash scripts/cursors-clients.sh` (cần `~/rc-tools`).
 
+### 26b. Khoá dòng cho UPDATE/DELETE (nhánh `rowlock`, 2026-10-31)
+
+`UPDATE` và `DELETE` đi qua cùng bảng khoá mềm (`locks.go`): lấy `FOR NO KEY UPDATE` (UPDATE không đổi khoá) hoặc `FOR UPDATE` (DELETE, đổi khoá) trên mọi dòng đã chọn **trước khi ghi**, chờ người đang giữ xung đột (writer chưa commit, `SELECT FOR UPDATE/SHARE`), giữ tới hết giao dịch. Nếu sau khi có khoá mà dòng đã có phiên bản mới hơn snapshot: READ COMMITTED và câu lệnh autocommit dịch snapshot (`core.Tx.Advance`) và tính lại câu (WHERE và SET đánh giá lại trên bản mới, dòng đã bị xoá thì bỏ); REPEATABLE READ/SERIALIZABLE trả 40001. `SELECT ... FOR UPDATE|SHARE` làm tương tự thay vì 40001. Deadlock: 40P01; `lock_timeout`: 55P03. Ngoài phạm vi (vẫn lạc quan, 40001 ở COMMIT): INSERT/ON CONFLICT, MERGE, COPY, FK/cascade, ghi qua view, câu lệnh > 50000 dòng. Cursor streaming trong khối READ COMMITTED có snapshot riêng, nên các câu lệnh sau DECLARE vẫn thấy dữ liệu mới.
+
 ## 27. Lệnh tạo bảng và nạp dữ liệu cơ bản: CTAS, LIKE, bảng tạm, view vật chất hoá, MERGE, TRUNCATE (nhánh `ctas`, 2026-10-30)
 
 Mã: `internal/sql/ctas.go` (cú pháp), `ctas_exec.go` (CTAS, LIKE, view vật chất hoá, TRUNCATE CASCADE), `temptable.go` (bảng tạm), `merge.go` (MERGE). Hook vào file có sẵn chỉ vài dòng mỗi chỗ (`parse.go`, `exec.go`, `catalog*.go`, `query.go`: một `case` trong `compileFrom`). **Không đổi định dạng log hay đĩa**: ba trường mới của `schema.Table` đều `omitempty` (`matview`, `mat_unpopulated`, `unlogged`).

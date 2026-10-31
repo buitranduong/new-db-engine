@@ -180,7 +180,7 @@ func TestTxDDLCommitConflict(t *testing.T) {
 	run(t, s1, `BEGIN`)
 	run(t, s1, `CREATE TABLE fresh (id BIGINT PRIMARY KEY)`)
 	run(t, s1, `UPDATE keep SET a = 'one' WHERE id = 1`)
-	run(t, s2, `UPDATE keep SET a = 'two' WHERE id = 1`)
+	run(t, s2, `INSERT INTO keep (id, a) VALUES (1, 'two') ON CONFLICT (id) DO UPDATE SET a = excluded.a`) // an UPDATE would wait for s1
 	if _, err := tryRun(s1, `COMMIT`); err == nil {
 		t.Fatal("want a write conflict")
 	}

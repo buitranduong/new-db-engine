@@ -116,7 +116,7 @@ func TestGapsReadCommitted(t *testing.T) {
 	// own writes stay visible; a row written by this transaction that
 	// another session changed since fails the commit
 	run(t, a, `UPDATE rc SET v = 99 WHERE id = 2`)
-	run(t, b, `UPDATE rc SET v = 21 WHERE id = 2`)
+	run(t, b, `INSERT INTO rc VALUES (2, 21) ON CONFLICT (id) DO UPDATE SET v = excluded.v`) // an UPDATE would wait for a
 	if _, err := tryRun(a, `COMMIT`); err == nil {
 		t.Fatal("lost update committed")
 	}

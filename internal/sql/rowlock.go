@@ -197,8 +197,10 @@ func (s *Session) lockRow(tx *core.Tx, o *lockOwner, table, key string, mode uin
 		switch {
 		case pol == waitSkip:
 			return false, nil
+		case s.canAdvance(tx):
+			return false, errRelock // run() takes a newer snapshot and selects again
 		case s.explicit:
-			return false, errf("40001", "could not serialize access due to concurrent update")
+			return false, serializeErr()
 		}
 		return false, core.ErrConflict // an autocommit statement is retried on a new snapshot
 	}

@@ -349,6 +349,11 @@ func (b *binder) bind(x Expr) (Expr, error) {
 		if i, ok := b.winSlots[f]; ok {
 			return &Slot{I: i}, nil
 		}
+		if f.Name == "stask_field" && len(f.Args) == 2 && b.c.s != nil {
+			if bx, ok, err := b.boundField(f); ok || err != nil {
+				return bx, err
+			}
+		}
 		if wholeRowScalarFns[f.Name] && len(f.Args) == 1 && f.Over == nil {
 			if bx, ok, err := b.wholeRowJSON(f.Args[0], f.Name); ok || err != nil {
 				return bx, err

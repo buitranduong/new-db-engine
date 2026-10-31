@@ -1880,6 +1880,9 @@ func itemName(it SelItem) string {
 		}
 		return e.Name
 	case *Cast:
+		if _, isRow := e.X.(*RowExpr); isRow {
+			return "row"
+		}
 		// the operand's name when it has one, else the type's
 		if n := castOperandName(e.X); n != "?column?" {
 			return n

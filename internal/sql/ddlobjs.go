@@ -21,6 +21,8 @@ type ObjDDL struct {
 
 	// CREATE TYPE .. AS ENUM
 	Labels []string
+	// CREATE TYPE .. AS (attrs) (compositetypes.go)
+	Attrs []compAttr
 	// ALTER TYPE: add_value, rename_value, rename; ALTER DOMAIN: set_default,
 	// drop_default, set_not_null, drop_not_null, add_check, drop_constraint,
 	// rename; ALTER SCHEMA: rename
@@ -110,8 +112,12 @@ func (p *parser) createObj() (Stmt, bool, error) {
 		if err := p.expectKw("as"); err != nil {
 			return nil, true, err
 		}
+		if p.isOp("(") {
+			c.Action = "composite"
+			return c, true, p.compositeAttrs(c)
+		}
 		if !p.acceptKw("enum") {
-			return nil, true, errf(codeFeature, "only CREATE TYPE .. AS ENUM is supported")
+			return nil, true, errf(codeFeature, "only CREATE TYPE .. AS ENUM or (attributes) is supported")
 		}
 		if err := p.expectOp("("); err != nil {
 			return nil, true, err

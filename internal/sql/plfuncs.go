@@ -123,6 +123,9 @@ func (s *Session) retComposite(d *funcDef) []Column {
 		if t, err := s.E.UserTable(d.Ret); err == nil {
 			return tableColumns(t.Schema())
 		}
+		if cols := s.compositeCols(d.Ret); cols != nil {
+			return cols
+		}
 	}
 	return nil
 }

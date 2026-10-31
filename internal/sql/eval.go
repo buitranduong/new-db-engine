@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -678,6 +679,14 @@ func arith(op string, l, r Datum) (Datum, error) {
 }
 
 func (c *evalCtx) call(f *Func) (Datum, error) {
+	if f.Name == "stask_field" && len(f.Args) == 2 {
+		if bx, ok, err := c.fieldOf(f); ok || err != nil {
+			if err != nil {
+				return Null, err
+			}
+			return c.eval(bx)
+		}
+	}
 	args := make([]Datum, len(f.Args))
 	for i, a := range f.Args {
 		v, err := c.eval(a)
@@ -685,6 +694,11 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 			return Null, err
 		}
 		args[i] = v
+	}
+	if strings.HasPrefix(f.Name, fieldFn) && len(args) == 3 {
+		k, _ := strconv.Atoi(f.Name[len(fieldFn):])
+		v, err := callField(Kind(k), args)
+		return v, err
 	}
 	if v, ok, err := c.callJSONArr(f, args); ok {
 		return v, err

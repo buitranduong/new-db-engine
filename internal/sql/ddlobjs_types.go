@@ -72,7 +72,9 @@ type objData struct {
 	Checks  []schema.Check `json:"checks,omitempty"`
 	Version string         `json:"version,omitempty"`
 	Schema  string         `json:"schema,omitempty"`
-	N       int            `json:"n,omitempty"` // domain: constraints named so far
+	Comp    bool           `json:"comp,omitempty"`
+	Attrs   []compAttr     `json:"attrs,omitempty"` // composite type (compositetypes.go); stored as a domain
+	N       int            `json:"n,omitempty"`     // domain: constraints named so far
 }
 
 type userType struct {
@@ -87,6 +89,7 @@ type userType struct {
 	Checks           []schema.Check
 	tmp              *schema.Table // the domain's value as a one-column table, to evaluate CHECKs
 	n                int
+	Attrs            []compAttr // composite type: non-nil (compositetypes.go)
 }
 
 func decodeType(kind string, o core.Obj) *userType {
@@ -104,6 +107,12 @@ func decodeType(kind string, o core.Obj) *userType {
 			ut.ord[l.L] = l.O
 		}
 	case "domain":
+		if d.Comp {
+			ut.Attrs = d.Attrs
+			if ut.Attrs == nil {
+				ut.Attrs = []compAttr{}
+			}
+		}
 		ut.BaseType, ut.BasePG, ut.NotNull, ut.Default, ut.Checks, ut.n = d.Base, d.BasePG, d.NotNull, d.Default, d.Checks, d.N
 		t := &schema.Table{Name: "domain " + o.Name, Key: "k", Columns: []schema.Column{{Name: "k", Type: "string"}, {Name: "value", Type: d.Base, PG: d.BasePG}}}
 		if t.Init() == nil {
@@ -286,6 +295,9 @@ func (ut *userType) apply(d Datum, explicit bool) (Datum, error) {
 		d.I, d.F = int64(ut.OID), o
 		return d, nil
 	}
+	if ut.isComposite() {
+		return ut.applyComposite(d)
+	}
 	if !d.IsNull() {
 		bt, err := schema.ParseType(ut.BaseType)
 		if err != nil {
@@ -415,6 +427,9 @@ func (s *Session) resolveUserTypes(cds []ColDef) error {
 			continue
 		}
 		cd.Type, cd.PG, cd.Domain = ut.BaseType, ut.BasePG, ut.Name
+		if ut.isComposite() {
+			cd.PG = "ut:" + ut.Name // the record text is normalized by the type on every write
+		}
 		switch ut.BaseType {
 		case "int":
 			cd.IntType = "bigint"
@@ -496,7 +511,7 @@ func (p *parser) userTypeName(t token) (string, bool) {
 // userSpecTy is specTy of "ut:<name>" for a type already in the registry.
 func userSpecTy(spec string) pgTy {
 	if ut := lookupUserType(spec[len("ut:"):]); ut != nil {
-		if ut.Kind == "enum" {
+		if ut.Kind == "enum" || ut.isComposite() {
 			return pgTy{oid: ut.OID, mod: -1}
 		}
 		return specTy(ut.BasePG)

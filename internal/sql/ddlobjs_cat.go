@@ -37,6 +37,9 @@ func typeByOID(oid int64) *pgType {
 		if ut.Kind == "enum" {
 			return &pgType{oid: oid, name: bareName(ut.Name), len: 4, cat: "E", sqlName: ut.Name, infoName: "USER-DEFINED"}
 		}
+		if ut.isComposite() {
+			return &pgType{oid: oid, name: bareName(ut.Name), len: -1, cat: "C", sqlName: ut.Name, infoName: "USER-DEFINED"}
+		}
 		if ut.tmp != nil {
 			b := typeByOID(int64(PgTypeOID(ut.tmp.Columns[1])))
 			return &pgType{oid: oid, name: bareName(ut.Name), len: b.len, cat: b.cat, sqlName: ut.Name, infoName: b.infoName}

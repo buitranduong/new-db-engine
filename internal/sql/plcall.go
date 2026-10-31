@@ -148,6 +148,13 @@ func (s *Session) invoke(d *funcDef, args []Datum) (*fnResult, error) {
 			}
 		default:
 			res.val = run.ret
+			if res.row && !res.val.IsNull() && len(res.cols) > 0 { // RETURN ROW(..) / a record text
+				if row, err := recordRow(res.val, res.cols); err != nil {
+					return nil, err
+				} else {
+					res.rows = [][]Datum{row}
+				}
+			}
 		}
 	}
 	if d.Procedure && len(outs) > 0 {

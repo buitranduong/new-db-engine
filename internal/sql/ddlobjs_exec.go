@@ -42,7 +42,11 @@ func (s *Session) objDDL(st Stmt) (*Result, error) {
 		var err error
 		switch st.Class + " " + st.Op {
 		case "type create":
-			res, err = s.createEnum(st)
+			if st.Action == "composite" {
+				res, err = s.createComposite(st)
+			} else {
+				res, err = s.createEnum(st)
+			}
 		case "type drop", "domain drop":
 			res, err = s.dropTypes(st)
 		case "type alter":
@@ -141,7 +145,7 @@ func (s *Session) dropTypes(st *ObjDDL) (*Result, error) {
 			res.Notice = fmt.Sprintf("type %q does not exist, skipping", n)
 			continue
 		}
-		if st.Class == "domain" && ut.Kind != "domain" {
+		if st.Class == "domain" && (ut.Kind != "domain" || ut.isComposite()) {
 			return nil, errf(codeWrongObjectType, "%q is not a domain", n)
 		}
 		todo = append(todo, ut)
@@ -399,7 +403,7 @@ func (s *Session) alterDomain(st *ObjDDL) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ut.Kind != "domain" {
+	if ut.Kind != "domain" || ut.isComposite() {
 		return nil, errf(codeWrongObjectType, "%q is not a domain", st.Names[0])
 	}
 	switch st.Action {

@@ -1015,13 +1015,13 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
 				if p, ok := f.Args[0].(*Param); ok {
 					if n := paramCastTypeName(st, p.N); n != "" {
-						return &Lit{TextD(n)}, true
+						return &Func{Name: "stask_regtype", Args: []Expr{&Lit{TextD(n)}}}, true
 					}
 				}
 				ptk, ptt := staticKind(f.Args[0], sk), inferTy(f.Args[0], slotTy)
 				ptk, ptt = jsonarrCol(f.Args[0], ptk, ptt, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
 				if n := staticTypeName(f.Args[0], ptt, ptk); n != "" {
-					return &Lit{TextD(n)}, true
+					return &Func{Name: "stask_regtype", Args: []Expr{&Lit{TextD(n)}}}, true
 				}
 			}
 			return nil, false
@@ -3254,7 +3254,7 @@ func (b *binder) wholeRowJSON(x Expr, fn string) (Expr, bool, error) {
 	if len(cols) == 0 {
 		return nil, false, nil
 	}
-	build := "json_build_object"
+	build := "stask_json_row"
 	if fn == "to_jsonb" || fn == "jsonb_agg" {
 		build = "jsonb_build_object"
 	}

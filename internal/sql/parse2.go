@@ -846,6 +846,9 @@ func (p *parser) fromItem() (FromNode, error) {
 			return nil, err
 		}
 		f, _ := x.(*Func)
+		if f != nil && isRecordFunc(f.Name) && len(f.Args) == 1 {
+			return p.recordFuncFrom(f)
+		}
 		ord := p.acceptKw("with", "ordinality")
 		alias, cols, err := p.aliasClause()
 		return &FromFunc{F: f, Alias: alias, ColAliases: cols, Ordinality: ord}, err

@@ -162,3 +162,8 @@ func likeOpAt(s string) string {
 
 // kUnhandled, returned by a kindFn, sends the lookup on to the built-in rules.
 const kUnhandled Kind = 255
+
+func init() {
+	// stask_regtype(name) is the planner's constant-folded pg_typeof: a regtype value.
+	regFn("stask_regtype", &fnSig{min: 1, kind: KText, ty: tyOf(tyRegtype), impl: func(c *evalCtx, a []Datum) (Datum, error) { return a[0], nil }})
+}

@@ -764,6 +764,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		if jp, ok := p.from.(*joinPlan); ok {
 			var keep Expr
 			for _, cnd := range splitAnd(p.where) {
+				if len(st.Lock) == 0 && pushWhere(jp, cnd) {
+					continue
+				}
 				if !jp.pushDown(cnd) {
 					if keep == nil {
 						keep = cnd
@@ -2332,6 +2335,9 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			conds = append(conds, splitAnd(on)...)
 		}
 		for _, cnd := range conds {
+			if jp.pushOn(cnd) {
+				continue
+			}
 			jp.addCond(cnd)
 		}
 		return jp, nil
@@ -2431,12 +2437,18 @@ type tablePlan struct {
 	c     []relCol
 	asOf  *asOfPlan // read the table as it was (asof.go)
 	keyEq Expr      // with asOf: the constant the key is compared to in WHERE
+
+	filter Expr // joinpush.go: conjuncts pushed down to this scan (slots of this table)
+	ub     Expr // filter with column names, for the index planners
 }
 
 func (p *tablePlan) cols() []relCol { return p.c }
 func (p *tablePlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	if p.asOf != nil {
 		return p.runAsOf(qx, outer)
+	}
+	if p.filter != nil {
+		return p.runFilter(qx, outer)
 	}
 	if rows, ok, err := p.runParallel(qx); ok || err != nil {
 		return rows, err
@@ -2543,159 +2555,6 @@ type joinPlan struct {
 }
 
 func (p *joinPlan) cols() []relCol { return p.c }
-
-func (p *joinPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
-	lrows, err := p.l.run(qx, outer)
-	if err != nil {
-		return nil, err
-	}
-	sp, lateral := p.r.(*subPlan)
-	lateral = lateral && sp.lateral
-	var rrows [][]Datum
-	if !lateral {
-		if rrows, err = p.r.run(qx, outer); err != nil {
-			return nil, err
-		}
-	}
-	ctx := qx.ctx(outer)
-	nr := len(p.r.cols())
-	key := func(xs []Expr, row []Datum) (string, bool, error) {
-		ctx.drow = row
-		vals := make([]Datum, len(xs))
-		for i, x := range xs {
-			v, err := ctx.eval(x)
-			if err != nil {
-				return "", false, err
-			}
-			if v.IsNull() {
-				return "", false, nil
-			}
-			vals[i] = v
-		}
-		return groupKey(normKeys(vals)), true, nil
-	}
-	var index map[string][]int
-	buildIndex := func(rows [][]Datum) error {
-		index = map[string][]int{}
-		if len(p.rkeys) == 0 {
-			return nil
-		}
-		for i, r := range rows {
-			k, ok, err := key(p.rkeys, r)
-			if err != nil {
-				return err
-			}
-			if ok {
-				index[k] = append(index[k], i)
-			}
-		}
-		return nil
-	}
-	if !lateral {
-		if err := buildIndex(rrows); err != nil {
-			return nil, err
-		}
-	}
-	rMatched := make([]bool, len(rrows))
-	var out [][]Datum
-	combined := func(l, r []Datum) []Datum {
-		row := make([]Datum, 0, p.nl+nr)
-		if l == nil {
-			row = append(row, make([]Datum, p.nl)...)
-		} else {
-			row = append(row, l...)
-		}
-		if r == nil {
-			row = append(row, make([]Datum, nr)...)
-		} else {
-			row = append(row, r...)
-		}
-		for _, m := range p.merge { // the raw left copies (see compileFrom), before any merge
-			row = append(row, row[m[0]])
-		}
-		return row
-	}
-	steps := 0 // join pairs visited: polls for cancel every few thousand
-	for _, l := range lrows {
-		if steps++; steps >= 4096 {
-			if steps = 0; qx.s.interrupted() {
-				return nil, core.ErrInterrupted
-			}
-		}
-		if lateral {
-			lctx := qx.ctx(outer)
-			lctx.drow = l
-			rel, err := sp.p.run(qx, lctx)
-			if err != nil {
-				return nil, err
-			}
-			rrows = rel.rows
-			if err := buildIndex(rrows); err != nil {
-				return nil, err
-			}
-		}
-		var cand []int
-		if len(p.lkeys) > 0 {
-			k, ok, err := key(p.lkeys, l)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				cand = index[k]
-			}
-		} else {
-			cand = make([]int, len(rrows))
-			for i := range cand {
-				cand[i] = i
-			}
-		}
-		matched := false
-		for _, ri := range cand {
-			if steps++; steps >= 4096 {
-				if steps = 0; qx.s.interrupted() {
-					return nil, core.ErrInterrupted
-				}
-			}
-			row := combined(l, rrows[ri])
-			if p.residual != nil {
-				ctx.drow = row
-				v, err := ctx.evalBool(p.residual)
-				if err != nil {
-					return nil, err
-				}
-				if !v.Bool() {
-					continue
-				}
-			}
-			matched = true
-			if !lateral {
-				rMatched[ri] = true
-			}
-			out = append(out, row)
-			if err := qx.charge(row); err != nil {
-				return nil, err
-			}
-			if p.any {
-				break
-			}
-		}
-		if !matched && (p.kind == "left" || p.kind == "full") {
-			out = append(out, combined(l, nil))
-		}
-	}
-	if p.kind == "right" || p.kind == "full" {
-		for i, r := range rrows {
-			if !rMatched[i] {
-				row := combined(nil, r)
-				for _, m := range p.merge {
-					row[m[0]] = row[m[1]]
-				}
-				out = append(out, row)
-			}
-		}
-	}
-	return out, nil
-}
 
 // ---- table functions ----
 

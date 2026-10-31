@@ -506,10 +506,22 @@ func (sp *spillState) fromSource(qx *qexec, outer *evalCtx, fp fromPlan) rowSour
 		return func(yield func([]Datum) error) error {
 			cols := f.t.Columns
 			var err error
+			fctx := qx.ctx(outer) // the filter pushed to this scan (joinpush.go)
 			serr := qx.tx.ScanAll(f.t.Name, func(_ string, r schema.Row) bool {
 				d := make([]Datum, len(cols))
 				for i := range cols {
 					d[i] = fromCol(&cols[i], r[i])
+				}
+				if f.filter != nil {
+					fctx.drow = d
+					v, ferr := fctx.evalBool(f.filter)
+					if ferr != nil {
+						err = ferr
+						return false
+					}
+					if !v.Bool() {
+						return true
+					}
 				}
 				err = yield(d)
 				return err == nil

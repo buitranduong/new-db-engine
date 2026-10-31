@@ -599,11 +599,7 @@ func semiName(b *boundSub) string {
 func (x *explainer) from(depth int, f fromPlan) {
 	switch f := f.(type) {
 	case *tablePlan:
-		x.node(depth, "Seq Scan on %s", f.t.Name)
-		if f.asOf != nil {
-			x.detail(depth, "AS OF: historical read")
-		}
-		x.detail(depth, "Note: the general executor reads the whole table (no index pushdown)")
+		x.explainTable(depth, f)
 	case *joinPlan:
 		kind := f.kind
 		if kind == "" || kind == "cross" {
@@ -623,6 +619,9 @@ func (x *explainer) from(depth int, f fromPlan) {
 		}
 		if f.residual != nil {
 			x.detail(depth, "Join Filter: %s", deparse(f.residual, colNamer(f.c)))
+		}
+		for _, n := range f.joinNote() {
+			x.detail(depth, "%s", n)
 		}
 		x.from(depth+1, f.l)
 		x.from(depth+1, f.r)

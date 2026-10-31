@@ -172,7 +172,13 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 			extra = append(extra, ref)
 		}
 	}
-	rows, vals, err := s.targetRows(tx, t, st.Table, st.Alias, st.From, st.Where, extra, params)
+	var rows []schema.Row
+	var vals [][]Datum
+	err := s.lockedRows(tx, t, updateLockMode(t, st.Set), func() ([]schema.Row, error) {
+		var e error
+		rows, vals, e = s.targetRows(tx, t, st.Table, st.Alias, st.From, st.Where, extra, params)
+		return rows, e
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +235,13 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 			extra = append(extra, ref)
 		}
 	}
-	rows, vals, err := s.targetRows(tx, t, st.Table, st.Alias, st.Using, st.Where, extra, params)
+	var rows []schema.Row
+	var vals [][]Datum
+	err := s.lockedRows(tx, t, lmUpdate, func() ([]schema.Row, error) {
+		var e error
+		rows, vals, e = s.targetRows(tx, t, st.Table, st.Alias, st.Using, st.Where, extra, params)
+		return rows, e
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -147,8 +147,9 @@ func TestForUpdateConflict(t *testing.T) {
 	seedN(t, a, 5)
 	run(t, a, "BEGIN")
 	run(t, a, "SELECT * FROM nums WHERE id = 1 FOR UPDATE")
-	// b writes the row and commits: a's commit must fail
-	run(t, b, "UPDATE nums SET v = 'changed' WHERE id = 1")
+	// b writes the row without a row lock (an UPDATE would now wait for a, as in
+	// PostgreSQL) and commits: a's commit must fail
+	run(t, b, "INSERT INTO nums VALUES (1, 'changed', 'free') ON CONFLICT (id) DO UPDATE SET v = excluded.v")
 	if _, err := tryRun(a, "COMMIT"); code(err) != "40001" {
 		t.Fatalf("commit after concurrent write: %v", err)
 	}

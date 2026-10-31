@@ -279,6 +279,7 @@ type cursor struct {
 	created time.Time
 	cols    []Column
 	tx      *core.Tx // transaction the source reads; nil once materialized
+	priv    *core.Tx // the cursor's own snapshot (READ COMMITTED), ended with the cursor
 	txGen   uint64   // declaring transaction (cursorSet.gen)
 
 	src      cursorSource
@@ -495,6 +496,7 @@ func (c *cursor) close() {
 		c.src = nil
 	}
 	c.win, c.tx = nil, nil
+	c.endPriv()
 	if c.mgr != nil {
 		c.mgr.Close()
 		c.mgr = nil
@@ -745,6 +747,12 @@ func (s *Session) declare(d *DeclareCursor, params []Datum) (*Result, error) {
 	if s.explicit {
 		if ss, cols := s.streamable(s.tx, d.Query, params); ss != nil {
 			c.src, c.cols, c.tx = ss, cols, s.tx
+			if s.tx.ReadCommitted() {
+				// own snapshot: the transaction's moves with each statement,
+				// the cursor's must not
+				c.priv = s.begin(core.SnapshotIsolation)
+				ss.tx, c.tx = c.priv, c.priv
+			}
 			cs.byName[d.Name] = c
 			return &Result{Tag: "DECLARE CURSOR"}, nil
 		}
@@ -869,6 +877,7 @@ func (c *cursor) materialize() error {
 	}
 	c.src.close()
 	c.tx = nil
+	c.endPriv()
 	c.win, c.winStart, c.srcPos = nil, 1, 0
 	if w == nil {
 		c.src = nil
@@ -913,4 +922,12 @@ func init() {
 			}
 			return rows
 		})
+}
+
+// endPriv releases the cursor's own snapshot.
+func (c *cursor) endPriv() {
+	if c.priv != nil {
+		c.priv.Abort()
+		c.priv = nil
+	}
 }

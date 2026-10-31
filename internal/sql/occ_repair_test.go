@@ -19,9 +19,11 @@ import (
 // be repaired, and property / liveness tests with concurrent writers.
 
 func lowRepairMin(t *testing.T, n int) {
-	old := repairMinRows
-	repairMinRows = n
-	t.Cleanup(func() { repairMinRows = old })
+	old, oldOff := repairMinRows, writeLocksOff
+	// the hooks write from inside the statement, as a writer that takes no row
+	// lock would (with locks they would wait for the statement itself)
+	repairMinRows, writeLocksOff = n, true
+	t.Cleanup(func() { repairMinRows, writeLocksOff = old, oldOff })
 }
 
 // hookOnce runs f before the first commit attempt of a statement.

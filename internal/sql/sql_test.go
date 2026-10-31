@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"stask/internal/core"
 )
@@ -307,13 +308,15 @@ func TestSQLTransactions(t *testing.T) {
 	run(t, a, `BEGIN`)
 	run(t, b, `BEGIN ISOLATION LEVEL REPEATABLE READ`)
 	run(t, a, `UPDATE acct SET bal = bal + 1 WHERE id = 1`)
-	run(t, b, `UPDATE acct SET bal = bal + 2 WHERE id = 1`)
+	// b's UPDATE waits for a (row lock) and, at REPEATABLE READ, fails once a committed
+	ch := blocked(t, b, `UPDATE acct SET bal = bal + 2 WHERE id = 1`, 100*time.Millisecond)
 	run(t, a, `COMMIT`)
-	if _, err := tryRun(b, `COMMIT`); code(err) != codeSerialization {
+	if err := waitDone(t, ch); code(err) != codeSerialization {
 		t.Fatalf("expected serialization failure, got %v", err)
 	}
+	run(t, b, `ROLLBACK`)
 	if b.TxStatus() != 'I' {
-		t.Fatal("failed commit must end the transaction")
+		t.Fatal("rollback must end the transaction")
 	}
 
 	// an error poisons the transaction until ROLLBACK

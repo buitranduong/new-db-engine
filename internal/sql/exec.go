@@ -182,7 +182,7 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 	}
 	if s.failed {
 		switch st.(type) {
-		case *Commit, *Rollback, *RollbackToStmt:
+		case *Commit, *Rollback, *RollbackToStmt, *PrepareTx:
 		default:
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 		}
@@ -210,6 +210,8 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 	switch st := st.(type) {
 	case *WithDML:
 		return s.withDML(st, params)
+	case *PrepareTx, *CommitPrepared:
+		return s.execTwoPhase(st)
 	case *PrepareStmt, *ExecuteStmt, *DeallocateStmt, *MaintStmt:
 		return s.execPrepare(st, params)
 	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:

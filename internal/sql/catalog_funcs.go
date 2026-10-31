@@ -370,7 +370,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return Null, nil
 	case "pg_database_size":
 		return s.pgcmdsDatabaseSize(), nil
-	case "txid_current", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
+	case "txid_current", "pg_current_xact_id", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
 		return s.pgcmdsScalar(name, args)
 	case "pg_is_other_temp_schema":
 		return BoolD(false), nil

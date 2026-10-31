@@ -190,6 +190,12 @@ func (p *parser) statement() (Stmt, error) {
 		return nil, p.errHere("syntax error at or near %q", t.s)
 	}
 	switch t.s {
+	case "prepare", "commit", "end", "rollback", "abort":
+		if st, ok, err := p.parseTwoPhase(); ok {
+			return st, err
+		}
+	}
+	switch t.s {
 	case "select", "with", "values", "table":
 		return intoWrap(p.queryStmt())
 	case "insert":

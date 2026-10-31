@@ -29,6 +29,7 @@ type Hybrid struct {
 
 	Used, Fallbacks atomic.Int64
 	seen            sync.Map // fallback reason -> logged once
+	stall           atomic.Pointer[hyStall]
 	Logf            func(string, ...any)
 }
 
@@ -157,17 +158,32 @@ func (s *Session) hyTxReason(tx *core.Tx) string {
 	return ""
 }
 
-func hyWaitApplied(f *core.Follower, lsn uint64, max time.Duration) bool {
+// waitApplied waits until the follower applied lsn, at most max. The follower is a goroutine like any other: when
+// the CPU is saturated by readers it can sit still for hundreds of ms and then catch up in one step (slice1c
+// measurement: 100-270 ms between wake-up and the first record at 8 busy cores), so "applied did not move for 200 ms"
+// is not a sign of a stalled follower. A wait that ran to its deadline is remembered (applied value and time): while
+// the follower is still at that value, later reads fall back at once instead of each paying the full wait. The loop
+// is bounded by the deadline.
+func (h *Hybrid) waitApplied(f *core.Follower, lsn uint64, max time.Duration) bool {
+	if f.Applied() >= lsn {
+		return true
+	}
+	if st := h.stall.Load(); st != nil && st.applied == f.Applied() && time.Now().Before(st.until) {
+		return false
+	}
 	deadline := time.Now().Add(max)
-	last := f.Applied()
-	for !f.WaitApplied(lsn, 200*time.Millisecond) {
-		cur := f.Applied()
-		if cur == last || time.Now().After(deadline) {
+	for !f.WaitApplied(lsn, 100*time.Millisecond) {
+		if !time.Now().Before(deadline) {
+			h.stall.Store(&hyStall{applied: f.Applied(), until: time.Now().Add(2 * max)})
 			return false
 		}
-		last = cur
 	}
 	return true
+}
+
+type hyStall struct {
+	applied uint64
+	until   time.Time
 }
 
 // hyContract picks the state per the consistency contract. The reason is
@@ -209,8 +225,8 @@ func (s *Session) hyContract(tx *core.Tx, rep *hyReport) (*proj.SegState, string
 			rep.readSnap = S
 			return s.hy.pinState, ""
 		}
-		if !hyWaitApplied(f, S, h.Wait) {
-			return nil, fmt.Sprintf("the segment state did not reach snapshot lsn %d within %v (applied %d); the log-gap path is not part of step 1", S, h.Wait, f.Applied())
+		if !h.waitApplied(f, S, h.Wait) {
+			return nil, fmt.Sprintf("the segment state did not reach snapshot lsn %d within %v (applied %d, durable %d, waited %v); the log-gap path is not part of step 1", S, h.Wait, f.Applied(), h.E.DurableLSN(), time.Since(t0).Round(time.Millisecond))
 		}
 		st := h.Seg.StateAt(S)
 		if st == nil {
@@ -227,7 +243,7 @@ func (s *Session) hyContract(tx *core.Tx, rep *hyReport) (*proj.SegState, string
 			rep.contract = "eventual"
 		}
 		if mode == "bounded" && f.Lag() > bound {
-			hyWaitApplied(f, rep.durable, bound)
+			h.waitApplied(f, rep.durable, bound)
 			if f.Lag() > bound {
 				return nil, fmt.Sprintf("segment state lags %v, more than the bound %v", f.Lag(), bound)
 			}

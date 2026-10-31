@@ -103,3 +103,23 @@ func TestReadVerify(t *testing.T) {
 		t.Fatalf("with the check off: %v", err)
 	}
 }
+
+// An empty segment has no frame at offset 0: reading its header is "torn", not corruption (no CRC alarm, no log
+// line, no counter): every fresh start probes it (core restoreHistoryState).
+func TestReadHeaderOfEmptySegmentIsNotCorruption(t *testing.T) {
+	l, err := Open(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if err := l.PrepareAppend(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	before := ReadCRCErrors.Load()
+	if _, _, _, err := l.ReadHeader(0, 0); !errors.Is(err, ErrTorn) {
+		t.Fatalf("ReadHeader of an empty segment: %v, want ErrTorn", err)
+	}
+	if ReadCRCErrors.Load() != before {
+		t.Fatal("an empty segment raised the read CRC counter")
+	}
+}

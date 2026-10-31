@@ -62,6 +62,11 @@ func parseFlags() *Config {
 	flag.Float64Var(&c.MinFreeGB, "min-free-gb", 3, "")
 	flag.StringVar(&c.LoadMode, "load-mode", "auto", "copy | insert | auto")
 	flag.StringVar(&c.Exec, "exec-mode", "simple", "simple | extended")
+	flag.BoolVar(&c.Columnar, "columnar", false, "create sims WITH (columnar = on) in the SUT (needed for staskd -hybrid)")
+	flag.IntVar(&c.Tear, "tear", 1, "tear-test readers: REPEATABLE READ transactions reading an R2 page and the multi-table invariants at one snapshot")
+	flag.IntVar(&c.ProbeWorkers, "probe-workers", 1, "read-your-writes probe workers (each owns a disjoint share of the probe sims)")
+	flag.DurationVar(&c.ProbeGap, "probe-gap", -1, "pause between probes (-1: spread over 90% of the duration; 0: back to back)")
+	flag.StringVar(&c.RefName, "ref-name", "m2h-ref", "name of the reference container (use a unique one when several harnesses run)")
 	flag.StringVar(&c.Iso, "iso", "", "transaction isolation level of T workers (default: server default)")
 	flag.Parse()
 	return c
@@ -168,20 +173,21 @@ func main() {
 	}
 	mach.Load1Max = mach.Load1At0
 
+	ColumnarSims = cfg.Columnar
 	// reference
 	if !cfg.NoRef && cfg.RefDocker {
 		port := "28791"
 		if i := strings.LastIndex(strings.SplitN(cfg.RefDSN, "/", 4)[2], ":"); i >= 0 {
 			port = strings.SplitN(cfg.RefDSN, "/", 4)[2][i+1:]
 		}
-		exec.Command("docker", "rm", "-f", "m2h-ref").Run()
-		if out, err := exec.Command("docker", "run", "-d", "--name", "m2h-ref", "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:"+port+":5432", "postgres:16").CombinedOutput(); err != nil {
+		exec.Command("docker", "rm", "-f", cfg.RefName).Run()
+		if out, err := exec.Command("docker", "run", "-d", "--name", cfg.RefName, "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:"+port+":5432", "postgres:16").CombinedOutput(); err != nil {
 			logf("cannot start reference: %v %s", err, out)
 			cleanup()
 			os.Exit(2)
 		}
 		if !cfg.KeepRef {
-			cleanup = func() { exec.Command("docker", "rm", "-f", "-v", "m2h-ref").Run() }
+			cleanup = func() { exec.Command("docker", "rm", "-f", "-v", cfg.RefName).Run() }
 			defer cleanup()
 		}
 		waitUp(ctx, cfg.RefDSN, 90*time.Second)
@@ -205,6 +211,7 @@ func main() {
 	}
 	if !cfg.NoRef {
 		t0 := time.Now()
+		ColumnarSims = false
 		if err := Load(ctx, cfg.RefDSN, g, cfg.SchemaFile, "copy", logf); err != nil {
 			logf("load reference failed: %v", err)
 			cleanup()
@@ -259,7 +266,14 @@ func main() {
 	}
 	spawn(func() { run.workerImport(wctx) })
 	spawn(func() { run.workerOracle(wctx, baseline) })
-	spawn(func() { run.workerProbe(wctx, probes) })
+	for i := 0; i < cfg.Tear; i++ {
+		i := i
+		spawn(func() { run.workerTear(wctx, i, baseline) })
+	}
+	for i := 0; i < max(1, cfg.ProbeWorkers); i++ {
+		i := i
+		spawn(func() { run.workerProbe(wctx, probes, i, max(1, cfg.ProbeWorkers)) })
+	}
 
 	// phases
 	type PhaseSpan struct {

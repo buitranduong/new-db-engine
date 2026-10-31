@@ -508,6 +508,7 @@ func main() {
 	var hy *sql.Hybrid
 	if *hybrid {
 		hy = sql.NewHybrid(e)
+		hsrv.HybridStatus = hy.Status
 	}
 	var pg *pgwire.Server
 	if *pgAddr != "" {

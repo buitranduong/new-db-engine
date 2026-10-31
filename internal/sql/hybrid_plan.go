@@ -17,6 +17,7 @@ package sql
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"stask/internal/proj"
@@ -47,11 +48,17 @@ type hyPlan struct {
 	dimJoinCol int // dimension column the group column is joined to (its key)
 	dimPreds   []Expr
 	filters    []proj.SegFilter
+	keyLo      *string // primary key range (bytewise); the bound is inclusive unless keyLoEx
+	keyHi      *string
+	keyLoEx    bool
+	keyHiEx    bool
 	filterText []string
 	groupCol   int
 	scoreCol   int
 	desc, md5  bool
 	suffix     string
+	groupInt   bool    // the partition column is an integer column (values are decimal strings in groups)
+	post       *hyPost // dimension tables joined outside the derived table (nil: none)
 	orderText  string
 	groups     []proj.SegGroup
 	outs       []hyOut // columns of the result, in order
@@ -126,6 +133,15 @@ func (p *hyPlan) relOf(rels []*hyRel, c *ColRef) (ri, ci int, ok bool) {
 // hyRecognize analyses st. cand=false: not an R2 candidate (nothing to
 // report). Otherwise either a plan or the reason it is not eligible.
 func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string, cand bool) {
+	orig := st
+	var post *hyPost
+	if _, ok := st.Rel.(*FromJoin); ok {
+		core, ps := hyPeel(st)
+		if core == nil {
+			return nil, "", false
+		}
+		st, post = core, ps
+	}
 	if !hyCandidate(st) {
 		return nil, "", false
 	}
@@ -264,6 +280,10 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 		p.groupCol = ci
 	}
 	keyCol := p.fact.t.KeyIndex()
+	p.groupInt = kindOfCol(p.fact.t.Columns[p.groupCol]) == KInt
+	if p.groupInt && p.dim != nil {
+		return fail("integer partition column with a dimension joined inside the derived table")
+	}
 	// window order: score [, md5(key || 'c')] , key
 	ord := w.OrderBy
 	var ordText []string
@@ -408,6 +428,13 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 				return fail("constant false predicate")
 			}
 		case used[0] && !used[1]:
+			if ok, why := s.hyKeyRange(p, rels, c, params); ok || why != "" {
+				if why != "" {
+					return fail("%s", why)
+				}
+				p.filterText = append(p.filterText, deparse(c, nil))
+				continue
+			}
 			f, txt, why := s.hyFilter(p, rels, c, params)
 			if why != "" {
 				return fail("%s", why)
@@ -496,11 +523,11 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 			case *Binary:
 				switch {
 				case x.Op == "=" && isGroupCol(x.L):
-					d, ok := s.hyConst(x.R, params)
-					if !ok || d.K != KText {
-						return fail("partition value %s is not a text constant", deparse(x.R, nil))
+					v, ok := s.hyGroupVal(p, x.R, params)
+					if !ok {
+						return fail("partition value %s is not a constant of the partition column type", deparse(x.R, nil))
 					}
-					r.vals = append(r.vals, d.S)
+					r.vals = append(r.vals, v)
 				case isRank(x.L):
 					n, ok := intConst(x.R)
 					if !ok {
@@ -538,11 +565,11 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 					return fail("outer predicate %s is not a partition IN list", deparse(c, nil))
 				}
 				for _, e := range x.List {
-					d, ok := s.hyConst(e, params)
-					if !ok || d.K != KText {
-						return fail("partition value %s is not a text constant", deparse(e, nil))
+					v, ok := s.hyGroupVal(p, e, params)
+					if !ok {
+						return fail("partition value %s is not a constant of the partition column type", deparse(e, nil))
 					}
-					r.vals = append(r.vals, d.S)
+					r.vals = append(r.vals, v)
 				}
 			default:
 				return fail("outer predicate %s is neither a partition value nor a rank bound", deparse(c, nil))
@@ -593,7 +620,192 @@ func (s *Session) hyRecognize(st *Select, params []Datum) (p *hyPlan, why string
 	if !DefaultCollation().Bytewise() {
 		return fail("the default collation is not bytewise (the segment orders text by bytes)")
 	}
+	if post != nil {
+		if w := s.hyBindPost(p, post, orig, fs.Alias); w != "" {
+			return fail("%s", w)
+		}
+		p.post = post
+	}
 	return p, "", true
+}
+
+// hyGroupVal turns a partition constant into the group value (decimal string for an integer column).
+func (s *Session) hyGroupVal(p *hyPlan, x Expr, params []Datum) (string, bool) {
+	d, ok := s.hyConst(x, params)
+	if !ok {
+		return "", false
+	}
+	if p.groupInt {
+		if d.K != KInt || d.I < -1<<31+1 || d.I > 1<<31-1 {
+			return "", false
+		}
+		return strconv.FormatInt(d.I, 10), true
+	}
+	if d.K != KText {
+		return "", false
+	}
+	return d.S, true
+}
+
+// hyPost: dimension tables joined OUTSIDE the derived table by their key
+// (INNER JOIN d ON d.k = t.col), and the projection over t and them. The page
+// is computed on the derived table first (the window sees the rows before the
+// join, as in SQL); each page row then looks its dimension rows up (read from
+// the core at the read snapshot) and is dropped when one is missing.
+type hyPost struct {
+	joins []hyPostJoin
+	items []hyPostItem
+}
+type hyPostJoin struct {
+	name, alias string
+	on          Expr
+	rel         *hyRel
+	keyCol      int  // key column of the dimension
+	keyInt      bool // the key is an integer column
+	tIdx        int  // index in the plan outs of the derived table column it is joined to
+}
+type hyPostItem struct {
+	join int // -1: column of the derived table
+	idx  int // index in outs (join < 0) or column of the dimension
+	name string
+}
+
+// hyPeel strips INNER JOINs of plain tables off a statement whose leftmost FROM item is the derived table.
+// It returns a copy of the statement over the derived table alone (SELECT *), or nil when this is not the shape.
+func hyPeel(st *Select) (*Select, *hyPost) {
+	var js []*FromJoin
+	n := st.Rel
+	for {
+		fj, ok := n.(*FromJoin)
+		if !ok {
+			break
+		}
+		js = append(js, fj)
+		n = fj.L
+	}
+	fs, ok := n.(*FromSubquery)
+	if !ok {
+		return nil, nil
+	}
+	core := *st
+	core.Rel = fs
+	core.Items = []SelItem{{Star: true}}
+	if !hyCandidate(&core) {
+		return nil, nil
+	}
+	sp := &hyPost{}
+	for i := len(js) - 1; i >= 0; i-- {
+		fj := js[i]
+		ft, ok := fj.R.(*FromTable)
+		if !ok || (fj.Kind != "inner" && fj.Kind != "") || fj.Any || len(fj.Using) > 0 || fj.Natural || fj.On == nil || ft.AsOf != nil || len(ft.ColAliases) > 0 {
+			return &core, &hyPost{items: nil, joins: []hyPostJoin{{name: "?"}}} // reported by hyBindPost
+		}
+		sp.joins = append(sp.joins, hyPostJoin{name: ft.Name, alias: ft.Alias, on: fj.On})
+	}
+	sp.items = nil
+	return &core, sp
+}
+
+func (s *Session) hyBindPost(p *hyPlan, sp *hyPost, orig *Select, tAlias string) string {
+	if len(sp.joins) == 1 && sp.joins[0].name == "?" {
+		return "a join outside the derived table is not a plain INNER JOIN ... ON of a table"
+	}
+	outIdx := func(name string) int {
+		for i, o := range p.outs {
+			if o.name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	for ji := range sp.joins {
+		j := &sp.joins[ji]
+		if _, tmp := s.tempReal(j.name); tmp || s.isView(j.name) {
+			return fmt.Sprintf("%s is a temporary table or a view", j.name)
+		}
+		t, err := s.table(j.name)
+		if err != nil {
+			return err.Error()
+		}
+		if t.ID == p.fact.t.ID {
+			return "self join"
+		}
+		j.rel = &hyRel{name: j.name, alias: j.alias, t: t}
+		b, ok := j.on.(*Binary)
+		if !ok || b.Op != "=" {
+			return fmt.Sprintf("join condition %s is not an equality", deparse(j.on, nil))
+		}
+		l, lok := b.L.(*ColRef)
+		r, rok := b.R.(*ColRef)
+		if !lok || !rok {
+			return fmt.Sprintf("join condition %s is not column = column", deparse(j.on, nil))
+		}
+		isDim := func(c *ColRef) bool {
+			if c.Table != "" {
+				return c.Table == j.alias || (j.alias == "" && c.Table == j.name)
+			}
+			_, found := t.Col(c.Name)
+			return found && outIdx(c.Name) < 0
+		}
+		isT := func(c *ColRef) bool {
+			return (c.Table == tAlias || (c.Table == "" && !isDim(c))) && outIdx(c.Name) >= 0
+		}
+		dc, tc := l, r
+		if !(isDim(l) && isT(r)) {
+			if !(isDim(r) && isT(l)) {
+				return fmt.Sprintf("join condition %s is not dimension key = derived table column", deparse(j.on, nil))
+			}
+			dc, tc = r, l
+		}
+		di, ok := t.Col(dc.Name)
+		if !ok || di != t.KeyIndex() {
+			return fmt.Sprintf("the join does not use the key of %s", j.name)
+		}
+		j.keyCol = di
+		j.keyInt = kindOfCol(t.Columns[di]) == KInt
+		if !j.keyInt && kindOfCol(t.Columns[di]) != KText {
+			return fmt.Sprintf("key of %s is neither text nor integer", j.name)
+		}
+		ti := outIdx(tc.Name)
+		o := p.outs[ti]
+		if o.kind != hyFact {
+			return "join column is not a column of the fact table"
+		}
+		if kindOfCol(p.fact.t.Columns[o.col]) != kindOfCol(t.Columns[di]) {
+			return "join column types differ"
+		}
+		j.tIdx = ti
+	}
+	for _, it := range orig.Items {
+		if it.Star {
+			return "SELECT * with joined dimension tables"
+		}
+		c, ok := it.X.(*ColRef)
+		if !ok {
+			return fmt.Sprintf("select item %s is not a plain column", deparse(it.X, nil))
+		}
+		var found []hyPostItem
+		if (c.Table == "" || c.Table == tAlias) && outIdx(c.Name) >= 0 {
+			found = append(found, hyPostItem{join: -1, idx: outIdx(c.Name), name: c.Name})
+		}
+		for ji, j := range sp.joins {
+			if c.Table != "" && !(c.Table == j.alias || (j.alias == "" && c.Table == j.name)) {
+				continue
+			}
+			if ci, ok := j.rel.t.Col(c.Name); ok {
+				found = append(found, hyPostItem{join: ji, idx: ci, name: c.Name})
+			}
+		}
+		if len(found) != 1 {
+			return fmt.Sprintf("select column %s not found or ambiguous", deparse(c, nil))
+		}
+		f := found[0]
+		if it.Alias != "" {
+			f.name = it.Alias
+		}
+		sp.items = append(sp.items, f)
+	}
+	return ""
 }
 
 // hyCanon prints a comparable form of an ORDER BY expression.
@@ -747,4 +959,88 @@ func (s *Session) hyFilter(p *hyPlan, rels []*hyRel, c Expr, params []Datum) (pr
 		return build(ci, "between", []Datum{lo, hi})
 	}
 	return no()
+}
+
+// hyKeyRange takes a conjunct "key <op> const" / "key BETWEEN a AND b" on the primary key (text) of the fact table
+// into p's key range. ok=false, why="" : not a key predicate.
+func (s *Session) hyKeyRange(p *hyPlan, rels []*hyRel, c Expr, params []Datum) (bool, string) {
+	keyCol := p.fact.t.KeyIndex()
+	isKey := func(x Expr) bool {
+		cr, ok := x.(*ColRef)
+		if !ok {
+			return false
+		}
+		ri, ci, ok := p.relOf(rels, cr)
+		return ok && ri == 0 && ci == keyCol
+	}
+	if kindOfCol(p.fact.t.Columns[keyCol]) != KText {
+		return false, ""
+	}
+	setLo := func(v string, ex bool) {
+		if p.keyLo == nil || v > *p.keyLo || (v == *p.keyLo && ex) {
+			p.keyLo, p.keyLoEx = &v, ex
+		}
+	}
+	setHi := func(v string, ex bool) {
+		if p.keyHi == nil || v < *p.keyHi || (v == *p.keyHi && ex) {
+			p.keyHi, p.keyHiEx = &v, ex
+		}
+	}
+	str := func(x Expr) (string, bool) {
+		d, ok := s.hyConst(x, params)
+		return d.S, ok && d.K == KText
+	}
+	switch x := c.(type) {
+	case *Binary:
+		op, l, r := x.Op, x.L, x.R
+		if !isKey(l) {
+			l, r = r, l
+			switch op {
+			case "<":
+				op = ">"
+			case "<=":
+				op = ">="
+			case ">":
+				op = "<"
+			case ">=":
+				op = "<="
+			}
+		}
+		if !isKey(l) {
+			return false, ""
+		}
+		v, ok := str(r)
+		if !ok {
+			return false, ""
+		}
+		switch op {
+		case "=":
+			setLo(v, false)
+			setHi(v, false)
+		case ">=":
+			setLo(v, false)
+		case ">":
+			setLo(v, true)
+		case "<=":
+			setHi(v, false)
+		case "<":
+			setHi(v, true)
+		default:
+			return false, ""
+		}
+		return true, ""
+	case *Between:
+		if x.Not || !isKey(x.X) {
+			return false, ""
+		}
+		lo, ok1 := str(x.Lo)
+		hi, ok2 := str(x.Hi)
+		if !ok1 || !ok2 {
+			return false, ""
+		}
+		setLo(lo, false)
+		setHi(hi, false)
+		return true, ""
+	}
+	return false, ""
 }

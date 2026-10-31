@@ -6,9 +6,9 @@ Thứ tự đọc: `00_START_HERE` → `27_handoff` (quy tắc người dùng + 
 
 ## 0. Mô tả ngắn (người dùng chốt, điều chỉnh 2026-10-31)
 
-STASK là một engine viết mới bằng Go (không dùng mã PostgreSQL), lấy cơ chế của **ba cơ sở dữ liệu: PostgreSQL** (giao thức, SQL, giao dịch, chỉ mục, nhân bản; psql, pgjdbc, pgx, Liquibase dùng được nguyên vẹn), **ClickHouse** (view cột cho gộp, đếm, facet; chuỗi thời gian; lịch sử) và **Redis** (chỉ mục chính nằm trong RAM để tra cứu điểm nhanh). Một log bền duy nhất là nguồn sự thật, các cấu trúc còn lại dẫn xuất từ đó: một bản dữ liệu, một đường khôi phục, không phải đồng bộ giữa nhiều hệ thống.
+STASK là một engine viết mới bằng Go (không dùng mã PostgreSQL), xây trên cơ chế của **hai cơ sở dữ liệu: PostgreSQL** (giao thức, SQL, giao dịch, chỉ mục, nhân bản; psql, pgjdbc, pgx, Liquibase dùng được nguyên vẹn) và **ClickHouse** (view cột cho gộp, đếm, facet; chuỗi thời gian; lịch sử). Một log bền duy nhất là nguồn sự thật, các cấu trúc còn lại dẫn xuất từ đó: một bản dữ liệu, một đường khôi phục, không phải đồng bộ giữa nhiều hệ thống.
 
-**Elasticsearch không được coi là cơ sở dữ liệu và không đặt vào engine** (người dùng, 2026-10-31). Nghĩa là: Elasticsearch KHÔNG dùng làm chuẩn so sánh, tiêu chí hay hướng để phát triển mã tiếp. Mã đã có (view trigram, phần tìm kiếm trong `internal/proj`) GIỮ NGUYÊN, không xoá và không bị đổi vì lý do này. Bối cảnh ở §1 (hai cụm ES đang chạy) chỉ là hiện trạng.
+**Redis và Elasticsearch không được coi là cơ sở dữ liệu và không đặt vào thiết kế** (người dùng, 2026-10-31). Từ Redis chỉ học kỹ thuật kiểm soát và nén hiệu năng trên RAM (chỉ mục chính nằm trong RAM); cả hai đều KHÔNG dùng làm chuẩn so sánh, tiêu chí hay hướng để phát triển mã tiếp. Mã đã có (chỉ mục chính trong RAM, view trigram, phần tìm kiếm trong `internal/proj`) GIỮ NGUYÊN, không xoá và không bị đổi vì lý do này. Bối cảnh ở §1 (hai cụm ES đang chạy) chỉ là hiện trạng.
 
 Cách hiểu đúng các so sánh: STASK **cover chức năng** của các hệ đó cho bài toán này. "Đạt hiệu năng như" thì chưa chứng minh: số đo thật chỉ có sau đợt kiểm nghiệm cuối (`docs/24_final_measurement.md`, `PROCESS` D32/D34). Superset và Jmix không phải mục tiêu bắt buộc; Jmix chỉ là một ca thử driver.
 

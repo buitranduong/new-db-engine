@@ -8,16 +8,17 @@ and it is built around one idea: **the write-ahead log is the single source of
 truth.**
 
 In one paragraph: STASK is a from-scratch Go engine (it does not use PostgreSQL
-code) that takes its mechanisms from three databases: PostgreSQL (wire protocol,
-SQL, transactions, indexes, replication), ClickHouse (a columnar view for
-aggregates and facets, time-series, history) and Redis (an in-RAM primary index
-for point lookups). psql, pgjdbc, pgx and Liquibase work unchanged. One durable
-log is the source of truth and the other structures are derived from it: one copy
-of the data and one recovery path instead of several systems to keep in sync.
-Elasticsearch is not considered a database and is not used as a reference or criterion for further development; the code already in place stays as it is.
-The claim is functional coverage;
-performance parity is not claimed until the final verification phase (see
-`docs/24_final_measurement.md`).
+code) built on the mechanisms of two databases: PostgreSQL (wire protocol, SQL,
+transactions, indexes, replication) and ClickHouse (a columnar view for
+aggregates and facets, time-series, history). psql, pgjdbc, pgx and Liquibase work
+unchanged. One durable log is the source of truth and the other structures are
+derived from it: one copy of the data and one recovery path instead of several
+systems to keep in sync. Redis and Elasticsearch are not considered databases and
+are not part of the design: from Redis it only borrows techniques for controlling
+and compacting RAM (the in-RAM primary index), and neither is used as a reference
+or criterion for further development; the code already in place stays as it is.
+The claim is functional coverage; performance parity is not claimed until the
+final verification phase (see `docs/24_final_measurement.md`).
 
 One process (`staskd`) owns one authoritative, segmented log. The same log is the
 WAL and the value store. On top of it sit an MVCC primary index and three derived
@@ -31,7 +32,7 @@ Direction: not "one database for everything", but a **tiered, tightly controlled
 > **Status: research prototype, code phase closed, verification phase next.**
 > The feature set for the target workload is implemented and covered by tests;
 > nothing has been measured at scale yet, and no performance parity with
-> PostgreSQL, ClickHouse or Redis is claimed. Current state, known
+> PostgreSQL or ClickHouse is claimed. Current state, known
 > gaps and the live work queue: [docs/STATUS.md](docs/STATUS.md) and
 > [docs/27_handoff.md](docs/27_handoff.md). Criteria for production use:
 > [docs/PROCESS.md](docs/PROCESS.md) D34 (seven criteria, none reached yet).

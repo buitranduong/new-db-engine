@@ -68,6 +68,9 @@ type Config struct {
 	MinFreeGB                                       float64
 	LoadMode, Exec, Iso, RefName                    string
 	Columnar                                        bool
+	Tear                                            int
+	ProbeWorkers                                    int
+	ProbeGap                                        time.Duration
 }
 
 func (c *Config) Query(name string, page int) string {
@@ -210,7 +213,15 @@ func (r *Run) workerOracle(ctx context.Context, baseline int64) {
 
 // ---------------------------------------------------------------- read-your-writes probe
 
-func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
+func (r *Run) workerProbe(ctx context.Context, probes []Sim, wid, nw int) {
+	// worker wid of nw takes the probe sims with index = wid (mod nw): no two writers touch the same sim
+	var mine []Sim
+	for i, p := range probes {
+		if i%nw == wid {
+			mine = append(mine, p)
+		}
+	}
+	probes = mine
 	if len(probes) == 0 || r.cfg.Probes == 0 {
 		return
 	}
@@ -218,10 +229,14 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
 	defer w.Drop()
 	defer rd.Drop()
 	rc := r.NewRecorder()
-	gap := r.cfg.Duration * 9 / 10 / time.Duration(r.cfg.Probes)
-	for i := 0; i < r.cfg.Probes && ctx.Err() == nil; i++ {
+	nprobes := r.cfg.Probes / nw
+	gap := r.cfg.Duration * 9 / 10 / time.Duration(max(1, nprobes))
+	if r.cfg.ProbeGap >= 0 {
+		gap = r.cfg.ProbeGap
+	}
+	for i := 0; i < nprobes && ctx.Err() == nil; i++ {
 		sim := probes[i%len(probes)]
-		val := 11 + i%990
+		val := 11 + (i*nw+wid)%990
 		txid := r.txid.Add(1)
 		p := &Payload{Kind: "probe", TS: fmtTS(time.Now()), Nums: []string{sim.Number}, Val: val}
 		r.gate.RLock()
@@ -563,3 +578,83 @@ func Barrier(ctx context.Context, cfg *Config, sutDSN, refDSN string) []QCompare
 	}
 	return out
 }
+
+// ---------------------------------------------------------------- tear test: one snapshot, several tables
+//
+// A read-only REPEATABLE READ transaction reads, at ONE snapshot: an R2 page (hybrid path on STASK -hybrid), then the
+// invariants that span orders + order_items + stock (q13, orphans, totals, reserved = open items), then the same R2
+// page again. The writers (T) change those tables together in one transaction each; a read that saw one table
+// before and another after a commit would violate an invariant, and the second R2 page must equal the first.
+func (r *Run) workerTear(ctx context.Context, id int, baseline int64) {
+	s := &Sess{dsn: r.sut}
+	defer s.Drop()
+	rc := r.NewRecorder()
+	page := 1 + id%3
+	for ctx.Err() == nil {
+		sleepCtx(ctx, 100*time.Millisecond)
+		c, err := s.Conn(ctx)
+		if err != nil {
+			continue
+		}
+		t0 := time.Now()
+		bad := func(err error) bool {
+			if err == nil || ctx.Err() != nil {
+				return err != nil
+			}
+			r.Count("tear_query_errors", 1)
+			r.Count("tear_query_err: "+trunc(err.Error(), 90), 1)
+			c.Exec(context.Background(), "ROLLBACK")
+			if ErrCode(err) == "conn" {
+				s.Drop()
+			}
+			return true
+		}
+		if _, err := c.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"); bad(err) {
+			continue
+		}
+		q := R2Query(page, 1, "")
+		first, err := QueryText(ctx, c, q)
+		if bad(err) {
+			continue
+		}
+		rows13, err := QueryText(ctx, c, r.cfg.Query("q13_stock_invariant", 0))
+		if bad(err) {
+			continue
+		}
+		okAll := true
+		r.Check("tear_q13_at_one_snapshot", len(rows13) == 0, "%d rows differ, first %v", len(rows13), first_(rows13))
+		for _, x := range []struct{ name, sql string }{{"tear_no_orphan_items", sqlOrphanItems}, {"tear_no_order_without_items", sqlEmptyOrders}, {"tear_order_total_equals_items", sqlTotals}} {
+			v, err := one(ctx, c, x.sql)
+			if bad(err) {
+				okAll = false
+				break
+			}
+			r.Check(x.name, v[0] == "0", "count=%s", v[0])
+		}
+		if !okAll {
+			continue
+		}
+		v, err := one(ctx, c, sqlReservedSum)
+		if bad(err) {
+			continue
+		}
+		a, _ := strconv.ParseInt(strings.Split(v[0], ".")[0], 10, 64)
+		b, _ := strconv.ParseInt(v[1], 10, 64)
+		r.Check("tear_reserved_equals_open_items", a-baseline == b, "sum(stock.reserved)-baseline=%d but open T order items=%d", a-baseline, b)
+		second, err := QueryText(ctx, c, q)
+		if bad(err) {
+			continue
+		}
+		same := len(first) == len(second)
+		for i := 0; same && i < len(first); i++ {
+			same = strings.Join(first[i], "|") == strings.Join(second[i], "|")
+		}
+		r.Check("tear_r2_page_repeatable_in_snapshot", same, "R2 page %d read twice in one REPEATABLE READ transaction differs (%d vs %d rows)", page, len(first), len(second))
+		_, err = c.Exec(ctx, "COMMIT")
+		bad(err)
+		rc.Add("tear_tx", r.Phase(), time.Since(t0), "")
+		r.Count("tear_snapshots", 1)
+	}
+}
+
+func first_(rows [][]string) any { return first(rows) }

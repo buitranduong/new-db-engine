@@ -63,6 +63,9 @@ func parseFlags() *Config {
 	flag.StringVar(&c.LoadMode, "load-mode", "auto", "copy | insert | auto")
 	flag.StringVar(&c.Exec, "exec-mode", "simple", "simple | extended")
 	flag.BoolVar(&c.Columnar, "columnar", false, "create sims WITH (columnar = on) in the SUT (needed for staskd -hybrid)")
+	flag.IntVar(&c.Tear, "tear", 1, "tear-test readers: REPEATABLE READ transactions reading an R2 page and the multi-table invariants at one snapshot")
+	flag.IntVar(&c.ProbeWorkers, "probe-workers", 1, "read-your-writes probe workers (each owns a disjoint share of the probe sims)")
+	flag.DurationVar(&c.ProbeGap, "probe-gap", -1, "pause between probes (-1: spread over 90% of the duration; 0: back to back)")
 	flag.StringVar(&c.RefName, "ref-name", "m2h-ref", "name of the reference container (use a unique one when several harnesses run)")
 	flag.StringVar(&c.Iso, "iso", "", "transaction isolation level of T workers (default: server default)")
 	flag.Parse()
@@ -263,7 +266,14 @@ func main() {
 	}
 	spawn(func() { run.workerImport(wctx) })
 	spawn(func() { run.workerOracle(wctx, baseline) })
-	spawn(func() { run.workerProbe(wctx, probes) })
+	for i := 0; i < cfg.Tear; i++ {
+		i := i
+		spawn(func() { run.workerTear(wctx, i, baseline) })
+	}
+	for i := 0; i < max(1, cfg.ProbeWorkers); i++ {
+		i := i
+		spawn(func() { run.workerProbe(wctx, probes, i, max(1, cfg.ProbeWorkers)) })
+	}
 
 	// phases
 	type PhaseSpan struct {

@@ -417,6 +417,14 @@ func (l *Log) ReadAt(seg uint32, off int64, p []byte) (int, error) {
 // header is not checked against the record's CRC.
 func (l *Log) ReadHeader(seg uint32, off int64) (kind uint8, lsn uint64, ts int64, err error) {
 	var b [frameHdr + 1 + 2*binary.MaxVarintLen64]byte
+	// no frame at off (an empty or ended segment: the length is 0) is not corruption; restore probes offset 0 of
+	// every segment, including the preallocated empty active one, and must not raise the CRC alarm for it
+	if _, err = l.ReadAt(seg, off, b[:frameHdr]); err != nil {
+		return
+	}
+	if binary.LittleEndian.Uint32(b[:]) == 0 {
+		return 0, 0, 0, ErrTorn
+	}
 	if err = l.VerifyFrame(seg, off); err != nil {
 		return
 	}

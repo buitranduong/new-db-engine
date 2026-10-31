@@ -501,7 +501,7 @@ func TestHybridIntGroupOuterJoins(t *testing.T) {
 		}
 	}
 	check("base")
-	mustq(t, rs, `UPDATE sims SET store_rate = 10 WHERE number IN ('090000000001','090000000002','090000000003','090000000010')`)
+	mustq(t, rs, `UPDATE sims SET store_rate = 10 WHERE number IN ('09000000001','090000000002','090000000003','090000000010')`)
 	mustq(t, rs, `UPDATE sims SET status = 'sold' WHERE category = 'TAM_HOA' AND carrier_id = 2 AND price < 1500000`)
 	mustq(t, rs, `UPDATE sims SET carrier_id = 3 WHERE number IN (SELECT number FROM sims WHERE carrier_id = 1 AND category = 'TAM_HOA' LIMIT 30)`)
 	check("after tail")
@@ -519,5 +519,36 @@ func TestHybridIntGroupOuterJoins(t *testing.T) {
 		v.cmp("key range "+kr, q)
 		mustq(t, rs, `UPDATE sims SET store_rate = 10 WHERE number IN ('090000015001','090000015002','090000011000','090000006000')`)
 		v.cmp("key range after tail "+kr, q)
+	}
+}
+
+// The follower is a goroutine: if it does not move for a while (CPU saturated by readers) a strong read must still
+// wait for it up to the deadline, and a wait that ran out makes the next ones fall back at once.
+func TestHybridWaitAppliedPatient(t *testing.T) {
+	v := newHyEnv(t, 2000)
+	h, f := v.h, v.h.Seg.Follower()
+	lsn := h.E.DurableLSN() + 1
+	go func() {
+		time.Sleep(450 * time.Millisecond) // longer than the old 200 ms "no progress" cut-off
+		mustq(t, NewSession(h.E), `UPDATE sims SET store_rate = 9 WHERE number = '09000000001'`)
+	}()
+	t0 := time.Now()
+	if !h.waitApplied(f, lsn, 5*time.Second) {
+		t.Fatalf("waitApplied gave up after %v although the commit arrives after 450 ms", time.Since(t0))
+	}
+	if time.Since(t0) < 400*time.Millisecond {
+		t.Fatalf("returned after %v, before the commit existed", time.Since(t0))
+	}
+	// a snapshot that never arrives: waits for the deadline, then the memo answers at once
+	t0 = time.Now()
+	if h.waitApplied(f, lsn+1000, 500*time.Millisecond) {
+		t.Fatal("reached an LSN that does not exist")
+	}
+	if d := time.Since(t0); d < 450*time.Millisecond || d > 3*time.Second {
+		t.Fatalf("first wait took %v, want about 500 ms", d)
+	}
+	t0 = time.Now()
+	if h.waitApplied(f, lsn+1000, 500*time.Millisecond) || time.Since(t0) > 50*time.Millisecond {
+		t.Fatalf("second wait did not fall back at once (%v)", time.Since(t0))
 	}
 }

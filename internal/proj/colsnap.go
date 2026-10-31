@@ -168,6 +168,12 @@ func sameLayout(a, b *schema.Table) bool {
 }
 
 func (c *SegColumnar) Apply(e *core.Engine, rec *wal.Record) {
+	t0 := time.Now()
+	defer func() {
+		if d := time.Since(t0); d > 50*time.Millisecond && c.Logf != nil {
+			c.Logf("segcolumnar: slow apply: lsn=%d kind=%d ops=%d took %v", rec.LSN, rec.Kind, len(rec.Ops), d.Round(time.Millisecond))
+		}
+	}()
 	if rec.Kind == wal.KindDDL {
 		c.ddl(e, rec)
 		return

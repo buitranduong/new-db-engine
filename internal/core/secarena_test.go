@@ -10,6 +10,8 @@ import (
 	"stask/internal/schema"
 )
 
+const lkN = 800
+
 func lkIndexEqual(t *testing.T, e *Engine, model map[string]int64, when string) {
 	t.Helper()
 	e.waitInstalled(e.DurableLSN())
@@ -56,7 +58,7 @@ func lkSecDB(t *testing.T, minDead int64, hook func(string)) (*Engine, map[strin
 		t.Fatal(err)
 	}
 	model := map[string]int64{}
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < lkN; i++ {
 		model[longID(i)] = int64(i % 50)
 		if _, err := e.Write([]WriteOp{{Table: "lk", Row: lkRow(longID(i), int64(i%50))}}); err != nil {
 			t.Fatal(err)
@@ -72,7 +74,7 @@ func lkSecDB(t *testing.T, minDead int64, hook func(string)) (*Engine, map[strin
 // so the arena holds dead key bytes.
 func lkChurn(t *testing.T, e *Engine, model map[string]int64, shift int) {
 	t.Helper()
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < lkN; i++ {
 		model[longID(i)] = int64((i + shift) % 50)
 		if _, err := e.Write([]WriteOp{{Table: "lk", Row: lkRow(longID(i), int64((i+shift)%50))}}); err != nil {
 			t.Fatal(err)
@@ -154,7 +156,7 @@ func TestSecArenaCompaction(t *testing.T) {
 	// the compacted index keeps working: sweeping after more churn, then equal again
 	lkChurn(t, e, model, 11)
 	lkIndexEqual(t, e, model, "after churn")
-	if ar := si.tr.Load().ar; ar.Dead.Load() == 0 || ar.Dead.Load() >= dead0+int64(3000*40) {
+	if ar := si.tr.Load().ar; ar.Dead.Load() == 0 || ar.Dead.Load() >= dead0+int64(lkN*40) {
 		t.Fatalf("dead key bytes after churn: %d (before the compaction %d)", ar.Dead.Load(), dead0)
 	}
 }

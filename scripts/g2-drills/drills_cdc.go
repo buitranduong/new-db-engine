@@ -158,6 +158,7 @@ func drillD7(e *Env, o *Opts, r *Result, mode string) {
 	invalidAt := map[string]time.Duration{}
 	deadline := 150 * time.Second
 	var peak = map[string]float64{}
+	var peakAll = map[string]float64{}
 	for time.Since(t0) < deadline {
 		time.Sleep(500 * time.Millisecond)
 		m, err := n.Metrics()
@@ -167,8 +168,11 @@ func drillD7(e *Env, o *Opts, r *Result, mode string) {
 		s := slotSample{t: time.Since(t0), lag: map[string]float64{}, walDisk: m["stask_wal_disk_bytes"]}
 		for _, sl := range []string{"healthy", "slow", "stalled"} {
 			s.lag[sl] = m[fmt.Sprintf("stask_cdc_slot_lag_bytes{slot=%q}", sl)]
-			if s.lag[sl] > peak[sl] {
-				peak[sl] = s.lag[sl]
+			if s.lag[sl] > peakAll[sl] {
+				peakAll[sl] = s.lag[sl]
+			}
+			if _, inv := invalidAt[sl]; !inv && s.lag[sl] > peak[sl] {
+				peak[sl] = s.lag[sl] // held back while the slot was still valid
 			}
 		}
 		samples = append(samples, s)
@@ -220,6 +224,8 @@ func drillD7(e *Env, o *Opts, r *Result, mode string) {
 			pre++
 		}
 	}
+	// the invalidation happens at the first cleaning round after the limit is crossed, so the lag is sampled
+	// at most one round (1 s of writes) past it
 	r.Check(peak["stalled"] > float64(limitMB)*1048576/2, "the lag of the stalled slot only reached %.1f MB", peak["stalled"]/1048576)
 	r.Check(grew >= pre-1, "the lag of the stalled slot did not grow monotonically before the invalidation (%d of %d samples did not decrease)", grew, pre)
 	// 2. retention is bounded: peak lag within limit + slack, wal bytes bounded after
@@ -232,8 +238,8 @@ func drillD7(e *Env, o *Opts, r *Result, mode string) {
 		}
 	}
 	r.Check(last.walDisk <= float64(limitMB<<20)+slack, "the log still holds %.1f MB at the end (limit %d MB)", last.walDisk/1048576, limitMB)
-	r.Logf("log on disk: peak %.1f MB, at the end %.1f MB; stalled slot lag: peak %.1f MB, slow slot peak %.1f MB, healthy slot peak %.2f MB, healthy at the end %.2f MB",
-		maxWal/1048576, last.walDisk/1048576, peak["stalled"]/1048576, peak["slow"]/1048576, peak["healthy"]/1048576, last.lag["healthy"]/1048576)
+	r.Logf("log on disk: peak %.1f MB, at the end %.1f MB; lag held back while valid: stalled slot %.1f MB, slow slot %.1f MB, healthy slot %.2f MB (healthy at the end %.2f MB); the metric of an invalidated slot goes on growing (stalled: %.1f MB at its peak) because it is the distance to a frozen position, it no longer holds the log back",
+		maxWal/1048576, last.walDisk/1048576, peak["stalled"]/1048576, peak["slow"]/1048576, peak["healthy"]/1048576, last.lag["healthy"]/1048576, peakAll["stalled"]/1048576)
 	// 3. the healthy slot is untouched, the slow one fell behind
 	_, healthyInvalid := invalidAt["healthy"]
 	r.Check(!healthyInvalid, "the healthy slot was invalidated")
@@ -260,5 +266,5 @@ func drillD7(e *Env, o *Opts, r *Result, mode string) {
 	rep, err := n.WaitInSync(60 * time.Second)
 	r.Check(err == nil && rep.Verdict == "IN_SYNC", "views after the drill: %v", err)
 	scrubCheck(r, n)
-	r.OracleOK("stalled slot: lag grew to %.1f MB (limit %d MB) and the engine invalidated it after %v, the log stayed at %.1f MB; the slow slot was %s; the healthy slot was never touched (lag %.2f MB at the end); %d writes ok, 0 failed; the invalidated slot answers 410 and reconcile -cdc-slot reports INVALID", peak["stalled"]/1048576, limitMB, inv.Round(time.Second), last.walDisk/1048576, map[bool]string{true: "invalidated too", false: "kept"}[slowInvalid], last.lag["healthy"]/1048576, wok.Load())
+	r.OracleOK("stalled slot: the lag it held back grew to %.1f MB (limit %d MB) and the engine invalidated it after %v, the log never exceeded %.1f MB; the slow slot was %s; the healthy slot was never touched (lag %.2f MB at the end); %d writes ok, 0 failed; the invalidated slot answers 410 and reconcile -cdc-slot reports INVALID", peak["stalled"]/1048576, limitMB, inv.Round(time.Second), maxWal/1048576, map[bool]string{true: "invalidated too", false: "kept"}[slowInvalid], last.lag["healthy"]/1048576, wok.Load())
 }

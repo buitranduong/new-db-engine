@@ -7,18 +7,21 @@ PostgreSQL wire protocol, so `psql`, JDBC, pgx and most ORMs can connect to it,
 and it is built around one idea: **the write-ahead log is the single source of
 truth.**
 
-In one paragraph: STASK is a from-scratch Go engine (it does not use PostgreSQL
-code) built on the mechanisms of two databases: PostgreSQL (wire protocol, SQL,
-transactions, indexes, replication) and ClickHouse (a columnar view for
-aggregates and facets, time-series, history). psql, pgjdbc, pgx and Liquibase work
-unchanged. One durable log is the source of truth and the other structures are
-derived from it: one copy of the data and one recovery path instead of several
-systems to keep in sync. Redis and Elasticsearch are not considered databases and
-are not part of the design: from Redis it only borrows techniques for controlling
-and compacting RAM (the in-RAM primary index), and neither is used as a reference
-or criterion for further development; the code already in place stays as it is.
-The claim is functional coverage; performance parity is not claimed until the
-final verification phase (see `docs/24_final_measurement.md`).
+In one paragraph: STASK is a from-scratch Go data engine (it does not use PostgreSQL
+code) for workloads that neither PostgreSQL alone nor ClickHouse alone solves: 30 to 100
+million rows across many tables with complex joins, ClickHouse-class read and analytic speed,
+and PostgreSQL-class transactions, bulk updates, orders and stock at the same time. PostgreSQL
+is strong at transactions, updates, business joins and correctness; ClickHouse is strong at
+columnar reads, compression, scans and aggregates. STASK combines them under one coordination
+mechanism: a trusted transaction core, one durable change log, and read structures derived from
+it (a columnar projection, indexes, history), with a query coordinator that picks the read path
+for each statement. While data is changing, queries stay fast and correct at the consistency
+level they asked for: never fast but silently stale. It speaks the PostgreSQL wire protocol and
+SQL, so psql, pgjdbc, pgx and Liquibase work unchanged. The SIM warehouse is the first
+validation workload, not the limit of the product. Redis and Elasticsearch are a source of ideas
+for RAM-resident indexing, not targets to replace. The claim is functional coverage;
+performance parity is not claimed until the final verification phase (see
+`docs/24_final_measurement.md`).
 
 One process (`staskd`) owns one authoritative, segmented log. The same log is the
 WAL and the value store. On top of it sit an MVCC primary index and three derived

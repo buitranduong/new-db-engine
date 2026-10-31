@@ -4,7 +4,35 @@ File này để **bất kỳ phiên làm việc mới nào** (người hay agent
 
 Thứ tự đọc: `00_START_HERE` → `29_requirements` (ngữ cảnh dự án: vì sao, cho ai, ngưỡng, kinh nghiệm thực tế) → `27_handoff` (quy tắc người dùng + trạng thái sống) → `STATUS` → `AGENT_PROTOCOL` → `PROCESS` (nhật ký quyết định) → `14_plan_target_actual` (bằng chứng chi tiết) → `15_target_workload` → `16_tiered_engine_vision`.
 
-## 0. Mô tả ngắn (người dùng chốt, điều chỉnh 2026-10-31)
+## 0. Mô tả ngắn (người dùng xác nhận là đúng trọng tâm và ngữ nghĩa nhất, 2026-10-31)
+
+Kho SIM không phải phạm vi duy nhất hay một sản phẩm chỉ dành cho SIM: nó là bằng chứng về loại bài toán cần giải và là **workload kiểm chứng đầu tiên**. Mục tiêu là một **data engine / nền tảng cơ sở dữ liệu** quản lý 30 đến 100 triệu bản ghi, **nhiều bảng và join phức tạp**; đọc và phân tích nhanh ấn tượng như ClickHouse, nhưng vẫn xử lý giao dịch, cập nhật hàng loạt, đơn hàng và tồn kho đồng thời như PostgreSQL.
+
+- PostgreSQL mạnh ở giao dịch, cập nhật, join nghiệp vụ, tính đúng đắn.
+- ClickHouse mạnh ở đọc và phân tích trên dữ liệu lớn: cột, nén, quét, gộp.
+- Hệ cần tạo phải kết hợp hai đặc tính đó **dưới một cơ chế điều phối thống nhất**, để không phải duy trì nhiều bản sao dữ liệu khó đồng bộ.
+- Khi dữ liệu đang thay đổi, truy vấn vẫn phải đọc nhanh và đúng theo mức nhất quán đã yêu cầu; **không được "đọc nhanh nhưng dữ liệu cũ mà không biết"**.
+- Phải xử lý nhiều bảng có liên kết, không chỉ tra cứu hay tìm kiếm trên một bảng SIM.
+- Đừng xây lại mọi tính năng phụ của PostgreSQL; hãy xây một engine lai phục vụ lớp workload giao dịch + phân tích lớn mà PostgreSQL đơn thuần và ClickHouse đơn thuần đều không giải quyết trọn vẹn.
+- ES và Redis là nguồn tham khảo về cách index, search, cache nhanh (chỉ mục trên RAM), không phải mục tiêu phải thay thế nguyên trạng.
+
+```
+Ứng dụng ghi đơn hàng / tồn kho
+              │
+      Lõi giao dịch kiểu PostgreSQL
+              │
+       một luồng thay đổi đáng tin (log)
+         ┌────┼────┐
+         │    │    │
+  bảng đọc nhanh  chỉ mục/tìm kiếm  dữ liệu lịch sử
+  kiểu ClickHouse
+         │
+  bộ điều phối truy vấn chọn cách đọc phù hợp
+```
+
+"Điều phối" là phần quyết định: câu nào cần dữ liệu mới nhất thì đọc lõi hoặc ghép thêm phần thay đổi mới; câu quét, join, lọc, gộp lớn thì đọc cấu trúc cột và chỉ mục đã tối ưu; khi giao dịch vừa đổi giá, tồn kho hay trạng thái thì hệ biết chính xác cấu trúc đọc đã theo kịp đến đâu và không âm thầm trả số cũ; query join nhiều bảng thì bộ điều phối tạo kế hoạch đọc hỗn hợp, không ép toàn bộ về hàng hay về cột. **Trọng tâm kiến trúc không phải số lượng tính năng SQL** mà là lõi giao dịch, dữ liệu cột, chỉ mục/tìm kiếm và bộ điều phối truy vấn có phối hợp đúng để đạt đồng thời hai mục tiêu hay không: thực thi lai (lõi giao dịch + chiếu dạng cột + phần thay đổi mới + chiến lược join + cách ly tài nguyên). Thiết kế đang làm: `docs/30_hybrid_execution.md`.
+
+Cách hiểu đúng các so sánh: STASK **cover chức năng** của các hệ đó cho bài toán này; "đạt hiệu năng như" chưa chứng minh, số đo thật chỉ có sau kiểm nghiệm (`docs/24`, `PROCESS` D32/D34/D35). Superset và Jmix không phải mục tiêu bắt buộc; Jmix chỉ là một ca thử driver. Redis và Elasticsearch không được coi là cơ sở dữ liệu, không dùng làm chuẩn so sánh hay tiêu chí; mã đã có (chỉ mục chính trong RAM, view trigram, phần tìm kiếm) giữ nguyên. Chúng vẫn có thể dùng chung với engine, tách vai trò; không có nhu cầu tìm văn bản thì engine một mình đủ cho phần lớn nhu cầu (vận hành đơn giản mà vẫn đủ nhanh). Ngữ cảnh đầy đủ: `docs/29_requirements.md`.
 
 **Vì sao có dự án (người dùng, 2026-10-31):** tốc độ và độ nén của ClickHouse rất ấn tượng, nhưng dữ liệu lớn và thay đổi liên tục nên không thể bỏ giao dịch cập nhật của PostgreSQL. Engine này nhằm có cả hai. ES, Redis, website chỉ là ví dụ điển hình. Ngữ cảnh đầy đủ: `docs/29_requirements.md`.
 

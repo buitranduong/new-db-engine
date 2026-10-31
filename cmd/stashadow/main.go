@@ -8,12 +8,16 @@
 //	stashadow status  -source URL -stask URL                  applied LSN, lag
 //	stashadow drop    -source URL -stask URL                  drop slot, publication and control row
 //	stashadow txstats FILE...                                 throughput and latency from -txlog files
+//	stashadow verify  -a URL -b URL [-tables ..]              per-table row counts and order-independent checksums computed inside each database (either direction)
+//	stashadow drain   -source URL                             wait until everything the (frozen) source committed is in STASK
+//	stashadow sync-sequences -from URL -to URL                carry sequence positions across (logical replication does not)
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime/pprof"
@@ -41,6 +45,12 @@ func main() {
 		cmdDrop(os.Args[2:])
 	case "txstats":
 		cmdTxStats(os.Args[2:])
+	case "verify":
+		cmdVerify(os.Args[2:])
+	case "drain":
+		cmdDrain(os.Args[2:])
+	case "sync-sequences":
+		cmdSyncSeq(os.Args[2:])
 	default:
 		usage()
 	}
@@ -97,6 +107,8 @@ func cmdRun(args []string) {
 	chunk := fs.Int("chunk", 500, "statements per pipeline flush")
 	pause := fs.String("pause-file", "", "while this file exists no new transaction is applied (touch to pause, rm to resume)")
 	txlog := fs.String("txlog", "", "append one line per applied transaction: commit_us,applied_us,rows,end_lsn")
+	schemaChanges := fs.String("schema-changes", "apply", "ALTER TABLE on the source: apply (ADD/DROP/RENAME COLUMN, ALTER COLUMN TYPE are carried to STASK) or stop (stop with the DDL to run)")
+	metricsAddr := fs.String("metrics-addr", "", "serve Prometheus metrics (lag bytes and seconds, throughput, reconnects) on this address, path /metrics")
 	cpuprof := fs.String("cpuprofile", "", "write a CPU profile to this file (for tuning)")
 	logEvery := fs.Duration("log-every", 5*time.Second, "progress line interval")
 	fs.Parse(args)
@@ -113,7 +125,16 @@ func cmdRun(args []string) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg := shadow.Config{SourceURL: c.source, StaskURL: c.stask, Tables: c.tableList(), Slot: c.slot, Publication: c.pub,
+	stats := shadow.NewStats()
+	if *metricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+			stats.WritePrometheus(w)
+		})
+		go func() { logf("metrics: %v", http.ListenAndServe(*metricsAddr, mux)) }()
+	}
+	cfg := shadow.Config{Stats: stats, SchemaChanges: *schemaChanges, SourceURL: c.source, StaskURL: c.stask, Tables: c.tableList(), Slot: c.slot, Publication: c.pub,
 		CreateTables: *createTables, SetReplicaIdentity: *setRI, Upsert: *upsert, Strict: *strict, Reset: *reset,
 		RowsPerSec: *rate, Chunk: *chunk, PauseFile: *pause, TxLog: *txlog, LogEvery: *logEvery, Logf: logf}
 	err := shadow.Run(ctx, cfg)
@@ -242,4 +263,79 @@ func cmdTxStats(files []string) {
 	fmt.Printf("txs=%d rows=%d span=%.1fs  rows/s(over span)=%.0f txs/s=%.0f\n", txs, rows, span, float64(rows)/span, float64(txs)/span)
 	fmt.Printf("commit->applied latency ms: p50=%.1f p90=%.1f p99=%.1f max=%.1f\n",
 		float64(shadow.Percentile(lat, 50))/1000, float64(shadow.Percentile(lat, 90))/1000, float64(shadow.Percentile(lat, 99))/1000, float64(lat[len(lat)-1])/1000)
+}
+
+func cmdVerify(args []string) {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	a := fs.String("a", env("SHADOW_SOURCE", "postgres://postgres@127.0.0.1:28510/postgres?sslmode=disable"), "reference database URL (usually PostgreSQL, the system of record)")
+	b := fs.String("b", env("SHADOW_STASK", "postgres://app@127.0.0.1:28501/stask?sslmode=disable"), "database URL to check")
+	tables := fs.String("tables", "", "comma-separated tables (default: every base table of schema public in A)")
+	retries := fs.Int("retries", 0, "re-check a differing table this many times (live systems)")
+	wait := fs.Duration("retry-wait", 2*time.Second, "pause between retries")
+	js := fs.String("json", "", "write the JSON report here")
+	fs.Parse(args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var names []string
+	for _, t := range strings.Split(*tables, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			names = append(names, t)
+		}
+	}
+	rep, err := shadow.Verify(ctx, shadow.VerifyConfig{AURL: *a, BURL: *b, Tables: names, Retries: *retries, RetryWait: *wait})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "verify:", err)
+		os.Exit(3)
+	}
+	rep.WriteTable(os.Stdout)
+	if *js != "" {
+		if f, err := os.Create(*js); err == nil {
+			rep.WriteJSON(f)
+			f.Close()
+		}
+	}
+	if !rep.OK {
+		os.Exit(1)
+	}
+}
+
+func cmdDrain(args []string) {
+	fs := flag.NewFlagSet("drain", flag.ExitOnError)
+	src := fs.String("source", env("SHADOW_SOURCE", "postgres://postgres@127.0.0.1:28510/postgres?sslmode=disable"), "source PostgreSQL URL (frozen for writes)")
+	slot := fs.String("slot", "stashadow", "slot name of the running stashadow")
+	timeout := fs.Duration("timeout", 2*time.Minute, "give up after this long")
+	fs.Parse(args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if _, err := shadow.Drain(ctx, *src, *slot, *timeout, logf); err != nil {
+		fmt.Fprintln(os.Stderr, "drain:", err)
+		os.Exit(1)
+	}
+	fmt.Println("drained")
+}
+
+func cmdSyncSeq(args []string) {
+	fs := flag.NewFlagSet("sync-sequences", flag.ExitOnError)
+	from := fs.String("from", "", "URL of the system the writes were on")
+	to := fs.String("to", "", "URL of the system the writes go to next")
+	margin := fs.Int64("margin", 0, "add this to every value (room for ids handed out but not committed)")
+	fs.Parse(args)
+	if *from == "" || *to == "" {
+		fmt.Fprintln(os.Stderr, "sync-sequences: -from and -to are required")
+		os.Exit(2)
+	}
+	res, err := shadow.SyncSequences(context.Background(), *from, *to, *margin, logf)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sync-sequences:", err)
+		os.Exit(1)
+	}
+	set := 0
+	for _, r := range res {
+		if r.Set {
+			set++
+		} else {
+			logf("sequence %s not changed: %s", r.Name, r.Reason)
+		}
+	}
+	fmt.Printf("%d sequences read, %d set\n", len(res), set)
 }

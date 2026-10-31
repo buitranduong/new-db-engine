@@ -44,6 +44,7 @@ func main() {
 	batch := flag.Int("max-batch", 512, "max transactions per group commit")
 	ckptMin := flag.Int64("checkpoint-min-mb", 512, "minimum log growth between checkpoints (MB)")
 	secDisk := flag.Bool("secindex-disk", false, "allow secondary indexes to be kept on disk: ALTER INDEX x SET (index_storage = 'disk') / ALTER TABLE t SET (index_storage = 'disk') (default off: all indexes stay in RAM)")
+	idxBudget := flag.Int("index-mem-budget", 0, "RAM budget of the index structures, in MiB (0: none): accounted per structure, reported in /v1/status index_memory, /metrics and the log; refuses moving an index to memory or a key arena compaction that would exceed it; never moves an index to disk by itself (explicit ALTER INDEX only)")
 	secDiskCache := flag.Int("secindex-cache-mb", 16, "buffer pool of each disk-resident secondary index, in MiB (with -secindex-disk)")
 	noCkpt := flag.Bool("no-checkpoint", false, "disable background checkpoints")
 	compress := flag.String("compress", "off", "compress sealed log segments: off, s2 or zstd")
@@ -270,7 +271,7 @@ func main() {
 	proj.PackColumns = *colPack
 	t0 := time.Now()
 	var fault *server.Fault
-	opts := core.Options{DiskIndexes: *secDisk, DiskIndexCacheMB: *secDiskCache, ViewSaveEvery: *viewEvery, NoViewFile: *noViewFile, Dir: *dir, SegmentSize: *seg << 20, MaxBatch: *batch,
+	opts := core.Options{DiskIndexes: *secDisk, IndexMemBudget: int64(*idxBudget) << 20, DiskIndexCacheMB: *secDiskCache, ViewSaveEvery: *viewEvery, NoViewFile: *noViewFile, Dir: *dir, SegmentSize: *seg << 20, MaxBatch: *batch,
 		CheckpointMinBytes: *ckptMin << 20, NoCheckpoint: *noCkpt, PreZero: *preZero, ZeroRate: *zeroRate << 20,
 		GC: *gc, GCRetention: gcRetention, GCInterval: *gcInterval, GCRateBytes: *gcRate << 20, GCMaxLiveRatio: *gcLive, CommitWait: *commitWait,
 		Compression: codec, CompressKeepRaw: *compressKeep, SlotMaxLagBytes: *slotMaxLag << 20, MaxSnapshotAge: *maxSnapAge,

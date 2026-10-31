@@ -407,7 +407,7 @@ func (e *Engine) loadCheckpoint(path string) (*ckptHeader, int, error) {
 		wg.Add(1)
 		go func(t *TableState, cs []*chunk) {
 			defer wg.Done()
-			b := newTreeBuilder(&t.keys)
+			b := newTreeBuilder(t.keys.Load())
 			var live int64
 			var prev ikey
 			for ci, c := range cs {
@@ -415,7 +415,7 @@ func (e *Engine) loadCheckpoint(path string) (*ckptHeader, int, error) {
 				for i := range c.ents {
 					en := c.ents[i]
 					if en.klen == longKey {
-						en.ikey = t.keys.ikeyOf(c.longs[nl])
+						en.ikey = t.keys.Load().ikeyOf(c.longs[nl])
 						nl++
 					}
 					if (ci > 0 || i > 0) && b.t.keyOf(&en) <= b.t.keyStr(&prev) {

@@ -39,6 +39,18 @@ func Start(e *core.Engine) *Platform {
 		}
 	}
 	p.SubF = e.Follow(p.Sub)
+	e.AddIndexMemSource("trigram", func() []core.IndexMem {
+		var out []core.IndexMem
+		for _, st := range p.Sub.Report() {
+			name := ""
+			if ts := e.TableByID(st.Table); ts != nil {
+				name = ts.Schema().Name
+			}
+			out = append(out, core.IndexMem{Kind: "trigram", Table: name, Name: st.Col, Storage: st.Storage,
+				RAMBytes: st.RAMBytes, DiskBytes: st.DiskBytes, Entries: st.Postings})
+		}
+		return out
+	})
 	return p
 }
 

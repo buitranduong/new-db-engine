@@ -970,7 +970,17 @@ func (e *Engine) SetIndexStorage(table, index, storage string) error {
 	}
 	si := t.secNamed(index)
 	if si == nil {
-		if substrIndexOf(t.Schema(), index) >= 0 {
+		if i := substrIndexOf(t.Schema(), index); i >= 0 {
+			if to == "memory" {
+				col := t.Schema().Substr[i].Col
+				for _, m := range e.structures() {
+					if m.Kind == "trigram" && m.Table == t.Schema().Name && m.Name == col && m.Storage == "disk" {
+						if err := e.checkBudgetFor("trigram index "+index, m.Entries*6); err != nil {
+							return err
+						}
+					}
+				}
+			}
 			// a trigram index: the catalog says where the posting lists
 			// go, the view converts them in the background (proj/substrdisk.go)
 			want := ""
@@ -991,6 +1001,15 @@ func (e *Engine) SetIndexStorage(table, index, storage string) error {
 		return fmt.Errorf("index %q does not exist", index)
 	}
 	from := si.storageOf()
+	if to == "memory" && from == "disk" {
+		if rd, ok, _ := si.openRead(); ok {
+			n := int64(rd.len())
+			rd.close()
+			if err := e.checkBudgetFor("index "+index, n*48); err != nil {
+				return err
+			}
+		}
+	}
 	if err := e.convertSec(t, si, to); err != nil {
 		return err
 	}

@@ -44,6 +44,14 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	p("stask_wal_written_bytes_total", "counter", "Bytes appended to the log.", e.Log().BytesWritten())
 	p("stask_wal_segments", "gauge", "Log segments on disk.", len(e.Log().Segments()))
 	p("stask_wal_disk_bytes", "gauge", "Disk space of the log segments.", e.Log().DiskBytes())
+	if r := e.IndexMemoryReport(); true {
+		p("stask_index_mem_budget_bytes", "gauge", "Configured RAM budget of the index structures (0: none).", r.BudgetBytes)
+		p("stask_index_mem_ram_bytes", "gauge", "Estimated RAM held by index structures (primary, secondary, disk-index pools, trigram).", r.RAMBytes)
+		p("stask_index_mem_disk_bytes", "gauge", "Disk held by disk-resident index structures.", r.DiskBytes)
+		p("stask_index_mem_forecast_seconds", "gauge", "Seconds until the budget is reached at the recent growth (-1: not growing or no budget).", r.ForecastSeconds)
+		p("stask_index_mem_alerts_total", "counter", "Index memory budget status changes logged.", e.BudgetAlerts.Load())
+		p("stask_key_arena_compactions_total", "counter", "Primary index key arenas rebuilt to reclaim dead long keys.", e.ArenaCompactions.Load())
+	}
 	p("stask_checkpoints_total", "counter", "Checkpoints written.", e.Stats.Checkpoints.Load())
 	p("stask_checkpoint_bytes_total", "counter", "Bytes written to checkpoints.", e.Stats.CkptBytes.Load())
 	gc := e.GCStats()

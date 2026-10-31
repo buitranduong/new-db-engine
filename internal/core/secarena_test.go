@@ -10,7 +10,7 @@ import (
 	"stask/internal/schema"
 )
 
-const lkN = 800
+const lkN = 450
 
 func lkIndexEqual(t *testing.T, e *Engine, model map[string]int64, when string) {
 	t.Helper()

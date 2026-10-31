@@ -28,6 +28,7 @@ type CopyStmt struct {
 	Null   string
 	Quote  byte
 	Escape byte
+	Binary bool // FORMAT binary (FROM STDIN only; copybin.go)
 }
 
 type copyTok struct {
@@ -244,7 +245,7 @@ func (p *copyParser) parse() (*CopyStmt, error) {
 		}
 		return s[0], nil
 	}
-	binary := func() error { return errf(codeFeature, "COPY BINARY format is not supported; use FORMAT text or csv") }
+	binary := func() error { cs.Binary = true; return nil }
 	var err error
 	setOpt := func(name string, legacy bool) error {
 		switch name {
@@ -362,6 +363,19 @@ func (p *copyParser) parse() (*CopyStmt, error) {
 	if p.peek().k != 0 {
 		return nil, p.bad()
 	}
+	if cs.Binary {
+		for _, c := range []struct {
+			set  bool
+			what string
+		}{{delimSet, "DELIMITER"}, {nullSet, "NULL"}, {cs.CSV, "CSV mode"}, {cs.Header, "HEADER"}, {quoteSet, "QUOTE"}, {escSet, "ESCAPE"}} {
+			if c.set {
+				return nil, errf("22023", "cannot specify %s in BINARY mode", c.what)
+			}
+		}
+		if !cs.From {
+			return nil, errf(codeFeature, "COPY TO in BINARY format is not supported; use FORMAT text or csv")
+		}
+	}
 	// defaults and checks (PostgreSQL's)
 	if !delimSet {
 		cs.Delim = '\t'
@@ -472,6 +486,7 @@ type CopyIn struct {
 	seen    map[string]struct{}
 	done    bool
 	eof     bool // end-of-data marker seen
+	binHdr  bool // binary format: the file header is consumed
 	fields  []copyField
 	q       *afterQueue // AFTER ROW triggers of the load, run by Finish (trigstmt.go)
 	stmtTrg bool        // the table has statement-level INSERT triggers
@@ -481,6 +496,7 @@ type copyField struct {
 	s      string
 	null   bool
 	quoted bool
+	raw    []byte // binary format: the field's bytes (decoded by the column's type in store)
 }
 
 // CopyFrom starts COPY FROM STDIN.
@@ -607,7 +623,13 @@ func (ci *CopyIn) write(p []byte) error {
 func (ci *CopyIn) record(b []byte) (n int, complete bool, err error) {
 	cs := ci.cs
 	var fields []copyField
-	if cs.CSV {
+	if cs.Binary && !ci.binHdr {
+		n, complete, err = ci.binHeader(b)
+		return n, complete, err
+	}
+	if cs.Binary {
+		fields, n, complete, err = ci.binRecord(b)
+	} else if cs.CSV {
 		fields, n, complete, err = ci.csvRecord(b)
 	} else {
 		fields, n, complete, err = ci.textRecord(b)
@@ -657,7 +679,17 @@ func (ci *CopyIn) store(f []copyField) error {
 		if f[i].null {
 			continue
 		}
-		v, err := toValueCol(&t.Columns[ci2], TextD(f[i].s))
+		var d Datum
+		if ci.cs.Binary {
+			var err error
+			if d, err = copyBinaryDatum(&t.Columns[ci2], f[i].raw); err != nil {
+				e := AsError(err)
+				return ci.lineErr(e.Code, e.Msg, i)
+			}
+		} else {
+			d = TextD(f[i].s)
+		}
+		v, err := toValueCol(&t.Columns[ci2], d)
 		if err != nil {
 			e := AsError(err)
 			return ci.lineErr(e.Code, e.Msg, i)
@@ -964,7 +996,14 @@ func (ci *CopyIn) Finish() (string, error) {
 	if ci.done {
 		return "", nil
 	}
-	if len(ci.buf) > 0 && !ci.eof {
+	if ci.cs.Binary {
+		if !ci.binHdr {
+			return "", ci.fail(errf("22P04", "COPY file signature not recognized"))
+		}
+		if len(ci.buf) > 0 && !ci.eof {
+			return "", ci.fail(errf("22P04", "unexpected EOF in COPY data"))
+		}
+	} else if len(ci.buf) > 0 && !ci.eof {
 		// last line without a newline
 		ci.buf = append(ci.buf, '\n')
 		if err := ci.write(nil); err != nil {

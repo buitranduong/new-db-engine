@@ -158,6 +158,7 @@ func (e *Engine) arenaCompactor() {
 		if min == 0 {
 			min = 64 << 20
 		}
+		e.compactSecArenas(min)
 		for _, t := range e.UserTables() {
 			ar := t.index().ar
 			dead := ar.Dead.Load()

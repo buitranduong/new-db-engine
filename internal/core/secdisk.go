@@ -816,6 +816,29 @@ func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 	}
 	nt := b.finish()
 	e.sidxStep("memory-built")
+	var old *diskStore
+	if err := e.installMemory(si, nt, ar, func() { old = si.dk.Swap(nil) }); err != nil {
+		return err
+	}
+	e.sidxStep("swapped-to-memory")
+	if old != nil {
+		old.retire(true)
+	}
+	return nil
+}
+
+// installMemory catches the RAM tree nt (built with key arena ar from a
+// copy of the index) up with the mutations recorded in si.mig since the
+// copy was taken, and publishes it as the index's store. swap runs inside
+// the seqlock section of the publication (toMemory drops the disk store
+// there). Used by toMemory and by the key-arena compaction of secarena.go;
+// the caller has set si.mig before copying.
+func (e *Engine) installMemory(si *secIndex, nt *tree, ar *keyArena, swap func()) error {
+	abort := func() {
+		si.mu.Lock()
+		si.discardMig()
+		si.mu.Unlock()
+	}
 	apply := func(ch migChunk) error {
 		defer ch.close()
 		if ch.count() == 0 {
@@ -863,14 +886,10 @@ func (e *Engine) toMemory(t *TableState, si *secIndex) error {
 			si.swaps.Add(1)
 			si.tr.Store(nt)
 			si.ar = ar
-			old := si.dk.Swap(nil)
+			swap()
 			si.mig = nil
 			si.swaps.Add(1)
 			si.mu.Unlock()
-			e.sidxStep("swapped-to-memory")
-			if old != nil {
-				old.retire(true)
-			}
 			return nil
 		} else {
 			si.mu.Unlock()

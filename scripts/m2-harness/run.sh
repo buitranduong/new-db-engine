@@ -3,7 +3,8 @@
 #   scripts/m2-harness/run.sh pg16|stask [stask-m2 flags]
 # Env: N (sims, default 1000000), DURATION (default 60s), OUT (report dir), CRASH=<dur> (kill -9 after that long),
 #      M2_DIR (default /tmp/m2), STASKD (binary, default built from this tree), STASK_FLAGS (extra staskd flags),
-#      SUT_PORT (default 28792), KEEP=1 (do not stop the SUT at the end), SKIP_BUILD=1.
+#      SUT_PORT (default 28792), SUT_NAME (docker name of pg16 SUT), REF_NAME/REF_PORT (reference container, default m2h-ref/28791),
+#      COLUMNAR=1 (sims WITH (columnar = on); automatic when STASK_FLAGS has -hybrid), KEEP=1 (do not stop the SUT at the end), SKIP_BUILD=1.
 # Any other argument is passed to stask-m2 (e.g. -t 8 -r 4 -probes 10000 -import-every 5).
 # The reference postgres:16 (journal replay, barrier comparison) is a throw-away container on port 28791.
 # To test an already running server instead: stask-m2 -sut <dsn> -ref-docker ... (see -h).
@@ -24,10 +25,13 @@ CR=()
 if [ -n "${CRASH:-}" ]; then
   CR=(-crash-at "$CRASH" -kill-cmd "M2_DIR=$M2_DIR $HERE/sut.sh $KIND kill9" -restart-cmd "M2_DIR=$M2_DIR $HERE/sut.sh $KIND restart")
 fi
+EXTRA=(-ref-name "${REF_NAME:-m2h-ref}" -ref "postgres://postgres:wm@127.0.0.1:${REF_PORT:-28791}/postgres?sslmode=disable")
+# STASK_FLAGS=-hybrid needs sims WITH (columnar = on); COLUMNAR=1 forces it (default: on when STASK_FLAGS mentions -hybrid)
+case "${COLUMNAR:-}${STASK_FLAGS:-}" in 1*|*-hybrid*) [ "$KIND" = stask ] && EXTRA+=(-columnar);; esac
 "$HERE/sut.sh" "$KIND" start || exit 2
 [ -z "${KEEP:-}" ] && trap '"$HERE/sut.sh" "$KIND" stop' EXIT
 "$M2_DIR/stask-m2" -sut "postgres://postgres:wm@127.0.0.1:$PORT/postgres?sslmode=disable" -ref-docker -label "$KIND" \
-  -n "$N" -duration "$DURATION" -out "$OUT" "${CR[@]}" "$@"
+  "${EXTRA[@]}" -n "$N" -duration "$DURATION" -out "$OUT" "${CR[@]}" "$@"
 rc=$?
 echo "report: $OUT/report.md"
 exit $rc

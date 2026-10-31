@@ -66,7 +66,8 @@ type Config struct {
 	Force                                           bool
 	GateLog, DiskPath                               string
 	MinFreeGB                                       float64
-	LoadMode, Exec, Iso                             string
+	LoadMode, Exec, Iso, RefName                    string
+	Columnar                                        bool
 }
 
 func (c *Config) Query(name string, page int) string {

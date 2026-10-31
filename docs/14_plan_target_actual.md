@@ -1670,3 +1670,9 @@ Reproduce: `go test -p 1 ./internal/sql ./internal/pgwire ./cmd/staskimport`; `g
 | Task | Plan | Target | Actual |
 |---|---|---|---|
 | integ16 merge | merge five agent branches into one integration, one gate | `RACE=1` gate green, claimcheck >= 603 | OK: 603 probes, wall 1721 s. The gate script now takes a flock (one gate at a time) and gives the `-race` stage 40 min for `internal/core`: four gates in parallel had overloaded the VM and pushed `core` past the 10 min default of go test. `pindexflake` fixed a real bug (pin flush could exhaust the pool) and the `TestOptimisticStress` goroutine leak, which had failed 4/4 gate runs. docs/14 conflicts resolved with `scripts/merge-docs.py`; no code conflicts. |
+
+### Appendix V — clusterrace (race detector on internal/cluster)
+
+| Task | Plan | Target | Actual |
+|---|---|---|---|
+| clusterrace: harness data race | `go test -race ./internal/cluster` failed in `TestHAMembership`: `newJoiner` did `c.nodes = append(...)` (and wrote `c.proxies`) while writers and the status/leader/httpList helpers read them. Fix the harness only (no product code): `sync.RWMutex` in `tcluster`, `c.nodes` copy-on-append (readers take an immutable snapshot via `snap()`), `c.proxies` read/written under the lock (`proxySnap()`, `isolate`). Add `./internal/cluster` to the `-race` stage of `scripts/merge-gate.sh` (40m timeout kept). `internal/raft` tests start no goroutines, so it stays out. | `-race -count=1 -timeout 40m ./internal/cluster` green twice in a row; `bash -n scripts/merge-gate.sh` ok | Run 1: ok, 294 s. Run 2: ok, 297 s; 0 DATA RACE lines in both logs. Precedent: Go race detector docs (a slice header or map that one goroutine writes and others read needs a lock or an immutable snapshot); the same pattern as `lead atomic.Int32` already in the harness. No perf measured (protocol section 6). |

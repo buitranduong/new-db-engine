@@ -248,7 +248,23 @@ func writesStatement(st Stmt) (bool, string) {
 		}
 		return false, ""
 	}
-	switch st.(type) {
+	switch st := st.(type) {
+	case *Select:
+		// Row locks live in the lock table of the node that took them, and
+		// only the leader's table is the one writers wait on: a follower (or
+		// a READ ONLY transaction) refuses them, as PostgreSQL does on a
+		// standby (docs/14 row RLF).
+		if len(st.Lock) > 0 {
+			return true, "SELECT FOR UPDATE/SHARE"
+		}
+	case *DeclareCursor:
+		if st.forUpdate {
+			return true, "DECLARE CURSOR FOR UPDATE/SHARE"
+		}
+	case *LockTable:
+		if st.Mode > tmRowExclusive {
+			return true, "LOCK TABLE"
+		}
 	case *WithDML:
 		return true, "WITH"
 	case *Insert:

@@ -391,7 +391,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		if err := nargs(3, 4); err != nil {
 			return Null, err
 		}
-		re, err := compileRegex(str(1))
+		pat := str(1)
+		if len(args) == 4 && strings.Contains(str(3), "i") {
+			pat = "(?i)" + pat // PostgreSQL flag i: case-insensitive
+		}
+		re, err := compileRegex(pat)
 		if err != nil {
 			return Null, err
 		}
@@ -622,6 +626,9 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 		d, err := in(2)
 		if err != nil {
 			return Null, err
+		}
+		if y == 0 || m < 1 || m > 12 || d < 1 || d > 31 || time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).Day() != int(d) {
+			return Null, errf("22008", "date field value out of range: %d-%d-%d", y, m, d) // PostgreSQL does not normalise
 		}
 		return DateD(time.Date(int(y), time.Month(m), int(d), 0, 0, 0, 0, time.UTC).UnixMicro()), nil
 	case "make_timestamp", "make_timestamptz":

@@ -34,7 +34,11 @@ type Hybrid struct {
 
 // NewHybrid registers the segment consumer with the engine.
 func NewHybrid(e *core.Engine) *Hybrid {
-	logf := func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }
+	return NewHybridLogf(e, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
+}
+
+// NewHybridLogf is NewHybrid with the destination of the log lines (merges, fall-back reasons).
+func NewHybridLogf(e *core.Engine, logf func(string, ...any)) *Hybrid {
 	// test/oracle knob: merge the tail early, so that merges happen at small scale
 	if v, err := strconv.Atoi(os.Getenv("STASK_SEG_MERGE_MIN_TAIL")); err == nil && v > 0 {
 		proj.SegMergeMinTail = v

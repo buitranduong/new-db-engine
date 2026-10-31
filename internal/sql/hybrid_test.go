@@ -59,8 +59,7 @@ func newHyEnv(t *testing.T, n int) *hyEnv {
 	mustq(t, rs, `INSERT INTO carriers VALUES ('A','A',true),('B','B',true),('C','C',true)`)
 	mustq(t, rs, fmt.Sprintf(hyGen, 0, n-1))
 	// the segment state is built from the data already in the core (Bootstrap)
-	h := NewHybrid(e)
-	h.Logf = func(f string, a ...any) { t.Logf(f, a...) }
+	h := NewHybridLogf(e, t.Logf)
 	hs.Hybrid = h
 	v := &hyEnv{t: t, hy: hs, row: rs, h: h}
 	v.sync()
@@ -415,7 +414,7 @@ func TestHybridRebuildFromCore(t *testing.T) {
 	e.Close()
 	e = open()
 	defer e.Close()
-	h := NewHybrid(e)
+	h := NewHybridLogf(e, t.Logf)
 	hs := NewSession(e)
 	hs.Hybrid = h
 	if !h.Seg.Follower().WaitApplied(e.DurableLSN(), 30*time.Second) {

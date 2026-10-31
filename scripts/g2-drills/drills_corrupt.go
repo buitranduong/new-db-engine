@@ -247,6 +247,12 @@ func drillD4(e *Env, o *Opts, r *Result, mode string) {
 		switch class {
 		case "REFUSED", "REPAIRED":
 			pass = true
+		case "LOUD_ERROR":
+			// the required behaviour for damage in a sealed segment: a loud error, never a wrong answer
+			pass = c.expect == "refuse" || c.expect == "tail"
+			if pass {
+				line += " (F1 fixed: loud error XX001 naming the segment and offset)"
+			}
 		case "DAMAGE_REPORTED":
 			if c.expect == "repair" {
 				pass, finding = true, finding+1
@@ -258,7 +264,7 @@ func drillD4(e *Env, o *Opts, r *Result, mode string) {
 				if class == "TORN_TAIL_DATA_LOST" {
 					line += " (FINDING F3: acknowledged transactions after the damaged record were dropped as a torn tail; documented non-guarantee of a single node, docs/01; the log line is the only trace)"
 				} else {
-					line += " (FINDING F1: the damage is not found at startup (a checkpoint covers the segment) nor on read; only a scrub finds it, and the background scrub is off by default)"
+					line += " (FINDING F1: the damage is not found at startup (a checkpoint covers the segment) nor on read; only a scrub finds it: THIS BUILD STILL HAS F1)"
 				}
 			}
 		}
@@ -316,6 +322,14 @@ func d4judge(r *Result, n *Node, l *Ledger, fl *Filler, ref map[string]digest, t
 	switch {
 	case equal && scrubOK && recOK:
 		return "REPAIRED", fmt.Sprintf("data equal to the pristine data, scrub OK, views in sync; %s", trace)
+	case !equal && !torn && derr != nil && isLoudCorruption(derr):
+		// F1 fixed: the read of a damaged frame is refused (SQLSTATE XX001),
+		// no row of it is returned, and the metric counts it
+		m, merr := n.Metrics()
+		if merr != nil || m["stask_read_crc_errors_total"] < 1 {
+			return "SILENT_WRONG_DATA", fmt.Sprintf("the read failed with %v but stask_read_crc_errors_total did not count it (%v)", derr, merr)
+		}
+		return "LOUD_ERROR", fmt.Sprintf("SELECT * failed with %s (no wrong data returned), stask_read_crc_errors_total=%v, scrub answered %d: %s", trunc(derr.Error(), 200), m["stask_read_crc_errors_total"], code, trunc(strings.TrimSpace(b), 120))
 	case !equal && torn:
 		return "TORN_TAIL_DATA_LOST", fmt.Sprintf("started with torn_tail=true; data differ: %s; scrub %d %s; %s", sameDigests(ref, got), code, trunc(strings.TrimSpace(b), 120), trace)
 	case !equal && !scrubOK:
@@ -331,6 +345,13 @@ func d4judge(r *Result, n *Node, l *Ledger, fl *Filler, ref map[string]digest, t
 	default:
 		return "OTHER", trace
 	}
+}
+
+// isLoudCorruption: the error is the data-corruption error (SQLSTATE XX001) the
+// engine returns for a log frame that fails its CRC.
+func isLoudCorruption(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "XX001") || strings.Contains(s, "data corruption detected")
 }
 
 func grepLines(s string, keys []string) string {

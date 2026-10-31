@@ -129,7 +129,7 @@ func TestGapsLongInParams(t *testing.T) {
 	before := inMemoBuilds.Load()
 	got := qres(t, s, `SELECT count(*) FROM a WHERE grp + 0 IN (`+strings.Join(ph, ",")+`) OR id IN (`+strings.Join(ph, ",")+`)`, ps...)
 	if got != "151" { // evens 2..300 and id 1000
-t	t.Fatalf("count %s", got)
+		t.Fatalf("count %s", got)
 	}
 	if n := inMemoBuilds.Load() - before; n > 2 {
 		t.Fatalf("sorted set built %d times for 2 lists", n)

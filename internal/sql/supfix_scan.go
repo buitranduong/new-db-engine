@@ -37,7 +37,7 @@ func (p *tablePlan) runParallel(qx *qexec) ([][]Datum, bool, error) {
 	n := len(cols)
 	buckets := make([][]scanBucket, helpers+1)
 	var held atomic.Int64
-	limit := QueryMemLimit
+	limit := qx.limit()
 	var over atomic.Bool
 	ok, err := qx.tx.ScanAllParallel(p.t.Name, nil, helpers, spawnHelper, keepHelper, func(w, seq, idx int, r schema.Row) bool {
 		bs := buckets[w]
@@ -63,6 +63,13 @@ func (p *tablePlan) runParallel(qx *qexec) ([][]Datum, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
+	if over.Load() {
+		// The helpers stopped at the budget, so what they collected is a PREFIX of the table.
+		// qx.chargeAll below reserves memory in 1 MB steps and can accept that prefix, which
+		// silently dropped the tail of the table (a 10M-row scan returned 8.63M rows). Fail
+		// like the sequential scan does.
+		return nil, true, qx.overBudget(limit)
+	}
 	var all []scanBucket
 	total := 0
 	for _, bs := range buckets {
@@ -79,6 +86,5 @@ func (p *tablePlan) runParallel(qx *qexec) ([][]Datum, bool, error) {
 	if err := qx.chargeAll(rows); err != nil {
 		return nil, true, err
 	}
-	_ = over.Load()
 	return rows, true, nil
 }

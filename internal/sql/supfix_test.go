@@ -304,3 +304,46 @@ func TestSupfixParallelScanOrder(t *testing.T) {
 	wg.Wait()
 	expectRows(t, s, `SELECT sum(n), count(*) FROM (SELECT * FROM big) t`, "2700045000.00,60000")
 }
+
+// A parallel table scan that reaches the query budget must fail with 53200 like the sequential
+// scan, never hand back the prefix the helpers had collected: the R2 quota query returned a wrong
+// page at 10M rows because the scan stopped at the budget and the missing tail was not reported.
+func TestParallelScanOverBudgetIsAnError(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE bigb (id BIGINT PRIMARY KEY, v TEXT)`)
+	run(t, s, `INSERT INTO bigb SELECT g, repeat('x', 40) FROM generate_series(1, 60000) g`)
+	for i := 0; i < 300; i++ { // the live row count (the parallel scan threshold) is installed a moment after the commit
+		if ts, err := e.UserTable("bigb"); err == nil && ts.LiveRows() == 60000 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer func(q, n int64, d string) { QueryMemLimit, SQLMemLimit, SpillDir = q, n, d }(QueryMemLimit, SQLMemLimit, SpillDir)
+	SQLMemLimit, SpillDir = 4<<30, ""
+	const q = `SELECT count(*) FROM (SELECT * FROM bigb) t`
+	QueryMemLimit = 0
+	expectRows(t, s, q, "60000")
+	// a limit below the table's size fails; none may return a prefix of the table
+	failed := 0
+	for lim := int64(2 << 20); lim < 11<<20; lim += 300007 {
+		QueryMemLimit = lim
+		res, err := tryRun(s, q)
+		switch {
+		case code(err) == "53200":
+			failed++
+		case err != nil:
+			t.Fatalf("limit %d: %v", lim, err)
+		case res.Rows[0][0].I != 60000:
+			t.Fatalf("limit %d: count %d, a prefix of the table without an error", lim, res.Rows[0][0].I)
+		}
+	}
+	if failed == 0 {
+		t.Fatal("no limit failed")
+	}
+	if n := SQLMemInUse(); n != 0 {
+		t.Fatalf("%d bytes still reserved", n)
+	}
+	QueryMemLimit = 64 << 20
+	expectRows(t, s, q, "60000")
+}

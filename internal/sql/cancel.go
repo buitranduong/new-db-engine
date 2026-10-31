@@ -101,6 +101,7 @@ func (s *Session) Exec(st Stmt, params []Datum) (*Result, error) {
 		timer = time.AfterFunc(d, func() { s.ctl.interrupt(seq, InterruptTimeout) })
 	}
 	s.refreshSnapshot(st)
+	st = s.rewriteAnyParams(st, params)
 	t0 := s.beginStmt(st)
 	res, err := s.exec(st, params)
 	s.endStmt(st, t0, err)

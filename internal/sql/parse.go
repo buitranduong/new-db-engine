@@ -1427,7 +1427,7 @@ func (p *parser) predicate() (Expr, error) {
 				if err != nil {
 					return nil, err
 				}
-				l = &InList{l, list, not}
+				l = &InList{X: l, List: list, Not: not}
 			case p.acceptKw("between"):
 				sym := p.acceptKw("symmetric")
 				lo, err := p.bitExpr()

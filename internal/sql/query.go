@@ -20,9 +20,11 @@ import (
 type relCol struct {
 	qual, name string
 	kind       Kind
-	ty         pgTy // PostgreSQL type when finer than kind (pgtype.go)
-	hidden     bool // the right-hand copy of a USING column: not visible unqualified or in *
-	sys        bool // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
+	ty         pgTy   // PostgreSQL type when finer than kind (pgtype.go)
+	hidden     bool   // the right-hand copy of a USING column: not visible unqualified or in *
+	raw        bool   // RIGHT/FULL JOIN .. USING: the left table's own value of the column (the merged column is the unqualified one)
+	rawQ       string // on a merged USING column: the qualifier of the raw left copy, which `q.*` and `q.col` use
+	sys        bool   // a hidden key column of the table (schema.RowIDCol, KeyCol): named explicitly only, never in *
 	// table OID and attribute number of a column read straight from a table (RowDescription)
 	src uint32
 	an  int16
@@ -688,7 +690,17 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 		}
 		for _, ci := range starOrder(fs.cols, starRank) {
 			col := fs.cols[ci]
-			if col.hidden || col.sys || qual != "" && col.qual != qual {
+			if col.sys || col.raw {
+				continue
+			}
+			if qual != "" && col.qual != qual && col.rawQ != qual {
+				continue
+			}
+			if col.hidden && (qual == "" || col.qual != qual) {
+				continue
+			}
+			if qual != "" && col.rawQ == qual { // the merged column stands for the left table's own value in q.*
+				items = append(items, SelItem{X: &ColRef{Table: qual, Name: col.name}, Alias: col.name})
 				continue
 			}
 			items = append(items, SelItem{X: &ColRef{Table: col.qual, Name: col.name}, Alias: col.name})
@@ -2224,6 +2236,14 @@ func (c *compiler) compileFrom(n FromNode, sc *qscope, lvl *qlevel, lat *qscope)
 			conds = append(conds, &Binary{Op: "=", L: &Slot{I: li}, R: &Slot{I: jp.nl + ri}})
 			jp.c[jp.nl+ri].hidden = true
 			if f.Kind == "right" || f.Kind == "full" {
+				// PostgreSQL: l.id keeps the left value (NULL for a right-only row); the unqualified id is
+				// COALESCE(l.id, r.id). The left slot becomes the unqualified merged column and a hidden
+				// copy at the end of the row keeps the left table's own value.
+				raw := jp.c[li]
+				raw.hidden, raw.raw = true, true
+				jp.c[li].rawQ, jp.c[li].qual = raw.qual, ""
+				jp.c = append(jp.c, raw)
+				js.cols = jp.c
 				jp.merge = append(jp.merge, [2]int{li, jp.nl + ri})
 			}
 		}
@@ -2512,6 +2532,9 @@ func (p *joinPlan) run(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 			row = append(row, make([]Datum, nr)...)
 		} else {
 			row = append(row, r...)
+		}
+		for _, m := range p.merge { // the raw left copies (see compileFrom), before any merge
+			row = append(row, row[m[0]])
 		}
 		return row
 	}

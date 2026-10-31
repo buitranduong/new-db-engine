@@ -1430,7 +1430,7 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		return nil, errf(codeGrouping, "aggregate functions are not allowed in WHERE")
 	}
 	if grouped {
-		if err := checkGrouping(items, st, aggs); err != nil {
+		if err := checkGrouping(items, st, aggs, sc.t); err != nil {
 			return nil, err
 		}
 	}
@@ -1927,12 +1927,29 @@ func itemName(it SelItem) string {
 
 // checkGrouping rejects column references outside aggregates that are not
 // GROUP BY expressions.
-func checkGrouping(items []SelItem, st *Select, aggs []*Func) error {
+func checkGrouping(items []SelItem, st *Select, aggs []*Func, t *schema.Table) error {
 	grouped := map[string]bool{}
 	for _, g := range st.GroupBy {
 		grouped[exprKey(g)] = true
 		if c, ok := g.(*ColRef); ok {
 			grouped["col:"+c.Name] = true
+		}
+	}
+	// functional dependence (PostgreSQL, docs "GROUP BY"): grouping by every column of the primary key of the
+	// table lets the select list name any column of that table
+	if t != nil && t.HasPK() {
+		keyCols := t.KeyCols
+		if len(keyCols) == 0 {
+			keyCols = []string{t.Key}
+		}
+		all := true
+		for _, k := range keyCols {
+			all = all && grouped["col:"+k]
+		}
+		if all {
+			for i := range t.Columns {
+				grouped["col:"+t.Columns[i].Name] = true
+			}
 		}
 	}
 	var check func(x Expr) error

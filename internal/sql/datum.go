@@ -226,6 +226,13 @@ func applyTypmod(typ string, d Datum) (Datum, error) {
 // coerceArray converts the elements of array d to kind ek and prints the
 // array in canonical form.
 func coerceArray(d Datum, ek Kind) (Datum, error) {
+	if t := strings.TrimSpace(d.S); d.K == KArray && isNestedArrayText(t) {
+		out, err := coerceArrayND(t, ek)
+		if err != nil {
+			return Null, err
+		}
+		return Datum{K: KArray, S: out, I: int64(ek)}, nil
+	}
 	elems := parseArrayText(d)
 	for i, e := range elems {
 		if e.IsNull() || ek == KText || ek == KNull {
@@ -680,4 +687,72 @@ func isVectorText(t string) bool {
 		}
 	}
 	return !strings.ContainsAny(t, "{}\"',")
+}
+
+// isNestedArrayText: the literal is a multi-dimensional array ("{{1,2},{3,4}}").
+func isNestedArrayText(t string) bool {
+	if len(t) < 3 || t[0] != '{' {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimLeft(t[1:], " "), "{")
+}
+
+// coerceArrayND converts the leaves of a multi-dimensional array literal to kind ek and prints it in canonical
+// form; the dimension structure is kept as written (rectangularity is checked where literals are built).
+func coerceArrayND(t string, ek Kind) (string, error) {
+	t = strings.TrimSpace(t)
+	if len(t) < 2 || t[0] != '{' || t[len(t)-1] != '}' {
+		return "", errf(codeInvalidText, "malformed array literal: %q", t)
+	}
+	parts := splitArrayTop(t[1 : len(t)-1])
+	if len(parts) > 0 && strings.HasPrefix(strings.TrimSpace(parts[0]), "{") {
+		out := make([]string, len(parts))
+		for i, p := range parts {
+			p = strings.TrimSpace(p)
+			if !strings.HasPrefix(p, "{") {
+				return "", errf("22P02", "malformed array literal: %q", t)
+			}
+			sub, err := coerceArrayND(p, ek)
+			if err != nil {
+				return "", err
+			}
+			out[i] = sub
+		}
+		return "{" + strings.Join(out, ",") + "}", nil
+	}
+	leaf, err := coerceArray(Datum{K: KArray, S: t, I: int64(ek)}, ek)
+	if err != nil {
+		return "", err
+	}
+	return leaf.S, nil
+}
+
+// splitArrayTop splits the inside of an array literal at the commas that are not inside quotes or braces.
+func splitArrayTop(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	quoted := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quoted:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				quoted = false
+			}
+		case c == '"':
+			quoted = true
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+		case c == ',' && depth == 0:
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	if strings.TrimSpace(s) != "" {
+		out = append(out, s[start:])
+	}
+	return out
 }

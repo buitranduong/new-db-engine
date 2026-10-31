@@ -34,6 +34,8 @@ type IndexDef struct {
 	// Additive. The index is still stored in byte order (collddl.go says what that means for the planner).
 	Colls  []string `json:"colls,omitempty"`
 	Unique bool     `json:"unique,omitempty"`
+	// NullsNotDistinct: UNIQUE NULLS NOT DISTINCT (PostgreSQL 15): NULLs are equal for uniqueness. Additive.
+	NullsNotDistinct bool `json:"nulls_not_distinct,omitempty"`
 	// Where is the predicate of a partial index (indexpred.go); additive.
 	Where []IndexPred `json:"where,omitempty"`
 	// Constraint: the index backs a UNIQUE constraint of this name
@@ -55,8 +57,15 @@ type ForeignKey struct {
 	Columns  []string `json:"columns"`
 	RefTable string   `json:"ref_table"`
 	RefCols  []string `json:"ref_columns"`
-	// OnDelete is "no action", "restrict", "cascade" or "set null".
+	// OnDelete is "no action", "restrict", "cascade", "set null" or "set default".
 	OnDelete string `json:"on_delete,omitempty"`
+	// OnUpdate is the same for a change of the referenced columns (additive; "" is "no action").
+	OnUpdate string `json:"on_update,omitempty"`
+	// Deferrable and InitiallyDeferred: DEFERRABLE [INITIALLY DEFERRED]; NotValid: ADD CONSTRAINT ... NOT VALID
+	// (rows that existed are not checked, new writes are) until VALIDATE CONSTRAINT. All additive.
+	Deferrable        bool `json:"deferrable,omitempty"`
+	InitiallyDeferred bool `json:"initially_deferred,omitempty"`
+	NotValid          bool `json:"not_valid,omitempty"`
 }
 
 // IndexableType reports whether columns of type ct can be indexed.

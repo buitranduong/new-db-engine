@@ -66,6 +66,8 @@ type parser struct {
 	// (int2, int4, float4, varchar(n), bpchar(n), name, date, time), or ""
 	// when the schema type says it all.
 	pgSpec string
+	// tempCreate: parsing CREATE TEMP TABLE: the name is not placed in a schema (it lives in pg_temp)
+	tempCreate bool
 }
 
 func (p *parser) peek() token { return p.toks[p.i] }
@@ -328,6 +330,9 @@ func (p *parser) statement() (Stmt, error) {
 		return &Rollback{}, nil
 	case "set":
 		p.next()
+		if p.acceptKw("constraints") {
+			return p.setConstraints()
+		}
 		p.acceptKw("session")
 		local := p.acceptKw("local")
 		var name []string
@@ -382,6 +387,9 @@ func (p *parser) statement() (Stmt, error) {
 	case "alter":
 		p.next()
 		if st, ok, err := p.alterObj(); ok {
+			return st, err
+		}
+		if st, ok, err := p.alterView(); ok {
 			return st, err
 		}
 		if p.acceptKw("role") || p.acceptKw("user") {
@@ -568,6 +576,9 @@ func (p *parser) createStmt() (Stmt, error) {
 			} else {
 				c.KeyCols = cols
 			}
+			if err := p.skipConstraintAttrs(); err != nil {
+				return nil, err
+			}
 		} else {
 			cd, err := p.colDef()
 			if err != nil {
@@ -694,6 +705,9 @@ func (p *parser) colDef() (ColDef, error) {
 		switch {
 		case p.acceptKw("primary", "key"):
 			cd.Primary, cd.NotNull = true, true
+			if err := p.skipConstraintAttrs(); err != nil {
+				return cd, err
+			}
 		case p.acceptKw("not", "null"):
 			cd.NotNull = true
 		case p.acceptKw("null"):
@@ -714,8 +728,16 @@ func (p *parser) colDef() (ColDef, error) {
 			default:
 				return cd, p.errHere("syntax error at or near %q", p.peek().s)
 			}
+			if cd.Identity == "always" && p.isKw("as") && p.peekN(1).s == "(" {
+				// GENERATED ALWAYS AS (expr) STORED (PostgreSQL 16 has no VIRTUAL; genstored.go)
+				cd.Identity = ""
+				if err := p.generatedExpr(&cd); err != nil {
+					return cd, err
+				}
+				continue
+			}
 			if !p.acceptKw("as", "identity") {
-				return cd, errf(codeFeature, "generated columns are not supported")
+				return cd, p.errHere("syntax error at or near %q", p.peek().s)
 			}
 			if cd.IntType == "" {
 				return cd, errf("22023", "identity column type must be smallint, integer, or bigint")
@@ -749,7 +771,16 @@ func (p *parser) colDef() (ColDef, error) {
 			}
 			switch {
 			case p.acceptKw("unique"):
-				cd.Constraints = append(cd.Constraints, &ConstraintDef{Kind: "unique", Name: name})
+				k := &ConstraintDef{Kind: "unique", Name: name}
+				if p.acceptKw("nulls") {
+					if k.NullsNotDistinct = p.acceptKw("not", "distinct"); !k.NullsNotDistinct {
+						p.acceptKw("distinct")
+					}
+				}
+				if err := p.skipConstraintAttrs(); err != nil {
+					return cd, err
+				}
+				cd.Constraints = append(cd.Constraints, k)
 			case p.acceptKw("references"):
 				k, err := p.referencesDef(name, nil)
 				if err != nil {
@@ -2353,6 +2384,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				if act.Check, err = p.checkDef(cname); err != nil {
 					return nil, err
 				}
+				act.Check.NotValid = p.acceptKw("not", "valid")
 				break
 			}
 			if p.acceptKw("unique") {
@@ -2384,6 +2416,34 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 			if act.Col, err = p.colDef(); err != nil {
 				return nil, err
 			}
+		case p.acceptKw("validate", "constraint"):
+			act.Kind = "validate_constraint"
+			if act.Column, err = p.ident(); err != nil {
+				return nil, err
+			}
+		case p.acceptKw("disable"), p.acceptKw("enable"):
+			// ALTER TABLE .. DISABLE|ENABLE [REPLICA|ALWAYS] TRIGGER {name|ALL|USER}: accepted, no effect
+			p.acceptKw("replica")
+			p.acceptKw("always")
+			if p.acceptKw("row", "level", "security") {
+				return nil, errf(codeFeature, "row level security is not supported")
+			}
+			if !p.acceptKw("trigger") && !p.acceptKw("rule") {
+				return nil, p.errHere("syntax error at or near %q", p.peek().s)
+			}
+			p.next() // a name, ALL or USER
+			act.Kind = "noop"
+		case p.acceptKw("cluster", "on"), p.acceptKw("set", "without", "cluster"), p.acceptKw("set", "without", "oids"):
+			if p.peek().k == tIdent && !p.isOp(",") && p.peek().k != tEOF {
+				if _, err := p.ident(); err != nil {
+					return nil, err
+				}
+			}
+			act.Kind = "noop"
+		case p.acceptKw("set", "logged"):
+			act.Kind = "set_logged"
+		case p.acceptKw("set", "unlogged"):
+			act.Kind = "set_unlogged"
 		case p.acceptKw("drop"):
 			if p.acceptKw("constraint") {
 				act.Kind, act.IfExists = "drop_constraint", p.acceptKw("if", "exists")
@@ -2397,7 +2457,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 					return nil, err
 				}
 			}
-			if !p.acceptKw("cascade") {
+			if act.Cascade = p.acceptKw("cascade"); !act.Cascade {
 				p.acceptKw("restrict")
 			}
 		case p.acceptKw("rename"):
@@ -2456,6 +2516,54 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				return &AlterColRestart{Table: name, Col: act.Column, Opts: o}, nil
 			case p.acceptKw("drop", "default"):
 				act.Kind = "drop_default"
+			case p.acceptKw("set", "generated"):
+				act.Kind = "set_identity"
+				if p.acceptKw("always") {
+					act.Expr = "always"
+				} else if p.acceptKw("by", "default") {
+					act.Expr = "by default"
+				} else {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+			case p.acceptKw("add", "generated"):
+				act.Kind = "add_identity"
+				if p.acceptKw("always") {
+					act.Expr = "always"
+				} else if p.acceptKw("by", "default") {
+					act.Expr = "by default"
+				} else {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+				if err := p.expectKw("as"); err != nil {
+					return nil, err
+				}
+				if err := p.expectKw("identity"); err != nil {
+					return nil, err
+				}
+				if p.acceptOp("(") {
+					o, err := p.seqOpts(false)
+					if err != nil {
+						return nil, err
+					}
+					act.Col.SeqOpts = &o
+					if err := p.expectOp(")"); err != nil {
+						return nil, err
+					}
+				}
+			case p.acceptKw("drop", "identity"):
+				act.Kind, act.IfExists = "drop_identity", p.acceptKw("if", "exists")
+			case p.acceptKw("set", "storage"), p.acceptKw("set", "compression"), p.acceptKw("set", "statistics"):
+				// per-column storage hints: accepted, no effect (rows are not stored as heap tuples)
+				p.next()
+				act.Kind = "noop"
+			case p.isKw("set") && p.peekN(1).k == tOp && p.peekN(1).s == "(", p.isKw("reset") && p.peekN(1).k == tOp && p.peekN(1).s == "(":
+				p.next()
+				if _, err := p.parseOptions(); err != nil {
+					return nil, err
+				}
+				act.Kind = "noop"
+			case p.acceptKw("drop", "expression"): // generated columns (genstored.go)
+				act.Kind, act.IfExists = "drop_expression", p.acceptKw("if", "exists")
 			case p.acceptKw("set", "not", "null"):
 				act.Kind = "set_not_null"
 			case p.acceptKw("drop", "not", "null"):

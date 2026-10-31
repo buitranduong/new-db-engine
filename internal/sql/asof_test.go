@@ -106,7 +106,7 @@ func TestSQLAsOf(t *testing.T) {
 	if _, err := tryRun(s, `ALTER TABLE sim SET (history_retention = 'banana')`); err == nil {
 		t.Fatal("bad retention")
 	}
-	if _, err := tryRun(s, `ALTER TABLE sim SET (fillfactor = 70)`); err == nil {
+	if _, err := tryRun(s, `ALTER TABLE sim SET (bogus_option = 70)`); err == nil {
 		t.Fatal("unknown option")
 	}
 }

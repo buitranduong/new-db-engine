@@ -84,6 +84,15 @@ func elemDef(t *schema.Table, ix schema.IndexDef, k int) string {
 	if fn == "" {
 		return col + coll
 	}
+	if j, ok := t.Col(ix.Columns[k]); ok && ctypeOf(t, j) == schema.TString && strings.HasPrefix(fn, "substr:") {
+		col = "(" + col + ")::text"
+	}
+	if strings.HasPrefix(fn, "date_trunc:") {
+		return fmt.Sprintf("date_trunc('%s'::text, %s)", strings.TrimPrefix(fn, "date_trunc:"), col) + coll
+	}
+	if strings.HasPrefix(fn, "substr:") {
+		return "substr(" + col + ", " + strings.Join(strings.Split(strings.TrimPrefix(fn, "substr:"), ":"), ", ") + ")" + coll
+	}
 	if fn == "btrim" {
 		fn = "TRIM(BOTH FROM %s)"
 	} else if fn == "length" {
@@ -131,6 +140,8 @@ func fkActionChar(a string) string {
 		return "c"
 	case "set null":
 		return "n"
+	case "set default":
+		return "d"
 	}
 	return "a"
 }
@@ -138,13 +149,21 @@ func fkActionChar(a string) string {
 // fkDef is pg_get_constraintdef of a foreign key.
 func (s *Session) fkDef(fk schema.ForeignKey) string {
 	d := "FOREIGN KEY (" + quoteList(fk.Columns) + ") REFERENCES " + s.relDisplay(fk.RefTable) + "(" + quoteList(fk.RefCols) + ")"
-	switch fk.OnDelete {
-	case "restrict":
-		d += " ON DELETE RESTRICT"
-	case "cascade":
-		d += " ON DELETE CASCADE"
-	case "set null":
-		d += " ON DELETE SET NULL"
+	act := map[string]string{"restrict": "RESTRICT", "cascade": "CASCADE", "set null": "SET NULL", "set default": "SET DEFAULT"}
+	if a, ok := act[fk.OnUpdate]; ok { // PostgreSQL prints ON UPDATE before ON DELETE
+		d += " ON UPDATE " + a
+	}
+	if a, ok := act[fk.OnDelete]; ok {
+		d += " ON DELETE " + a
+	}
+	if fk.Deferrable {
+		d += " DEFERRABLE"
+		if fk.InitiallyDeferred {
+			d += " INITIALLY DEFERRED"
+		}
+	}
+	if fk.NotValid {
+		d += " NOT VALID"
 	}
 	return d
 }
@@ -186,9 +205,10 @@ func secIndexRows(c *catSnap, f func(t *schema.Table, ix schema.IndexDef)) {
 }
 
 func secConstraintRows(c *catSnap, rows *[][]Datum) {
+	var deferrable, deferred, notValid bool
 	row := func(oid int64, name, typ string, rel, ind, frel int64, upd, del string, key, fkey Datum) {
-		*rows = append(*rows, []Datum{IntD(oid), TextD(name), IntD(nsPublic), TextD(typ), BoolD(false), BoolD(false),
-			BoolD(true), IntD(rel), IntD(0), IntD(ind), IntD(0), IntD(frel), TextD(upd), TextD(del), TextD(supfixMatchType(typ)),
+		*rows = append(*rows, []Datum{IntD(oid), TextD(name), IntD(nsPublic), TextD(typ), BoolD(deferrable), BoolD(deferred),
+			BoolD(!notValid), IntD(rel), IntD(0), IntD(ind), IntD(0), IntD(frel), TextD(upd), TextD(del), TextD(supfixMatchType(typ)),
 			BoolD(true), IntD(0), BoolD(false), key, fkey, Null, Null, Null, Null, Null, Null})
 	}
 	for _, t := range c.tables {
@@ -203,8 +223,10 @@ func secConstraintRows(c *catSnap, rows *[][]Datum) {
 			if p == nil {
 				continue
 			}
-			row(fkConOID(t, fk.Name), fk.Name, "f", tableOID(t), c.referencedIndexOID(fk), tableOID(p), "a", fkActionChar(fk.OnDelete),
+			deferrable, deferred, notValid = fk.Deferrable, fk.InitiallyDeferred, fk.NotValid
+			row(fkConOID(t, fk.Name), fk.Name, "f", tableOID(t), c.referencedIndexOID(fk), tableOID(p), fkActionChar(fk.OnUpdate), fkActionChar(fk.OnDelete),
 				i2vec(attnums(t, fk.Columns)...), i2vec(attnums(p, fk.RefCols)...))
+			deferrable, deferred, notValid = false, false, false
 		}
 	}
 }

@@ -505,6 +505,7 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	if !cs.From || cs.Query != nil {
 		return nil, errf(codeFeature, "not a COPY FROM")
 	}
+	cs.Table = s.resolveRel(cs.Table) // along the search path
 	if err := s.checkNeeds([]need{{cs.Table, core.PrivInsert}}, ""); s.role != "" && err != nil {
 		return nil, s.copyFail(err)
 	}
@@ -516,6 +517,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	given := make([]bool, len(t.Columns))
 	if cs.Cols == nil {
 		for _, i := range t.VisibleCols() {
+			if t.Columns[i].Generated != "" { // computed, not copied
+				continue
+			}
 			ci.cols = append(ci.cols, i)
 			given[i] = true
 		}
@@ -524,6 +528,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 			i, ok := t.Col(c)
 			if !ok {
 				return nil, s.copyFail(errf(codeUndefinedColumn, "column %q of relation %q does not exist", c, t.Name))
+			}
+			if t.Columns[i].Generated != "" {
+				return nil, s.copyFail(errf("42P10", "column %q is a generated column", c))
 			}
 			if given[i] {
 				return nil, s.copyFail(errf("42701", "column %q specified more than once", c))
@@ -1094,6 +1101,7 @@ func (s *Session) CopyTo(cs *CopyStmt, begin func(ncols int) error, emit func(li
 	if s.failed {
 		return 0, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 	}
+	cs.Table = s.resolveRel(cs.Table)
 	if s.role != "" {
 		if err := s.checkNeeds([]need{{cs.Table, core.PrivSelect}}, ""); err != nil {
 			s.markFailed()

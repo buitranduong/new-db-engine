@@ -31,6 +31,7 @@ type CreateView struct {
 	Cols      []string
 	Query     Stmt
 	Text      string // the SQL text of Query
+	CheckOpt  string // WITH [CASCADED|LOCAL] CHECK OPTION: "cascaded", "local" or ""
 }
 
 // DropView is DROP VIEW [IF EXISTS] name [, ...] [CASCADE | RESTRICT].
@@ -55,8 +56,9 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 	if p.acceptKw("materialized", "view") {
 		return nil, true, errf(codeFeature, "materialized views are not supported")
 	}
+	recursive := p.acceptKw("recursive")
 	if !p.acceptKw("view") {
-		if replace {
+		if replace || recursive {
 			return nil, true, errf(codeFeature, "only CREATE OR REPLACE VIEW is supported")
 		}
 		p.i = save
@@ -81,6 +83,16 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 			return nil, true, err
 		}
 	}
+	if p.isKw("with") && p.peekN(1).k == tOp && p.peekN(1).s == "(" { // WITH (security_barrier, check_option = local, ...)
+		p.next()
+		opts, err := p.parseOptions()
+		if err != nil {
+			return nil, true, err
+		}
+		if v, ok := opts["check_option"]; ok {
+			c.CheckOpt = strings.ToLower(strings.Trim(v, "'\""))
+		}
+	}
 	if err := p.expectKw("as"); err != nil {
 		return nil, true, err
 	}
@@ -89,6 +101,34 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 		return nil, true, err
 	}
 	c.Text = strings.TrimSpace(p.src[start:p.peek().pos])
+	if recursive { // CREATE RECURSIVE VIEW v (cols) AS q  =  CREATE VIEW v AS WITH RECURSIVE v (cols) AS (q) SELECT cols FROM v
+		if len(c.Cols) == 0 {
+			return nil, true, errf("42P16", "recursive view %q must specify a column name list", c.Name)
+		}
+		// the CTE gets a private name: the view's own name would be read as the view (a cycle)
+		cte := quoteIdent("rec_" + bareName(c.Name))
+		list := quoteList(c.Cols)
+		c.Text = fmt.Sprintf("WITH RECURSIVE %s (%s) AS (%s) SELECT %s FROM %s", cte, list,
+			renameRelInQuery(c.Text, bareName(c.Name), "rec_"+bareName(c.Name)), list, cte)
+		if c.Query, err = ParseOne(c.Text); err != nil {
+			return nil, true, err
+		}
+		c.Cols = nil
+	}
+	if p.acceptKw("with") {
+		c.CheckOpt = "cascaded"
+		if p.acceptKw("local") {
+			c.CheckOpt = "local"
+		} else {
+			p.acceptKw("cascaded")
+		}
+		if err := p.expectKw("check"); err != nil {
+			return nil, true, err
+		}
+		if err := p.expectKw("option"); err != nil {
+			return nil, true, err
+		}
+	}
 	return c, true, nil
 }
 
@@ -160,7 +200,7 @@ func (c *compiler) expandView(f *FromTable, qual string) (fromPlan, bool, error)
 // compileViewDef plans the stored query of a view. It sees no scope of the
 // query that uses the view (no CTEs, no outer columns).
 func (c *compiler) compileViewDef(def *core.View) (qplan, error) {
-	st, err := ParseOne(def.Query)
+	st, err := c.s.parseOwned(def.Name, def.Query)
 	if err != nil || st == nil {
 		return nil, errf(codeInternal, "view %q has an invalid definition", def.Name)
 	}
@@ -268,6 +308,18 @@ func (s *Session) createView(st *CreateView) (*Result, error) {
 	if err := s.E.PutView(def, st.OrReplace); err != nil {
 		return nil, AsError(err)
 	}
+	if st.CheckOpt != "" {
+		if _, ok := s.simpleViewOf(st.Name); !ok {
+			if !exists {
+				_ = s.E.DropViews([]string{st.Name})
+			}
+			return nil, errf(codeFeature, "WITH CHECK OPTION is supported only on automatically updatable views")
+		}
+	}
+	if err := s.setViewOption(st.Name, st.CheckOpt); err != nil {
+		return nil, err
+	}
+	s.noteOwnerPath(st.Name)
 	return &Result{Tag: "CREATE VIEW"}, nil
 }
 
@@ -351,6 +403,9 @@ func (s *Session) dropViews(st *DropView) (*Result, error) {
 		return nil, AsError(err)
 	}
 	for _, n := range append(names, cascaded...) { // their INSTEAD OF triggers go with them
+		if err := s.setViewOption(n, ""); err != nil {
+			return nil, err
+		}
 		if err := s.E.DropTableTriggers(n); err != nil {
 			return nil, AsError(err)
 		}
@@ -387,7 +442,7 @@ func asErr(err error) error {
 func (s *Session) alterTableViews(st *AlterTable) error {
 	for _, a := range st.Actions {
 		switch a.Kind {
-		case "drop_column", "set_type", "rename_table", "rename_column":
+		case "drop_column", "set_type", "rename_column": // a table RENAME rewrites the views (viewalter.go)
 		default:
 			continue
 		}

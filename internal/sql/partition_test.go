@@ -28,7 +28,10 @@ func TestPartitionEmulation(t *testing.T) {
 	run(t, s, `CREATE TABLE reg (id BIGINT PRIMARY KEY, region TEXT) PARTITION BY LIST (region)`)
 	run(t, s, `CREATE TABLE reg_eu PARTITION OF reg FOR VALUES IN ('eu', 'uk')`)
 	run(t, s, `CREATE TABLE reg_none PARTITION OF reg FOR VALUES IN (NULL)`)
-	run(t, s, `INSERT INTO reg VALUES (1,'eu'),(2,'us'),(3,NULL)`)
+	run(t, s, `INSERT INTO reg VALUES (1,'eu'),(3,NULL)`) // a row of no partition is refused (23514)
+	if _, err := tryRun(s, `INSERT INTO reg VALUES (2,'us')`); err == nil {
+		t.Error("row outside every partition accepted")
+	}
 	if got := ids(t, s, `SELECT id FROM reg_eu`); got != "1" {
 		t.Errorf("list partition: %q", got)
 	}
@@ -68,9 +71,7 @@ func TestPartitionEmulation(t *testing.T) {
 	}
 	// refused forms
 	for _, q := range []string{
-		`CREATE TABLE h (id int) PARTITION BY HASH (id)`,
 		`CREATE TABLE r2 (a int, b int) PARTITION BY RANGE (a, b)`,
-		`CREATE TABLE r3 PARTITION OF reg DEFAULT`,
 	} {
 		if _, err := tryRun(s1, q); err == nil || AsError(err).Code != codeFeature && AsError(err).Code != "42601" {
 			t.Errorf("%s: %v", q, err)

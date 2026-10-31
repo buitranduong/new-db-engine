@@ -284,7 +284,7 @@ func (s *Session) seqFunc(name string, args []Datum) (rows [][]Datum, ok bool, e
 			if v, called, err := s.E.SequenceState(q.Name); err == nil && called {
 				last = IntD(v)
 			}
-			rows = append(rows, []Datum{TextD("public"), TextD(q.Name), TextD("stask"), TextD(q.Type),
+			rows = append(rows, []Datum{TextD(schemaOfName(q.Name)), TextD(bareName(q.Name)), TextD("stask"), TextD(q.Type),
 				IntD(q.Start), IntD(q.Min), IntD(q.Max), IntD(q.Inc), BoolD(q.Cycle), IntD(1), last})
 		}
 		return rows, true, nil
@@ -332,7 +332,7 @@ func parseStored(text string, full bool) (Expr, error) {
 
 func hasDefaults(t *schema.Table) bool {
 	for i := range t.Columns {
-		if columnDefaultText(&t.Columns[i]) != "" {
+		if columnDefaultText(&t.Columns[i]) != "" || t.Columns[i].Generated != "" {
 			return true
 		}
 	}
@@ -367,6 +367,8 @@ func (s *Session) rowValues(t *schema.Table, cols []int, exprs []Expr, ctx *eval
 		}
 		c := &t.Columns[ci]
 		switch {
+		case c.Generated != "":
+			return nil, nil, errGeneratedValue(c, false)
 		case c.Identity == "always" && overriding == "":
 			return nil, nil, errf("428C9", "cannot insert a non-DEFAULT value into column %q: column %q is an identity column defined as GENERATED ALWAYS (use OVERRIDING SYSTEM VALUE to override)", c.Name, c.Name)
 		case c.Identity != "" && overriding == "user":
@@ -472,7 +474,20 @@ func checksOf(c *CreateTable, t *schema.Table) ([]schema.Check, error) {
 		}
 	}
 	for _, ck := range c.Checks {
-		if err := add(ck, c.Name+"_check"); err != nil {
+		// PostgreSQL names a table CHECK after the one column it uses, table_check otherwise
+		base := c.Name + "_check"
+		if x, err := parseCheck(ck.Expr); err == nil {
+			var used []string
+			for _, col := range t.Columns {
+				if refersToCol(x, col.Name) {
+					used = append(used, col.Name)
+				}
+			}
+			if len(used) == 1 {
+				base = c.Name + "_" + used[0] + "_check"
+			}
+		}
+		if err := add(ck, base); err != nil {
 			return nil, err
 		}
 	}

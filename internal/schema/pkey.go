@@ -46,12 +46,12 @@ func (t *Table) keyHidden() bool {
 }
 
 // Composite reports whether the PRIMARY KEY has more than one column.
-func (t *Table) Composite() bool { return len(t.KeyCols) > 1 }
+func (t *Table) Composite() bool { return len(t.KeyCols) > 0 }
 
 // PKCols are the declared primary key columns: nil without a PRIMARY KEY.
 func (t *Table) PKCols() []string {
 	switch {
-	case len(t.KeyCols) > 1:
+	case len(t.KeyCols) > 0:
 		return t.KeyCols
 	case !t.HasPK():
 		return nil
@@ -106,9 +106,8 @@ func (t *Table) initKeyCols() error {
 	if len(t.KeyCols) == 0 {
 		return nil
 	}
-	if len(t.KeyCols) < 2 {
-		return fmt.Errorf("key_cols needs two columns or more")
-	}
+	// one column is allowed: a PRIMARY KEY on a column whose type cannot be the row key itself
+	// (date, timestamp, numeric, boolean, ...) uses the encoded hidden key like a composite one
 	if t.Key != KeyCol {
 		return fmt.Errorf("a composite key table keeps its key in column %q", KeyCol)
 	}

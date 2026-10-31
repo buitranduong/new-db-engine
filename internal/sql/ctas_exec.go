@@ -310,6 +310,9 @@ func (s *Session) extTable(c *CreateTable, t *schema.Table) {
 		t.Unlogged = e.Unlogged
 		t.MatView = e.Mat
 		t.MatUnpopulated = e.Mat != "" && e.NoData
+		if e.Mat != "" {
+			s.noteOwnerPath(c.Name) // the query is read again with this search_path (schemapath.go)
+		}
 	}
 }
 
@@ -388,6 +391,8 @@ func (s *Session) expandLikes(c *CreateTable, likes []likeDef) error {
 					}
 					cd.NotNull = true
 				}
+			} else if l.Gen && sc.Generated != "" {
+				cd.Generated = sc.Generated
 			} else if l.Defaults && sc.Default != "" {
 				cd.Default = sc.Default
 			}
@@ -403,7 +408,7 @@ func (s *Session) expandLikes(c *CreateTable, likes []likeDef) error {
 		}
 		if l.Indexes {
 			if src.HasPK() {
-				if len(src.KeyCols) > 1 {
+				if len(src.KeyCols) > 0 {
 					if c.Key == "" && c.KeyCols == nil {
 						c.KeyCols = slices.Clone(src.KeyCols)
 					}
@@ -546,7 +551,7 @@ func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Resu
 			return nil, errf(codeNotPopulated, "cannot refresh materialized view %q concurrently (create a unique index with no WHERE clause on one or more columns of the materialized view)", st.Name)
 		}
 	}
-	q, err := ParseOne(t.MatView)
+	q, err := s.parseOwned(t.Name, t.MatView)
 	if err != nil {
 		return nil, err
 	}

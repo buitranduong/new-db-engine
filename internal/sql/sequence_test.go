@@ -122,7 +122,7 @@ func TestSQLCheck(t *testing.T) {
 	for q, name := range map[string]string{
 		`INSERT INTO prod VALUES (2, -1, 1)`:                                          "prod_price_check",
 		`INSERT INTO prod VALUES (3, 5, 5000)`:                                        "qty_ok",
-		`INSERT INTO prod VALUES (3, 2e6, 1)`:                                         "prod_check",
+		`INSERT INTO prod VALUES (3, 2e6, 1)`:                                         "prod_price_check1", // a table CHECK on one column is named after it, as PostgreSQL does
 		`UPDATE prod SET qty = -1 WHERE id = 1`:                                       "qty_ok",
 		`INSERT INTO prod VALUES (1, 5, 1) ON CONFLICT (id) DO UPDATE SET price = -5`: "prod_price_check",
 	} {

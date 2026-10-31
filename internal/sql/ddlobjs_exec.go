@@ -599,8 +599,23 @@ func (s *Session) dropSchemas(st *ObjDDL) (*Result, error) {
 			}
 		}
 		if len(tables) > 0 {
-			if _, err := s.cdDrop(&DropTable{Names: tables, Cascade: true}); err != nil {
-				return nil, err
+			var mats, plain []string // a materialized view is dropped as one, not as a table
+			for _, tn := range tables {
+				if ts, err := s.E.UserTable(tn); err == nil && ts.Schema().MatView != "" {
+					mats = append(mats, tn)
+				} else {
+					plain = append(plain, tn)
+				}
+			}
+			if len(mats) > 0 {
+				if _, err := s.cdDrop(&DropTable{Names: mats, Cascade: true, Mat: true}); err != nil {
+					return nil, err
+				}
+			}
+			if len(plain) > 0 {
+				if _, err := s.cdDrop(&DropTable{Names: plain, Cascade: true}); err != nil {
+					return nil, err
+				}
 			}
 			s.dropRelComments(tables...)
 		}
@@ -733,6 +748,10 @@ func commentKey(class, name, col string) string {
 
 // resolveRel resolves a relation name along the search path.
 func (s *Session) resolveRel(n string) string {
+	n = strings.TrimPrefix(n, "pg_temp.")
+	if _, ok := s.tempReal(n); ok {
+		return n
+	}
 	if _, _, ok := splitSchema(n); ok || !s.customPath() {
 		return n
 	}

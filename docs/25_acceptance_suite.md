@@ -137,3 +137,21 @@ Chỉ sửa các lỗi "sai kết quả hoặc hành vi nguy hiểm" (mục 6, S
 | T1 int4 so với int8 | đã sửa phần ảnh hưởng driver | `VALUES` và `UNION/INTERSECT/EXCEPT` với số nguyên/NULL, `grouping()`, `mode()`, `percentile_disc()` nay trả int4 như PG (pgjdbc `getObject` trả `Integer`); các mục T1 còn lại (sum(real), avg(interval), min/max mảng, bytea) chưa đụng tới |
 
 PASS theo nhóm sau sửa: 01 198, 02 72, 03 43, 04 115, 05 253, 06 159, 07 99, 08 87, 09 50, 10 99, 11 89 (hết DIFF), 12 29, 13 95, 14 310.
+
+
+## 9. Nhánh `compat-ddl` (từ `main` cd42af1): nhóm DDL và ràng buộc
+
+Chạy lại trên `staskd` của nhánh với PostgreSQL 16.15 (`scripts/suite/run.sh`, N=100). Nhóm mới `16_ddl_more` (tệp `scripts/suite/16_ddl_more.sql`, 281 câu). Chi tiết từng mục và tiền lệ: `docs/14` Phụ lục CD.
+
+| Nhóm | PASS trước | PASS sau |
+|---|---|---|
+| 01_ddl_types | 207 | 259 |
+| 02_indexes | 72 | 73 |
+| 03_views | 43 | 92 |
+| 04_dml | 117 | 135 |
+| 05_transactions | 254 | 254 |
+| 13_catalog | 95 | 104 |
+| 14_errors | 310 | 312 |
+| 16_ddl_more (mới) | không chạy được (0 trên 281 trước các sửa) | 281 / 281 |
+
+Các nhóm khác không đổi (06 159, 07 99, 08 87, 09 50, 10 99, 11 89, 12 29). Hai nguyên nhân gốc đã sửa: phân vùng không thực thi biên (A1) và tên trong view/COPY/bảng tạm không theo `search_path` (49 câu lớp B của G1). Còn lại ở các nhóm này là kiểu dữ liệu, hàm, cú pháp toán tử (nhánh khác) và: `pg_indexes.indexdef` không in `DESC`, kiểu cột của view trong `information_schema.columns` (text), `pg_am`/`pg_type` thiếu dòng, `table_privileges` theo `current_user`, INHERITS, `tableoid`.

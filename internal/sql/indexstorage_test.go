@@ -142,7 +142,7 @@ func TestSQLIndexStorage(t *testing.T) {
 	for _, c := range []struct{ sql, state string }{
 		{`ALTER INDEX nosuch SET (index_storage = 'disk')`, "42704"},
 		{`ALTER INDEX t_a SET (index_storage = 'tape')`, "22023"},
-		{`ALTER INDEX t_a SET (fillfactor = 70)`, "0A000"},
+		{`ALTER INDEX t_a SET (bogus_option = 70)`, "0A000"},
 		{`ALTER TABLE t SET (index_storage = 'disk', history_retention = '1 day')`, "0A000"},
 		{`ALTER TABLE t SET (index_storage = 'tape')`, "22023"},
 		{`ALTER TABLE nosuch SET (index_storage = 'disk')`, "42P01"},

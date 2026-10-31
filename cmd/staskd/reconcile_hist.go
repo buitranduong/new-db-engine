@@ -15,17 +15,13 @@ func histReconcileView(names []string, f *core.Follower, hs *histstore.Store) *r
 		Tables:   names,
 		Follower: f,
 		InGap:    hs.InGap,
-		Newest: func(table uint32, key string, maxLSN uint64) ([]byte, uint64, bool, bool, error) {
-			all, err := hs.Versions(table, key, 0, math.MaxInt64)
-			if err != nil {
-				return nil, 0, false, false, err
-			}
-			for i := len(all) - 1; i >= 0; i-- {
-				if all[i].LSN <= maxLSN {
-					return all[i].Val, all[i].LSN, all[i].Del, true, nil
+		Scan: func(table uint32, maxLSN uint64, fn func(string, []byte, uint64, bool)) error {
+			return hs.ScanTime(0, math.MaxInt64, func(e histstore.Entry) bool {
+				if e.Table == table && e.LSN <= maxLSN {
+					fn(e.Key, e.Val, e.LSN, e.Del)
 				}
-			}
-			return nil, 0, false, false, nil
+				return true
+			})
 		},
 	}
 }

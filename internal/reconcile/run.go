@@ -19,9 +19,9 @@ import (
 type HistoryView struct {
 	Tables   []string
 	Follower *core.Follower
-	// Newest returns the newest stored version of (table,key) with
-	// LSN <= maxLSN.
-	Newest func(table uint32, key string, maxLSN uint64) (val []byte, lsn uint64, deleted, found bool, err error)
+	// Scan calls fn for every stored version of table with LSN <= maxLSN
+	// (any order across keys; the versions of one key may come in any order).
+	Scan func(table uint32, maxLSN uint64, fn func(key string, val []byte, lsn uint64, deleted bool)) error
 	// InGap reports whether the store dropped history (disk full) and has
 	// a hole.
 	InGap func() bool
@@ -713,9 +713,37 @@ func (r *runner) contentHistory(t *target) {
 		all = append(all, proj.RecCol{Num: c.Num, Name: c.Name, Kind: 'a'})
 	}
 	idx, _ := proj.RecColIdx(sch, all)
+	type hent struct {
+		lsn uint64
+		h   uint64
+		del bool
+	}
 	for attempt := 0; ; attempt++ {
 		S := h.Follower.Applied()
 		release := r.e.PinLSN(S)
+		newest := map[string]hent{}
+		serr := h.Scan(sch.ID, S, func(key string, val []byte, lsn uint64, del bool) {
+			if div > 1 && proj.RecKeyHash(key)%div != 0 {
+				return
+			}
+			if cur, ok := newest[key]; ok && cur.lsn >= lsn {
+				return
+			}
+			en := hent{lsn: lsn, del: del}
+			if !del {
+				if hr, err := sch.DecodeAt(val, lsn); err == nil {
+					en.h = proj.RecRowHash(all, idx, hr)
+				} else {
+					en.h = 1
+				}
+			}
+			newest[key] = en
+		})
+		if serr != nil {
+			release()
+			rep.Status, rep.Detail = StInconclusive, join(rep.Detail, "reading the history store: "+serr.Error())
+			return
+		}
 		diffs := map[string]string{}
 		var n, absent int64
 		err := r.corePass(sch.Name, S, func(keys []string, rows []schema.Row) {
@@ -724,20 +752,13 @@ func (r *runner) contentHistory(t *target) {
 					continue
 				}
 				n++
-				val, lsn, del, found, err := h.Newest(sch.ID, keys[i], S)
-				if err != nil {
-					continue
-				}
-				if !found {
+				en, found := newest[keys[i]]
+				switch {
+				case !found:
 					absent++
-					continue
-				}
-				if del {
+				case en.del:
 					diffs[keys[i]] = "extra_in_view"
-					continue
-				}
-				hr, err := sch.DecodeAt(val, lsn)
-				if err != nil || proj.RecRowHash(all, idx, hr) != proj.RecRowHash(all, idx, row) {
+				case en.h != proj.RecRowHash(all, idx, row):
 					diffs[keys[i]] = "changed"
 				}
 			}

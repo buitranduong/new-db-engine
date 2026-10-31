@@ -1696,3 +1696,9 @@ Tests run (plain, VM): `go test -p 2 ./internal/audit ./internal/seccrypt ./inte
 | Task | Plan | Target | Actual |
 |---|---|---|---|
 | integ17 merge | merge three agent branches, one gate, now with `internal/cluster` under `-race` | `RACE=1` gate green, claimcheck >= 603 | OK: 603 of 604 probes, wall 1820 s, no data race. `secenc`: audit log, encrypted backups, security.sh extended (114 OK), fixed a Raft add-member handshake hole. `rowlockfwd`: SELECT FOR UPDATE / LOCK TABLE on a follower now return 25006 instead of taking a lock nobody sees. `clusterrace`: harness data race fixed; `internal/cluster` added to the gate's `-race` stage. Agents no longer run the full gate (flock, one at a time); the orchestrator runs one gate per integration. Ten orphan `pgrep -f` wait loops (the pattern matched its own command line) were found and stopped. |
+
+### Appendix U (cont.) — final measurement plan
+
+| Task | Plan | Target | Actual |
+|---|---|---|---|
+| Write the single measurement plan (D32) | Order, sizes and pass criteria for the one final measurement phase, fitted to the VM (8 vCPU, 31 GB RAM, ~12 GB free disk) | A document that makes the phase runnable without further questions | `docs/24_final_measurement.md`: 10 ordered measurements, scale ladder 1M/5M/20M (+50M if disk >= 20 GB), pass rule = not worse than PostgreSQL 16 on the same VM plus stability limits, until the user gives absolute targets. Nothing measured yet. |

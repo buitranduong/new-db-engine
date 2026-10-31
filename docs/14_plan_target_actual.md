@@ -1493,3 +1493,9 @@ Theo D32: **không có phép đo hiệu năng** trong phụ lục này. Mọi "n
 simbench `es_facet_carrier`, `es_prefix_count`, `crm_count` với `-heavy-workers` tự động khi CPU bão hòa (kỳ vọng ~35 ms, không 1,5 s); p99 câu điểm với `-heavy-share` 0 / 0,25 / 0,5; `web_prefix` (khoảng khoá chính so với trigram) và keyset trên bảng 1M+ dòng; chi phí ước lượng bộ nhớ của `selectRows` (mỗi nhóm/dòng) trên GROUP BY 10M dòng; GC với mặc định tự động.
 
 **Cổng.** `scripts/merge-gate.sh` OK trên nhánh `aggfacet` (gốc `main` @ 4380d4f, không cần rebase): gofmt, build, vet, `go test -p 4 -count=1 ./...` toàn bộ qua, claimcheck **507/513** (nền 507, không tụt), 328 s.
+
+### Phụ lục U (bổ sung 2026-10-31): nguyên nhân gốc của các lỗi "address already in use"
+| Việc | Plan | Target | Actual (bằng chứng) |
+|---|---|---|---|
+| Gate cluster đỏ lặp lại (TestProcChaos, TestProcSecure, TestHAFailover) | Tìm nguyên nhân gốc, không chạy lại cho tới khi xanh | Biết và sửa nguyên nhân | `/proc/sys/net/ipv4/ip_local_port_range` = `1024 65535` nên cổng tạm của kết nối đi ra (test nhiều kết nối, benchmark) rơi vào 21000–21999 (cổng cố định của test cluster) và 28000–28999 (cổng của agent). Sửa: `sysctl net.ipv4.ip_local_reserved_ports=21000-21999,28000-28999` (chạy tức thời; KHÔNG ghi /etc nên mất khi khởi động lại VM, cần ghi `/etc/sysctl.d/` nếu muốn bền). Test harness thêm `waitPortsFree` khi khởi động lại nút (cổng cũ chưa nhả sau kill -9). |
+| Binary build bị commit nhầm | Gỡ khỏi repo | Không còn binary trong cây | `staskd` (22 MB, do `git add -A` sau `go build` ở gốc worktree) và `claimcheck` (từ commit `87dc3e1`) đã `git rm --cached` + `.gitignore` ở `f0538f8`. Lịch sử vẫn chứa hai file; xoá hẳn cần viết lại lịch sử + force push, chờ người dùng quyết định. Script gộp của orchestrator nay chỉ commit khi không còn xung đột mã. |

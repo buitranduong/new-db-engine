@@ -132,8 +132,9 @@ func drillD5(e *Env, o *Opts, r *Result, mode string) {
 	}
 	defer unlock()
 	rows := o.Rows
-	// source + archive + base backup + one restored copy, about 500 bytes per row in all, and 3 GB must stay free
-	if need, free := int64(rows)*500>>20+3072, freeMB(e.Work); free < need {
+	// source + archive + base backup + one restored copy: measured about 200 bytes per row in all for this table
+	// (1 GB at 5,000,000 rows); 250 are reserved, and 3 GB must stay free
+	if need, free := int64(rows)*250>>20+3072, freeMB(e.Work); free < need {
 		r.Skipped = fmt.Sprintf("only %d MB free in %s; %d rows need about %d MB (including the 3 GB that must stay free): not started", free, e.Work, rows, need)
 		return
 	}

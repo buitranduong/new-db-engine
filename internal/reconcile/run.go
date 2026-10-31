@@ -281,7 +281,6 @@ func (r *runner) quick(t *target, tr *TableReport) {
 		d0 := r.e.DurableLSN()
 		cr, vr := t.table.LiveRows(), t.live()
 		a := t.fol.Applied()
-		d1 := r.e.DurableLSN()
 		rep.CoreRows, rep.ViewRows, rep.Checked = cr, vr, "lsn+count"
 		if cr == vr && a >= d0 {
 			return
@@ -290,9 +289,6 @@ func (r *runner) quick(t *target, tr *TableReport) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
-		if d1 != d0 {
-			continue
-		}
 	}
 	if r.e.DurableLSN() != rep.DurableLSN || t.fol.Applied() < r.e.DurableLSN() {
 		rep.Status = Worse(rep.Status, StBehind)

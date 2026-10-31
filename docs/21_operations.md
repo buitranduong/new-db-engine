@@ -300,6 +300,8 @@ Các ngưỡng là điểm xuất phát chưa hiệu chỉnh trên tải thật;
 
 ## 8. Quy trình xử lý sự cố
 
+> Từ cổng G2, sổ tay đầy đủ theo bảy lớp sự cố (triệu chứng, phát hiện, tra nguyên nhân, sửa, bằng chứng diễn tập) và công cụ đối chiếu `staskctl reconcile` nằm ở `docs/33_incident_runbook.md`; mục này giữ các quy trình ngắn.
+
 ### 8.1 Nút báo `stask_up == 0` hoặc `/v1/health` 503
 Engine gặp lỗi ghi (đĩa đầy, I/O) và dừng ghi. Xem nhật ký (dòng `failed`), `df -h`. Giải phóng đĩa rồi khởi động lại tiến trình (recovery cắt phần đuôi hỏng). Trong cụm: các nút khác vẫn phục vụ; nút này tự xuống và khi trở lại sẽ được nạp tiếp từ leader.
 

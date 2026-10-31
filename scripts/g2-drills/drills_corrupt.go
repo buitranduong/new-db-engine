@@ -247,6 +247,11 @@ func drillD4(e *Env, o *Opts, r *Result, mode string) {
 		switch class {
 		case "REFUSED", "REPAIRED":
 			pass = true
+		case "DAMAGE_REPORTED":
+			if c.expect == "repair" {
+				pass, finding = true, finding+1
+				line += " (FINDING F2b: reported and recorded as a gap since F2 was fixed, but the history of the damaged bucket is not re-read from the log: reconcile keeps showing the loss until it is rebuilt from a backup with -hist-store-backfill-dir)"
+			}
 		case "DETECTED_BY_SCRUB_ONLY", "TORN_TAIL_DATA_LOST":
 			if c.expect == "refuse" || c.expect == "tail" {
 				pass, finding = true, finding+1
@@ -319,6 +324,8 @@ func d4judge(r *Result, n *Node, l *Ledger, fl *Filler, ref map[string]digest, t
 		return "SILENT_WRONG_DATA", fmt.Sprintf("started silently with different data: %v %s", derr, sameDigests(ref, got))
 	case !scrubOK:
 		return "DETECTED_BY_SCRUB_ONLY", fmt.Sprintf("data equal but the scrub found damage: %s", trunc(strings.TrimSpace(b), 200))
+	case !recOK && strings.Contains(log, "bad record"):
+		return "DAMAGE_REPORTED", fmt.Sprintf("the node said so (%s) and marked a gap; the tables equal the pristine ones, reconcile -full still shows what the structure lost: %s", trace, recSum)
 	case !recOK:
 		return "SILENT_VIEW_DIVERGENCE", fmt.Sprintf("started without a word (log words: %v), the tables equal the pristine ones, but reconcile -full says: %s", sayings, recSum)
 	default:
@@ -387,15 +394,27 @@ func drillD4Cluster(e *Env, o *Opts, r *Result) {
 	r.Logf("follower %d with a flipped byte in its oldest log segment: %s: %s", victim.ID, class, detail)
 	victim.Kill9()
 	reseed := func(why string) {
-		// the operator's repair: re-seed the node from the cluster (wipe, start, catch up by snapshot)
+		// the operator's repair, as documented (docs/06 5.2b): remove the member, wipe its directory,
+		// start it with -raft-join, add it again; it is then filled from the leader
+		var urls []string
+		for _, n := range t.Nodes {
+			urls = append(urls, "http://"+n.HTTP)
+		}
+		hs := strings.Join(urls, ",")
+		out, _, err := victim.runCtl("cluster", "remove", "-http", hs, "-id", fmt.Sprint(victim.ID))
+		r.Check(err == nil, "cluster remove: %v %s", err, trunc(out, 200))
+		victim.Kill9()
 		os.RemoveAll(victim.Dir)
+		victim.args = append(victim.args, "-raft-join")
 		r.Check(victim.Start() == nil, "restart after wiping")
 		r.Check(victim.WaitSQL(120*time.Second) == nil, "node did not start after the wipe: %s", lastLines(victim.logSince(), 4))
+		out, _, err = victim.runCtl("cluster", "add", "-http", hs, "-id", fmt.Sprint(victim.ID), "-raft", victim.Raft, "-node-http", victim.HTTP)
+		r.Check(err == nil, "cluster add: %v %s", err, trunc(out, 200))
 		lead2 := t.Leader()
-		r.Check(lead2 != nil && catchUp(r, victim, lead2, 180*time.Second), "re-seeded node %d did not catch up", victim.ID)
+		r.Check(lead2 != nil && catchUp(r, victim, lead2, 180*time.Second), "re-seeded node %d did not catch up: %s", victim.ID, lastLines(victim.logSince(), 3))
 		got, derr := digests(victim.URL(), tables...)
 		r.Check(derr == nil && sameDigests(ref, got) == "", "re-seeded node differs from the leader: %v %s", derr, sameDigests(ref, got))
-		r.OracleOK("cluster: a follower with a flipped byte in a sealed log segment %s; wiping its directory and restarting re-seeded it from the leader and its tables equal the leader's", why)
+		r.OracleOK("cluster: a follower with a flipped byte in a sealed log segment %s; removing it from the cluster, wiping its directory, restarting it with -raft-join and adding it again re-seeded it from the leader and its tables equal the leader's (wiping and restarting without remove/add does not: finding F10)", why)
 	}
 	switch class {
 	case "REFUSED":

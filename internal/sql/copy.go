@@ -473,6 +473,8 @@ type CopyIn struct {
 	done    bool
 	eof     bool // end-of-data marker seen
 	fields  []copyField
+	q       *afterQueue // AFTER ROW triggers of the load, run by Finish (trigstmt.go)
+	stmtTrg bool        // the table has statement-level INSERT triggers
 }
 
 type copyField struct {
@@ -528,6 +530,15 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	} else {
 		ci.tx, ci.own = s.begin(core.SnapshotIsolation), true
 		ci.seen = map[string]struct{}{}
+	}
+	if tgs := s.E.Triggers(t.Name); tgs != nil && !s.noTrig {
+		ci.q = &afterQueue{}
+		if ci.stmtTrg = hasStmtTrigger(tgs, "insert"); ci.stmtTrg {
+			if err := s.fireStmtTriggers(ci.tx, t.Name, tgs, "before", "insert"); err != nil {
+				ci.fail(err)
+				return nil, AsError(err)
+			}
+		}
 	}
 	return ci, nil
 }
@@ -625,6 +636,11 @@ func (ci *CopyIn) lineErr(code, msg string, col int) error {
 }
 
 func (ci *CopyIn) store(f []copyField) error {
+	if ci.q != nil { // the row triggers' AFTER part waits for the end of the load
+		prev := ci.s.afterQ
+		ci.s.afterQ = ci.q
+		defer func() { ci.s.afterQ = prev }()
+	}
 	t := ci.t
 	if len(f) < len(ci.cols) {
 		return ci.lineErr("22P04", "missing data for column \""+t.Columns[ci.cols[len(f)]].Name+"\"", -1)
@@ -960,6 +976,16 @@ func (ci *CopyIn) Finish() (string, error) {
 	}
 	if ci.s.interrupted() {
 		return "", ci.fail(core.ErrInterrupted)
+	}
+	if ci.q != nil {
+		if err := ci.s.flushAfter(ci.tx, ci.q); err != nil {
+			return "", ci.fail(err)
+		}
+		if ci.stmtTrg {
+			if err := ci.s.fireStmtTriggers(ci.tx, ci.t.Name, ci.s.E.Triggers(ci.t.Name), "after", "insert"); err != nil {
+				return "", ci.fail(err)
+			}
+		}
 	}
 	ci.finish()
 	if ci.own {

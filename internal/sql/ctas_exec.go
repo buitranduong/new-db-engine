@@ -29,7 +29,7 @@ func (s *Session) runExt(tx *core.Tx, st Stmt, params []Datum) (*Result, error) 
 	case *DropMat:
 		return s.dropMat(st)
 	case *Merge:
-		return s.merge(tx, st, params)
+		return s.withStmtEvents(tx, st.Table, mergeEvents(st), func() (*Result, error) { return s.merge(tx, st, params) })
 	}
 	return nil, errf(codeFeature, "unsupported statement %T", st)
 }

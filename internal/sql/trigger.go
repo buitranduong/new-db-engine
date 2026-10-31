@@ -125,8 +125,8 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 					}
 				}
 			}
-		case p.isKw("truncate"):
-			return nil, true, errf(codeFeature, "TRUNCATE triggers are not supported")
+		case p.acceptKw("truncate"):
+			ev = "truncate"
 		default:
 			return nil, true, p.errHere("syntax error at or near %q (expected INSERT, UPDATE or DELETE)", p.peek().s)
 		}
@@ -152,6 +152,17 @@ func (p *parser) createTrigger() (st Stmt, ok bool, err error) {
 			c.Level = "row"
 		default:
 			return nil, true, p.errHere("syntax error at or near %q (expected ROW or STATEMENT)", p.peek().s)
+		}
+	}
+	if slices.Contains(c.Events, "truncate") {
+		if c.Level == "row" {
+			return nil, true, errf("42P17", "TRUNCATE triggers must be FOR EACH STATEMENT")
+		}
+		if c.Level == "" {
+			c.Level = "statement"
+		}
+		if len(c.Events) > 1 {
+			return nil, true, errf(codeFeature, "TRUNCATE cannot be combined with other trigger events")
 		}
 	}
 	if len(c.UpdateOf) > 0 && !slices.Contains(c.Events, "update") {
@@ -635,6 +646,9 @@ func (s *Session) fireTriggers(tx *core.Tx, t *schema.Table, tgs []*core.Trigger
 	if s.noTrig {
 		return nw, false, nil
 	}
+	if timing == "after" && s.queueAfter(t, tgs, event, old, nw) {
+		return nw, false, nil
+	}
 	entered := false
 	for _, tg := range tgs {
 		if tg.Statement() || !tg.Fires(timing, event) {
@@ -906,7 +920,7 @@ func pgTriggerRows(c *catSnap) [][]Datum {
 			typ |= 2
 		}
 		for _, ev := range tg.Events {
-			typ |= map[string]int64{"insert": 4, "delete": 8, "update": 16}[ev]
+			typ |= map[string]int64{"insert": 4, "delete": 8, "update": 16, "truncate": 32}[ev]
 		}
 		qual := Null
 		if tg.When != "" {

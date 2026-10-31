@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"stask/internal/seccrypt"
 )
 
 // Continuous archiving and point-in-time recovery, as PostgreSQL does
@@ -115,10 +117,25 @@ func (e *Engine) archiveSegment(seg uint32) (int64, error) {
 	}
 	data = data[:end]
 	if old, err := os.ReadFile(dst); err == nil {
+		if key := e.opts.ArchiveKey; len(key) > 0 {
+			if pt, derr := seccrypt.Open(key, old); derr == nil {
+				old = pt
+			}
+		}
 		if string(old) == string(data) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("%s exists with other content: a restored database archives to a new -archive-dir", dst)
+	}
+	if key := e.opts.ArchiveKey; len(key) > 0 {
+		// authenticated encryption of the segment (docs/23): a segment is
+		// the customer data, and an archive is copied to places the data
+		// directory never is
+		sealed, serr := seccrypt.Seal(key, data)
+		if serr != nil {
+			return 0, serr
+		}
+		data = sealed
 	}
 	tmp := dst + ".tmp"
 	f, err := os.Create(tmp)
@@ -174,7 +191,7 @@ func (e *Engine) archiveHolds(seg uint32) bool {
 
 // restoreFromArchive copies into the log directory the archived segments
 // newer than the log's newest (a base backup's), sized to segMax.
-func restoreFromArchive(walDir, archive string, segMax int64, logf func(string, ...any)) error {
+func restoreFromArchive(walDir, archive string, segMax int64, key []byte, allowPlain bool, logf func(string, ...any)) error {
 	segs, err := archivedSegs(archive)
 	if err != nil {
 		return err
@@ -203,6 +220,16 @@ func restoreFromArchive(walDir, archive string, segMax int64, logf func(string, 
 		data, err := os.ReadFile(archiveName(archive, s))
 		if err != nil {
 			return err
+		}
+		switch enc := seccrypt.IsEncrypted(data); {
+		case enc && len(key) == 0:
+			return fmt.Errorf("archive segment %d is encrypted: give the archive key (-archive-key-file or $%s)", s, seccrypt.EnvKey)
+		case enc:
+			if data, err = seccrypt.Open(key, data); err != nil {
+				return fmt.Errorf("archive segment %d: %w", s, err)
+			}
+		case len(key) > 0 && !allowPlain:
+			return fmt.Errorf("archive segment %d is not encrypted but a key is configured: refusing a plaintext segment (-archive-allow-plain for an archive that predates encryption)", s)
 		}
 		dst := filepath.Join(walDir, fmt.Sprintf("%08d.wal", s))
 		os.Remove(dst + "z")

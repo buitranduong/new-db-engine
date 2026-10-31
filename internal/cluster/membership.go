@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
 
 	"stask/internal/raft"
+	"stask/internal/repl"
 )
 
 // Membership change (see the raft package comment for the protocol): the
@@ -159,7 +159,14 @@ func (c *Cluster) ChangeMember(op string, id uint64, raftAddr, httpAddr string) 
 		}
 		// A voter nobody can reach counts toward the majority and can stop
 		// the cluster from committing: refuse an address that does not answer.
-		conn, err := net.DialTimeout("tcp", raftAddr, 2*time.Second)
+		// The dial also runs the secured handshake (TLS, client certificate,
+		// shared secret) with the credentials of this cluster: a node that
+		// cannot authenticate would be a voter nobody can talk to.
+		sec, err := c.cfg.Settings.Replica(raftAddr)
+		if err != nil {
+			return err
+		}
+		conn, _, err := repl.Dial(raftAddr, sec)
 		if err != nil {
 			return fmt.Errorf("node %d is not reachable at %s (start it with the join option first): %w", id, raftAddr, err)
 		}

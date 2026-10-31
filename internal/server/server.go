@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"stask/internal/audit"
 	"stask/internal/buildinfo"
 	"stask/internal/core"
 	"stask/internal/planner"
@@ -753,7 +756,16 @@ func (s *Server) clusterMembers(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	if err := s.ClusterChange(req.Op, req.ID, req.Raft, req.HTTP); err != nil {
+	err := s.ClusterChange(req.Op, req.ID, req.Raft, req.HTTP)
+	if l := audit.Get(); l.Has(audit.ClassAdmin) {
+		detail := fmt.Sprintf("node=%d raft=%s", req.ID, req.Raft)
+		if err != nil {
+			detail += " " + err.Error()
+		}
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		l.Log(audit.Record{Ev: "cluster.member", User: HTTPIdentity(r), Addr: host, Cmd: strings.ToUpper(req.Op), Obj: "cluster", Detail: detail, OK: err == nil}, true)
+	}
+	if err != nil {
 		reply(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}

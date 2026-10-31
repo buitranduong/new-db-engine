@@ -219,6 +219,7 @@ func (s *Session) endStmt(st Stmt, t0 time.Time, err error) {
 		c = &s.act.c
 	}
 	c.stmts[kindOfStmt(st)].Add(1)
+	s.auditStmt(st, err)
 	if err != nil {
 		c.errs.Add(1)
 		if e, ok := err.(*Error); ok && e.Code == codeInsufficientPrivilege {

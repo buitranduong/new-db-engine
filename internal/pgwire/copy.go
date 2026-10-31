@@ -40,6 +40,7 @@ func (c *conn) copyCommand(cs *sql.CopyStmt, perr error) (stop bool) {
 	}, func(line []byte) error {
 		return c.send(newMsg('d').bytes(line))
 	})
+	c.sess.AuditCopy(cs, err)
 	if err != nil {
 		c.sendError(sql.AsError(err))
 		return false
@@ -52,6 +53,7 @@ func (c *conn) copyCommand(cs *sql.CopyStmt, perr error) (stop bool) {
 func (c *conn) copyIn(cs *sql.CopyStmt) (stop bool) {
 	ci, err := c.sess.CopyFrom(cs)
 	if err != nil {
+		c.sess.AuditCopy(cs, err)
 		c.sendError(sql.AsError(err))
 		return false
 	}
@@ -81,6 +83,7 @@ func (c *conn) copyIn(cs *sql.CopyStmt) (stop bool) {
 		case 'c':
 			if failure == nil {
 				tag, err := ci.Finish()
+				c.sess.AuditCopy(cs, err)
 				if err != nil {
 					failure = err
 				} else {
@@ -94,6 +97,7 @@ func (c *conn) copyIn(cs *sql.CopyStmt) (stop bool) {
 			if failure == nil {
 				msg := (&reader{b: body}).str()
 				failure = ci.Abort(&sql.Error{Code: "57014", Msg: "COPY from stdin failed: " + msg})
+				c.sess.AuditCopy(cs, failure)
 			}
 			c.sendError(sql.AsError(failure))
 			return false

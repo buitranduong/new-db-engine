@@ -7,6 +7,12 @@
 //	staskctl restore -backup DIR/<time> -dir NEWDIR -standalone   a cluster backup as a single-node data directory (point-in-time recovery: start staskd on it with -restore-archive)
 //	staskctl cluster add|remove -http URL[,URL...] -id N [-raft ADDR -node-http ADDR]   change the voters of a Raft cluster by one node
 //	staskctl backup-loop -from ADDR -out DIR -interval 6h   backup, verify, prune, write a Prometheus textfile; forever or -once
+//	staskctl keygen [-out FILE]                              a new 32-byte backup/archive encryption key (hex)
+//	staskctl audit verify|query -dir DIR [-key-file F]       check the hash chain of the audit trail / list its records (docs/22)
+//
+// backup, verify, restore and backup-loop encrypt/decrypt with AES-256-GCM
+// when given -key-file (or $STASK_BACKUP_KEY); the key is never stored in the
+// backup (docs/23).
 //
 // A backup is a directory with a manifest (sha256 of every file) next to the
 // files; verify checks the manifest first, then really starts the server on a
@@ -16,6 +22,7 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,6 +43,7 @@ import (
 
 	"stask/internal/cluster"
 	"stask/internal/repl"
+	"stask/internal/seccrypt"
 )
 
 func main() {
@@ -57,6 +65,10 @@ func main() {
 		err = cmdCluster(args)
 	case "backup-loop":
 		err = cmdLoop(args)
+	case "keygen":
+		err = cmdKeygen(args)
+	case "audit":
+		err = cmdAudit(args)
 	default:
 		usage()
 	}
@@ -95,8 +107,13 @@ func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	urls := fs.String("url", "http://127.0.0.1:8080", "comma-separated HTTP API URLs of the nodes")
 	token := fs.String("token", os.Getenv("STASK_TOKEN"), "API token (for /v1/cluster and /v1/status)")
+	var tf tlsFlags
+	tf.add(fs)
 	fs.Parse(args)
-	hc := &http.Client{Timeout: 5 * time.Second}
+	hc, herr := tf.client(5 * time.Second)
+	if herr != nil {
+		return herr
+	}
 	get := func(u, path string, out any) (int, error) {
 		req, _ := http.NewRequest("GET", strings.TrimRight(u, "/")+path, nil)
 		if *token != "" {
@@ -171,8 +188,81 @@ type Manifest struct {
 	RaftIdx  uint64            `json:"raft_index,omitempty"`
 	SegMax   int64             `json:"segment_size"`
 	Bytes    int64             `json:"bytes"`
-	Files    map[string]string `json:"sha256"`
+	Files    map[string]string `json:"sha256"` // of the files as stored (ciphertext when Encrypted)
 	Duration float64           `json:"seconds"`
+	// Encrypted: every file is AES-256-GCM sealed (internal/seccrypt).
+	// KeyID identifies the key (never the key); MAC is an HMAC of this
+	// manifest under the key, so the file list cannot be edited unnoticed.
+	Encrypted bool   `json:"encrypted,omitempty"`
+	KeyID     string `json:"key_id,omitempty"`
+	MAC       string `json:"manifest_mac,omitempty"`
+}
+
+func (m Manifest) mac(key []byte) string {
+	m.MAC = ""
+	b, _ := json.Marshal(m)
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte("stask-manifest\x00"))
+	h.Write(b)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// keyFlags: where the encryption key comes from.
+type keyFlags struct{ file string }
+
+func (k *keyFlags) add(fs *flag.FlagSet) {
+	fs.StringVar(&k.file, "key-file", "", "AES-256 key file (64 hex digits, base64 or 32 raw bytes) for encrypted backups; default $STASK_BACKUP_KEY. Never stored in the backup")
+}
+
+func (k keyFlags) load() ([]byte, error) { return seccrypt.LoadKey(k.file) }
+
+// encryptTree seals every file of src into dst (same relative names).
+func encryptTree(src, dst string, key []byte) error {
+	return filepath.Walk(src, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if fi.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o700)
+		}
+		return seccrypt.EncryptFile(p, filepath.Join(dst, rel), key)
+	})
+}
+
+// decryptTree opens every file of src into dst; the first failure (wrong key,
+// modified file) aborts.
+func decryptTree(src, dst string, key []byte) error {
+	return filepath.Walk(src, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if fi.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o700)
+		}
+		if rel == manifestName {
+			return nil
+		}
+		if err := seccrypt.DecryptFile(p, filepath.Join(dst, rel), key); err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
+		}
+		return nil
+	})
+}
+
+// checkKey compares the key with the one the backup was made with, before
+// any data is touched.
+func (m *Manifest) checkKey(key []byte) error {
+	switch {
+	case m.Encrypted && len(key) == 0:
+		return fmt.Errorf("the backup is encrypted (key id %s): give -key-file or set $%s", m.KeyID, seccrypt.EnvKey)
+	case m.Encrypted && seccrypt.KeyID(key) != m.KeyID:
+		return fmt.Errorf("wrong encryption key: the backup was made with key id %s, this key is %s", m.KeyID, seccrypt.KeyID(key))
+	case m.Encrypted && m.MAC != m.mac(key):
+		return errors.New("the manifest of the encrypted backup was modified (authentication failed)")
+	}
+	return nil
 }
 
 const manifestName = "manifest.json"
@@ -205,11 +295,23 @@ func hashTree(dir string) (map[string]string, int64, error) {
 	return out, total, err
 }
 
-func doBackup(from, out string, cl bool, sec repl.Settings) (string, *Manifest, error) {
+func doBackup(from, out string, cl bool, sec repl.Settings, key []byte) (string, *Manifest, error) {
 	t0 := time.Now()
-	dir := filepath.Join(out, t0.UTC().Format("20060102T150405Z"))
+	final := filepath.Join(out, t0.UTC().Format("20060102T150405Z"))
+	dir := final
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return "", nil, err
+	}
+	if len(key) > 0 {
+		// the base backup lands in a private scratch directory next to the
+		// result and is sealed file by file; the plaintext is removed at once
+		parent := final + ".plain"
+		os.RemoveAll(parent)
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return "", nil, err
+		}
+		defer os.RemoveAll(parent)
+		dir = filepath.Join(parent, "b") // BaseBackup / cluster.Backup create it
 	}
 	m := &Manifest{Kind: "single", Time: t0.UTC(), From: from}
 	if cl {
@@ -247,11 +349,23 @@ func doBackup(from, out string, cl bool, sec repl.Settings) (string, *Manifest, 
 			}
 		}
 	}
+	if len(key) > 0 {
+		if err := encryptTree(dir, final, key); err != nil {
+			os.RemoveAll(final)
+			return "", nil, fmt.Errorf("encrypt: %w", err)
+		}
+		os.RemoveAll(dir)
+		dir = final
+		m.Encrypted, m.KeyID = true, seccrypt.KeyID(key)
+	}
 	files, n, err := hashTree(dir)
 	if err != nil {
 		return "", nil, err
 	}
 	m.Files, m.Bytes, m.Duration = files, n, time.Since(t0).Seconds()
+	if m.Encrypted {
+		m.MAC = m.mac(key)
+	}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, manifestName), b, 0o644); err != nil {
 		return "", nil, err
@@ -266,16 +380,26 @@ func cmdBackup(args []string) error {
 	cl := fs.Bool("cluster", false, "back up a Raft cluster")
 	var sf secFlags
 	sf.add(fs)
+	var kf keyFlags
+	kf.add(fs)
 	fs.Parse(args)
 	if *from == "" || *out == "" {
 		return errors.New("-from and -out are required")
 	}
-	dir, m, err := doBackup(*from, *out, *cl, sf.s)
+	key, err := kf.load()
+	if err != nil {
+		return err
+	}
+	dir, m, err := doBackup(*from, *out, *cl, sf.s, key)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%s\n", dir)
-	logf("backup %s: %d files, %d MiB, lsn %d, %.1fs", m.Kind, len(m.Files), m.Bytes>>20, m.LSN, m.Duration)
+	enc := "not encrypted"
+	if m.Encrypted {
+		enc = "AES-256-GCM, key id " + m.KeyID
+	}
+	logf("backup %s: %d files, %d MiB, lsn %d, %.1fs, %s", m.Kind, len(m.Files), m.Bytes>>20, m.LSN, m.Duration, enc)
 	return nil
 }
 
@@ -318,7 +442,7 @@ func freePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-func verifyBackup(dir, staskd string) (rep VerifyReport) {
+func verifyBackup(dir, staskd string, key []byte) (rep VerifyReport) {
 	t0 := time.Now()
 	rep = VerifyReport{Backup: dir, Time: t0.UTC(), Tables: map[string]int64{}}
 	fail := func(format string, a ...any) VerifyReport {
@@ -331,6 +455,9 @@ func verifyBackup(dir, staskd string) (rep VerifyReport) {
 		return fail("manifest: %v", err)
 	}
 	rep.Kind = m.Kind
+	if err := m.checkKey(key); err != nil {
+		return fail("%v", err)
+	}
 	now, _, err := hashTree(dir)
 	if err != nil {
 		return fail("hash: %v", err)
@@ -351,6 +478,13 @@ func verifyBackup(dir, staskd string) (rep VerifyReport) {
 	}
 	defer os.RemoveAll(scratch)
 	data := filepath.Join(scratch, "data")
+	if m.Encrypted { // open the whole backup into the scratch directory
+		plain := filepath.Join(scratch, "plain")
+		if err := decryptTree(dir, plain, key); err != nil {
+			return fail("decrypt: %v", err)
+		}
+		dir = plain
+	}
 	for _, sub := range []string{"wal", "ckpt"} {
 		if err := copyDir(filepath.Join(dir, sub), filepath.Join(data, sub)); err != nil {
 			return fail("restore %s: %v", sub, err)
@@ -524,11 +658,17 @@ func cmdVerify(args []string) error {
 	dir := fs.String("backup", "", "backup directory (with manifest.json)")
 	staskd := fs.String("staskd", "", "staskd binary (default: next to staskctl, then PATH)")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
+	var kf keyFlags
+	kf.add(fs)
 	fs.Parse(args)
 	if *dir == "" {
 		return errors.New("-backup is required")
 	}
-	rep := verifyBackup(*dir, findStaskd(*staskd))
+	key, err := kf.load()
+	if err != nil {
+		return err
+	}
+	rep := verifyBackup(*dir, findStaskd(*staskd), key)
 	if *asJSON {
 		b, _ := json.MarshalIndent(rep, "", "  ")
 		fmt.Println(string(b))
@@ -556,12 +696,21 @@ func cmdRestore(args []string) error {
 	dir := fs.String("backup", "", "backup directory (with manifest.json)")
 	to := fs.String("dir", "", "empty data directory to restore into (a cluster backup: the directory of one node; run once per node)")
 	standalone := fs.Bool("standalone", false, "a cluster backup: make a single-node data directory (for point-in-time recovery from the cluster's archive) instead of a cluster node directory")
+	var kf keyFlags
+	kf.add(fs)
 	fs.Parse(args)
 	if *dir == "" || *to == "" {
 		return errors.New("-backup and -dir are required")
 	}
+	key, err := kf.load()
+	if err != nil {
+		return err
+	}
 	m, err := readManifest(*dir)
 	if err != nil {
+		return err
+	}
+	if err := m.checkKey(key); err != nil {
 		return err
 	}
 	now, _, err := hashTree(*dir)
@@ -572,6 +721,17 @@ func cmdRestore(args []string) error {
 		if now[f] != h {
 			return fmt.Errorf("file %s differs from the manifest: not restoring a damaged backup", f)
 		}
+	}
+	if m.Encrypted {
+		// open into a private directory beside the target, copy from it, remove it
+		tmp := *to + ".decrypt-tmp"
+		os.RemoveAll(tmp)
+		if err := decryptTree(*dir, tmp, key); err != nil {
+			os.RemoveAll(tmp)
+			return fmt.Errorf("decrypt: %w", err)
+		}
+		defer os.RemoveAll(tmp)
+		*dir = tmp
 	}
 	if m.Kind == "cluster" && !*standalone {
 		if err := cluster.RestoreNode(*dir, *to); err != nil {
@@ -615,9 +775,15 @@ func cmdLoop(args []string) error {
 	once := fs.Bool("once", false, "one backup, then exit (status 1 if it or its verification failed)")
 	var sf secFlags
 	sf.add(fs)
+	var kf keyFlags
+	kf.add(fs)
 	fs.Parse(args)
 	if *from == "" || *out == "" {
 		return errors.New("-from and -out are required")
+	}
+	key, kerr := kf.load()
+	if kerr != nil {
+		return kerr
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -625,10 +791,10 @@ func cmdLoop(args []string) error {
 	var failures int
 	run := func() error {
 		t0 := time.Now()
-		dir, m, err := doBackup(*from, *out, *cl, sf.s)
+		dir, m, err := doBackup(*from, *out, *cl, sf.s, key)
 		var rep VerifyReport
 		if err == nil && !*noVerify {
-			rep = verifyBackup(dir, findStaskd(*staskd))
+			rep = verifyBackup(dir, findStaskd(*staskd), key)
 			if !rep.OK {
 				err = fmt.Errorf("verification failed: %s", rep.Error)
 				os.Rename(dir, dir+".FAILED")
@@ -719,12 +885,17 @@ func cmdCluster(args []string) error {
 	raftAddr := fs.String("raft", "", "add: the new node's Raft address (it must already run with -raft-join)")
 	nodeHTTP := fs.String("node-http", "", "add: the new node's HTTP address (informational)")
 	token := fs.String("token", os.Getenv("STASK_TOKEN"), "API token")
+	var tf tlsFlags
+	tf.add(fs)
 	fs.Parse(args[1:])
 	if *id == 0 {
 		return errors.New("-id is required")
 	}
 	body, _ := json.Marshal(map[string]any{"op": op, "id": *id, "raft": *raftAddr, "http": *nodeHTTP})
-	hc := &http.Client{Timeout: 45 * time.Second}
+	hc, herr := tf.client(45 * time.Second)
+	if herr != nil {
+		return herr
+	}
 	var last error
 	for try := 0; try < 10; try++ {
 		for _, u := range strings.Split(*urls, ",") {

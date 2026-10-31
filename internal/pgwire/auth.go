@@ -166,6 +166,7 @@ func (c *conn) startTLS(direct bool) error {
 // sendFatal sends an error that ends the session, as PostgreSQL does for
 // startup and authentication failures.
 func (c *conn) sendFatal(code, text string) {
+	c.lastFatal = text
 	c.send(newMsg('E').byte1('S').str("FATAL").byte1('V').str("FATAL").byte1('C').str(code).byte1('M').str(text).byte1(0))
 }
 

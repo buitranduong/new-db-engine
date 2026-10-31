@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"stask/internal/audit"
 	"stask/internal/cluster"
 	"stask/internal/core"
 	"stask/internal/histstore"
@@ -32,6 +33,7 @@ import (
 	"stask/internal/planner"
 	"stask/internal/proj"
 	"stask/internal/repl"
+	"stask/internal/seccrypt"
 	"stask/internal/server"
 	"stask/internal/spill"
 	"stask/internal/sql"
@@ -147,6 +149,15 @@ func main() {
 	pgKeepCount := flag.Int("pg-tcp-keepalives-count", 6, "unanswered keepalive probes before the connection is dropped (0 = system default)")
 	pgUserTimeout := flag.Duration("pg-tcp-user-timeout", 0, "TCP_USER_TIMEOUT of PostgreSQL connections (Linux): drop a connection whose sent data stays unacknowledged this long (0 = system default)")
 	archiveDir := flag.String("archive-dir", "", "copy every sealed log segment to this directory (continuous archiving, as PostgreSQL's archive_command); log reclamation waits for it")
+	archiveKeyFile := flag.String("archive-key-file", "", "encrypt archived log segments with AES-256-GCM using the 32-byte key in this file (64 hex digits, base64 or raw); $STASK_BACKUP_KEY is used when no file is given. With -restore-archive the same key decrypts them. The key is never stored (docs/23)")
+	archiveAllowPlain := flag.Bool("archive-allow-plain", false, "with an archive key: let -restore-archive also accept plaintext segments (an archive that predates encryption)")
+	auditDir := flag.String("audit-dir", "", "write the tamper-evident audit trail (hash chain, rotated files) to this directory (docs/22); empty = off")
+	auditLog := flag.String("audit-log", "", "audit classes, comma separated: connection,role,ddl,read,write,denied,admin,all,none (default connection,role,ddl,denied,admin). read/write log every table (pgaudit session logging)")
+	auditTables := flag.String("audit-tables", "", "audit reads/writes of these tables only (pgaudit object logging): t1,t2:read,t3:write,t4:read+write")
+	auditKeyFile := flag.String("audit-key-file", "", "HMAC key for the audit chain (at least 16 bytes, raw or hex): without it a writer of the files can rebuild the chain")
+	auditMaxMB := flag.Int64("audit-max-mb", 64, "rotate the audit file at this size")
+	auditKeep := flag.Int("audit-keep", 0, "keep this many audit files (0 = all)")
+	auditText := flag.Bool("audit-statement", false, "include the statement text in read/write audit records (may contain customer data)")
 	backupFrom := flag.String("backup-from", "", "take a base backup of the leader whose -repl-addr this is into -dir, then exit (uses the -repl-* security settings)")
 	restoreArchive := flag.String("restore-archive", "", "point-in-time recovery: before opening -dir (a base backup), add the log segments it lacks from this archive and replay to the recovery target")
 	targetTime := flag.String("recovery-target-time", "", "with -restore-archive: stop replay before the first commit after this time (RFC 3339)")
@@ -192,6 +203,39 @@ func main() {
 		}
 	}
 	hs.BasicPass = *pgPassword
+	if *auditDir != "" {
+		classes := audit.DefaultClasses
+		if *auditLog != "" {
+			var aerr error
+			if classes, aerr = audit.ParseClasses(*auditLog); aerr != nil {
+				log.Fatalf("-audit-log: %v", aerr)
+			}
+		}
+		tabs, aerr := audit.ParseTables(*auditTables)
+		if aerr != nil {
+			log.Fatalf("-audit-tables: %v", aerr)
+		}
+		var akey []byte
+		if *auditKeyFile != "" {
+			if akey, aerr = audit.LoadKey(*auditKeyFile); aerr != nil {
+				log.Fatalf("-audit-key-file: %v", aerr)
+			}
+		} else {
+			log.Printf("WARNING: -audit-dir without -audit-key-file: the chain detects edits but anyone who can write the files can rebuild it")
+		}
+		al, aerr := audit.Open(audit.Config{Dir: *auditDir, Key: akey, MaxBytes: *auditMaxMB << 20, Keep: *auditKeep,
+			Classes: classes, Tables: tabs, Text: *auditText})
+		if aerr != nil {
+			log.Fatalf("-audit-dir: %v", aerr)
+		}
+		audit.SetDefault(al)
+		defer al.Close()
+		log.Printf("audit trail: dir=%s classes=%#x tables=%d keyed=%v", *auditDir, classes, len(tabs), akey != nil)
+	}
+	archiveKey, kerr := seccrypt.LoadKey(*archiveKeyFile)
+	if kerr != nil {
+		log.Fatalf("-archive-key-file: %v", kerr)
+	}
 	httpAuth, httpTLS := httpSecurity(hs, *addr, *pprofAddr, *pprofInsecure, *faults)
 	if *procs > 0 {
 		runtime.GOMAXPROCS(*procs)
@@ -314,7 +358,8 @@ func main() {
 		CheckpointMinBytes: *ckptMin << 20, NoCheckpoint: *noCkpt, PreZero: *preZero, ZeroRate: *zeroRate << 20,
 		GC: *gc, GCRetention: gcRetention, GCInterval: *gcInterval, GCRateBytes: *gcRate << 20, GCMaxLiveRatio: *gcLive, CommitWait: *commitWait,
 		Compression: codec, CompressKeepRaw: *compressKeep, SlotMaxLagBytes: *slotMaxLag << 20, MaxSnapshotAge: *maxSnapAge,
-		ArchiveDir: *archiveDir, RestoreArchive: *restoreArchive, RecoveryTargetLSN: *targetLSN}
+		ArchiveDir: *archiveDir, RestoreArchive: *restoreArchive, RecoveryTargetLSN: *targetLSN,
+		ArchiveKey: archiveKey, ArchiveAllowPlain: *archiveAllowPlain}
 	if *faults {
 		fault = &server.Fault{}
 		opts.Fault = fault
@@ -449,12 +494,14 @@ func main() {
 			fmt.Fprintf(w, "# HELP stask_history_store_bytes Size of the history store.\n# TYPE stask_history_store_bytes gauge\nstask_history_store_bytes{kind=\"disk\"} %d\nstask_history_store_bytes{kind=\"memory\"} %d\n", histSt.DiskBytes(), histSt.MemBytes())
 		})
 	}
-	srv := &http.Server{Addr: *addr, Handler: httpAuth.Wrap(hsrv.Handler()), TLSConfig: httpTLS}
+	srv := &http.Server{Addr: *addr, Handler: server.AuditWrap(httpAuth.Wrap(hsrv.Handler())), TLSConfig: httpTLS}
 	if *pprofAddr != "" {
 		runtime.SetMutexProfileFraction(20)
 		runtime.SetBlockProfileRate(int(50 * time.Microsecond))
 		// same credentials as the API when it has any (full access)
-		go func() { log.Printf("pprof: %v", http.ListenAndServe(*pprofAddr, httpAuth.Wrap(http.DefaultServeMux))) }()
+		go func() {
+			log.Printf("pprof: %v", http.ListenAndServe(*pprofAddr, server.AuditWrap(httpAuth.Wrap(http.DefaultServeMux))))
+		}()
 	}
 	var pg *pgwire.Server
 	if *pgAddr != "" {

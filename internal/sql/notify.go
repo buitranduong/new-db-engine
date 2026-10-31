@@ -78,6 +78,11 @@ func (l *Listener) push(n Notification) {
 }
 
 type notifyHub struct {
+	// pubMu serializes publish calls, so every listener sees the
+	// notifications of concurrent committers in the same order (PostgreSQL
+	// has one queue; without this two publishes interleave differently on
+	// different listeners).
+	pubMu  sync.Mutex
 	mu     sync.RWMutex
 	byChan map[string]map[*Listener]bool
 }
@@ -93,6 +98,8 @@ func hubOf(e *core.Engine) *notifyHub {
 }
 
 func (h *notifyHub) publish(ns []Notification) {
+	h.pubMu.Lock()
+	defer h.pubMu.Unlock()
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, n := range ns {

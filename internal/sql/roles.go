@@ -564,7 +564,7 @@ func collectNeeds(st Stmt) (needs []need, ddl string) {
 		return nil, "CREATE/DROP VIEW"
 	case *CreateSequence, *AlterSequence, *DropSequence:
 		return nil, "sequence DDL"
-	case *CreatePublication, *DropPublication:
+	case *CreatePublication, *AlterPublication, *DropPublication:
 		return nil, "publication DDL"
 	case *CreateRole, *AlterRole, *DropRole, *Grant:
 		return nil, "role management"

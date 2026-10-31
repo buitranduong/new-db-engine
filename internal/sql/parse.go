@@ -387,6 +387,9 @@ func (p *parser) statement() (Stmt, error) {
 		if p.acceptKw("role") || p.acceptKw("user") {
 			return p.alterRole()
 		}
+		if p.acceptKw("publication") {
+			return p.alterPublication()
+		}
 		if p.acceptKw("index") {
 			a := &AlterIndex{IfExists: p.acceptKw("if", "exists")}
 			var err error
@@ -2115,6 +2118,75 @@ func (p *parser) caseExpr() (Expr, error) {
 		}
 	}
 	return c, p.expectKw("end")
+}
+
+// alterPublication parses what follows ALTER PUBLICATION.
+func (p *parser) alterPublication() (Stmt, error) {
+	a := &AlterPublication{}
+	var err error
+	if a.Name, err = p.ident(); err != nil {
+		return nil, err
+	}
+	tables := func() error {
+		if err := p.expectKw("table"); err != nil {
+			return err
+		}
+		for {
+			p.acceptKw("only")
+			t, err := p.qualifiedName()
+			if err != nil {
+				return err
+			}
+			a.Tables = append(a.Tables, t)
+			if !p.acceptOp(",") {
+				return nil
+			}
+		}
+	}
+	switch {
+	case p.acceptKw("add"):
+		a.Action = "add"
+		err = tables()
+	case p.acceptKw("drop"):
+		a.Action = "drop"
+		err = tables()
+	case p.acceptKw("set"):
+		if p.acceptOp("(") {
+			a.Action = "options"
+			for {
+				k, err := p.ident()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp("="); err != nil {
+					return nil, err
+				}
+				v := p.next()
+				switch k {
+				case "publish":
+					a.Publish = v.s
+				case "publish_via_partition_root":
+				default:
+					return nil, errf(codeSyntax, "unrecognized publication parameter: %q", k)
+				}
+				if !p.acceptOp(",") {
+					break
+				}
+			}
+			err = p.expectOp(")")
+		} else {
+			a.Action = "set"
+			err = tables()
+		}
+	case p.acceptKw("rename"):
+		a.Action = "rename"
+		if err = p.expectKw("to"); err == nil {
+			a.RenameTo, err = p.ident()
+		}
+	default:
+		return nil, p.errHere("syntax error at or near %q", p.peek().s)
+	}
+	return a, err
 }
 
 func (p *parser) createPublication() (Stmt, error) {

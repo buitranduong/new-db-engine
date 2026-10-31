@@ -381,7 +381,7 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 			s.markFailed()
 		}
 		return res, err
-	case *CreatePublication, *DropPublication, *AlterReplicaIdentity:
+	case *CreatePublication, *AlterPublication, *DropPublication, *AlterReplicaIdentity:
 		// applied at once, not at commit (unlike PostgreSQL, where these
 		// are transactional catalog changes)
 		res, err := s.cdcDDL(st)

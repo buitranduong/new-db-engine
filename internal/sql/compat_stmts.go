@@ -112,6 +112,10 @@ type savepointState struct {
 	sp   *core.Savepoint
 	dj   djMark // DDL journal position (ddltx.go)
 	tmp  int    // position in the temporary table log (temptable.go)
+	// pending NOTIFY and LISTEN/UNLISTEN of the transaction when the
+	// savepoint was set: ROLLBACK TO drops what came after (PostgreSQL
+	// AtSubAbort_Notify)
+	notes, listenOps int
 }
 
 // execCompat runs the statements above.
@@ -121,7 +125,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 		if !s.explicit {
 			return nil, errf("25P01", "SAVEPOINT can only be used in transaction blocks")
 		}
-		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark(), s.tempMark()})
+		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark(), s.tempMark(), len(s.notes), len(s.listenOps)})
 		return &Result{Tag: "SAVEPOINT"}, nil
 	case *ReleaseStmt:
 		i, err := s.findSavepoint(st.Name)
@@ -137,6 +141,8 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 		}
 		s.tx.RollbackTo(s.savepoints[i].sp)
 		s.tempRollbackTo(s.savepoints[i].tmp)
+		s.notes = s.notes[:min(len(s.notes), s.savepoints[i].notes)]
+		s.listenOps = s.listenOps[:min(len(s.listenOps), s.savepoints[i].listenOps)]
 		s.savepoints = s.savepoints[:i+1]
 		s.failed = false // the transaction is usable again
 		if err := s.djRollbackTo(s.savepoints[i].dj); err != nil {

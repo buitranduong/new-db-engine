@@ -227,6 +227,16 @@ type CreatePublication struct {
 	Tables    []string
 	Publish   string // "" = all operations
 }
+
+// AlterPublication: ALTER PUBLICATION name {ADD | SET | DROP} TABLE t, ... |
+// SET (publish = '...') | RENAME TO new.
+type AlterPublication struct {
+	Name     string
+	Action   string // add, set, drop (tables), options, rename
+	Tables   []string
+	Publish  string
+	RenameTo string
+}
 type DropPublication struct {
 	Name     string
 	IfExists bool
@@ -239,6 +249,7 @@ type AlterReplicaIdentity struct {
 }
 
 func (*CreatePublication) stmt()    {}
+func (*AlterPublication) stmt()     {}
 func (*CreateSequence) stmt()       {}
 func (*AlterTable) stmt()           {}
 func (*DropSequence) stmt()         {}

@@ -137,3 +137,26 @@ Chỉ sửa các lỗi "sai kết quả hoặc hành vi nguy hiểm" (mục 6, S
 | T1 int4 so với int8 | đã sửa phần ảnh hưởng driver | `VALUES` và `UNION/INTERSECT/EXCEPT` với số nguyên/NULL, `grouping()`, `mode()`, `percentile_disc()` nay trả int4 như PG (pgjdbc `getObject` trả `Integer`); các mục T1 còn lại (sum(real), avg(interval), min/max mảng, bytea) chưa đụng tới |
 
 PASS theo nhóm sau sửa: 01 198, 02 72, 03 43, 04 115, 05 253, 06 159, 07 99, 08 87, 09 50, 10 99, 11 89 (hết DIFF), 12 29, 13 95, 14 310.
+
+## 9. Kiểu dữ liệu: interval làm cột, range, macaddr/macaddr8, bit/varbit (nhánh `compat-types`, từ `main` cd42af1)
+
+Chỉ làm phần KIỂU của backlog F1 (mục 6): `interval` làm cột, `int4range/int8range/numrange/daterange/tsrange/tstzrange`, `macaddr8` (và toán tử macaddr), `bit`/`varbit`. Không đụng nhóm 01-14 (người khác sửa); ca mới nằm ở tệp mới `scripts/suite/15_types_more.sql` (nhóm `15_types_more`, 332 câu, mọi câu lấy kết quả từ postgres:16.15 qua `pgdiff`). Tiền lệ PostgreSQL và quyết định thiết kế: `docs/14` Phụ lục T.
+
+Đo trước/sau trên cùng VM, cùng postgres:16.15 (`SUITE_N=100`, `staskd` dựng từ `main` cd42af1 và từ nhánh này):
+
+| Nhóm | Trước | Sau |
+|---|---|---|
+| 01_ddl_types | 207 | 222 |
+| 06_select_basics | 159 | 160 |
+| 08_aggregates | 87 | 88 |
+| 11_analytics | 89 | 90 |
+| 14_errors | 311 | 314 |
+| 02-05, 07, 09, 10, 12, 13 | không đổi | không đổi |
+| **Tổng nhóm 01-14 (2196 câu)** | **1711** | **1732** |
+| **15_types_more (332 câu, mới)** | n/a | **332** |
+
+Không câu nào của nhóm 01-14 từ PASS thành DIFF/ERR (so từng dòng `summary.txt`). Phần còn lại của nhóm 01 liên quan kiểu mà KHÔNG làm: `timetz`, `xml`, `money` (bảng `misc`, `dt` không tạo được kéo theo lỗi dây chuyền), multirange (`int4multirange`, `unnest`), mảng kiểu composite, `enum_first/enum_last/enum_range`.
+
+Các phiên của nhóm 15: `interval-input` (85 dạng nhập), `interval-column` (cột, ORDER BY, chỉ mục, PK, CTAS, UPDATE, typmod), `interval-arith` (cộng/trừ/nhân/chia, `justify_*`, `make_interval`, date/timestamp ± interval, `generate_series`, sum/avg/min/max), `interval-extract`, `interval-cast-text`, `interval-style` (bốn `IntervalStyle`), `interval-binary` (COPY text/binary, tham số), `range-literals`, `range-ops`, `range-column` (sáu kiểu, sắp xếp, GROUP BY, join, chỉ mục, PK), `range-binary`, `macaddr-input`, `macaddr-ops`, `macaddr-column`, `bit-literals`, `bit-column`, `bit-binary`. Ca Go (pgx nhị phân, COPY, sắp xếp, chỉ mục, khoá chính): `internal/pgwire/exttypes_wire_test.go`, `internal/sql/exttypes_test.go`.
+
+Giới hạn đã biết (đều có trong docs/14 Phụ lục T): `to_char(interval, ...)`; `interval` nhập kiểu `sql_standard` với dấu `-` đầu; `0.0000015 sec` làm tròn 2 µs (PostgreSQL 1 µs); `IntervalStyle` không áp dụng cho COPY TO text; so sánh/UNIQUE trên cột interval coi `1 month` và `30 days` là khác nhau (so sánh trong biểu thức thì bằng nhau).

@@ -8,6 +8,94 @@
 DROP SCHEMA IF EXISTS s15 CASCADE;
 CREATE SCHEMA s15;
 
+-- Suite group 15: types beyond group 01 (interval columns, ranges, macaddr8, bit strings, tsvector/tsquery).
+-- Source: PostgreSQL 16 documentation chapter 8 (data types), 9.9 (date/time), 9.20 (range functions), 9.6 (bit strings).
+-- Cases are added only in this and later files (15_*.sql ...); group files 01-14 belong to other tasks.
+
+-- ### 15_types_more/interval-input
+SET search_path = s15;
+SELECT '1-2'::interval;
+SELECT '-1-2'::interval;
+SELECT '+1-2'::interval;
+SELECT '1 2:03:04'::interval;
+SELECT '1 -2:03:04'::interval;
+SELECT '3:04'::interval;
+SELECT '04:05.5'::interval;
+SELECT '5'::interval;
+SELECT '1 2'::interval;
+SELECT '1.5 days'::interval;
+SELECT '1.5 months'::interval;
+SELECT '.5 years'::interval;
+SELECT '1 year 2 months ago'::interval;
+SELECT '@ 1 day 2 hours ago'::interval;
+SELECT '-1 day +2 hours'::interval;
+SELECT '1 day -2:00'::interval;
+SELECT 'P1Y2M3DT4H5M6S'::interval;
+SELECT 'P0001-02-03T04:05:06'::interval;
+SELECT 'PT1.5S'::interval;
+SELECT 'P1W'::interval;
+SELECT 'P-1Y2M'::interval;
+SELECT '1 y 2 mon 3 d'::interval;
+SELECT '1h 2m 3s'::interval;
+SELECT '1 hour 30 min'::interval;
+SELECT '2 weeks'::interval;
+SELECT '1 decade'::interval;
+SELECT '1 century'::interval;
+SELECT '1 millennium'::interval;
+SELECT '1 microsecond'::interval;
+SELECT '1.2345678 sec'::interval;
+SELECT '3 days 04:05:06.789'::interval;
+SELECT '-00:00:01'::interval;
+SELECT '12:34:56.123456789'::interval;
+SELECT '1:2'::interval;
+SELECT '100:00:00'::interval;
+SELECT '1 day 24:00:00'::interval;
+SELECT 'infinity'::interval;
+SELECT '-infinity'::interval;
+SELECT '1 fortnight'::interval;
+SELECT '1:2:3:4'::interval;
+SELECT '1 hour 2'::interval;
+SELECT '1.5 hours'::interval;
+SELECT '1 mon 1.5 day'::interval;
+SELECT '0.1 day'::interval;
+SELECT '1e2 days'::interval;
+SELECT '- 1 day'::interval;
+SELECT '2147483647 months'::interval;
+SELECT '2147483648 months'::interval;
+SELECT '178000000 years'::interval;
+SELECT '1 second 2 seconds'::interval;
+SELECT '1 dow'::interval;
+SELECT 'now'::interval;
+SELECT '1 day ago ago'::interval;
+SELECT '0.5 mon'::interval;
+SELECT '1.5 week'::interval;
+SELECT '1 month 2 days 3 hours ago'::interval;
+SELECT '-1 month +2 days'::interval;
+SELECT '1:30 ago'::interval;
+SELECT '+5'::interval;
+SELECT '-5'::interval;
+SELECT '1.9999999 sec'::interval;
+SELECT '1.3 years'::interval;
+SELECT '0.0000005 sec'::interval;
+SELECT '1.5 millisecond'::interval;
+SELECT '0.5 microsecond'::interval;
+SELECT '1.5 microsecond'::interval;
+SELECT '0.3 mon'::interval;
+SELECT '0.7 week'::interval;
+SELECT '1.123456789 minute'::interval;
+SELECT '0.00001 hour'::interval;
+SELECT '1.5 decade'::interval;
+SELECT '0.01 century'::interval;
+SELECT '1.5 millennium'::interval;
+SELECT '1 sec 2 ms'::interval;
+SELECT '1 hour 02:00:00'::interval;
+SELECT '5 mins 01:00:00'::interval;
+SELECT '1 ms 1 ms'::interval;
+SELECT '-1.5 days'::interval;
+SELECT '1.5 day ago'::interval;
+SELECT '2.7 months'::interval;
+SELECT '0.33 year'::interval;
+
 -- ### 15_types_more/interval-column
 SET search_path = s15;
 CREATE TABLE iv (id int PRIMARY KEY, d interval, p interval(2), ym interval year to month, ds interval day to second(3));

@@ -995,6 +995,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 						}
 					}
 				}
+				if f.Name == "generate_series" && len(f.Args) >= 2 && seriesColKind(f.Args) == KNumeric {
+					k, t = KNumeric, pgTy{}
+				}
 				if f.Name == "generate_subscripts" {
 					k = KInt
 				}
@@ -2635,7 +2638,11 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 		}
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
 		if f.F.Name == "generate_series" {
-			fp.c[0].ty = seriesTy(fp.args)
+			if k := seriesColKind(f.F.Args); k != KInt {
+				fp.c[0].kind = k
+			} else {
+				fp.c[0].ty = seriesTy(fp.args)
+			}
 		}
 	case "stask_history":
 		cols, err := c.historyCols(f.F.Args)
@@ -2768,6 +2775,9 @@ func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([
 		}
 		if args[0].IsNull() || args[1].IsNull() {
 			return nil, nil
+		}
+		if done, err := fnGenSeries(args, maxRows, emit); done {
+			return out, err
 		}
 		if args[0].K == KTime || args[0].K == KDate || args[0].K == KText && len(args) == 3 {
 			start, err := coerce(args[0], KTime)

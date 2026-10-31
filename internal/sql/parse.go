@@ -1423,6 +1423,18 @@ func (p *parser) predicate() (Expr, error) {
 			}
 			l = bin
 			lcoll = nil
+		case p.isKw("overlaps"):
+			p.next()
+			r, err := p.bitExpr()
+			if err != nil {
+				return nil, err
+			}
+			lr, ok1 := l.(*RowExpr)
+			rr, ok2 := r.(*RowExpr)
+			if !ok1 || !ok2 || len(lr.Items) != 2 || len(rr.Items) != 2 {
+				return nil, p.errHere("syntax error at or near \"overlaps\"")
+			}
+			l = &Func{Name: "stask_overlaps", Disp: "overlaps", Args: []Expr{lr.Items[0], lr.Items[1], rr.Items[0], rr.Items[1]}}
 		case t.k == tOp && (t.s == "~~" || t.s == "!~~" || t.s == "~~*" || t.s == "!~~*"):
 			p.next()
 			r, err := p.bitExpr()
@@ -1824,6 +1836,20 @@ func (p *parser) primary() (Expr, error) {
 				s := p.next()
 				return &Cast{&Lit{TextD(s.s)}, ty, pg}, nil
 			}
+		case "current_time", "localtime":
+			p.next()
+			var targs []Expr
+			if p.acceptOp("(") {
+				if p.peek().k != tNumber {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+				targs = append(targs, &Lit{IntD(0)})
+				targs[0].(*Lit).V, _ = coerce(TextD(p.next().s), KInt)
+				if err := p.expectOp(")"); err != nil {
+					return nil, err
+				}
+			}
+			return &Func{Name: t.s, Args: targs}, nil
 		case "current_timestamp", "localtimestamp":
 			p.next()
 			if p.acceptOp("(") { // current_timestamp(3): the precision is accepted; values keep microseconds
@@ -1834,6 +1860,9 @@ func (p *parser) primary() (Expr, error) {
 				if err := p.expectOp(")"); err != nil {
 					return nil, err
 				}
+			}
+			if t.s == "localtimestamp" {
+				return &Cast{&Func{Name: "now"}, "timestamp", "timestamp"}, nil
 			}
 			return &Func{Name: "now"}, nil
 		}

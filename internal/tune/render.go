@@ -95,12 +95,12 @@ func Render(f Facts) string {
 	p("go-gc = 400")
 	p("")
 	p("# ---- commit log ----")
-	seg := int64(256)
-	switch free := f.Disk.FreeBytes; {
-	case free > 0 && free < 8<<30:
-		seg = 64
-	case free > 0 && free < 64<<30:
-		seg = 128
+	// 64 MiB is the engine default: the preallocated active and spare
+	// segments cost two segments of disk, so smaller is cheaper (docs/14,
+	// r2perf disk analysis; PostgreSQL uses 16 MB).
+	seg := int64(64)
+	if free := f.Disk.FreeBytes; free > 0 && free < 8<<30 {
+		seg = 32
 	}
 	p("# segment size by free space (%d GiB)", f.Disk.FreeBytes>>30)
 	p("segment-mb = %d", seg)

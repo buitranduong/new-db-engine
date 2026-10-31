@@ -391,7 +391,7 @@ const tsRingSize = 1 << 20
 
 func Open(opts Options) (*Engine, error) {
 	if opts.SegmentSize == 0 {
-		opts.SegmentSize = 256 << 20
+		opts.SegmentSize = 64 << 20
 	}
 	if opts.MaxBatch == 0 {
 		opts.MaxBatch = 512

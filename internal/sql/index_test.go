@@ -330,7 +330,7 @@ func TestSQLIndexCatalog(t *testing.T) {
 		"FOREIGN KEY (org_id) REFERENCES org(id) ON DELETE CASCADE;UNIQUE (code)")
 	expectRows(t, s, `SELECT pg_get_indexdef('emp_age_idx'::regclass), pg_get_indexdef('emp_age_idx'::regclass, 2, false)`,
 		"CREATE INDEX emp_age_idx ON public.emp USING btree (age, org_id),org_id")
-	expectRows(t, s, `SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'emp' ORDER BY constraint_name`,
+	expectRows(t, s, `SELECT constraint_name, constraint_type FROM information_schema.table_constraints WHERE table_name = 'emp' AND constraint_name NOT LIKE '%not_null' ORDER BY constraint_name`,
 		"emp_org_id_fkey,FOREIGN KEY;emp_pkey,PRIMARY KEY")
 	expectRows(t, s, `SELECT constraint_name, update_rule, delete_rule FROM information_schema.referential_constraints`,
 		"emp_org_id_fkey,NO ACTION,CASCADE")

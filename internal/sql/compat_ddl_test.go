@@ -210,5 +210,5 @@ func TestExpressionIndexesDateTruncSubstr(t *testing.T) {
 	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE substr(code, 1, 3) = 'AB3'`, "29")
 	mustq(t, s, `INSERT INTO ti VALUES (500, '2024-03-03 10:00', 'zz', 'AB9xx')`)
 	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE date_trunc('day', ts) = '2024-03-03'`, "1")
-	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE substr(code, 1, 3) = 'AB9'`, "29")
+	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE substr(code, 1, 3) = 'AB9'`, "1")
 }

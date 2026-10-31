@@ -62,7 +62,16 @@ func checkAll(t *testing.T, e *Engine, when string) {
 
 func storageIs(t *testing.T, e *Engine, want string) {
 	t.Helper()
-	got, err := e.IndexStorage("kv", "kv_n")
+	// a change that arrives by log replay is made in the background
+	// (convertAsync): give it a moment
+	var got string
+	var err error
+	for i := 0; i < 400; i++ {
+		if got, err = e.IndexStorage("kv", "kv_n"); err == nil && got == want {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 	if err != nil || got != want {
 		t.Fatalf("storage = %q, %v; want %q", got, err, want)
 	}
@@ -365,7 +374,14 @@ func TestDiskIndexCrashPoints(t *testing.T) {
 				if !optOn {
 					exp = "memory"
 				}
-				got, err := e2.IndexStorage("kv", "kv_n")
+				var got string
+				var err error
+				for i := 0; i < 400; i++ { // a change replayed from the log is made in the background
+					if got, err = e2.IndexStorage("kv", "kv_n"); err == nil && got == exp {
+						break
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
 				if err != nil || got != exp {
 					t.Fatalf("after restart: storage %q, %v; want %q", got, err, exp)
 				}

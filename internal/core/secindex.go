@@ -582,10 +582,16 @@ func (e *Engine) reconcileSec(t *TableState, sch *schema.Table, src *tree) error
 		if si := t.secNamed(def.Name); si != nil {
 			// a storage change that arrives by replay or on a replica (the
 			// leader converted online before logging it)
-			if want := cmp(def.Storage, "memory"); si.storageOf() != want && (want == "memory" || e.opts.DiskIndexes) {
-				// online: the replaying goroutine (start-up, a replica
-				// applying the leader's ALTER) does not wait for the build
-				e.convertAsync(t, si, want)
+			want := cmp(def.Storage, "memory")
+			if want == "memory" || e.opts.DiskIndexes {
+				// compare with what an earlier request is already heading for,
+				// not only with where the index is now: a log with disk, memory,
+				// disk must end on disk
+				if w := si.want.Load(); (w != nil && *w != want) || (w == nil && si.storageOf() != want) {
+					// online: the replaying goroutine (start-up, a replica
+					// applying the leader's ALTER) does not wait for the build
+					e.convertAsync(t, si, want)
+				}
 			}
 			continue
 		}

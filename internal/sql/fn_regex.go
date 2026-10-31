@@ -643,6 +643,11 @@ func regexpSplit(a []Datum) ([]string, error) {
 // fnSRFRows runs the set-returning functions of this task (jsonarr.go srfRows calls it first).
 func fnSRFRows(name string, a []Datum) ([][]Datum, bool, error) {
 	switch name {
+	case "pg_input_error_info":
+		if len(a) != 2 {
+			return nil, true, errf(codeUndefinedFunction, "function pg_input_error_info with %d arguments does not exist", len(a))
+		}
+		return pgInputErrorRows(a), true, nil
 	case "regexp_matches":
 		if len(a) < 2 || len(a) > 3 {
 			return nil, true, errf(codeUndefinedFunction, "function regexp_matches with %d arguments does not exist", len(a))

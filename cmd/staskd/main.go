@@ -93,7 +93,8 @@ func main() {
 	// GC then runs idle mark workers on the extra Ps, taking most of the
 	// real CPUs for each mark phase (20M rows: write p99 313ms with the
 	// lane, 43ms without; docs/08_memory.md).
-	heavyWorkers := flag.Int("heavy-workers", 0, "OS threads that run statements classified heavy (multi-row writes, scans) at lower priority; point statements run at normal priority (-1 = the usable CPUs, 0 = no lanes)")
+	heavyWorkers := flag.Int("heavy-workers", 0, "OS threads that run statements classified heavy (multi-row writes, scans that the columnar view does not answer cheaply); point statements run on their session. -2 (default) = automatic: none below 4 CPUs, else a quarter of the CPUs (1 to 4); -1 = the usable CPUs; 0 = no lanes")
+	heavyShare := flag.Float64("heavy-share", 0.25, "fraction of the CPUs the heavy lane is guaranteed while the node is saturated and the most it takes then (user-space token bucket, no nice needed); 0 = off, the lane then relies on -heavy-nice / -cpu-groups")
 	admission := flag.Bool("admission", false, "queue statements beyond -admission-slots, reads before writes (measured: no gain on the mixed benchmark, where reads wait on CPU, not on slots)")
 	admissionSlots := flag.Int("admission-slots", 0, "statements executing at once before others queue by priority (0 = adapt to scheduler latency)")
 	runnableThreshold := flag.Float64("runnable-threshold", 4, "with -heavy-cap: runnable goroutines per CPU (averaged over 10ms) at or above which the heavy lane is capped (Go 1.26+). Aggregate helpers yield to waiting goroutines by themselves; with older Go they are cut on -sched-target instead")
@@ -195,8 +196,20 @@ func main() {
 	}
 	// usable CPUs: affinity lowered by a container's cpu.max
 	cpus := tune.WholeCPUs()
-	if *heavyWorkers < 0 {
+	switch {
+	case *heavyWorkers == -2:
+		*heavyWorkers = sql.AutoHeavyWorkers(cpus)
+		log.Printf("heavy lane: -heavy-workers not set: automatic %d for %d CPUs", *heavyWorkers, cpus)
+	case *heavyWorkers < 0:
 		*heavyWorkers = cpus
+	}
+	sql.HeavyShare = max(0, min(1, *heavyShare))
+	if sql.HeavyShare > 0 {
+		niceSet := false
+		flag.Visit(func(f *flag.Flag) { niceSet = niceSet || f.Name == "heavy-nice" })
+		if !niceSet {
+			*heavyNice = 0 // the scheduler, not the kernel priority, protects point statements
+		}
 	}
 	if *scanWorkers <= 0 {
 		*scanWorkers = cpus

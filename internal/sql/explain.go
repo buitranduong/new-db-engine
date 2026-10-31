@@ -222,9 +222,34 @@ func (x *explainer) leaf(depth int, t *schema.Table, alias string, where Expr, s
 			return
 		}
 	}
+	if usable {
+		if b, ok := pkRangeBounds(t, alias, where, ctx); ok {
+			x.node(depth, "Index Scan using %s_pkey on %s", t.Name, label)
+			x.detail(depth, "Index Cond: primary key (%s) %s", pk, pkRangeText(t.Key, b))
+			if sel != nil && sel.Limit != nil && !sel.Distinct && len(sel.GroupBy) == 0 && len(sel.OrderBy) > 0 {
+				orderOut := make([]int, len(sel.OrderBy))
+				for i, o := range sel.OrderBy {
+					orderOut[i] = -1
+					for j, it := range items {
+						if !it.Star && exprKey2(it.X) == exprKey2(o.X) {
+							orderOut[i] = j
+						}
+					}
+				}
+				if pkOrdered(t, alias, sel, items, orderOut) {
+					x.detail(depth, "Order: rows come out in index order (no sort), stops at LIMIT")
+				}
+			}
+			x.detail(depth, "Filter (rechecked): %s", deparse(where, nil))
+			return
+		}
+	}
 	x.node(depth, "Seq Scan on %s", label)
 	if where != nil {
 		x.detail(depth, "Filter: %s", deparse(where, nil))
+		if col := unindexedWildcardLike(t, alias, where); col != "" {
+			x.detail(depth, "Reason: LIKE/ILIKE with a leading wildcard on %q and no trigram index on it (CREATE INDEX .. ON %s USING gin (%s gin_trgm_ops))", col, t.Name, col)
+		}
 	}
 	if note != "" {
 		x.detail(depth, "Note: %s", note)
@@ -397,13 +422,18 @@ func (x *explainer) simpleSelect(depth int, q *Select, t *schema.Table) error {
 		d++
 	}
 	if grouped {
+		if vp := x.s.viewAggPlan(q, t, x.params); vp.ok {
+			x.viewAggNode(d, q, t, vp)
+			return nil
+		} else if x.s.Views != nil && t.Columnar {
+			defer x.detail(d, "Columnar view not used: %s", vp.reason)
+		}
 		if len(q.GroupBy) > 0 {
 			x.node(d, "HashAggregate")
 			x.detail(d, "Group Key: %s", exprList(q.GroupBy))
 		} else {
 			x.node(d, "Aggregate")
 		}
-		x.detail(d, "Note: may be answered from the columnar view when the table has one and the query fits it")
 		d++
 	}
 	before := len(x.lines)
@@ -472,6 +502,9 @@ func (x *explainer) plan(depth int, p qplan) {
 		}
 		if p.distinct || p.distinctOn != nil {
 			x.node(d, "Unique")
+			if p.distinctOn != nil {
+				x.detail(d, "Note: DISTINCT ON sorts the rows that match WHERE and keeps the first per key; there is no loose index scan, so a big table is read whole (use a LIMIT-ed keyset query or the columnar view for per-group extremes: SELECT k, min(c) ... GROUP BY k)")
+			}
 			d++
 		}
 		if len(p.order) > 0 {
@@ -622,8 +655,8 @@ func (s *Session) explainAny(e *Explain, params []Datum) (*Result, error) {
 		return nil, err
 	}
 	x.lines = s.supfixAnnotate(x.lines)
-	if o := len(x.lines); o > 0 && (SpillDir != "" || QueryMemLimit > 0) {
-		x.detail(0, "Memory: query budget %s; sort/join/aggregate spill to temp files when exceeded (spill %s)", memStr(QueryMemLimit), onOff(SpillDir != ""))
+	if o := len(x.lines); o > 0 && (SpillDir != "" || s.simpleBudget() > 0) {
+		x.detail(0, "Memory: statement budget %s (work_mem %s); sort/join/aggregate spill to temp files when exceeded (spill %s)", memStr(s.simpleBudget()), s.vars[WorkMemVar], onOff(SpillDir != ""))
 	}
 	if e.Analyze {
 		spilledBefore := s.spilled
@@ -665,6 +698,9 @@ func memStr(n int64) string {
 	if n <= 0 {
 		return "unlimited"
 	}
+	if n < 1<<20 {
+		return fmt.Sprintf("%d kB", n>>10)
+	}
 	return fmt.Sprintf("%d MB", n>>20)
 }
 
@@ -673,4 +709,29 @@ func onOff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// viewAggNode prints the plan of an aggregate answered by the columnar view:
+// what the view holds, the consistency contract and the lane.
+func (x *explainer) viewAggNode(d int, q *Select, t *schema.Table, vp viewAggPlan) {
+	x.node(d, "Columnar View Aggregate on %s", t.Name)
+	if len(q.GroupBy) > 0 {
+		x.detail(d, "Group Key: %s", exprList(q.GroupBy))
+	}
+	if q.Where != nil {
+		x.detail(d, "Filter (evaluated on the columns): %s", deparse(q.Where, nil))
+	}
+	if vp.staleness > 0 {
+		x.detail(d, "Consistency: bounded by %s=%dms (view lag now %dms)", ReadStalenessVar, vp.staleness.Milliseconds(), vp.lag.Milliseconds())
+	} else {
+		x.detail(d, "Consistency: strong (the view must have applied the statement's snapshot; the rows are scanned instead if it stalls)")
+	}
+	lane := "normal"
+	switch {
+	case heavyQ == nil:
+		lane = "session (lanes off)"
+	case !x.s.viewLaneNormal(q, x.params):
+		lane = "heavy"
+	}
+	x.detail(d, "View: %d live rows, lag %dms; lane: %s (normal up to %d rows)", vp.rows, vp.lag.Milliseconds(), lane, ViewNormalRows)
 }

@@ -51,6 +51,14 @@ func StartHeavyLane(workers, nice int) {
 	}
 	heavyQ = make(chan func())
 	heavyWQ = make(chan func())
+	startGovernor()
+	runTask := func(f func()) {
+		t0 := time.Now()
+		f()
+		if g := govP.Load(); g != nil {
+			g.charge(time.Since(t0))
+		}
+	}
 	for i := 0; i < workers; i++ {
 		writer := i == 0 // worker 0 only runs heavy writes (with one worker: writes first, then reads)
 		go func() {
@@ -59,19 +67,22 @@ func StartHeavyLane(workers, nice int) {
 				setThreadNice(nice)
 			}
 			for {
+				if g := govP.Load(); g != nil {
+					g.wait() // saturated and over its share: let point statements run
+				}
 				if writer && workers > 1 {
-					(<-heavyWQ)()
+					runTask(<-heavyWQ)
 					continue
 				}
 				select {
 				case f := <-heavyWQ:
-					f()
+					runTask(f)
 				default:
 					select {
 					case f := <-heavyWQ:
-						f()
+						runTask(f)
 					case f := <-heavyQ:
-						f()
+						runTask(f)
 					}
 				}
 			}
@@ -204,6 +215,10 @@ func (s *Session) heavy(st Stmt, params []Datum) bool {
 		}
 		return false
 	}
+	if sel != nil && s.viewLaneNormal(sel, params) {
+		laneViewAggs.Add(1)
+		return false // the columnar view answers it cheaply: no scan to isolate
+	}
 	return true
 }
 
@@ -230,9 +245,11 @@ func noteSelectTime(st Stmt, params []Datum, d time.Duration) {
 	switch {
 	case !was && time.Duration(nw) > slowSelect:
 		ss.heavy.Store(true)
+		shapeMovesHeavy.Add(1)
 		fmt.Printf("lane: select shape %q now heavy (avg run %v)\n", k, time.Duration(nw))
 	case was && time.Duration(nw) < slowSelect/4:
 		ss.heavy.Store(false)
+		shapeMovesNormal.Add(1)
 		fmt.Printf("lane: select shape %q now normal (avg run %v)\n", k, time.Duration(nw))
 	}
 }

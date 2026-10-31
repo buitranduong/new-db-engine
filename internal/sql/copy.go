@@ -431,8 +431,8 @@ func (qx *qexec) chargeN(n int64) error {
 	if qx.memUsed <= qx.memReserved {
 		return nil
 	}
-	if QueryMemLimit > 0 && qx.memUsed > QueryMemLimit {
-		return errf("53200", "out of memory: the query holds more than its budget of %d MB (-query-mem-mb)", QueryMemLimit>>20)
+	if lim := qx.limit(); lim > 0 && qx.memUsed > lim {
+		return qx.overBudget(lim)
 	}
 	step := max(int64(memStep), qx.memUsed-qx.memReserved)
 	if SQLMemLimit > 0 && sqlMemUsed.Add(step) > SQLMemLimit {

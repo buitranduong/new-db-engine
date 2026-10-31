@@ -710,6 +710,9 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 		switch st.(type) {
 		case *Insert, *Update, *Delete:
 			lane = onHeavyWriteLane
+			laneHeavyWrites.Add(1)
+		default:
+			laneHeavyReads.Add(1)
 		}
 		lane(func() {
 			t0 := time.Now() // run time only, not the wait for a heavy thread: a shape that is fast again goes back
@@ -724,6 +727,9 @@ func (s *Session) run(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
 	if heavyQ == nil {
 		return s.runHere(tx, st, params)
 	}
+	laneNormalStmts.Add(1)
+	fgInFlight.Add(1)
+	defer fgInFlight.Add(-1)
 	t0 := time.Now()
 	res, err := s.runHere(tx, st, params)
 	noteSelectTime(st, params, time.Since(t0))
@@ -742,6 +748,12 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 			return s.runQuery(tx, st, params)
 		}
 		res, err := s.selectRows(tx, st, params)
+		if err == errSimpleSpill {
+			// the single-table path would hold more than the statement's budget
+			// (groups, rows to sort or de-duplicate): the general executor
+			// runs it through the spilling operators
+			return s.runQuery(tx, st, params)
+		}
 		if err != nil && retryGeneral(err) {
 			if r2, err2 := s.runQuery(tx, st, params); err2 == nil {
 				return r2, nil
@@ -1432,7 +1444,15 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		return nil, err
 	}
 	var out []outRow
+	var simpleMem int64
+	simpleBudget := s.simpleBudget()
+	buffered := len(st.OrderBy) > 0 || st.Distinct // rows are held beyond the result itself
 	project := func() error {
+		if buffered && simpleBudget > 0 {
+			if simpleMem += schemaRowBytes(ctx.row) + 64; simpleMem > simpleBudget {
+				return s.simpleOver(simpleBudget)
+			}
+		}
 		r := outRow{vals: make([]Datum, len(items))}
 		if lk != nil && !lk.inVisit {
 			r.lkey = sc.t.KeyOf(ctx.row)
@@ -1503,6 +1523,11 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 		k := groupKey(keys)
 		g := groups[k]
 		if g == nil {
+			if simpleBudget > 0 {
+				if simpleMem += schemaRowBytes(r) + int64(len(k)) + 96 + 64*int64(len(aggs)); simpleMem > simpleBudget {
+					return false, s.simpleOver(simpleBudget)
+				}
+			}
 			g = &group{rep: r, keys: keys}
 			for _, f := range aggs {
 				a := &aggState{f: f}
@@ -1569,6 +1594,9 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 			if err != nil {
 				return nil, err
 			}
+			if ok && simpleBudget > 0 && int64(len(g))*(256+64*int64(len(aggs))) > simpleBudget {
+				return nil, s.simpleOver(simpleBudget)
+			}
 			if ok {
 				groups, order, done = g, o, true
 			}
@@ -1591,8 +1619,22 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 				return nil, err
 			}
 		} else if !done {
-			if err := s.scanRows(tx, sc.t, ctx, st.Where, visit); err != nil {
-				return nil, err
+			used := false
+			if !grouped && lk == nil && ordIx == nil {
+				stopAtLimit := limit > 0 && !st.Distinct && pkOrdered(sc.t, sc.alias, st, items, orderOut)
+				ordStop = stopAtLimit
+				ok, err := s.scanPKRange(tx, sc.t, sc.alias, ctx, st.Where, visit)
+				if err != nil {
+					return nil, err
+				}
+				if used = ok; !ok {
+					ordStop = false
+				}
+			}
+			if !used {
+				if err := s.scanRows(tx, sc.t, ctx, st.Where, visit); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

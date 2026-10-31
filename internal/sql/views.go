@@ -42,84 +42,12 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 	if s.Views == nil || s.explicit || !t.Columnar {
 		return nil, nil, false, nil
 	}
-	col := func(x Expr) (int, bool) {
-		c, ok := x.(*ColRef)
-		if !ok {
-			return 0, false
-		}
-		i, err := ctx.sc.resolve(c)
-		return i, err == nil
-	}
-	q := &proj.AggQuery{Table: t.Name, SQLNulls: true}
-	var gcols []int
-	truncated := false
-	for _, g := range st.GroupBy {
-		unit := ""
-		if f, ok := g.(*Func); ok && f.Name == "date_trunc" && len(f.Args) == 2 {
-			// date_trunc('unit', column): grouped by bucket on the view
-			l, isLit := f.Args[0].(*Lit)
-			if !isLit || l.V.K != KText || !proj.TruncUnitOK(l.V.S) {
-				return nil, nil, false, nil
-			}
-			unit, g = l.V.S, f.Args[1]
-		}
-		ci, ok := col(g)
-		if !ok || t.Columns[ci].T == schema.TFloat || slices.Contains(gcols, ci) ||
-			unit != "" && (!t.Columns[ci].T.IsTime() || !onlyTruncated(st, ci, unit, col)) {
-			return nil, nil, false, nil
-		}
-		gcols = append(gcols, ci)
-		q.GroupBy = append(q.GroupBy, t.Columns[ci].Name)
-		q.GroupTrunc = append(q.GroupTrunc, unit)
-		truncated = truncated || unit != ""
-	}
-	if !truncated {
-		q.GroupTrunc = nil
-	}
-	names := make([]string, len(aggs))
-	distinct := -1                    // column of the count(DISTINCT) aggregates: one only
-	isTime := make([]bool, len(aggs)) // min / max of a timestamp column
-	tcol := make([]schema.ColType, len(aggs))
-	for i, f := range aggs {
-		names[i] = "a" + strconv.Itoa(i)
-		a := proj.Agg{Fn: f.Name, As: names[i], Distinct: f.Distinct}
-		switch {
-		case !aggFuncs[f.Name] || f.Distinct && (f.Name != "count" || f.Star):
-			return nil, nil, false, nil
-		case f.Star:
-			if f.Name != "count" {
-				return nil, nil, false, nil
-			}
-		default:
-			if len(f.Args) != 1 {
-				return nil, nil, false, nil
-			}
-			ci, ok := col(f.Args[0])
-			if !ok {
-				return nil, nil, false, nil
-			}
-			ty := t.Columns[ci].T
-			isTime[i] = ty.IsTime() && (f.Name == "min" || f.Name == "max")
-			tcol[i] = ty
-			if f.Name != "count" && ty != schema.TInt && ty != schema.TFloat && ty != schema.TNumeric && !isTime[i] {
-				return nil, nil, false, nil
-			}
-			if f.Distinct {
-				if t.Columns[ci].T == schema.TFloat || distinct >= 0 && distinct != ci {
-					return nil, nil, false, nil
-				}
-				distinct = ci
-			}
-			a.Col = t.Columns[ci].Name
-		}
-		q.Aggs = append(q.Aggs, a)
-	}
-	if !conjFilters(st.Where, t, ctx, col, q) {
-		return nil, nil, false, nil
-	}
-	if _, point, err := keyLookups(t, st.Where, ctx); err != nil || point {
+	vq, ok, err := s.buildViewQuery(st, t, ctx, aggs)
+	if err != nil || !ok {
 		return nil, nil, false, err
 	}
+	q, gcols, names, isTime, tcol := vq.q, vq.gcols, vq.names, vq.isTime, vq.tcol
+	col := colResolver(ctx)
 	if limit > 0 && st.Having == nil && !st.Distinct && len(st.OrderBy) == 1 {
 		x := st.OrderBy[0].X
 		if orderOut[0] >= 0 {
@@ -197,6 +125,113 @@ func (s *Session) viewGroups(tx *core.Tx, st *Select, t *schema.Table, ctx *eval
 	}
 	ViewAggregates.Add(1)
 	return groups, order, true, nil
+}
+
+// colResolver maps a plain column reference to its column index.
+func colResolver(ctx *evalCtx) func(Expr) (int, bool) {
+	return func(x Expr) (int, bool) {
+		c, ok := x.(*ColRef)
+		if !ok {
+			return 0, false
+		}
+		i, err := ctx.sc.resolve(c)
+		return i, err == nil
+	}
+}
+
+// viewQuery is a SELECT's aggregate part expressed for the columnar view.
+type viewQuery struct {
+	q      *proj.AggQuery
+	gcols  []int
+	names  []string
+	isTime []bool
+	tcol   []schema.ColType
+}
+
+// buildViewQuery expresses the grouping, aggregates and WHERE of st as a
+// view query; ok=false when the view cannot express them. It is shared by
+// the executor (viewGroups), the lane classifier and EXPLAIN, so all three
+// agree on which statements the view answers.
+func (s *Session) buildViewQuery(st *Select, t *schema.Table, ctx *evalCtx, aggs []*Func) (*viewQuery, bool, error) {
+	col := func(x Expr) (int, bool) {
+		c, ok := x.(*ColRef)
+		if !ok {
+			return 0, false
+		}
+		i, err := ctx.sc.resolve(c)
+		return i, err == nil
+	}
+	q := &proj.AggQuery{Table: t.Name, SQLNulls: true}
+	var gcols []int
+	truncated := false
+	for _, g := range st.GroupBy {
+		unit := ""
+		if f, ok := g.(*Func); ok && f.Name == "date_trunc" && len(f.Args) == 2 {
+			// date_trunc('unit', column): grouped by bucket on the view
+			l, isLit := f.Args[0].(*Lit)
+			if !isLit || l.V.K != KText || !proj.TruncUnitOK(l.V.S) {
+				return nil, false, nil
+			}
+			unit, g = l.V.S, f.Args[1]
+		}
+		ci, ok := col(g)
+		if !ok || t.Columns[ci].T == schema.TFloat || slices.Contains(gcols, ci) ||
+			unit != "" && (!t.Columns[ci].T.IsTime() || !onlyTruncated(st, ci, unit, col)) {
+			return nil, false, nil
+		}
+		gcols = append(gcols, ci)
+		q.GroupBy = append(q.GroupBy, t.Columns[ci].Name)
+		q.GroupTrunc = append(q.GroupTrunc, unit)
+		truncated = truncated || unit != ""
+	}
+	if !truncated {
+		q.GroupTrunc = nil
+	}
+	names := make([]string, len(aggs))
+	distinct := -1                    // column of the count(DISTINCT) aggregates: one only
+	isTime := make([]bool, len(aggs)) // min / max of a timestamp column
+	tcol := make([]schema.ColType, len(aggs))
+	for i, f := range aggs {
+		names[i] = "a" + strconv.Itoa(i)
+		a := proj.Agg{Fn: f.Name, As: names[i], Distinct: f.Distinct}
+		switch {
+		case !aggFuncs[f.Name] || f.Distinct && (f.Name != "count" || f.Star):
+			return nil, false, nil
+		case f.Star:
+			if f.Name != "count" {
+				return nil, false, nil
+			}
+		default:
+			if len(f.Args) != 1 {
+				return nil, false, nil
+			}
+			ci, ok := col(f.Args[0])
+			if !ok {
+				return nil, false, nil
+			}
+			ty := t.Columns[ci].T
+			isTime[i] = ty.IsTime() && (f.Name == "min" || f.Name == "max")
+			tcol[i] = ty
+			if f.Name != "count" && ty != schema.TInt && ty != schema.TFloat && ty != schema.TNumeric && !isTime[i] {
+				return nil, false, nil
+			}
+			if f.Distinct {
+				if t.Columns[ci].T == schema.TFloat || distinct >= 0 && distinct != ci {
+					return nil, false, nil
+				}
+				distinct = ci
+			}
+			a.Col = t.Columns[ci].Name
+		}
+		q.Aggs = append(q.Aggs, a)
+	}
+	if !conjFilters(st.Where, t, ctx, col, q) {
+		return nil, false, nil
+	}
+	if _, point, err := keyLookups(t, st.Where, ctx); err != nil || point {
+		return nil, false, err
+	}
+	return &viewQuery{q: q, gcols: gcols, names: names, isTime: isTime, tcol: tcol}, true, nil
 }
 
 // onlyTruncated reports whether column ci appears in the select list,

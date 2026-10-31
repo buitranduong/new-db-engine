@@ -149,7 +149,7 @@ func typesFuncKind(name string, args []Kind) (Kind, bool) {
 		return KText, true
 	case "bit_count", "get_bit", "numnode":
 		return KInt, true
-	case "stask_tsnot", "stask_tsphrase", "querytree":
+	case "stask_tsnot", "querytree":
 		return KText, true
 	case "trunc":
 		if len(args) == 1 && args[0] == KText { // trunc(macaddr)

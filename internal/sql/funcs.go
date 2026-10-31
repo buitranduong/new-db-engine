@@ -1421,6 +1421,9 @@ func funcKind(name string, args []Kind) Kind {
 	if k, ok := userFuncKind(name); ok {
 		return k
 	}
+	if k, ok := fnKindOf(name, args); ok {
+		return k
+	}
 	if k, ok := jsonarrFuncKind(name, args); ok {
 		return k
 	}

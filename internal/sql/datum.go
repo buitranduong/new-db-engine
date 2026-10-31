@@ -265,6 +265,11 @@ func coerce(d Datum, k Kind) (Datum, error) {
 	if d.K == k || d.IsNull() {
 		return d, nil
 	}
+	if d.K == KJSONB || d.K == KJSON {
+		if r, ok, err := jsonScalarCoerce(d, k); ok {
+			return r, err
+		}
+	}
 	bad := func(typ string) (Datum, error) {
 		return Null, errf(codeInvalidText, "invalid input syntax for type %s: %q", typ, d.S)
 	}

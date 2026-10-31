@@ -161,7 +161,7 @@ func windowPartition(ctx *evalCtx, w *winCall, idx []int, okeys, args [][]Datum,
 				return err
 			}
 			if k <= 0 {
-				return errf(codeInvalidParameter, "argument of ntile must be greater than zero")
+				return errf("22014", "argument of ntile must be greater than zero")
 			}
 			size, extra := int64(n)/k, int64(n)%k
 			// the first extra buckets hold size+1 rows
@@ -218,7 +218,7 @@ func windowPartition(ctx *evalCtx, w *winCall, idx []int, okeys, args [][]Datum,
 					return err
 				}
 				if k <= 0 {
-					return errf(codeInvalidParameter, "argument of nth_value must be greater than zero")
+					return errf("22016", "argument of nth_value must be greater than zero")
 				}
 				if j := lo + int(k) - 1; j <= hi {
 					v = arg(j, 0)

@@ -446,8 +446,13 @@ func extFuncTy(e *Func, argTy func(i int) pgTy) (pgTy, bool) {
 	}
 	if len(e.Args) >= 1 {
 		switch e.Name {
-		case "stask_tsnot", "stask_tsphrase":
+		case "stask_tsnot":
 			return pgTy{oid: 3615, mod: -1}, true
+		case "stask_tsphrase": // tsquery <-> tsquery, otherwise the pg_trgm distance (fn_trgm.go)
+			if argTy(0).oid == 3615 || len(e.Args) > 1 && argTy(1).oid == 3615 {
+				return pgTy{oid: 3615, mod: -1}, true
+			}
+			return pgTy{oid: tyFloat4, mod: -1}, true
 		case "stask_overlap":
 			if argTy(0).oid == 3615 {
 				return pgTy{oid: 3615, mod: -1}, true

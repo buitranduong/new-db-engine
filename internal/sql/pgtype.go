@@ -140,7 +140,7 @@ func (t pgTy) family() Kind {
 		return KInt
 	case tyFloat4, tyFloat8:
 		return KFloat
-	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249:
+	case tyVarchar, tyBpchar, tyName, tyText, tyTime, tyVoid, tyInet, tyCidr, tyMacaddr, 2249, tyRegtype, tyTSVector, tyTSQuery:
 		return KText
 	case tyDate:
 		return KDate
@@ -247,6 +247,11 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 		if t, ok := extBinaryTy(e, inferTy(e.L, leaf), inferTy(e.R, leaf)); ok {
 			return t
 		}
+		if e.Op == "||" {
+			if inferTy(e.L, leaf).oid == tyTSVector && inferTy(e.R, leaf).oid == tyTSVector {
+				return pgTy{oid: tyTSVector, mod: -1}
+			}
+		}
 		switch e.Op {
 		case "+", "-", "*", "/", "%", "&", "|", "#", "<<", ">>":
 			l, r := inferTy(e.L, leaf), inferTy(e.R, leaf)
@@ -283,6 +288,9 @@ func inferTy(x Expr, leaf func(Expr) (pgTy, bool)) pgTy {
 			return t
 		}
 		if t, ok := supfixFuncTy(e); ok {
+			return t
+		}
+		if t, ok := fnInferTy(e, leaf); ok {
 			return t
 		}
 		if e.Over != nil && !tySameAsArg[e.Name] && e.Name != "ntile" {
@@ -382,6 +390,10 @@ func pgTyName(t pgTy) string {
 		}
 	}
 	switch t.oid {
+	case tyTSVector:
+		return "tsvector"
+	case tyTSQuery:
+		return "tsquery"
 	case tyBool:
 		return "boolean"
 	case tyBytea:

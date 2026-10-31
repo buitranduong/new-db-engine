@@ -40,8 +40,8 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			if k, ok := jsonarrBinKind("-", typeOf(e.L, sc, pk), typeOf(e.R, sc, pk)); ok {
 				return k
 			}
-		case "<<", ">>":
-			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText { // inet containment (inet.go)
+		case "<<", ">>", "%": // inet containment (inet.go); pg_trgm similarity (fn_trgm.go)
+			if typeOf(e.L, sc, pk) == KText && typeOf(e.R, sc, pk) == KText {
 				return KBool
 			}
 		case "^":
@@ -97,6 +97,15 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 				return KText
 			}
 			return typeOf(e.Args[0], sc, pk)
+		}
+		if _, reg := fnReg[e.Name]; reg {
+			kinds := make([]Kind, len(e.Args))
+			for i, a := range e.Args {
+				kinds[i] = typeOf(a, sc, pk)
+			}
+			if k, ok := fnKindOf(e.Name, kinds); ok {
+				return k
+			}
 		}
 		switch e.Name {
 		case "count", "length", "char_length":

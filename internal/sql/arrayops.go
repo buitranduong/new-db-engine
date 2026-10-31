@@ -1017,6 +1017,18 @@ func anyArr(args []Datum) (Datum, bool, error) {
 			sawNull = true
 			continue
 		}
+		if pok, isPat, err := anyArrPattern(op, x, e); isPat {
+			if err != nil {
+				return Null, true, err
+			}
+			if all && !pok {
+				return BoolD(false), true, nil
+			}
+			if !all && pok {
+				return BoolD(true), true, nil
+			}
+			continue
+		}
 		cmp, err := compare(x, e)
 		if err != nil {
 			return Null, true, err

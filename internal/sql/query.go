@@ -1023,6 +1023,9 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 						}
 					}
 				}
+				if f.Name == "generate_series" && len(f.Args) >= 2 && seriesColKind(f.Args) == KNumeric {
+					k, t = KNumeric, pgTy{}
+				}
 				if f.Name == "generate_subscripts" {
 					k = KInt
 				}
@@ -1040,13 +1043,13 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 			if f, ok := e.(*Func); ok && f.Name == "pg_typeof" && len(f.Args) == 1 {
 				if p, ok := f.Args[0].(*Param); ok {
 					if n := paramCastTypeName(st, p.N); n != "" {
-						return &Lit{TextD(n)}, true
+						return &Func{Name: "stask_regtype", Args: []Expr{&Lit{TextD(n)}}}, true
 					}
 				}
 				ptk, ptt := staticKind(f.Args[0], sk), inferTy(f.Args[0], slotTy)
 				ptk, ptt = jsonarrCol(f.Args[0], ptk, ptt, func(x Expr) Kind { return staticKind(x, sk) }, slotTy)
 				if n := staticTypeName(f.Args[0], ptt, ptk); n != "" {
-					return &Lit{TextD(n)}, true
+					return &Func{Name: "stask_regtype", Args: []Expr{&Lit{TextD(n)}}}, true
 				}
 			}
 			return nil, false
@@ -1584,8 +1587,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			if k, ok := jsonarrBinKind("-", staticKind(e.L, kinds), staticKind(e.R, kinds)); ok {
 				return k
 			}
-		case "<<", ">>":
-			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText { // inet containment (inet.go)
+		case "<<", ">>", "%": // inet containment (inet.go); pg_trgm similarity (fn_trgm.go)
+			if staticKind(e.L, kinds) == KText && staticKind(e.R, kinds) == KText {
 				return KBool
 			}
 		case "^":
@@ -2695,9 +2698,13 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 		}
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
 		if f.F.Name == "generate_series" {
-			fp.c[0].ty = seriesTy(fp.args)
 			if k := seriesTimeKind(f.F.Args); k != KNull { // generate_series(timestamp, timestamp, interval)
+				fp.c[0].ty = seriesTy(fp.args)
 				fp.c[0].kind = k
+			} else if k := seriesColKind(f.F.Args); k != KInt {
+				fp.c[0].kind = k
+			} else {
+				fp.c[0].ty = seriesTy(fp.args)
 			}
 		}
 	case "stask_history":
@@ -2860,6 +2867,9 @@ func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([
 				t = addIntervalTS(t, step, 1)
 			}
 			return out, nil
+		}
+		if done, err := fnGenSeries(args, maxRows, emit); done { // numeric, float and the rest (fn_*.go)
+			return out, err
 		}
 		var vals [3]int64
 		vals[2] = 1
@@ -3312,7 +3322,7 @@ func (b *binder) wholeRowJSON(x Expr, fn string) (Expr, bool, error) {
 	if len(cols) == 0 {
 		return nil, false, nil
 	}
-	build := "json_build_object"
+	build := "stask_json_row"
 	if fn == "to_jsonb" || fn == "jsonb_agg" {
 		build = "jsonb_build_object"
 	}

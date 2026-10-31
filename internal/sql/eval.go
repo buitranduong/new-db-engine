@@ -479,6 +479,9 @@ func (c *evalCtx) binary(e *Binary) (Datum, error) {
 	if d, ok, err := typesBinary(e.Op, l, r); ok { // ranges, bit strings, macaddr8 (exttypes.go)
 		return d, err
 	}
+	if e.Op == "%" && l.K == KText && r.K == KText {
+		return c.trgmPercent(l, r)
+	}
 	if (e.Op == "<<" || e.Op == ">>") && l.K == KText {
 		if d, ok := inetOp(e.Op, l, r); ok {
 			return d, nil
@@ -747,6 +750,9 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 		}
 	}
 	if v, ok, err := c.callUser(f, args); ok {
+		return v, err
+	}
+	if v, ok, err := c.fnCall(f, args); ok {
 		return v, err
 	}
 	if v, ok, err := c.callPre(f, args); ok {

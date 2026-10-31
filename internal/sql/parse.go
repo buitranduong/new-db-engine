@@ -1463,6 +1463,37 @@ func (p *parser) predicate() (Expr, error) {
 			}
 			l = bin
 			lcoll = nil
+		case p.isKw("overlaps"):
+			p.next()
+			r, err := p.bitExpr()
+			if err != nil {
+				return nil, err
+			}
+			lr, ok1 := l.(*RowExpr)
+			rr, ok2 := r.(*RowExpr)
+			if !ok1 || !ok2 || len(lr.Items) != 2 || len(rr.Items) != 2 {
+				return nil, p.errHere("syntax error at or near \"overlaps\"")
+			}
+			l = &Func{Name: "stask_overlaps", Disp: "overlaps", Args: []Expr{lr.Items[0], lr.Items[1], rr.Items[0], rr.Items[1]}}
+		case t.k == tOp && (t.s == "~~" || t.s == "!~~" || t.s == "~~*" || t.s == "!~~*"):
+			p.next()
+			r, err := p.bitExpr()
+			if err != nil {
+				return nil, err
+			}
+			l = &Like{X: l, Pat: r, Not: strings.HasPrefix(t.s, "!"), ICase: strings.HasSuffix(t.s, "*")}
+		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*") && (p.peekN(1).s == "any" || p.peekN(1).s == "some" || p.peekN(1).s == "all") && p.peekN(2).s == "(":
+			p.next()
+			all := p.next().s == "all"
+			p.next()
+			arr, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(")"); err != nil {
+				return nil, err
+			}
+			l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(t.s)}, &Lit{BoolD(all)}}}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
 			r, err := p.bitExpr()
@@ -1577,6 +1608,23 @@ func (p *parser) predicate() (Expr, error) {
 				}
 			case p.acceptKw("like"), p.acceptKw("ilike"):
 				ic := p.toks[p.i-1].s == "ilike"
+				if (p.isKw("any") || p.isKw("some") || p.isKw("all")) && p.peekN(1).s == "(" { // x LIKE ANY (array)
+					all := p.next().s == "all"
+					p.next()
+					arr, err := p.expr()
+					if err != nil {
+						return nil, err
+					}
+					if err := p.expectOp(")"); err != nil {
+						return nil, err
+					}
+					op := map[bool]string{true: "ilike", false: "like"}[ic]
+					if not {
+						op = "not " + op
+					}
+					l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(op)}, &Lit{BoolD(all)}}}
+					continue
+				}
 				pat, err := p.bitExpr()
 				if err != nil {
 					return nil, err
@@ -1640,6 +1688,10 @@ func (p *parser) mulExpr() (Expr, error) {
 		op := p.next().s
 		var r Expr
 		if r, err = p.powExpr(); err == nil {
+			if op == "%" && (isTextLit(l) || isTextLit(r) || isAnyTextLit(l) && isAnyTextLit(r)) { // pg_trgm similarity: text % text
+				l = &Func{Name: "stask_trgm_sim", Disp: "?column?", Args: []Expr{l, r}}
+				continue
+			}
 			l = &Binary{Op: op, L: l, R: r}
 		}
 	}
@@ -1878,6 +1930,20 @@ func (p *parser) primary() (Expr, error) {
 				s := p.next()
 				return &Cast{&Lit{TextD(s.s)}, ty, pg}, nil
 			}
+		case "current_time", "localtime":
+			p.next()
+			var targs []Expr
+			if p.acceptOp("(") {
+				if p.peek().k != tNumber {
+					return nil, p.errHere("syntax error at or near %q", p.peek().s)
+				}
+				targs = append(targs, &Lit{IntD(0)})
+				targs[0].(*Lit).V, _ = coerce(TextD(p.next().s), KInt)
+				if err := p.expectOp(")"); err != nil {
+					return nil, err
+				}
+			}
+			return &Func{Name: t.s, Args: targs}, nil
 		case "current_timestamp", "localtimestamp":
 			p.next()
 			if p.acceptOp("(") { // current_timestamp(3): the precision is accepted; values keep microseconds
@@ -1888,6 +1954,9 @@ func (p *parser) primary() (Expr, error) {
 				if err := p.expectOp(")"); err != nil {
 					return nil, err
 				}
+			}
+			if t.s == "localtimestamp" {
+				return &Cast{&Func{Name: "now"}, "timestamp", "timestamp"}, nil
 			}
 			return &Func{Name: "now"}, nil
 		}
@@ -1979,11 +2048,35 @@ func (p *parser) funcCall(name string) (Expr, error) {
 			return &Func{Name: "overlay", Args: args}, p.expectOp(")")
 		}
 		p.i = save
+	case "normalize": // normalize(x [, NFC|NFD|NFKC|NFKD])
+		x, err := p.expr()
+		if err != nil {
+			return nil, err
+		}
+		args := []Expr{x}
+		if p.acceptOp(",") {
+			args = append(args, &Lit{TextD(strings.ToUpper(p.next().s))})
+		}
+		return &Func{Name: "normalize", Args: args}, p.expectOp(")")
 	case "substring", "substr":
 		disp := name
 		x, err := p.expr()
 		if err != nil {
 			return nil, err
+		}
+		if p.acceptKw("similar") { // substring(x similar pattern escape e)
+			pat, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectKw("escape"); err != nil {
+				return nil, err
+			}
+			esc, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			return &Func{Name: "substr", Disp: disp, Args: []Expr{x, pat, esc}}, p.expectOp(")")
 		}
 		if p.isKw("from") || p.isKw("for") {
 			args := []Expr{x, &Lit{IntD(1)}}

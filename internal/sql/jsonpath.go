@@ -12,8 +12,9 @@ import (
 // <= > >= && || ! exists() and parentheses, the methods .size() .type()
 // .double() .abs() .floor() .ceiling(), and the functions jsonb_path_exists
 // / match / query / query_first / query_array and the operators @? and @@.
-// Not supported: variables ($name), like_regex, starts with, datetime
-// methods, arithmetic; they report 42601.
+// Also: variables ($name, from the vars argument), arithmetic + - * / %, like_regex,
+// starts with, last in subscripts, .** and .keyvalue(). Not supported: .datetime() and the other
+// datetime methods (42601).
 
 type jpTok struct {
 	k byte // 'i' ident, 's' string, 'n' number, 'o' operator, 0 end
@@ -27,6 +28,13 @@ func jpLex(src string) ([]jpTok, error) {
 		switch {
 		case c == ' ' || c == '\t' || c == '\n':
 			i++
+		case c == '$' && i+1 < len(src) && (src[i+1] == '_' || src[i+1] >= 'a' && src[i+1] <= 'z' || src[i+1] >= 'A' && src[i+1] <= 'Z'):
+			j := i + 1
+			for j < len(src) && (src[j] == '_' || src[j] >= 'a' && src[j] <= 'z' || src[j] >= 'A' && src[j] <= 'Z' || src[j] >= '0' && src[j] <= '9') {
+				j++
+			}
+			out = append(out, jpTok{'v', src[i+1 : j]})
+			i = j
 		case c == '"':
 			j := i + 1
 			for j < len(src) && src[j] != '"' {
@@ -67,7 +75,7 @@ func jpLex(src string) ([]jpTok, error) {
 					continue
 				}
 			}
-			if strings.IndexByte("$@.*[](),?<>!", c) < 0 {
+			if strings.IndexByte("$@.*[](),?<>!+-/%", c) < 0 {
 				return nil, errf(codeSyntax, "syntax error in jsonpath: unexpected %q", string(c))
 			}
 			out = append(out, jpTok{'o', string(c)})
@@ -84,6 +92,8 @@ type jpNode struct {
 	root byte // '$' or '@'
 	step []jpStep
 	l, r *jpNode
+	name string // variable name; pattern of like_regex
+	flag string
 }
 
 type jpStep struct {
@@ -91,6 +101,14 @@ type jpStep struct {
 	key    string
 	lo, hi int
 	pred   *jpNode
+	subs   []jpSub // array subscripts (idx)
+}
+
+// jpSub is one subscript: lo [to hi], each a number or last[-n].
+type jpSub struct {
+	lo, hi         int
+	loLast, hiLast bool
+	single         bool
 }
 
 type jpParser struct {
@@ -159,13 +177,40 @@ func (p *jpParser) not() (*jpNode, error) {
 		x, err := p.not()
 		return &jpNode{op: "not", l: x}, err
 	}
-	l, err := p.primary()
+	l, err := p.additive()
 	if err != nil {
 		return nil, err
 	}
+	if t := p.peek(); t.k == 'i' && t.s == "like_regex" {
+		p.i++
+		pt := p.peek()
+		if pt.k != 's' {
+			return nil, jpErr()
+		}
+		p.i++
+		n := &jpNode{op: "likere", l: l, name: pt.s}
+		if ft := p.peek(); ft.k == 'i' && ft.s == "flag" {
+			p.i++
+			fs := p.peek()
+			if fs.k != 's' {
+				return nil, jpErr()
+			}
+			p.i++
+			n.flag = fs.s
+		}
+		return n, nil
+	}
+	if t := p.peek(); t.k == 'i' && t.s == "starts" && p.t[p.i+1].k == 'i' && p.t[p.i+1].s == "with" {
+		p.i += 2
+		r, err := p.additive()
+		if err != nil {
+			return nil, err
+		}
+		return &jpNode{op: "starts", l: l, r: r}, nil
+	}
 	for _, op := range []string{"==", "!=", "<>", "<=", ">=", "<", ">"} {
 		if p.acceptOp(op) {
-			r, err := p.primary()
+			r, err := p.additive()
 			if err != nil {
 				return nil, err
 			}
@@ -178,6 +223,45 @@ func (p *jpParser) not() (*jpNode, error) {
 	return l, nil
 }
 
+func (p *jpParser) additive() (*jpNode, error) {
+	l, err := p.mult()
+	for err == nil && (p.isOp("+") || p.isOp("-")) {
+		op := p.peek().s
+		p.i++
+		var r *jpNode
+		if r, err = p.mult(); err == nil {
+			l = &jpNode{op: "arith", cmp: op, l: l, r: r}
+		}
+	}
+	return l, err
+}
+
+func (p *jpParser) mult() (*jpNode, error) {
+	l, err := p.unary()
+	for err == nil && (p.isOp("*") || p.isOp("/") || p.isOp("%")) {
+		op := p.peek().s
+		p.i++
+		var r *jpNode
+		if r, err = p.unary(); err == nil {
+			l = &jpNode{op: "arith", cmp: op, l: l, r: r}
+		}
+	}
+	return l, err
+}
+
+func (p *jpParser) unary() (*jpNode, error) {
+	if p.isOp("-") || p.isOp("+") {
+		op := p.peek().s
+		p.i++
+		x, err := p.unary()
+		if err != nil {
+			return nil, err
+		}
+		return &jpNode{op: "neg", cmp: op, l: x}, nil
+	}
+	return p.primary()
+}
+
 func (p *jpParser) primary() (*jpNode, error) {
 	t := p.peek()
 	switch {
@@ -187,6 +271,9 @@ func (p *jpParser) primary() (*jpNode, error) {
 	case t.k == 's':
 		p.i++
 		return &jpNode{op: "lit", lit: &jn{t: 's', s: t.s}}, nil
+	case t.k == 'v':
+		p.i++
+		return &jpNode{op: "var", name: t.s}, nil
 	case t.k == 'i' && (t.s == "true" || t.s == "false"):
 		p.i++
 		return &jpNode{op: "lit", lit: &jn{t: 'b', s: t.s}}, nil
@@ -215,6 +302,9 @@ func (p *jpParser) primary() (*jpNode, error) {
 			case p.acceptOp("."):
 				t := p.peek()
 				switch {
+				case p.isOp("*") && p.t[p.i+1].k == 'o' && p.t[p.i+1].s == "*":
+					p.i += 2
+					n.step = append(n.step, jpStep{kind: "anyall"})
 				case p.acceptOp("*"):
 					n.step = append(n.step, jpStep{kind: "wild"})
 				case t.k == 'i' || t.k == 's':
@@ -235,23 +325,56 @@ func (p *jpParser) primary() (*jpNode, error) {
 				if p.acceptOp("*") {
 					n.step = append(n.step, jpStep{kind: "all"})
 				} else {
-					lo := p.peek()
-					if lo.k != 'n' {
-						return nil, jpErr()
-					}
-					p.i++
-					a, _ := strconv.Atoi(lo.s)
-					b := a
-					if t := p.peek(); t.k == 'i' && t.s == "to" {
-						p.i++
-						hi := p.peek()
-						if hi.k != 'n' {
-							return nil, jpErr()
+					st := jpStep{kind: "idx"}
+					atom := func() (int, bool, error) {
+						t := p.peek()
+						switch {
+						case t.k == 'n':
+							p.i++
+							v, err := strconv.Atoi(t.s)
+							return v, false, err
+						case t.k == 'i' && t.s == "last":
+							p.i++
+							off := 0
+							if p.isOp("-") || p.isOp("+") {
+								sign := 1
+								if p.peek().s == "-" {
+									sign = -1
+								}
+								p.i++
+								nt := p.peek()
+								if nt.k != 'n' {
+									return 0, false, jpErr()
+								}
+								p.i++
+								v, err := strconv.Atoi(nt.s)
+								off = sign * v
+								return off, true, err
+							}
+							return 0, true, nil
 						}
-						p.i++
-						b, _ = strconv.Atoi(hi.s)
+						return 0, false, jpErr()
 					}
-					n.step = append(n.step, jpStep{kind: "idx", lo: a, hi: b})
+					for {
+						lo, loLast, err := atom()
+						if err != nil {
+							return nil, err
+						}
+						sub := jpSub{lo: lo, hi: lo, loLast: loLast, hiLast: loLast, single: true}
+						if t := p.peek(); t.k == 'i' && t.s == "to" {
+							p.i++
+							hi, hiLast, err := atom()
+							if err != nil {
+								return nil, err
+							}
+							sub.hi, sub.hiLast, sub.single = hi, hiLast, false
+						}
+						st.subs = append(st.subs, sub)
+						if !p.acceptOp(",") {
+							break
+						}
+					}
+					n.step = append(n.step, st)
 				}
 				if !p.acceptOp("]") {
 					return nil, jpErr()
@@ -274,6 +397,15 @@ func (p *jpParser) primary() (*jpNode, error) {
 type jpEval struct {
 	strict bool
 	root   *jn
+	vars   *jn
+}
+
+// anyAll appends it and every value nested in it, depth first.
+func anyAll(it *jn, out *[]*jn) {
+	*out = append(*out, it)
+	for _, k := range it.kids {
+		anyAll(k, out)
+	}
 }
 
 func (e *jpEval) steps(in []*jn, steps []jpStep) ([]*jn, error) {
@@ -322,13 +454,23 @@ func (e *jpEval) steps(in []*jn, steps []jpStep) ([]*jn, error) {
 				} else if e.strict {
 					return nil, errf("22039", "jsonpath array accessor can only be applied to an array")
 				}
-				for i := st.lo; i <= st.hi; i++ {
-					if i >= 0 && i < len(arr) {
-						out = append(out, arr[i])
-					} else if e.strict {
+				for _, sb := range st.subs {
+					lo, hi := sb.lo, sb.hi
+					if sb.loLast {
+						lo = len(arr) - 1 + sb.lo
+					}
+					if sb.hiLast {
+						hi = len(arr) - 1 + sb.hi
+					}
+					if e.strict && (lo < 0 || hi >= len(arr) || lo > hi && !sb.single) {
 						return nil, errf("22033", "jsonpath array subscript is out of bounds")
 					}
+					for i := max(lo, 0); i <= hi && i < len(arr); i++ {
+						out = append(out, arr[i])
+					}
 				}
+			case "anyall":
+				anyAll(it, &out)
 			case "filter":
 				items := []*jn{it}
 				if it.t == 'a' && !e.strict {
@@ -353,6 +495,13 @@ func (e *jpEval) steps(in []*jn, steps []jpStep) ([]*jn, error) {
 					}
 				case "type":
 					out = append(out, &jn{t: 's', s: jtype(it)})
+				case "keyvalue":
+					if it.t != 'o' {
+						return nil, errf("22039", "jsonpath item method .keyvalue() can only be applied to an object")
+					}
+					for i, k := range it.keys {
+						out = append(out, &jn{t: 'o', keys: []string{"key", "value", "id"}, kids: []*jn{{t: 's', s: k}, it.kids[i], {t: '#', s: "0"}}})
+					}
 				case "double", "abs", "floor", "ceiling":
 					x, err := pgnum.Parse(it.s)
 					if it.t != '#' && it.t != 's' || err != nil {
@@ -384,6 +533,13 @@ func (e *jpEval) seq(n *jpNode, cur *jn) ([]*jn, error) {
 	switch n.op {
 	case "lit":
 		return []*jn{n.lit}, nil
+	case "var":
+		if e.vars == nil || e.vars.field(n.name) == nil {
+			return nil, errf("42704", "could not find jsonpath variable \"%s\"", n.name)
+		}
+		return []*jn{e.vars.field(n.name)}, nil
+	case "arith", "neg":
+		return e.arith(n, cur)
 	case "path":
 		base := e.root
 		if n.root == '@' {
@@ -421,6 +577,38 @@ func (e *jpEval) truth(n *jpNode, cur *jn) (bool, error) {
 			return false, nil
 		}
 		return len(s) > 0, err
+	case "likere":
+		ls, err := e.seq(n.l, cur)
+		if err != nil {
+			return false, err
+		}
+		re, err := pgRegexCompile(n.name, jpRegexFlags(n.flag))
+		if err != nil {
+			return false, err
+		}
+		for _, a := range ls {
+			if a.t == 's' && re.MatchString(a.s) {
+				return true, nil
+			}
+		}
+		return false, nil
+	case "starts":
+		ls, err := e.seq(n.l, cur)
+		if err != nil {
+			return false, err
+		}
+		rs, err := e.seq(n.r, cur)
+		if err != nil {
+			return false, err
+		}
+		for _, a := range ls {
+			for _, b := range rs {
+				if a.t == 's' && b.t == 's' && strings.HasPrefix(a.s, b.s) {
+					return true, nil
+				}
+			}
+		}
+		return false, nil
 	case "cmp":
 		ls, err := e.seq(n.l, cur)
 		if err != nil {
@@ -493,8 +681,18 @@ func jsonPathRun(args []Datum) ([]*jn, *jpParser, *jpNode, bool, error) {
 	}
 	silent := len(args) >= 4 && args[3].Bool()
 	e := &jpEval{strict: p.strict, root: j}
+	if len(args) >= 3 && !args[2].IsNull() {
+		vj, _, verr := jsonIn(args[2])
+		if verr != nil {
+			return nil, nil, nil, false, verr
+		}
+		if vj.t != 'o' {
+			return nil, nil, nil, false, errf("22023", "\"vars\" argument is not an object")
+		}
+		e.vars = vj
+	}
 	s, err := e.seq(n, j)
-	if err != nil && silent {
+	if err != nil && silent && AsError(err).Code != "42704" {
 		return nil, p, n, true, nil
 	}
 	return s, p, n, false, err
@@ -562,4 +760,99 @@ func jsonPathQuery(args []Datum) ([][]Datum, error) {
 		out = append(out, []Datum{d})
 	}
 	return out, nil
+}
+
+// jpRegexFlags maps the flag letters of like_regex (i s m x q) to the engine's.
+func jpRegexFlags(f string) string {
+	out := ""
+	for _, c := range f {
+		switch c {
+		case 'i':
+			out += "i"
+		case 'm':
+			out += "n"
+		case 'q':
+			out += "q"
+		case 'x':
+			out += "x"
+		}
+	}
+	return out
+}
+
+// arith evaluates unary and binary arithmetic over singleton numeric operands (lax mode unwraps arrays).
+func (e *jpEval) arith(n *jpNode, cur *jn) ([]*jn, error) {
+	num := func(x *jpNode) ([]pgnum.Dec, error) {
+		s, err := e.seq(x, cur)
+		if err != nil {
+			return nil, err
+		}
+		var out []pgnum.Dec
+		for _, it := range s {
+			items := []*jn{it}
+			if it.t == 'a' && !e.strict {
+				items = it.kids
+			}
+			for _, c := range items {
+				if c.t != '#' {
+					return nil, errf("22038", "operand of unary jsonpath operator %s is not a numeric value", n.cmp)
+				}
+				d, err := pgnum.Parse(c.s)
+				if err != nil {
+					return nil, errf("22038", "operand of jsonpath operator %s is not a numeric value", n.cmp)
+				}
+				out = append(out, d)
+			}
+		}
+		return out, nil
+	}
+	if n.op == "neg" {
+		xs, err := num(n.l)
+		if err != nil {
+			return nil, err
+		}
+		var out []*jn
+		for _, x := range xs {
+			if n.cmp == "-" {
+				x = x.Neg()
+			}
+			out = append(out, &jn{t: '#', s: x.String()})
+		}
+		return out, nil
+	}
+	ls, err := num(n.l)
+	if err != nil {
+		return nil, err
+	}
+	rs, err := num(n.r)
+	if err != nil {
+		return nil, err
+	}
+	if len(ls) != 1 || len(rs) != 1 {
+		return nil, errf("22038", "left operand of jsonpath operator %s is not a single numeric value", n.cmp)
+	}
+	a, b := ls[0], rs[0]
+	var r pgnum.Dec
+	switch n.cmp {
+	case "+":
+		r = pgnum.Add(a, b)
+	case "-":
+		r = pgnum.Sub(a, b)
+	case "*":
+		r = pgnum.Mul(a, b)
+	case "/":
+		if b.IsZero() {
+			return nil, errf(codeDivisionByZero, "division by zero")
+		}
+		r, err = pgnum.Div(a, b)
+	case "%":
+		if b.IsZero() {
+			return nil, errf(codeDivisionByZero, "division by zero")
+		}
+		r, err = pgnum.Mod(a, b)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []*jn{{t: '#', s: r.String()}}, nil
 }

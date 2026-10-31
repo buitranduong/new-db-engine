@@ -41,6 +41,12 @@ func newAgg(a *aggCall) (aggImpl, error) {
 	if impl, ok, err := supfixNewAgg(a); ok {
 		return impl, err
 	}
+	if impl, ok, err := fnNewAgg(a); ok {
+		if err == nil && a.f.Distinct {
+			impl = &distinctAgg{inner: impl, seen: map[string]bool{}}
+		}
+		return impl, err
+	}
 	want := func(lo, hi int) error {
 		if nargs < lo || nargs > hi {
 			return errf(codeUndefinedFunction, "function %s with %d arguments does not exist", f.Name, nargs)
@@ -145,15 +151,18 @@ func newAgg(a *aggCall) (aggImpl, error) {
 		return nil, errf(codeUndefinedFunction, "aggregate %s does not exist", f.Name)
 	}
 	if f.Distinct {
-		impl = &distinctAgg{inner: impl, seen: map[string]bool{}}
+		impl = &distinctAgg{inner: impl, seen: map[string]bool{}, sortIn: distinctSorted[f.Name]}
 	}
 	return impl, nil
 }
 
 // distinctAgg feeds its aggregate each distinct argument list once.
 type distinctAgg struct {
-	inner aggImpl
-	seen  map[string]bool
+	inner  aggImpl
+	seen   map[string]bool
+	sortIn bool // order-sensitive aggregate: PostgreSQL feeds DISTINCT input sorted (fn_agg.go)
+	rows   [][2][]Datum
+	fed    bool
 }
 
 func (a *distinctAgg) add(args, keys []Datum) error {
@@ -162,9 +171,21 @@ func (a *distinctAgg) add(args, keys []Datum) error {
 		return nil
 	}
 	a.seen[k] = true
+	if a.sortIn {
+		a.rows = append(a.rows, [2][]Datum{append([]Datum(nil), args...), append([]Datum(nil), keys...)})
+		return nil
+	}
 	return a.inner.add(args, keys)
 }
-func (a *distinctAgg) result() (Datum, error) { return a.inner.result() }
+func (a *distinctAgg) result() (Datum, error) {
+	if a.sortIn && !a.fed {
+		a.fed = true
+		if err := feedSorted(a.inner, a.rows); err != nil {
+			return Null, err
+		}
+	}
+	return a.inner.result()
+}
 
 // ifAgg is a ClickHouse -If combinator: the last argument filters rows.
 type ifAgg struct{ inner aggImpl }

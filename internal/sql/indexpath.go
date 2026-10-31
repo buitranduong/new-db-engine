@@ -120,7 +120,7 @@ type colBounds struct {
 // boundsOf collects, for each column of t, what the conjuncts of where fix.
 func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[string]*colBounds {
 	out := map[string]*colBounds{}
-	types := map[string]schema.ColType{} // bound key -> type of the indexed value
+	types := map[string]schema.ColType{}  // bound key -> type of the indexed value
 	pgcols := map[string]*schema.Column{} // columns of the added types (exttypes.go): constants go through the column's spec
 	colOf := func(x Expr) (string, bool) {
 		fn := ""

@@ -361,8 +361,11 @@ type Description struct {
 	// ParamElem[i] is the element kind of array parameter $i+1 (0 = not
 	// known to be an array of a typed element).
 	ParamElem []Kind
-	Cols      []Column // result columns
-	HasRows   bool
+	// ParamOID[i] is the PostgreSQL type of parameter $i+1 when it stands for a value of a type a Kind cannot name
+	// (ranges, bit strings, macaddr8: extparams.go); 0 = the Kind's type. Nil when no parameter has one.
+	ParamOID []uint32
+	Cols     []Column // result columns
+	HasRows  bool
 }
 
 // Describe types a statement without running it.
@@ -462,6 +465,7 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 		}
 	}
 	d.ParamElem = paramElems(pk, n)
+	d.ParamOID = extParamOIDs(st, sc.t, n)
 	if sel, ok := st.(*Select); ok {
 		for _, it := range sel.Items {
 			if it.Star {

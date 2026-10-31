@@ -962,6 +962,8 @@ func (c *conn) parse(body []byte) {
 			if ps.params[i] == 0 || ps.params[i] == oidUnknown {
 				if i < len(desc.ParamElem) && desc.ParamElem[i] != 0 && sql.ArrayOIDOfKind(desc.ParamElem[i]) != 0 {
 					ps.params[i] = sql.ArrayOIDOfKind(desc.ParamElem[i])
+				} else if i < len(desc.ParamOID) && desc.ParamOID[i] != 0 {
+					ps.params[i] = desc.ParamOID[i]
 				} else if i < len(desc.Params) {
 					ps.params[i] = oidOf(desc.Params[i])
 				} else {

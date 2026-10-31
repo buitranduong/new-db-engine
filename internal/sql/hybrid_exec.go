@@ -92,7 +92,8 @@ type hyReport struct {
 
 // Status is what GET /v1/status reports under "hybrid": how many R2 statements took the path and how many fell back.
 func (h *Hybrid) Status() any {
-	return map[string]any{"used": h.Used.Load(), "fallbacks": h.Fallbacks.Load(), "state_ready": h.Seg.Ready(),
+	ringStates, ringBases := h.Seg.RingStats()
+	return map[string]any{"ring_states": ringStates, "ring_bases": ringBases, "ring_idle_trims": h.Seg.IdleTrims.Load(), "used": h.Used.Load(), "fallbacks": h.Fallbacks.Load(), "state_ready": h.Seg.Ready(),
 		"applied_lsn": h.Seg.Follower().Applied(), "durable_lsn": h.E.DurableLSN(), "lag_ms": h.Seg.Follower().Lag().Milliseconds(),
 		"merges": h.Seg.Merges.Load()}
 }

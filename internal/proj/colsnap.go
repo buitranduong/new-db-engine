@@ -24,6 +24,7 @@ type SegColumnar struct {
 
 	// follower goroutine only
 	tables    map[uint32]*segW
+	chainMu   sync.Mutex // guards chain: the follower (publish) and the idle ticker (trimIdle)
 	chain     []*SegState
 	lastLSN   uint64
 	partDirty bool
@@ -36,6 +37,10 @@ type SegColumnar struct {
 
 	Publishes atomic.Int64
 	Merges    atomic.Int64 // base swaps finished
+	IdleTrims atomic.Int64 // times the idle ticker released old ring states
+
+	stopOnce sync.Once
+	stop     chan struct{}
 }
 
 // Ring of retained states, so a reader whose snapshot is slightly older than
@@ -44,10 +49,14 @@ var (
 	SegRingMin = 32
 	SegRingMax = 4096
 	SegRingAge = 2 * time.Second
+	// SegIdleTrim: when no state was published for this long the ring is cut
+	// to the newest state, so a base replaced by a merge is not pinned by
+	// retained old states until 32 more publishes (0 = never).
+	SegIdleTrim = 2 * time.Second
 )
 
 func NewSegColumnar() *SegColumnar {
-	return &SegColumnar{tables: map[uint32]*segW{}, broken: map[uint32]string{}}
+	return &SegColumnar{tables: map[uint32]*segW{}, broken: map[uint32]string{}, stop: make(chan struct{})}
 }
 
 // StartSeg registers the consumer with the engine.
@@ -61,6 +70,60 @@ func StartSeg(e *core.Engine) *SegColumnar {
 func (c *SegColumnar) Start(e *core.Engine) {
 	c.e = e
 	c.f = e.Follow(c)
+	if d := SegIdleTrim; d > 0 {
+		go c.idleLoop(d)
+	}
+}
+
+// Stop ends the idle ticker (the state itself stays usable).
+func (c *SegColumnar) Stop() { c.stopOnce.Do(func() { close(c.stop) }) }
+
+// idleLoop is owned by the SegColumnar, never runs on a reader path.
+func (c *SegColumnar) idleLoop(idle time.Duration) {
+	tick := max(idle/4, 5*time.Millisecond)
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-t.C:
+			c.trimIdle(time.Now().UnixNano(), idle)
+		}
+	}
+}
+
+// trimIdle cuts the ring to the newest state when nothing was published for
+// idle. A reader holding an older state keeps its own reference (and its own
+// prev chain); a snapshot read older than the ring finds no state and falls
+// back with a reason, as when the ring ages out.
+func (c *SegColumnar) trimIdle(now int64, idle time.Duration) bool {
+	c.chainMu.Lock()
+	defer c.chainMu.Unlock()
+	if len(c.chain) <= 1 {
+		return false
+	}
+	last := c.chain[len(c.chain)-1]
+	if now-last.At < int64(idle) {
+		return false
+	}
+	last.prev.Store(nil)
+	c.chain = []*SegState{last}
+	c.IdleTrims.Add(1)
+	return true
+}
+
+// RingStats: number of retained states and of distinct base segments they hold.
+func (c *SegColumnar) RingStats() (states, bases int) {
+	c.chainMu.Lock()
+	defer c.chainMu.Unlock()
+	seen := map[*SegBase]bool{}
+	for _, s := range c.chain {
+		for _, t := range s.Tbls {
+			seen[t.Base] = true
+		}
+	}
+	return len(c.chain), len(seen)
 }
 
 func (c *SegColumnar) Name() string             { return "segcolumnar" }
@@ -275,6 +338,7 @@ func (c *SegColumnar) publish(lsn uint64) {
 	now := time.Now().UnixNano()
 	st := &SegState{LSN: lsn, At: now, Tbls: tbls}
 	st.prev.Store(c.cur.Load())
+	c.chainMu.Lock()
 	c.cur.Store(st)
 	c.Publishes.Add(1)
 	c.chain = append(c.chain, st)
@@ -289,6 +353,7 @@ func (c *SegColumnar) publish(lsn uint64) {
 			c.chain = append([]*SegState(nil), c.chain...)
 		}
 	}
+	c.chainMu.Unlock()
 	for _, w := range c.tables {
 		if w.wantMerge() {
 			w.startMerge(tbls[w.id])

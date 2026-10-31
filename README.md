@@ -8,14 +8,17 @@ and it is built around one idea: **the write-ahead log is the single source of
 truth.**
 
 In one paragraph: STASK is a from-scratch Go engine (it does not use PostgreSQL
-code) that speaks the PostgreSQL wire protocol and SQL, so psql, pgjdbc, pgx and
-Liquibase work unchanged. Its core is one durable log plus an in-RAM primary
-index for Redis-style point lookups. On the same data it keeps derived views: a
-columnar view for ClickHouse-style aggregates and facets, a trigram view for
-Elasticsearch-style substring search, and time-series and history views. One copy
+code) that takes its mechanisms from three databases: PostgreSQL (wire protocol,
+SQL, transactions, indexes, replication), ClickHouse (a columnar view for
+aggregates and facets, time-series, history) and Redis (an in-RAM primary index
+for point lookups). psql, pgjdbc, pgx and Liquibase work unchanged. One durable
+log is the source of truth and the other structures are derived from it: one copy
 of the data and one recovery path instead of several systems to keep in sync.
-The claim is functional coverage; performance parity is not claimed until the
-final verification phase (see `docs/24_final_measurement.md`).
+Elasticsearch is not a database and is not part of the engine's design; text
+matching is limited to what PostgreSQL itself offers (`LIKE`/`ILIKE`, trigram
+indexes in the style of `pg_trgm`). The claim is functional coverage;
+performance parity is not claimed until the final verification phase (see
+`docs/24_final_measurement.md`).
 
 One process (`staskd`) owns one authoritative, segmented log. The same log is the
 WAL and the value store. On top of it sit an MVCC primary index and three derived

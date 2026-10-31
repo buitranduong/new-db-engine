@@ -4,9 +4,11 @@ File này để **bất kỳ phiên làm việc mới nào** (người hay agent
 
 Thứ tự đọc: `00_START_HERE` → `27_handoff` (quy tắc người dùng + trạng thái sống) → `STATUS` → `AGENT_PROTOCOL` → `PROCESS` (nhật ký quyết định) → `14_plan_target_actual` (bằng chứng chi tiết) → `15_target_workload` → `16_tiered_engine_vision`.
 
-## 0. Mô tả ngắn (người dùng chốt, 2026-10-31)
+## 0. Mô tả ngắn (người dùng chốt, điều chỉnh 2026-10-31)
 
-STASK là một engine viết mới bằng Go (không dùng mã PostgreSQL), nói giao thức và SQL của PostgreSQL nên psql, pgjdbc, pgx, Liquibase dùng được nguyên vẹn. Lõi là **một log bền duy nhất** cùng **chỉ mục chính nằm trong RAM** để tra cứu điểm nhanh như Redis. Trên cùng dữ liệu đó là các **view dẫn xuất**: view cột cho gộp, đếm, facet kiểu ClickHouse; view trigram cho tìm chuỗi con kiểu Elasticsearch; view chuỗi thời gian và lịch sử. Một bản dữ liệu, một lần khôi phục, không phải đồng bộ giữa nhiều hệ thống.
+STASK là một engine viết mới bằng Go (không dùng mã PostgreSQL), lấy cơ chế của **ba cơ sở dữ liệu: PostgreSQL** (giao thức, SQL, giao dịch, chỉ mục, nhân bản; psql, pgjdbc, pgx, Liquibase dùng được nguyên vẹn), **ClickHouse** (view cột cho gộp, đếm, facet; chuỗi thời gian; lịch sử) và **Redis** (chỉ mục chính nằm trong RAM để tra cứu điểm nhanh). Một log bền duy nhất là nguồn sự thật, các cấu trúc còn lại dẫn xuất từ đó: một bản dữ liệu, một đường khôi phục, không phải đồng bộ giữa nhiều hệ thống.
+
+**Elasticsearch không được coi là cơ sở dữ liệu và KHÔNG đặt vào engine** (người dùng, 2026-10-31). Tìm chuỗi giới hạn ở những gì chính PostgreSQL có (`LIKE`/`ILIKE`, chỉ mục trigram kiểu `pg_trgm`); xếp hạng độ liên quan (BM25) và phân tích ngôn ngữ ngoài phạm vi. Phần mã tìm kiếm hiện có (view trigram, `internal/proj` search) chưa bị đổi: người dùng sẽ điều chỉnh sau khi có kết quả, nên không xoá hay mở rộng cho tới lúc đó. Bối cảnh ở §1 (hai cụm ES đang chạy) là hiện trạng cần thay thế bằng cách khác, không phải yêu cầu đưa ES vào engine.
 
 Cách hiểu đúng các so sánh: STASK **cover chức năng** của các hệ đó cho bài toán này. "Đạt hiệu năng như" thì chưa chứng minh: số đo thật chỉ có sau đợt kiểm nghiệm cuối (`docs/24_final_measurement.md`, `PROCESS` D32/D34). Superset và Jmix không phải mục tiêu bắt buộc; Jmix chỉ là một ca thử driver.
 

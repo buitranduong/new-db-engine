@@ -1702,3 +1702,9 @@ Tests run (plain, VM): `go test -p 2 ./internal/audit ./internal/seccrypt ./inte
 | Task | Plan | Target | Actual |
 |---|---|---|---|
 | Write the single measurement plan (D32) | Order, sizes and pass criteria for the one final measurement phase, fitted to the VM (8 vCPU, 31 GB RAM, ~12 GB free disk) | A document that makes the phase runnable without further questions | `docs/24_final_measurement.md`: 10 ordered measurements, scale ladder 1M/5M/20M (+50M if disk >= 20 GB), pass rule = not worse than PostgreSQL 16 on the same VM plus stability limits, until the user gives absolute targets. Nothing measured yet. |
+
+### Appendix U (cont.) — cifix (CI was red)
+
+| Task | Plan | Target | Actual |
+|---|---|---|---|
+| CI red on every run since `raftmem` | Find the failing test from the GitHub annotations (no log access without login), reproduce, fix at the root | CI green on `main` | Root cause: `TestHAMembershipSnapshotJoin` checked at once that the Raft log was compacted; compaction is a background task, so on a fast machine the 300 writes finished first and the test failed in 1.5 s (passed on the VM, which is slower). Test now waits up to 60 s while feeding entries. `ci.yml` prints `FAIL` and `_test.go:N:` lines as annotations. Gate (`RACE=1`, `internal/cluster` included): 603 probes, 1918 s, no race. Lesson: after every push, read the CI result (`docs/27 §2`). |

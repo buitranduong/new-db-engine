@@ -7,7 +7,7 @@
 Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối của docs/15 §5. Vì vậy tiêu chí là so sánh được và kiểm tra được:
 
 - **A. Không tệ hơn PostgreSQL 16** trên cùng dữ liệu, cùng truy vấn, cùng VM (PG16 là hệ thống đang bị thay): p50 và p99 của tra cứu điểm, tiền tố, đếm/nhóm, lịch sử một SIM; thời gian nhập.
-- **B. Các truy vấn kiểu Elasticsearch** (hậu tố, chứa, đuôi đẹp, facet) so với PG16 + `pg_trgm`; không có nền so sánh ES trên VM này, ghi số tuyệt đối.
+- **B. Các truy vấn khớp chuỗi** (hậu tố, chứa, đuôi đẹp) so với PG16 + `pg_trgm`. Elasticsearch không phải đối chứng (không coi là cơ sở dữ liệu).
 - **C. Ổn định:** p99 không tăng quá 2x giữa 10 phút đầu và 10 phút cuối của mỗi lượt chạy; RSS không tăng đều; không lỗi.
 - **D. Mọi chỉ tiêu tuyệt đối của người dùng** (khi có) thay A cho phép đo tương ứng.
 
@@ -25,7 +25,7 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 ## 3. Thứ tự đo (tuần tự, mỗi phép đo trọn trước khi sang phép tiếp)
 
 1. **Bộ nhớ từng cấu trúc** (`scripts/memmap.sh`, `cmd/memmap`): L1/L2/L3 (+L4); trigram dùng đầu số thật (090/091/098...). Kết quả quyết định cấu hình (RAM hay `index_storage=disk`).
-2. **Tra cứu và truy vấn nền** (`scripts/simbench.sh` trên bản đóng băng, so với PG16): điểm, tiền tố, hậu tố, chứa, facet, đếm, lịch sử một SIM; nền và trong lúc nhập.
+2. **Tra cứu và truy vấn nền** (`scripts/simbench.sh` trên bản đóng băng, so với PG16 có `pg_trgm`): điểm, tiền tố, hậu tố, chứa (kiểu `LIKE`, không phải tìm kiếm văn bản kiểu Elasticsearch), facet, đếm, lịch sử một SIM; nền và trong lúc nhập.
 3. **Nhập Excel hằng ngày** (`cmd/staskimport`, chế độ binary/text/insert): L3 và L4 hàng triệu dòng; thông lượng, độ trễ nền trong lúc nhập, tốc độ view bắt kịp.
 4. **Làn công việc:** `-heavy-workers` (0 so với tự động), `-heavy-share`; p99 tra cứu khi có truy vấn nặng (rủi ro đã biết: p99 43 -> 313 ms ở 20M khi GC).
 5. **Chỉ mục đĩa `pindex` trên đĩa thật** (điều kiện D29 số 3): đọc điểm với truy cập lệch, nhập ngẫu nhiên cập nhật chỉ mục phụ, tỉ lệ trúng cache; so với chỉ mục RAM.

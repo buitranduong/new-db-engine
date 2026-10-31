@@ -265,7 +265,7 @@ func TestCatalogInformationSchema(t *testing.T) {
 	expectRows(t, s, `SELECT schema_name, schema_owner FROM information_schema.schemata ORDER BY schema_name`,
 		"information_schema,stask;pg_catalog,stask;public,stask")
 	expectRows(t, s, `SELECT sequence_name, data_type, start_value, increment FROM information_schema.sequences ORDER BY sequence_name`,
-		"ident_id_seq,bigint,1,1;items_id_seq,integer,1,1;s1,bigint,10,5")
+		"items_id_seq,integer,1,1;s1,bigint,10,5") // the sequence of an identity column is not listed (PostgreSQL)
 	expectRows(t, s, `SELECT count(*) FROM information_schema.table_privileges WHERE table_name = 'items'`, "7")
 	// the join Liquibase, Hibernate and ORMs use for primary keys
 	expectRows(t, s, `SELECT kcu.column_name FROM information_schema.table_constraints tc

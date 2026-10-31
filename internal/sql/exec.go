@@ -696,6 +696,13 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 			noteCollatedColumns(s.E)
 		}
 	}
+	if c.Key != "" { // a one-column key of a type that cannot be the row key itself goes through the encoded key
+		if i := colIndex(&t, c.Key); i >= 0 {
+			if ct := ctype(&t, i); ct != schema.TInt && ct != schema.TString && ct != schema.TUUID && schema.IndexableType(ct) {
+				c.KeyCols, c.Key, t.Key, t.KeyCols = []string{c.Key}, "", "", []string{c.Key}
+			}
+		}
+	}
 	for _, cd := range c.Cols {
 		if cd.Generated != "" {
 			if err := validateGenerated(&t, cd.Name, cd.Generated); err != nil {

@@ -408,7 +408,7 @@ func (s *Session) expandLikes(c *CreateTable, likes []likeDef) error {
 		}
 		if l.Indexes {
 			if src.HasPK() {
-				if len(src.KeyCols) > 1 {
+				if len(src.KeyCols) > 0 {
 					if c.Key == "" && c.KeyCols == nil {
 						c.KeyCols = slices.Clone(src.KeyCols)
 					}

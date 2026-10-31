@@ -205,7 +205,7 @@ func TestExpressionIndexesDateTruncSubstr(t *testing.T) {
 	mustq(t, s, `INSERT INTO ti SELECT x, timestamp '2024-01-01' + (x || ' hours')::interval, 'name' || x, 'AB' || (x % 7) || 'zz' FROM generate_series(1, 200) x`)
 	mustq(t, s, `CREATE INDEX ti_d ON ti (date_trunc('day', ts))`)
 	mustq(t, s, `CREATE INDEX ti_s ON ti (substr(code, 1, 3))`)
-	wantErr(t, s, `CREATE INDEX ti_bad ON ti (date_trunc('foo', ts))`, "0A000")
+	wantErr(t, s, `CREATE INDEX ti_bad ON ti (date_trunc('foo', ts))`, "22023")
 	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE date_trunc('day', ts) = '2024-01-03'`, "24")
 	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE substr(code, 1, 3) = 'AB3'`, "29")
 	mustq(t, s, `INSERT INTO ti VALUES (500, '2024-03-03 10:00', 'zz', 'AB9xx')`)
@@ -259,7 +259,7 @@ func TestFKActionsDeferrableNotValid(t *testing.T) {
 	wantErr(t, s, `SET CONSTRAINTS d2_pid_fkey IMMEDIATE`, "23503")
 	mustq(t, s, `ROLLBACK`)
 	mustq(t, s, `BEGIN`)
-	wantErr(t, s, `SET CONSTRAINTS pa_pkey DEFERRED`, "55000")
+	wantErr(t, s, `SET CONSTRAINTS pa_pkey DEFERRED`, "42809")
 	mustq(t, s, `ROLLBACK`)
 
 	// NOT VALID and VALIDATE CONSTRAINT
@@ -313,4 +313,24 @@ func TestAlterViewRecursiveIdentity(t *testing.T) {
 	mustq(t, s, `INSERT INTO nid VALUES (7, 7)`)
 	mustq(t, s, `ALTER TABLE nid ALTER COLUMN a DROP IDENTITY`)
 	wantErr(t, s, `ALTER TABLE nid ALTER COLUMN a DROP IDENTITY`, "55000")
+}
+
+// A one-column PRIMARY KEY on a date/timestamp/numeric/boolean column (partitioned tables are keyed by
+// the partition key) goes through the encoded hidden key.
+func TestOneColumnPrimaryKeyOfOtherTypes(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE TABLE kp (d date PRIMARY KEY, v int)`)
+	mustq(t, s, `INSERT INTO kp VALUES ('2024-01-01', 1), ('2024-01-02', 2)`)
+	wantErr(t, s, `INSERT INTO kp VALUES ('2024-01-01', 3)`, "23505")
+	mustq(t, s, `UPDATE kp SET d = '2024-02-01' WHERE v = 1`)
+	mustq(t, s, `CREATE TABLE kc (id int PRIMARY KEY, d date REFERENCES kp (d) ON UPDATE CASCADE)`)
+	mustq(t, s, `INSERT INTO kc VALUES (1, '2024-02-01')`)
+	wantErr(t, s, `INSERT INTO kc VALUES (3, '2025-01-01')`, "23503")
+	mustq(t, s, `UPDATE kp SET d = '2024-03-01' WHERE v = 1`)
+	ddlWantRows(t, s, `SELECT d::text FROM kc`, "2024-03-01")
+	ddlWantRows(t, s, `SELECT count(*) FROM kp WHERE d = '2024-03-01'`, "1")
+	mustq(t, s, `CREATE TABLE pk2 (d date PRIMARY KEY) PARTITION BY RANGE (d)`)
+	mustq(t, s, `CREATE TABLE pk2a PARTITION OF pk2 FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')`)
+	mustq(t, s, `INSERT INTO pk2 VALUES ('2024-03-03')`)
+	ddlWantRows(t, s, `SELECT count(*) FROM pk2a`, "1")
 }

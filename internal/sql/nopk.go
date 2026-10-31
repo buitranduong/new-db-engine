@@ -20,7 +20,7 @@ func (s *Session) hiddenKey(c *CreateTable, t *schema.Table) (*core.Sequence, er
 	switch {
 	case c.Key != "":
 		return nil, nil
-	case len(c.KeyCols) > 1:
+	case len(c.KeyCols) > 0:
 		for _, name := range c.KeyCols {
 			i := colIndex(t, name)
 			if i < 0 {

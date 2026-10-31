@@ -315,7 +315,7 @@ func (c *compiler) compileKeyed(f *FromKeyed) (fromPlan, error) {
 // mergeKeys finds the keys the target rows that ON can match have, or
 // ok=false when ON has no usable "target.pk = X" conjunct.
 func (s *Session) mergeKeys(tx *core.Tx, t *schema.Table, qual string, st *Merge, params []Datum) (keys []string, ok bool) {
-	if !t.HasPK() || len(t.KeyCols) > 1 || t.Key == schema.RowIDCol || t.Key == schema.KeyCol {
+	if !t.HasPK() || len(t.KeyCols) > 0 || t.Key == schema.RowIDCol || t.Key == schema.KeyCol {
 		return nil, false
 	}
 	var conj []Expr

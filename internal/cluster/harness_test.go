@@ -337,7 +337,27 @@ func (c *tcluster) term(nd *tnode) {
 	nd.cmd = nil
 }
 
+// waitPortsFree waits until every 127.0.0.1:port in args can be bound. A process
+// that was just killed may not have released its sockets yet; starting the new one
+// at once fails with "address already in use" (seen under load in the merge gate).
+func waitPortsFree(args []string) {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "127.0.0.1:") {
+			continue
+		}
+		for i := 0; i < 100; i++ {
+			ln, err := net.Listen("tcp", a)
+			if err == nil {
+				ln.Close()
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
 func (c *tcluster) start(nd *tnode) {
+	waitPortsFree(nd.args)
 	lf, err := os.OpenFile(nd.log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		c.t.Fatal(err)

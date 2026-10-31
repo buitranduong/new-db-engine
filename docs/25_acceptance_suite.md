@@ -137,3 +137,28 @@ Chỉ sửa các lỗi "sai kết quả hoặc hành vi nguy hiểm" (mục 6, S
 | T1 int4 so với int8 | đã sửa phần ảnh hưởng driver | `VALUES` và `UNION/INTERSECT/EXCEPT` với số nguyên/NULL, `grouping()`, `mode()`, `percentile_disc()` nay trả int4 như PG (pgjdbc `getObject` trả `Integer`); các mục T1 còn lại (sum(real), avg(interval), min/max mảng, bytea) chưa đụng tới |
 
 PASS theo nhóm sau sửa: 01 198, 02 72, 03 43, 04 115, 05 253, 06 159, 07 99, 08 87, 09 50, 10 99, 11 89 (hết DIFF), 12 29, 13 95, 14 310.
+
+## 9. DML, transactions and error codes (branch `compat-dml`, from main cd42af1)
+
+Run against the same postgres:16.15 image, `staskd` of the branch on a free port, N=100. PASS includes PASS-MSG. "Before" is `main` cd42af1 re-run the same day (the figures in section 8 are from `suitefix`); "after" is the branch head.
+
+| Group | Statements | PASS before | PASS after |
+|---|---|---|---|
+| 01_ddl_types | 332 | 207 | 207 |
+| 02_indexes | 99 | 72 | 72 |
+| 03_views | 95 | 43 | 43 |
+| 04_dml | 145 | 117 | **145** |
+| 05_transactions | 272 | 254 | **272** |
+| 06_select_basics | 192 | 159 | 159 |
+| 07_joins | 103 | 99 | 101 |
+| 08_aggregates | 101 | 87 | 87 |
+| 09_window | 61 | 50 | 52 |
+| 10_cte_subquery | 115 | 99 | 99 |
+| 11_analytics | 96 | 89 | 89 |
+| 12_text_search | 68 | 29 | 29 |
+| 13_catalog | 123 | 95 | 97 |
+| 14_errors | 394 | 311 | 337 |
+| **Old total** | 2196 | **1711** | **1789** |
+| 18_dml_more (new file `scripts/suite/18_dml_more.sql`) | 289 | n/a | **289** |
+
+What moved: 04 and 05 are now equal to PostgreSQL in every statement (two-phase commit, `ON CONFLICT` on a unique index, MERGE, COPY through `search_path`, `FORCE_QUOTE`, SET TRANSACTION rules, `EXECUTE` arity, `pg_prepared_statements`). 14 gained 26 (SET/SHOW unknown parameters, bad values, maintenance on unknown relations, OFFSET, DISTINCT/ORDER BY, window in WHERE, duplicate alias, numeric lexing, has_table_privilege). Statements still different in 14 are functions, types and regproc casts (other branches) and COPY from server files. No statement that passed before fails now (checked by comparing the two reports). Group 18 covers what the brief lists as new cases: conflict arbiters, DML forms, MERGE, USING joins, GROUP BY key, ~50 error codes, SET/GUC, maintenance commands, 2PC, cursors, locks, EXPLAIN shape.

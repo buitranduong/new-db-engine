@@ -223,3 +223,17 @@ func errText(err error) string {
 	}
 	return err.Error()
 }
+
+func TestSetValidation(t *testing.T) {
+	s := NewSession(newEngine(t))
+	for _, q := range []string{"SET DateStyle = 'ISO, DMY'", "SET IntervalStyle = 'iso_8601'", "SET TimeZone = 'UTC'", "SET extra_float_digits = 3",
+		"SET application_name = 'x'", "SET enable_seqscan = off", "SET myapp.x = 'y'", "SET bytea_output = 'escape'"} {
+		run(t, s, q)
+	}
+	for q, want := range map[string]string{"SET nosuch_param = 1": "42704", "SET enable_seqscan = maybe": "22023",
+		"SET bytea_output = 'bogus'": "22023", "SET client_encoding = 'BOGUS'": "22023"} {
+		if _, err := tryRun(s, q); sqlCode(err) != want {
+			t.Fatalf("%s: %v want %s", q, err, want)
+		}
+	}
+}

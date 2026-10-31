@@ -31,6 +31,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -173,6 +174,35 @@ func Serve(e *core.Engine, addr string, sec *Security, logf func(string, ...any)
 }
 
 func (s *Server) Addr() string { return s.ln.Addr().String() }
+
+// ReplicaInfo is the state of one replica's slot on the leader.
+type ReplicaInfo struct {
+	ID        string
+	Connected bool
+	LagBytes  int64 // log the leader has durable that the replica has not been sent
+	SilentFor time.Duration
+}
+
+// Replicas lists the replicas the leader keeps log for.
+func (s *Server) Replicas() []ReplicaInfo {
+	_, dpos, _ := s.e.DurablePoint()
+	segMax := s.e.Log().SegMax()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ReplicaInfo, 0, len(s.slots))
+	for id, sl := range s.slots {
+		ri := ReplicaInfo{ID: id, Connected: sl.connected}
+		if !sl.connected {
+			ri.SilentFor = time.Since(sl.lastSeen)
+		}
+		if p, ok := sl.sh.Position(); ok {
+			ri.LagBytes = int64(dpos.Seg-p.Seg)*segMax + dpos.Off - p.Off
+		}
+		out = append(out, ri)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
 
 // expire releases the log kept for replicas disconnected for too long.
 func (s *Server) expire() {

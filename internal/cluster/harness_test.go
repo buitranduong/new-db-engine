@@ -165,6 +165,7 @@ type tnode struct {
 	log      string
 	http     string
 	raft     string
+	pg       string
 	args     []string
 	cmd      *exec.Cmd
 	done     chan struct{}
@@ -253,6 +254,12 @@ func freeBase(t *testing.T, need int) int {
 // newCluster starts n nodes. extra are additional staskd flags; segment
 // size is small and pre-zeroing off so that the disk is not filled.
 func newCluster(t *testing.T, n int, extra ...string) *tcluster {
+	return newClusterPre(t, n, nil, extra...)
+}
+
+// newClusterPre is newCluster with a hook that runs before the processes
+// start (to place restored data in the node directories).
+func newClusterPre(t *testing.T, n int, pre func(*tcluster), extra ...string) *tcluster {
 	c := &tcluster{t: t, bin: staskdBin(t), proxies: map[[2]int]*proxy{}, rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 		client: &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
 	base := freeBase(t, 3*n+n*n)
@@ -260,7 +267,8 @@ func newCluster(t *testing.T, n int, extra ...string) *tcluster {
 	for i := 0; i < n; i++ {
 		c.nodes = append(c.nodes, &tnode{id: uint64(i + 1), dir: filepath.Join(dir, fmt.Sprintf("n%d", i+1)),
 			log:  filepath.Join(dir, fmt.Sprintf("n%d.log", i+1)),
-			http: fmt.Sprintf("127.0.0.1:%d", base+i), raft: fmt.Sprintf("127.0.0.1:%d", base+n+i)})
+			http: fmt.Sprintf("127.0.0.1:%d", base+i), raft: fmt.Sprintf("127.0.0.1:%d", base+n+i),
+			pg: fmt.Sprintf("127.0.0.1:%d", base+2*n+n*(n-1)+i)})
 	}
 	pp := base + 2*n
 	for i := 0; i < n; i++ {
@@ -285,7 +293,7 @@ func newCluster(t *testing.T, n int, extra ...string) *tcluster {
 			}
 			peers = append(peers, fmt.Sprintf("%d=%s@%s", o.id, addr, o.http))
 		}
-		nd.args = append([]string{"-dir", nd.dir, "-addr", nd.http, "-pg-addr", "", "-segment-mb", "8", "-prezero=false", "-gc=false",
+		nd.args = append([]string{"-dir", nd.dir, "-addr", nd.http, "-pg-addr", nd.pg, "-segment-mb", "8", "-prezero=false", "-gc=false",
 			"-raft-id", fmt.Sprint(nd.id), "-raft-listen", nd.raft, "-raft-peers", strings.Join(peers, ",")}, extra...)
 	}
 	t.Cleanup(func() {
@@ -305,10 +313,28 @@ func newCluster(t *testing.T, n int, extra ...string) *tcluster {
 			}
 		}
 	})
+	if pre != nil {
+		pre(c)
+	}
 	for _, nd := range c.nodes {
 		c.start(nd)
 	}
 	return c
+}
+
+// term stops the process with SIGTERM (a graceful stop) and waits for it.
+func (c *tcluster) term(nd *tnode) {
+	if nd.cmd == nil {
+		return
+	}
+	nd.cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-nd.done:
+	case <-time.After(30 * time.Second):
+		nd.cmd.Process.Signal(syscall.SIGKILL)
+		<-nd.done
+	}
+	nd.cmd = nil
 }
 
 func (c *tcluster) start(nd *tnode) {

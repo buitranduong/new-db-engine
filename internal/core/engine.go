@@ -331,6 +331,10 @@ type Stats struct {
 	GCMovedVersions     atomic.Int64
 	GCMovedBytes        atomic.Int64
 	GCDroppedTombstones atomic.Int64
+
+	// CommitLat is the latency of the commits (submit to acknowledgement),
+	// for /metrics (stask_commit_latency_seconds).
+	CommitLat PromHist
 }
 
 type RecoveryStats struct {
@@ -1341,6 +1345,7 @@ func (e *Engine) submit(r *commitReq) error {
 	if err := e.Failed(); err != nil {
 		return err
 	}
+	subT0 := time.Now()
 	r.done = make(chan struct{})
 	if g := e.gate.Load(); g != nil && r.gate != g {
 		g.wait(e, r) // occ_repair.go: a starved statement is finishing on these tables
@@ -1388,6 +1393,7 @@ func (e *Engine) submit(r *commitReq) error {
 		if LatDebug && r.stage == nil {
 			LatWake.Add(time.Since(r.acked))
 		}
+		e.Stats.CommitLat.Observe(time.Since(subT0))
 		return r.err
 	case <-e.commitExited:
 		select {

@@ -69,6 +69,8 @@ func AsError(err error) *Error {
 	switch {
 	case errors.As(err, &se):
 		return se
+	case errors.Is(err, core.ErrReadOnly):
+		return errf("25006", "cannot execute a write on a read-only node (replica or cluster follower): %v", err)
 	case errors.Is(err, core.ErrConflict):
 		return errf(codeSerialization, "could not serialize access due to concurrent update")
 	case errors.As(err, new(*core.KeyExistsError)):

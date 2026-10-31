@@ -28,6 +28,9 @@ type Config struct {
 	Upsert             bool // apply INSERT as INSERT .. ON CONFLICT DO UPDATE (repair mode)
 	Strict             bool // an UPDATE/DELETE that finds no row stops the tool
 	Reset              bool // drop the slot and the control row, snapshot again
+	// SchemaChanges: "apply" (default) carries ADD/DROP/RENAME COLUMN and
+	// ALTER COLUMN TYPE of the source to STASK; "stop" stops with the DDL to run.
+	SchemaChanges string
 
 	RowsPerSec  float64       // apply rate limit (rows per second, 0 = unlimited)
 	Chunk       int           // statements per pipeline flush inside a transaction
@@ -42,6 +45,9 @@ type Config struct {
 func (c *Config) defaults() {
 	if c.Slot == "" {
 		c.Slot = "stashadow"
+	}
+	if c.SchemaChanges == "" {
+		c.SchemaChanges = "apply"
 	}
 	if c.Publication == "" {
 		c.Publication = "stashadow_pub"
@@ -87,6 +93,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return err
 		}
 		cfg.Logf("connection or apply error, will reconnect and resume from the applied LSN: %v", err)
+		cfg.Stats.reconnects.Add(1)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -103,6 +110,9 @@ type runner struct {
 	reset bool
 	txlog *bufio.Writer
 	mu    sync.Mutex
+
+	srcConn, stConn *pgconn.PgConn        // the source (catalog reads) and a second STASK connection (DDL), per runOnce
+	shapes          map[string][]shapeCol // schema.go: the shape of each table as last applied to STASK
 }
 
 type ctlState struct {
@@ -146,10 +156,25 @@ func (r *runner) runOnce(ctx context.Context) error {
 		return fmt.Errorf("connect to source: %w", err)
 	}
 	defer src.Close(context.Background())
+	r.srcConn, r.stConn, r.shapes = src, nil, map[string][]shapeCol{}
+	defer func() {
+		if r.stConn != nil {
+			r.stConn.Close(context.Background())
+			r.stConn = nil
+		}
+	}()
 
 	tables, err := LoadSourceTables(ctx, src, cfg.Tables)
 	if err != nil {
 		return err
+	}
+	snapShapes := map[string][]shapeCol{} // the shapes at the time of the source catalog read above
+	for _, t := range tables {
+		now, err := sourceNow(ctx, src, t.Name)
+		if err != nil {
+			return err
+		}
+		snapShapes[t.Name] = shapeOf(t, attnumsOf(now))
 	}
 	for _, t := range tables {
 		if len(t.PK) == 0 && t.ReplIdent != 'f' && cfg.SetReplicaIdentity {
@@ -167,7 +192,9 @@ func (r *runner) runOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read control table: %w", err)
 	}
+	didInit := false
 	if r.reset || state == nil || state.phase != "streaming" {
+		didInit = true
 		if state != nil && state.phase == "snapshot" {
 			cfg.Logf("previous run stopped during the initial snapshot: starting it again from scratch")
 		}
@@ -178,6 +205,36 @@ func (r *runner) runOnce(ctx context.Context) error {
 		if state, err = readCtl(ctx, st, cfg.Slot); err != nil || state == nil {
 			return fmt.Errorf("read control row after snapshot: %v", err)
 		}
+	}
+	if err := ensureSchemaTable(ctx, st); err != nil {
+		return fatalf("create %s in STASK: %v", schemaTable, err)
+	}
+	for _, t := range tables {
+		known, ok, err := loadShape(ctx, st, cfg.Slot, t.Name)
+		if err != nil {
+			return err
+		}
+		if !ok || didInit {
+			known = snapShapes[t.Name]
+			if err := saveShape(ctx, st, cfg.Slot, t.Name, known); err != nil {
+				return err
+			}
+		} else {
+			// the shape applied so far, not the source's current one: the
+			// stream brings the difference as Relation messages
+			pk := t.pkNames()
+			t.Cols = t.Cols[:0]
+			for _, c := range known {
+				t.Cols = append(t.Cols, Column{Name: c.Name, OID: c.OID, Type: c.Type, Kind: kindOfOID(c.OID)})
+			}
+			t.PK = t.PK[:0]
+			for _, n := range pk {
+				if j := t.colIndex(n); j >= 0 {
+					t.PK = append(t.PK, j)
+				}
+			}
+		}
+		r.shapes[t.Name] = known
 	}
 	stcols := map[string]map[string]bool{}
 	for _, t := range tables {
@@ -195,6 +252,9 @@ func (r *runner) runOnce(ctx context.Context) error {
 		stcols[t.Name] = m
 	}
 	cfg.Logf("streaming from slot %q at applied LSN %s (txs=%d rows=%d so far)", cfg.Slot, pglogrepl.LSN(state.applied), state.txs, state.rows)
+	cfg.Stats.appliedLSN.Store(state.applied)
+	cfg.Stats.streaming.Store(true)
+	defer cfg.Stats.streaming.Store(false)
 	return r.stream(ctx, st, tables, stcols, state.applied)
 }
 
@@ -493,8 +553,14 @@ func (r *runner) stream(ctx context.Context, st *pgconn.PgConn, tables []*Table,
 			if err != nil {
 				return err
 			}
+			cfg.Stats.sourceLSN.Store(uint64(k.ServerWALEnd))
 			if !inTx && uint64(k.ServerWALEnd) > idleAck {
 				idleAck = uint64(k.ServerWALEnd)
+			}
+			if !inTx {
+				// idle and everything before this keepalive is applied: WAL of
+				// other tables and checkpoints is not lag
+				cfg.Stats.appliedLSN.Store(ack())
 			}
 			if k.ReplyRequested {
 				pendingReply = true
@@ -523,7 +589,7 @@ func (r *runner) stream(ctx context.Context, st *pgconn.PgConn, tables []*Table,
 					ap.begin()
 				}
 			case *pglogrepl.RelationMessage:
-				rr, err := r.onRelation(m, byName, stcols)
+				rr, err := r.onRelation(ctx, m, byName, stcols)
 				if err != nil {
 					return err
 				}
@@ -604,6 +670,8 @@ func (r *runner) stream(ctx context.Context, st *pgconn.PgConn, tables []*Table,
 					return err
 				}
 				applied = end
+				cfg.Stats.appliedLSN.Store(end)
+				cfg.Stats.lastCommitUs.Store(m.CommitTime.UnixMicro())
 				idleAck = 0
 				now := time.Now()
 				lat := now.UnixMicro() - m.CommitTime.UnixMicro()
@@ -639,11 +707,18 @@ func (r *runner) stream(ctx context.Context, st *pgconn.PgConn, tables []*Table,
 // onRelation checks a Relation message against the source catalog and STASK.
 // A table whose shape does not fit stops the tool with the exact DDL to run:
 // the tool never applies DDL by itself.
-func (r *runner) onRelation(m *pglogrepl.RelationMessage, byName map[string]*Table, stcols map[string]map[string]bool) (*rel, error) {
+func (r *runner) onRelation(ctx context.Context, m *pglogrepl.RelationMessage, byName map[string]*Table, stcols map[string]map[string]bool) (*rel, error) {
 	t := byName[m.RelationName]
 	if m.Namespace != "public" || t == nil {
 		r.cfg.Logf("ignoring relation %s.%s (not in -tables)", m.Namespace, m.RelationName)
 		return nil, nil
+	}
+	var rm relMsg
+	for _, c := range m.Columns {
+		rm.cols = append(rm.cols, msgCol{Name: c.Name, OID: c.DataType})
+	}
+	if err := r.evolve(ctx, rm, t, stcols); err != nil {
+		return nil, err
 	}
 	rr := &rel{tbl: t}
 	for i, c := range m.Columns {

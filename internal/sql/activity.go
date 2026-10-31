@@ -90,6 +90,9 @@ var stats struct {
 // CountAuthFailure is called by the wire protocol when a login is refused.
 func CountAuthFailure() { stats.authFail.Add(1) }
 
+// AuthFailuresTotal is the number of refused logins since start.
+func AuthFailuresTotal() int64 { return stats.authFail.Load() }
+
 // ---- slow-statement log ----
 
 var (

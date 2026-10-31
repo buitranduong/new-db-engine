@@ -142,8 +142,12 @@ type Server struct {
 	// RolesOnly closes the shared-password login once a stored superuser
 	// role that can log in exists: only roles (CREATE ROLE) then connect.
 	RolesOnly bool
-	Logf      func(string, ...any)
-	Views     sql.Views // derived views SELECT aggregates may be answered from
+	// HBA, if set, is an allow list (pg_hba.conf style, hba.go): a
+	// connection no rule admits is refused before authentication.
+	HBA   *HBA
+	fail  failTracker
+	Logf  func(string, ...any)
+	Views sql.Views // derived views SELECT aggregates may be answered from
 
 	// Session defaults of statement_timeout,
 	// idle_in_transaction_session_timeout and idle_session_timeout
@@ -522,10 +526,28 @@ func (c *conn) startup() error {
 			c.w.Flush()
 			return errors.New("TLS required")
 		}
+		host, _, _ := net.SplitHostPort(c.nc.RemoteAddr().String())
+		if c.s.HBA != nil {
+			ip := net.ParseIP(host)
+			m := c.s.HBA.Match(ip, c.tls, c.dbname, params["user"])
+			if m == "" || m == "reject" {
+				enc := "no encryption"
+				if c.tls {
+					enc = "SSL encryption"
+				}
+				c.sendFatal("28000", fmt.Sprintf("no pg_hba.conf entry for host %q, user %q, database %q, %s", host, params["user"], c.dbname, enc))
+				c.w.Flush()
+				sql.CountAuthFailure()
+				return errors.New("refused by the allow list")
+			}
+		}
+		time.Sleep(c.s.fail.delay(host)) // addresses that keep failing wait before the next try
 		role, err := c.authenticate(params["user"])
 		if err != nil {
+			c.s.fail.record(host)
 			return err
 		}
+		c.s.fail.ok(host)
 		c.user, c.app, c.role = params["user"], params["application_name"], role
 		isSuper := "on"
 		if role != "" {
@@ -568,6 +590,7 @@ func (c *conn) startup() error {
 			{"DateStyle", "ISO, MDY"}, {"TimeZone", "UTC"}, {"integer_datetimes", "on"},
 			{"standard_conforming_strings", "on"}, {"application_name", params["application_name"]},
 			{"is_superuser", isSuper}, {"session_authorization", params["user"]}, {"IntervalStyle", "postgres"},
+			{"in_hot_standby", onOff(c.s.E.ReadOnly())}, {"default_transaction_read_only", onOff(c.s.E.ReadOnly())},
 		} {
 			c.send(newMsg('S').str(kv[0]).str(kv[1]))
 		}
@@ -1323,4 +1346,12 @@ func trimTimeFrac(s string) string {
 		return s
 	}
 	return strings.TrimSuffix(strings.TrimRight(s, "0"), ".")
+}
+
+// onOff is the text of a boolean GUC.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }

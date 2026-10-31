@@ -301,6 +301,8 @@ Còn dở: ở chế độ cluster (§5.2) nâng cấp đã nóng (`Engine.Promo
 
 ### 5.4 Còn dở sau P6.2
 
+> **2026-10-31 (nhánh `opsha`, docs/21):** cụm Raft được chọn làm đường HA production. Mới: nút báo vai trò trên giao thức PG (`pg_is_in_recovery()`, `transaction_read_only`, `in_hot_standby`; ghi trên follower = SQLSTATE 25006) nên DSN nhiều host của libpq/pgx tìm đúng leader; sao lưu và khôi phục cụm (`staskctl backup -cluster`, `cluster.Backup/RestoreNode`); test HA qua PG (`internal/cluster/ha_test.go`: mất leader, split-brain, khởi động lại cuốn chiếu, sao lưu/khôi phục); metrics Raft và `/v1/ready`. Vẫn còn dở: đổi thành viên, đọc theo lease, PITR trong cụm (bảng dưới).
+
 | Còn thiếu | Ghi chú |
 |---|---|
 | **Đổi thành viên** (thêm/bớt node), chuyển quyền leader, learner không bỏ phiếu | **Không làm trong lượt này.** Tập bỏ phiếu cố định theo `-raft-peers`. Hệ quả thực tế: không thay được node hỏng đĩa. Một node dùng lại id cũ với thư mục rỗng đã quên phiếu bầu của nó và có thể bỏ phiếu hai lần trong một term, nên **không được xoá thư mục dữ liệu của một node đang là thành viên**; muốn thay phải có đổi thành viên (thêm id mới, bớt id cũ). Thiết kế định làm: entry cấu hình đổi một node mỗi lần (Ongaro §4.1), cấu hình hiệu lực ngay khi được thêm vào log và lưu cùng gốc snapshot |

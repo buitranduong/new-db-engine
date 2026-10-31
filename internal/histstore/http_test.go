@@ -28,7 +28,7 @@ func TestHTTPUsesTheStore(t *testing.T) {
 	gcAll(t, e)
 	p := planner.Start(e)
 	hs := server.New(p, nil)
-	hs.ExtraMetrics = r.c.Metrics
+	hs.HistMetrics = r.c.Metrics
 	ts := httptest.NewServer(hs.Handler())
 	defer ts.Close()
 	key := fmt.Sprintf("090%07d", 3)

@@ -4,19 +4,25 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Stats collects apply statistics of one process lifetime.
 type Stats struct {
-	mu        sync.Mutex
-	start     time.Time
-	Txs, Rows int64
-	Anomalies int64
-	lat       []int64 // commit-to-applied latency, microseconds
-	winLat    []int64
-	winRows   int64
-	winStart  time.Time
+	mu                    sync.Mutex
+	start                 time.Time
+	Txs, Rows             int64
+	Anomalies             int64
+	schemaChanges         atomic.Int64
+	sourceLSN, appliedLSN atomic.Uint64
+	lastCommitUs          atomic.Int64
+	reconnects            atomic.Int64
+	streaming             atomic.Bool
+	lat                   []int64 // commit-to-applied latency, microseconds
+	winLat                []int64
+	winRows               int64
+	winStart              time.Time
 }
 
 func newStats() *Stats { n := time.Now(); return &Stats{start: n, winStart: n} }

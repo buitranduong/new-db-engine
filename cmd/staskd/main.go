@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
@@ -108,6 +109,8 @@ func main() {
 	heavyWeight := flag.Int("heavy-weight", 50, "cpu.weight of the heavy-lane group")
 	pgMaxConns := flag.Int64("pg-max-conns", 100000, "maximum PostgreSQL sessions; more are refused with SQLSTATE 53300 (0 = unlimited)")
 	pgPassword := flag.String("pg-password", "", "password of PostgreSQL connections (empty = trust); sent per -pg-auth")
+	pgPasswordFile := flag.String("pg-password-file", "", "file holding the -pg-password (trailing white space ignored; keeps it out of the process list); not together with -pg-password")
+	pgHBA := flag.String("pg-hba", "", "allow list in the style of pg_hba.conf (docs/21 section 7): lines \"TYPE DATABASE USER ADDRESS METHOD\", first match wins, no match = refused; hostssl lines admit TLS connections only")
 	pgAuth := flag.String("pg-auth", "", "PostgreSQL authentication: trust, password (cleartext) or scram (SCRAM-SHA-256, verifier derived from -pg-password); empty = password when -pg-password is set, else trust")
 	pgTLSCert := flag.String("pg-tls-cert", "", "PEM certificate for PostgreSQL TLS (with -pg-tls-key; empty = SSLRequest answered 'N')")
 	pgTLSKey := flag.String("pg-tls-key", "", "PEM private key for PostgreSQL TLS")
@@ -156,15 +159,34 @@ func main() {
 	faults := flag.Bool("enable-faults", false, "enable the fault-injection admin endpoint (tests only)")
 	collation := flag.String("collation", "C", "database default text collation: C (byte order, the default), POSIX, en_US.utf8, vi_VN.utf8, und-x-icu, or another CLDR locale (x_Y.utf8, x-x-icu). Orders ORDER BY, < <= > >=, BETWEEN, min/max; equality, GROUP BY, DISTINCT and unique keys stay bytewise. Indexes are byte-ordered, so ORDER BY and text ranges on a non-C collation do not use them (docs/14 Appendix W). COLLATE \"name\" overrides per expression")
 	confPath := flag.String("config", os.Getenv("STASK_CONFIG"), "settings file: one \"name = value\" per line, names as these flags; flags on the command line win (default $STASK_CONFIG)")
+	logLevel := flag.String("log-level", "info", "log level: debug, info, warn or error (lines are leveled by their prefix or, without one, by keywords; docs/21 section 6)")
+	logFormat := flag.String("log-format", "text", "log format: text or json (one object per line with time, level, msg)")
 	flag.Parse()
 	if *confPath != "" {
 		if err := conf.Load(flag.CommandLine, *confPath); err != nil {
 			log.Fatalf("config: %v", err)
 		}
+	}
+	if err := setupLogging(*logLevel, *logFormat); err != nil {
+		log.Fatal(err)
+	}
+	if *confPath != "" {
 		log.Printf("config: loaded %s", *confPath)
 	}
 	if err := sql.SetDefaultCollation(*collation); err != nil {
 		log.Fatalf("-collation: %v", err)
+	}
+	if *pgPasswordFile != "" {
+		if *pgPassword != "" {
+			log.Fatal("give -pg-password or -pg-password-file, not both")
+		}
+		b, err := os.ReadFile(*pgPasswordFile)
+		if err != nil {
+			log.Fatalf("-pg-password-file: %v", err)
+		}
+		if *pgPassword = strings.TrimRight(string(b), " \t\r\n"); *pgPassword == "" {
+			log.Fatalf("-pg-password-file: %s is empty", *pgPasswordFile)
+		}
 	}
 	hs.BasicPass = *pgPassword
 	httpAuth, httpTLS := httpSecurity(hs, *addr, *pprofAddr, *pprofInsecure, *faults)
@@ -383,10 +405,32 @@ func main() {
 	hsrv := server.New(p, fault)
 	if cl != nil {
 		hsrv.Cluster = func() any { return cl.Status() }
+		hsrv.ClusterMetrics = func() map[string]float64 {
+			st := cl.Status()
+			b := func(v bool) float64 {
+				if v {
+					return 1
+				}
+				return 0
+			}
+			return map[string]float64{"raft_term": float64(st.Term), "raft_is_leader": b(st.Role == "leader"),
+				"raft_writable": b(st.Writable), "raft_leader_known": b(st.Leader != 0), "raft_lease": b(st.Lease),
+				"raft_commit_index": float64(st.Commit), "raft_applied_index": float64(st.Applied),
+				"raft_apply_lag_entries":         float64(st.Commit - min(st.Commit, st.Applied)),
+				"raft_snapshots_installed_total": float64(cl.Stats.Snapshots.Load())}
+		}
+	}
+	if rs != nil {
+		hsrv.ReplicaInfo = rs.Replicas
 	}
 	var histSt *histstore.Store
 	if *histStore {
 		histSt = startHistStore(e, *dir, *histStoreTables, *histStoreRetentionS, *histStoreBucket, *histStoreMinFreeMB, *histStoreStall, *histStoreBackfill, hsrv, cl != nil)
+	}
+	if histSt != nil {
+		hsrv.ExtraMetrics = append(hsrv.ExtraMetrics, func(w io.Writer) {
+			fmt.Fprintf(w, "# HELP stask_history_store_bytes Size of the history store.\n# TYPE stask_history_store_bytes gauge\nstask_history_store_bytes{kind=\"disk\"} %d\nstask_history_store_bytes{kind=\"memory\"} %d\n", histSt.DiskBytes(), histSt.MemBytes())
+		})
 	}
 	srv := &http.Server{Addr: *addr, Handler: httpAuth.Wrap(hsrv.Handler()), TLSConfig: httpTLS}
 	if *pprofAddr != "" {
@@ -405,9 +449,36 @@ func main() {
 		if err != nil {
 			log.Fatalf("pg listen: %v", err)
 		}
+		if *pgInsecure && !server.IsLoopback(*pgAddr) && *pgPassword == "" {
+			log.Printf("warn: -pg-insecure: %s is open to the network and anyone who reaches it is the superuser", *pgAddr)
+		}
+		if *pgPassword != "" && (*pgAuth == "" || *pgAuth == "password") && *pgTLSCert == "" && !server.IsLoopback(*pgAddr) {
+			log.Printf("warn: -pg-addr %s uses cleartext password authentication without TLS: use -pg-auth scram and -pg-tls-cert/-pg-tls-key", *pgAddr)
+		}
 		pg = &pgwire.Server{E: e, Password: *pgPassword, Auth: *pgAuth, TLSRequire: *pgTLSRequire, MaxConns: *pgMaxConns, Views: p, RolesOnly: *pgRolesOnly,
 			StatementTimeout: stmtTimeout, IdleInTxTimeout: idleInTxTimeout, IdleSessionTimeout: idleTimeout,
 			KeepAliveIdle: *pgKeepIdle, KeepAliveInterval: *pgKeepInterval, KeepAliveCount: *pgKeepCount, TCPUserTimeout: *pgUserTimeout}
+		if *pgHBA != "" {
+			b, err := os.ReadFile(*pgHBA)
+			if err != nil {
+				log.Fatalf("-pg-hba: %v", err)
+			}
+			if pg.HBA, err = pgwire.ParseHBA(string(b)); err != nil {
+				log.Fatalf("-pg-hba %s: %v", *pgHBA, err)
+			}
+			// the server's authentication is decided later (prepareAuth): check now with the same rule
+			eff := *pgAuth
+			if eff == "" {
+				eff = pgwire.AuthTrust
+				if *pgPassword != "" {
+					eff = pgwire.AuthPassword
+				}
+			}
+			if err := pg.HBA.Check(eff); err != nil {
+				log.Fatalf("-pg-hba %s: %v", *pgHBA, err)
+			}
+			log.Printf("pg allow list: %s", *pgHBA)
+		}
 		if (*pgTLSCert == "") != (*pgTLSKey == "") {
 			log.Fatalf("pg tls: -pg-tls-cert and -pg-tls-key go together")
 		}
@@ -503,7 +574,7 @@ func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.D
 	}
 	e.Follow(c)
 	c.Attach(e)
-	hsrv.ExtraMetrics = c.Metrics
+	hsrv.HistMetrics = c.Metrics
 	role := "primary"
 	if e.IsReplica() {
 		role = "replica (follows its own copy of the leader log)"

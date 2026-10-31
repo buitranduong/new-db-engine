@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -28,14 +29,15 @@ import (
 //	node -> peer  'B'                  snapshot complete
 //	node -> peer  'E' text             refusal
 const (
-	fHello = 'H'
-	fMsg   = 'M'
-	fSnapQ = 'Q'
-	fSeg   = 'S'
-	fCkpt  = 'C'
-	fMeta  = 'm'
-	fDone  = 'B'
-	fErr   = 'E'
+	fHello   = 'H'
+	fMsg     = 'M'
+	fSnapQ   = 'Q'
+	fBackupQ = 'K' // a backup client (not a peer) asks for the same snapshot
+	fSeg     = 'S'
+	fCkpt    = 'C'
+	fMeta    = 'm'
+	fDone    = 'B'
+	fErr     = 'E'
 )
 
 type transport struct{ c *Cluster }
@@ -159,6 +161,15 @@ func (c *Cluster) serve(raw net.Conn) {
 	}
 	conn.SetDeadline(time.Time{})
 	from := binary.LittleEndian.Uint64(b)
+	if typ == fBackupQ {
+		// authenticated like a peer (secret or mTLS) but is not one
+		err := c.serveSnapshot(conn, 0)
+		if err != nil {
+			c.cfg.Logf("cluster: backup: %v", err)
+			repl.WriteFrame(conn, fErr, []byte(err.Error()))
+		}
+		return
+	}
 	if _, ok := c.cfg.Peers[from]; !ok || from == c.cfg.ID {
 		return
 	}
@@ -209,6 +220,9 @@ type snapMeta struct {
 func (c *Cluster) serveSnapshot(conn net.Conn, segMax int64) error {
 	if c.e.ReadOnly() || !c.writable.Load() {
 		return errors.New("not the leader")
+	}
+	if segMax == 0 {
+		segMax = c.e.Log().SegMax()
 	}
 	if segMax != c.e.Log().SegMax() {
 		return fmt.Errorf("segment size %d, the cluster's is %d", segMax, c.e.Log().SegMax())
@@ -309,80 +323,8 @@ func (c *Cluster) fetchSnapshot(leader uint64) error {
 	if err != nil {
 		return err
 	}
-	conn, r, err := repl.Dial(addr, sec)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	req := binary.LittleEndian.AppendUint64(nil, c.cfg.ID)
-	req = binary.LittleEndian.AppendUint64(req, uint64(c.cfg.SegMax))
-	if err := repl.WriteFrame(conn, fSnapQ, req); err != nil {
-		return err
-	}
 	tmp := c.snapDir()
-	os.RemoveAll(tmp)
-	for _, d := range []string{"wal", "ckpt"} {
-		if err := os.MkdirAll(filepath.Join(tmp, d), 0o755); err != nil {
-			return err
-		}
-	}
-	write := func(path string, data []byte, size int64) error {
-		f, err := os.Create(path)
-		if err != nil {
-			return err
-		}
-		if _, err = f.Write(data); err == nil && size > 0 {
-			err = f.Truncate(size)
-		}
-		if err == nil {
-			err = f.Sync()
-		}
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		return err
-	}
-	var meta snapMeta
-	haveMeta := false
-	t0 := time.Now()
-	var bytes int64
-	for done := false; !done; {
-		conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
-		typ, b, err := repl.ReadFrame(r)
-		if err != nil {
-			return err
-		}
-		switch typ {
-		case fSeg:
-			seg := binary.LittleEndian.Uint32(b)
-			bytes += int64(len(b) - 4)
-			if err := write(filepath.Join(tmp, "wal", fmt.Sprintf("%08d.wal", seg)), b[4:], c.cfg.SegMax); err != nil {
-				return err
-			}
-		case fCkpt:
-			n := int(binary.LittleEndian.Uint16(b))
-			bytes += int64(len(b) - 2 - n)
-			if err := write(filepath.Join(tmp, "ckpt", filepath.Base(string(b[2:2+n]))), b[2+n:], 0); err != nil {
-				return err
-			}
-		case fMeta:
-			if err := json.Unmarshal(b, &meta); err != nil {
-				return err
-			}
-			haveMeta = true
-		case fDone:
-			done = true
-		case fErr:
-			return fmt.Errorf("node %d: %s", leader, b)
-		default:
-			return fmt.Errorf("unexpected frame %q", typ)
-		}
-	}
-	if !haveMeta || meta.SegMax != c.cfg.SegMax {
-		return errors.New("snapshot without a usable description")
-	}
-	mb, _ := json.Marshal(meta)
-	if err := write(filepath.Join(tmp, "meta.json"), mb, 0); err != nil {
+	if _, err := fetchInto(addr, sec, fSnapQ, c.cfg.ID, c.cfg.SegMax, tmp, c.cfg.Logf); err != nil {
 		return err
 	}
 	// the marker: from here on the next start installs it
@@ -393,8 +335,165 @@ func (c *Cluster) fetchSnapshot(leader uint64) error {
 		return err
 	}
 	c.Stats.Snapshots.Add(1)
-	c.cfg.Logf("cluster: fetched a snapshot at entry %d from node %d: %d MiB in %v", meta.Index, leader, bytes>>20, time.Since(t0).Round(time.Millisecond))
 	return nil
+}
+
+// SnapInfo describes a backup: the Raft entry and LSN it ends at.
+type SnapInfo = snapMeta
+
+// Backup takes a consistent snapshot of the cluster from the node at raftAddr
+// (it must be the leader) into dir: wal/, ckpt/ and meta.json. Dropped into an
+// empty node directory as snap.ready (RestoreNode) it makes the node start
+// from that state. The settings are the -repl-* security settings.
+func Backup(raftAddr string, st repl.Settings, dir string, logf func(string, ...any)) (SnapInfo, error) {
+	sec, err := st.Replica(raftAddr)
+	if err != nil {
+		return SnapInfo{}, err
+	}
+	return fetchInto(raftAddr, sec, fBackupQ, 0, 0, dir, logf)
+}
+
+// RestoreNode installs a backup made by Backup into the (empty) data
+// directory of a cluster node: the next start of the node adopts it.
+func RestoreNode(backupDir, nodeDir string) error {
+	if _, err := os.Stat(filepath.Join(backupDir, "meta.json")); err != nil {
+		return fmt.Errorf("%s is not a cluster backup: %w", backupDir, err)
+	}
+	for _, e := range []string{"wal", "ckpt", "raft", "snap.ready"} {
+		if _, err := os.Stat(filepath.Join(nodeDir, e)); err == nil {
+			return fmt.Errorf("%s is not empty (%s exists): a node that was a cluster member must not be reset in place", nodeDir, e)
+		}
+	}
+	if err := os.MkdirAll(nodeDir, 0o755); err != nil {
+		return err
+	}
+	tmp := filepath.Join(nodeDir, "snap.tmp")
+	os.RemoveAll(tmp)
+	if err := copyTree(backupDir, tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(nodeDir, "snap.ready"))
+}
+
+func copyTree(src, dst string) error {
+	return filepath.Walk(src, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		t := filepath.Join(dst, rel)
+		if fi.IsDir() {
+			return os.MkdirAll(t, 0o755)
+		}
+		in, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.Create(t)
+		if err != nil {
+			return err
+		}
+		if _, err = io.Copy(out, in); err == nil {
+			err = out.Sync()
+		}
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+		return err
+	})
+}
+
+// fetchInto asks the node at addr for a snapshot (typ fSnapQ from a peer, or
+// fBackupQ from a backup client) and writes it into tmp. segMax 0 accepts the
+// node's segment size.
+func fetchInto(addr string, sec *repl.Security, typ byte, from uint64, segMax int64, tmp string, logf func(string, ...any)) (snapMeta, error) {
+	conn, r, err := repl.Dial(addr, sec)
+	if err != nil {
+		return snapMeta{}, err
+	}
+	defer conn.Close()
+	req := binary.LittleEndian.AppendUint64(nil, from)
+	req = binary.LittleEndian.AppendUint64(req, uint64(segMax))
+	if err := repl.WriteFrame(conn, typ, req); err != nil {
+		return snapMeta{}, err
+	}
+	os.RemoveAll(tmp)
+	for _, d := range []string{"wal", "ckpt"} {
+		if err := os.MkdirAll(filepath.Join(tmp, d), 0o755); err != nil {
+			return snapMeta{}, err
+		}
+	}
+	var meta snapMeta
+	haveMeta := false
+	t0 := time.Now()
+	var bytes int64
+	for done := false; !done; {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
+		typ, b, err := repl.ReadFrame(r)
+		if err != nil {
+			return snapMeta{}, err
+		}
+		switch typ {
+		case fSeg:
+			seg := binary.LittleEndian.Uint32(b)
+			bytes += int64(len(b) - 4)
+			if err := writeSnapFile(filepath.Join(tmp, "wal", fmt.Sprintf("%08d.wal", seg)), b[4:], segMax); err != nil {
+				return snapMeta{}, err
+			}
+		case fCkpt:
+			n := int(binary.LittleEndian.Uint16(b))
+			bytes += int64(len(b) - 2 - n)
+			if err := writeSnapFile(filepath.Join(tmp, "ckpt", filepath.Base(string(b[2:2+n]))), b[2+n:], 0); err != nil {
+				return snapMeta{}, err
+			}
+		case fMeta:
+			if err := json.Unmarshal(b, &meta); err != nil {
+				return snapMeta{}, err
+			}
+			haveMeta = true
+		case fDone:
+			done = true
+		case fErr:
+			return snapMeta{}, fmt.Errorf("%s: %s", addr, b)
+		default:
+			return snapMeta{}, fmt.Errorf("unexpected frame %q", typ)
+		}
+	}
+	if !haveMeta || meta.SegMax == 0 || (segMax != 0 && meta.SegMax != segMax) {
+		return snapMeta{}, errors.New("snapshot without a usable description")
+	}
+	if segMax == 0 { // the segment size was not known while the segments arrived
+		ents, _ := os.ReadDir(filepath.Join(tmp, "wal"))
+		for _, e := range ents {
+			if err := os.Truncate(filepath.Join(tmp, "wal", e.Name()), meta.SegMax); err != nil {
+				return snapMeta{}, err
+			}
+		}
+	}
+	mb, _ := json.Marshal(meta)
+	if err := writeSnapFile(filepath.Join(tmp, "meta.json"), mb, 0); err != nil {
+		return snapMeta{}, err
+	}
+	logf("cluster: fetched a snapshot at entry %d: %d MiB in %v", meta.Index, bytes>>20, time.Since(t0).Round(time.Millisecond))
+	return meta, nil
+}
+
+func writeSnapFile(path string, data []byte, size int64) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err == nil && size > 0 {
+		err = f.Truncate(size)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // finishSnapshot installs a fetched snapshot (Prepare, before the engine

@@ -370,8 +370,13 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return s.pgcmdsDatabaseSize(), nil
 	case "txid_current", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
 		return s.pgcmdsScalar(name, args)
-	case "pg_is_other_temp_schema", "pg_is_in_recovery":
+	case "pg_is_other_temp_schema":
 		return BoolD(false), nil
+	case "pg_is_in_recovery":
+		// true on a replica and on a cluster node that is not the leader:
+		// multi-host clients (targetServerType=primary, target_session_attrs)
+		// use it to find the node that takes writes.
+		return BoolD(s.E != nil && s.E.ReadOnly()), nil
 	case "pg_table_is_visible", "pg_type_is_visible", "pg_function_is_visible":
 		if name == "pg_type_is_visible" && len(args) == 1 && args[0].K == KInt && isInfoDomain(args[0].I) {
 			return BoolD(false), nil

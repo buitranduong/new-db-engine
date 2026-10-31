@@ -43,7 +43,7 @@ import (
 func main() {
 	dir := flag.String("dir", "/mnt/sda3/stask-data/db", "data directory")
 	addr := flag.String("addr", "127.0.0.1:17070", "listen address")
-	seg := flag.Int64("segment-mb", 256, "log segment size (MB)")
+	seg := flag.Int64("segment-mb", 64, "log segment size (MB); must be the same on every node of a cluster and for a data dir written earlier")
 	batch := flag.Int("max-batch", 512, "max transactions per group commit")
 	ckptMin := flag.Int64("checkpoint-min-mb", 512, "minimum log growth between checkpoints (MB)")
 	secDisk := flag.Bool("secindex-disk", false, "allow secondary indexes to be kept on disk: ALTER INDEX x SET (index_storage = 'disk') / ALTER TABLE t SET (index_storage = 'disk') (default off: all indexes stay in RAM)")

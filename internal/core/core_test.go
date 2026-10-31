@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -732,5 +733,57 @@ func TestRecoveryEndIgnoresEmptySpare(t *testing.T) {
 	}
 	if _, err := e2.Write([]WriteOp{{Table: "kv", Row: row("x", 1)}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The default segment size (64 MiB) must hold the largest frame: a 2 MiB
+// value, a transaction of about 85 MB that spans segments, and everything
+// after them must survive a restart that again uses the default.
+func TestDefaultSegmentSizeLargeValueAndTx(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes ~90MB")
+	}
+	dir := t.TempDir()
+	openDefault := func() *Engine {
+		e, err := Open(Options{Dir: dir, NoCheckpoint: true, Logf: t.Logf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	e := openDefault()
+	if got := e.Log().SegMax(); got != 64<<20 {
+		t.Fatalf("default segment size %d, want 64 MiB", got)
+	}
+	e.CreateTable(kvTable())
+	big := strings.Repeat("x", 2<<20)
+	if _, err := e.Write([]WriteOp{{Table: "kv", Row: schema.Row{{S: "big"}, {I: 1}, {S: big}}}}); err != nil {
+		t.Fatal(err)
+	}
+	const n = 250_000
+	ops := make([]WriteOp, n)
+	for i := range ops {
+		ops[i] = WriteOp{Table: "kv", Row: row(fmt.Sprint(i), int64(i))}
+	}
+	if _, err := e.Write(ops); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Write([]WriteOp{{Table: "kv", Row: schema.Row{{S: "big2"}, {I: 2}, {S: big}}}}); err != nil {
+		t.Fatal(err)
+	}
+	e.Close()
+	e = openDefault()
+	defer e.Close()
+	if tb, _ := e.Table("kv"); tb.LiveRows() != n+2 {
+		t.Fatalf("live rows after restart %d, want %d", tb.LiveRows(), n+2)
+	}
+	for _, k := range []string{"big", "big2"} {
+		r, _, err := e.Get("kv", k)
+		if err != nil || r == nil || len(r[2].S) != 2<<20 {
+			t.Fatalf("get %s: %v", k, err)
+		}
+	}
+	if len(e.Log().Segments()) < 2 {
+		t.Fatalf("expected the writes to span several segments")
 	}
 }

@@ -19,6 +19,7 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 - Kiểm CRC khi đọc log luôn bật (`-no-read-crc` chỉ để đo chi phí của chính nó, một lần, ghi nhãn).
 - `-hybrid` bật khi đo đường lai; đo cả hai (có và không) cho cùng truy vấn.
 - Đĩa trống >= 5 GB, tải 1 phút < 1,0, qua `scripts/perf-run.sh`; không có gate hay agent nào chạy.
+- **Chạy G3 của lát dọc bằng `scripts/m2-harness/g3.sh`** (docs/32 §6): một lệnh cho ma trận {hybrid bật/tắt} x {không nhập, nhập theo lô (mặc định), nhập một giao dịch}, PostgreSQL 16 làm chuẩn khi N <= 10M, các cờ ở trên (`-scrub-interval 0`, perf-run, khoá `/tmp/stask-bigdata.lock`, đĩa >= 3 GB dừng) đã nằm trong script; `N=10000000 scripts/m2-harness/g3.sh` rồi `N=30000000`.
 
 ## 2. Kích thước (vừa VM: 8 vCPU, 31 GB RAM; đĩa trống ~12 GB, ~23 GB sau khi xoá cache Go)
 

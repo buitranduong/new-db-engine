@@ -43,6 +43,9 @@ type ckptHeader struct {
 	LastTS      int64          `json:"last_ts"`
 	NextTableID uint32         `json:"next_table_id"`
 	Tables      []schema.Table `json:"tables"`
+	// Nonce ties the disk secondary index files to this checkpoint
+	// (secpersist.go). Additive: absent in older checkpoints.
+	Nonce uint64 `json:"nonce,omitempty"`
 }
 
 var crcTab = crc32.MakeTable(crc32.Castagnoli)
@@ -90,11 +93,12 @@ func (e *Engine) recover() error {
 		}
 		rs.CheckpointLSN, rs.CheckpointKeys = hdr.StartLSN, keys
 		// the checkpoint holds index definitions only (secindex.go)
-		if err := e.rebuildSec(); err != nil {
+		if err := e.rebuildSec(hdr); err != nil {
 			return fmt.Errorf("rebuild indexes: %w", err)
 		}
 		rs.CheckpointLoad = time.Since(t0)
 	}
+	e.sidxCleanup()
 	t1 := time.Now()
 	segs := e.log.Segments()
 	end := startPos
@@ -210,6 +214,7 @@ func (e *Engine) recover() error {
 	e.installed.Store(lastLSN)
 	e.installedPos = end
 	e.ckptWalBase = 0
+	e.verifyAdopted(lastLSN)
 	rs.RecoveredLSN = lastLSN
 	rs.Total = time.Since(t0)
 	e.logf("recovery: lsn=%d ckpt_keys=%d ckpt_load=%v replay_records=%d replay_bytes=%d replay=%v torn_tail=%v total=%v",
@@ -402,7 +407,7 @@ func (e *Engine) loadCheckpoint(path string) (*ckptHeader, int, error) {
 		wg.Add(1)
 		go func(t *TableState, cs []*chunk) {
 			defer wg.Done()
-			b := newTreeBuilder(&t.keys)
+			b := newTreeBuilder(t.keys.Load())
 			var live int64
 			var prev ikey
 			for ci, c := range cs {
@@ -410,7 +415,7 @@ func (e *Engine) loadCheckpoint(path string) (*ckptHeader, int, error) {
 				for i := range c.ents {
 					en := c.ents[i]
 					if en.klen == longKey {
-						en.ikey = t.keys.ikeyOf(c.longs[nl])
+						en.ikey = t.keys.Load().ikeyOf(c.longs[nl])
 						nl++
 					}
 					if (ci > 0 || i > 0) && b.t.keyOf(&en) <= b.t.keyStr(&prev) {
@@ -546,6 +551,9 @@ func (e *Engine) Checkpoint() error {
 	gen := e.gc.ckptStarted.Add(1)
 	tables := e.allTables() // dropped ones too: older log records refer to them
 	hdr := ckptHeader{Version: ckptVersion, StartLSN: startLSN, StartSeg: startPos.Seg, StartOff: startPos.Off, LastTS: e.lastTSAt(startLSN)}
+	if e.opts.DiskIndexes {
+		hdr.Nonce = newNonce()
+	}
 	clones := make([]*tree, len(tables))
 	e.tmu.RLock()
 	hdr.NextTableID = e.nextTableID
@@ -627,6 +635,10 @@ func (e *Engine) Checkpoint() error {
 		return err
 	}
 	f.Close()
+	// the disk index files are checkpointed before the header becomes the
+	// latest, with the same start and nonce (secpersist.go)
+	e.checkpointSec(tables, hdr.Tables, startLSN, hdr.Nonce)
+	e.sidxStep("ckpt-before-rename")
 	final := filepath.Join(e.ckptDir(), fmt.Sprintf("ckpt-%020d.ckpt", startLSN))
 	if err := os.Rename(tmp, final); err != nil {
 		return err
@@ -635,6 +647,7 @@ func (e *Engine) Checkpoint() error {
 		d.Sync()
 		d.Close()
 	}
+	e.sidxStep("ckpt-after-rename")
 	// remove older checkpoints
 	ents2, _ := os.ReadDir(e.ckptDir())
 	var old []string

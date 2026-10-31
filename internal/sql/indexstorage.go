@@ -38,6 +38,8 @@ func storageErr(err error) error {
 		return nil
 	case errors.Is(err, core.ErrDiskIndexOff):
 		return errf(codeFeature, "%v", err)
+	case errors.Is(err, core.ErrIndexBudget):
+		return errf("53200", "%v", err)
 	}
 	return AsError(err)
 }

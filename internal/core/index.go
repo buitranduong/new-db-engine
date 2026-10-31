@@ -161,6 +161,7 @@ type tree struct {
 	inner *innerNode // root otherwise
 	n     int
 	ar    *keyArena
+	rec   *arenaRec // set while the key arena is being compacted (arenacompact.go)
 }
 
 var treeGen atomic.Uint64
@@ -284,6 +285,9 @@ func (t *tree) put(key string, v *Version) (old entry, had bool) {
 	}
 	if !had {
 		t.n++
+	}
+	if t.rec != nil {
+		t.rec.put(key, v)
 	}
 	return old, had
 }
@@ -474,6 +478,9 @@ func (t *tree) del(key string) (old entry, had bool) {
 		t.ar.Dead.Add(int64(len(t.keyOf(&old))))
 	}
 	t.n--
+	if t.rec != nil {
+		t.rec.del(key)
+	}
 	return old, true
 }
 

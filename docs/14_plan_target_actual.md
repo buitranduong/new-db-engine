@@ -1556,3 +1556,28 @@ Theo D32: **không có phép đo hiệu năng** trong phụ lục này, chỉ đ
 9. Harness CRM đầy đủ (Liquibase + ứng dụng Jmix) chưa chạy lại với nhánh này; thay bằng `h_plsqlfull_crm.sql` chạy đúng nội dung `functions.xml` (cả changeset trigger) trên PG và STASK: khớp 25/25.
 
 Tái lập: `cd ~/wt/plsqlfull`, đặt postgres:16 ở cổng 28820 và `staskd` (`-collation en_US.utf8` cho nhóm `coll`) rồi `pgdiff -pg ... -stask ... scripts/pgdiff` (hoặc `SCRIPTS=<thư mục chứa h_plsqlfull*.sql> scripts/pgdiff-run.sh`); `go test -count=1 ./internal/sql -run 'PlFull|Collation'`; `go test ./internal/pgwire -run Plpgsql`; `claimcheck -only pf_` (cả với `-url postgres://postgres@..../postgres` trên postgres:16).
+
+## Phụ lục [. Nhánh `diskidx`: index phụ đĩa giữ qua restart, trigram trên đĩa, ngân sách bộ nhớ, chuyển đổi online khi replay, thu hồi arena (2026-10-31, gốc `pindexpre` @ b235cc9)
+
+**Kế hoạch (plan).** Hoàn thiện về mã các việc D29/D32 còn mở sau `pindexpre`, **không đo hiệu năng** (D32): (1) file index phụ đĩa giữ qua khởi động lại, gắn với checkpoint, rơi về dựng lại khi có nghi ngờ; (2) trigram trên đĩa, chuyển đổi online bằng dựng hàng loạt; (3) `-index-mem-budget` tính theo từng cấu trúc, báo cáo, cảnh báo và dự báo, giữ "không tự đẩy xuống đĩa"; (4) arena khoá dài của index chính thu hồi được, `cmd/memmap` dựng và test cỡ nhỏ; (5) chuyển đổi online trên replica/replay, DROP đua, nhật ký chuyển đổi có giới hạn; (6) mọi thứ có test `-race` + ảnh crash, và probe `claimcheck` nơi phù hợp.
+
+**Mục tiêu (target).** Test mới qua dưới `-race`, mỗi tính năng có ít nhất một phá thử làm test fail; `gofmt`, `go vet ./...`, `go test -race` các gói đụng tới, `claimcheck` không dưới `docs/claimcheck_baseline.txt`; thay đổi định dạng chỉ cộng thêm, tuỳ chọn (docs/09); docs/18 chỉ còn điều kiện 3 (đo đĩa thật) cho D32.
+
+**Thực tế (actual).** Chi tiết, lệnh và giới hạn: docs/18 §12–15.
+
+| # | Việc | Mã | Test (`go test -race`) | Phá thử |
+|---|---|---|---|---|
+| 1 | Giữ file qua restart | `core/secpersist.go`; `pindex.CheckpointFn`; `nonce` trong header checkpoint; hook trong `Checkpoint`/`recover` | `core`: `SecPersistAdopt`, `…CheckpointCrashPoints`, `…Corruption` (6 kiểu hỏng + tuỳ chọn tắt), `…LostTail`, `…DDLAfterCheckpoint`, `…Stress` (ảnh crash ở mọi móc checkpoint) | bỏ so StartLSN/nonce → fail; bỏ kiểm `hi` → fail |
+| 2 | Trigram trên đĩa | `proj/substrdisk.go`, sửa `proj/substr.go` (`docList`, `Scan`), `schema.SubstrIndex.Storage`, `core.SetIndexStorage` cho tên trigram, `planner.Start` | `sql`: `SubstrDiskMatchesScan` (trong lúc chuyển + ghi song song), `…RestartAndCompaction`, `…DropRacesConversion` | đổi thuật toán `seek` đĩa → test treo/fail (lần chạy bị bỏ vì treo, xem hạn chế) |
+| 3 | Ngân sách | `core/idxbudget.go`, `/v1/status`, `/metrics`, `staskd -index-mem-budget` | `core`: `IndexMemBudget`, `IndexMemForecast` | — |
+| 4 | Arena khoá + memmap | `core/arenacompact.go`, `TableState.keys` → con trỏ nguyên tử; `cmd/memmap -disk` | `core`: `KeyArenaCompaction`, `…Aborts`, `…AutoCompactor`; `cmd/memmap`: `TestRunSmallDisk` | bỏ phát lại nhật ký → fail "2000 rows, want 2014" |
+| 5 | Online khi replay/replica, DROP đua, nhật ký giới hạn | `core/secdisk.go` viết lại phần chuyển đổi (`convertAsync`, `migLog` tràn tệp, `retireDisk` chờ) | `core`: `DiskIndexReplayConvertsOnline`, `…DropRacesConversion`, `…ConversionLogSpills`; `repl`: `ReplicaIndexStorageOnline` | — |
+| 6 | Probe claimcheck | `cmd/claimcheck/probes_diskidx.go` (6 probe: hợp đồng mặc-định-tắt) | claimcheck **529/535** (nền main 523/529; 6 probe mới đều PASS, không probe cũ nào đổi) | — |
+
+Lệnh tái lập: `go test -p 2 -race -timeout 30m ./internal/pindex ./internal/core ./internal/proj ./internal/planner ./internal/server ./internal/repl ./internal/schema ./cmd/memmap`; `go test -p 2 -race -run 'SubstrDisk|SQLIndexStorage' ./internal/sql`.
+
+**Chênh lệch/lưu ý.** (a) Tên báo cáo: yêu cầu nhắc `stask_stats` và `/v1/stats`; mã chỉ có `/v1/status` và `/metrics`, nên báo cáo nằm ở đó (docs/18 §14). (b) Cờ là `-index-mem-budget` tính bằng MiB. (c) Định dạng: thêm `nonce` (header checkpoint), `storage` trong `substr_indexes`, blob `SXI1` trong meta file index (docs/09): orchestrator đã duyệt "nếu cộng thêm và có phiên bản"; không dùng tuỳ chọn thì không byte nào đổi. (d) Arena: đỉnh RAM tạm thời = thêm một bản index của bảng; chỉ chạy khi ngân sách chứa nổi.
+
+**Cổng.** `RACE=1 scripts/merge-gate.sh` OK trên nhánh rebased lên `main` 18dcbb4 (lần 2; lần 1 đỏ vì `TestSQLIndexStorage` chưa chờ chuyển đổi nền sau restart, đã sửa, và vì hai test `cluster` thiếu khối cổng do agent khác chiếm 21000-21999, không liên quan). Sau đó đổi tên bảng probe sang `cc_t` (harness chỉ dọn `cc_t/cc_p/cc_c/cc_v`) và chạy lại claimcheck riêng: 529/535. Lỗi thật tìm được nhờ cổng: yêu cầu chuyển đổi lúc replay so với trạng thái hiện tại thay vì mục tiêu đang chờ (log `disk, memory, disk` kết thúc ở memory) — sửa ở `reconcileSec`, test lặp 6 lần dưới `-race` đều qua.
+
+**Hạn chế (thành thật).** Không có số đo hiệu năng hay RSS nào (D32). Nhận lại file vẫn quét tuần tự toàn file để dựng danh sách `dead`; đường dựng-lại vẫn gom khoá vào slice; trigram giữ các mảng theo tài liệu trong RAM (chỉ posting list xuống đĩa); số RAM của ngân sách là ước tính (trừ index chính); arena khoá của index phụ RAM chưa thu hồi online; lần phá thử đổi `seek` của list đĩa làm test **treo** thay vì fail nhanh (tiến trình test còn chạy tới hết timeout 10 phút, không kill được vì lệnh kill bị chặn).

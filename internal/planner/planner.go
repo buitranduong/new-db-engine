@@ -33,7 +33,24 @@ func Start(e *core.Engine) *Platform {
 	p.SF = e.Follow(p.Srch)
 	p.TSF = e.Follow(p.TS)
 	p.Sub = proj.NewSubstr()
+	if on, dir, cache, logf := e.DiskIndexConfig(); on {
+		if err := p.Sub.ConfigureDisk(true, dir, cache, logf); err != nil {
+			logf("trigram disk store: %v", err)
+		}
+	}
 	p.SubF = e.Follow(p.Sub)
+	e.AddIndexMemSource("trigram", func() []core.IndexMem {
+		var out []core.IndexMem
+		for _, st := range p.Sub.Report() {
+			name := ""
+			if ts := e.TableByID(st.Table); ts != nil {
+				name = ts.Schema().Name
+			}
+			out = append(out, core.IndexMem{Kind: "trigram", Table: name, Name: st.Col, Storage: st.Storage,
+				RAMBytes: st.RAMBytes, DiskBytes: st.DiskBytes, Entries: st.Postings})
+		}
+		return out
+	})
 	return p
 }
 

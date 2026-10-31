@@ -204,6 +204,9 @@ func (g *Gen) ProbeSims(max int) []Sim {
 func (g *Gen) FrozenLo() string { return simNum(int64(g.PEnd)) }
 
 // Load creates the schema and loads the data into the server behind dsn.
+// ColumnarSims makes Load create sims WITH (columnar = on) (STASK -hybrid needs it; never set for the reference).
+var ColumnarSims bool
+
 func Load(ctx context.Context, dsn string, g *Gen, schemaFile, mode string, logf func(string, ...any)) error {
 	c, err := Connect(ctx, dsn)
 	if err != nil {
@@ -229,6 +232,9 @@ func Load(ctx context.Context, dsn string, g *Gen, schemaFile, mode string, logf
 	for _, s := range stmts {
 		if strings.TrimSpace(s) == "" {
 			continue
+		}
+		if ColumnarSims && strings.HasPrefix(strings.TrimSpace(s), "CREATE TABLE sims") {
+			s = strings.TrimSpace(s) + " WITH (columnar = on)"
 		}
 		if _, err := c.Exec(ctx, s); err != nil {
 			return fmt.Errorf("schema: %q: %w", strings.TrimSpace(s), err)

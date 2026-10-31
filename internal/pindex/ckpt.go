@@ -205,15 +205,7 @@ func (t *Tree) CheckpointFn(userFn func() []byte) error {
 	// now) or from the end of the file.
 	t.fl.Lock()
 	R, O := len(t.ready), len(t.pending)+len(t.prevFL)
-	k := (R + O + flCap - 1) / flCap
-	for {
-		take := min(k, R)
-		k2 := (R + O - take + flCap - 1) / flCap
-		if k2 == k {
-			break
-		}
-		k = k2
-	}
+	k := flPages(R, O)
 	take := min(k, R)
 	flIDs := append([]uint64(nil), t.ready[R-take:]...)
 	for len(flIDs) < k {
@@ -306,4 +298,18 @@ func (t *Tree) Close() error {
 	e := error(ErrFailed)
 	t.failedErr.Store(&e)
 	return t.f.Close()
+}
+
+// flPages returns how many free-list pages a checkpoint writes when R ready
+// pages exist (some of which are taken to hold the list itself) and O other
+// entries must be recorded: the smallest k with k*flCap >= R+O-min(k,R).
+// The need is non-increasing in k, so the first k that suffices is found by
+// counting up. (An earlier fixed-point iteration k = need(k) oscillates
+// forever between two values when R>=2 and R+O == flCap+1, with t.mu held.)
+func flPages(R, O int) int {
+	k := 0
+	for (R+O-min(k, R)+flCap-1)/flCap > k {
+		k++
+	}
+	return k
 }

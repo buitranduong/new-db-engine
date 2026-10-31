@@ -17,6 +17,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -85,15 +86,19 @@ type SegGroup struct {
 
 // SegR2 is one top-N-per-group query on one table.
 type SegR2 struct {
-	Filters     []SegFilter
-	Group       int
-	Groups      []SegGroup
-	Score       int
-	Desc        bool
-	Md5         bool
-	Md5Suffix   string
-	Workers     int
-	Interrupted func() bool
+	Filters   []SegFilter
+	Group     int
+	Groups    []SegGroup
+	Score     int
+	Desc      bool
+	Md5       bool
+	Md5Suffix string
+	// optional range on the primary key (bytewise), applied to the rows that pass the other filters
+	KeyLo, KeyHi string
+	HasLo, HasHi bool
+	LoEx, HiEx   bool
+	Workers      int
+	Interrupted  func() bool
 }
 
 type SegHit struct {
@@ -400,9 +405,10 @@ func (h *r2heap) offer(sk int64, id uint32) {
 // TopNPerGroup runs the query on this immutable table state.
 func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 	var st SegR2Stats
-	if q.Group < 0 || q.Group >= len(t.Kinds) || t.Kinds[q.Group] != SegText || t.Absent&(1<<uint(q.Group)) != 0 {
-		return nil, st, fmt.Errorf("group column is not held as a dictionary column")
+	if q.Group < 0 || q.Group >= len(t.Kinds) || (t.Kinds[q.Group] != SegText && t.Kinds[q.Group] != SegInt) || t.Absent&(1<<uint(q.Group)) != 0 {
+		return nil, st, fmt.Errorf("group column is not held as a dictionary or integer column")
 	}
+	intGroup := t.Kinds[q.Group] == SegInt
 	if q.Score < 0 || q.Score >= len(t.Kinds) || t.Kinds[q.Score] != SegInt || t.Absent&(1<<uint(q.Score)) != 0 {
 		return nil, st, fmt.Errorf("score column is not held as an integer column")
 	}
@@ -411,7 +417,36 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 		return nil, st, err
 	}
 	// groups: dictionary code -> group index
-	gnames := t.Dict[q.Group]
+	var gnames []string
+	if !intGroup {
+		gnames = t.Dict[q.Group]
+	}
+	// integer group column: gidx is indexed by value - gmin (values of the asked groups only; NULL never matches)
+	var gmin int64
+	if intGroup {
+		gmax := int64(0)
+		for i, g := range q.Groups {
+			v, err := strconv.ParseInt(g.Value, 10, 32)
+			if err != nil {
+				return nil, st, fmt.Errorf("group value %q is not an integer", g.Value)
+			}
+			if i == 0 || v < gmin {
+				gmin = v
+			}
+			if i == 0 || v > gmax {
+				gmax = v
+			}
+		}
+		if len(q.Groups) > 0 && gmax-gmin >= 1<<16 {
+			return nil, st, fmt.Errorf("integer group values span more than 65536")
+		}
+		gnames = make([]string, 0)
+		gidxLen := 0
+		if len(q.Groups) > 0 {
+			gidxLen = int(gmax-gmin) + 1
+		}
+		gnames = make([]string, gidxLen)
+	}
 	gidx := make([]int8, len(gnames))
 	for i := range gidx {
 		gidx[i] = -1
@@ -428,12 +463,32 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 		if caps[gi] > SegMaxTopN {
 			return nil, st, fmt.Errorf("%w: %d > %d", ErrSegBudget, caps[gi], SegMaxTopN)
 		}
-		if code, ok := dictCode(gnames, g.Value); ok {
+		if intGroup {
+			v, _ := strconv.ParseInt(g.Value, 10, 32)
+			gidx[v-gmin] = int8(gi)
+		} else if code, ok := dictCode(gnames, g.Value); ok {
 			gidx[code] = int8(gi)
 		}
 	}
 	var md5Evals atomic.Int64
 	rc := &r2ctx{t: t, md5: q.Md5, suffix: q.Md5Suffix, md5Evals: &md5Evals}
+	keyOK := func(id uint32) bool {
+		if !q.HasLo && !q.HasHi {
+			return true
+		}
+		k := rc.key(id)
+		if q.HasLo {
+			if c := bytes.Compare(k, []byte(q.KeyLo)); c < 0 || (c == 0 && q.LoEx) {
+				return false
+			}
+		}
+		if q.HasHi {
+			if c := bytes.Compare(k, []byte(q.KeyHi)); c > 0 || (c == 0 && q.HiEx) {
+				return false
+			}
+		}
+		return true
+	}
 	b := t.Base
 	nz := 0
 	if b.n > 0 {
@@ -475,7 +530,13 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 			var bytesTouched int64
 			sel := make([]int32, 0, SegChunkRows)
 			scoreCol := b.ints[q.Score]
-			groupCol := b.text[q.Group]
+			var groupCol []uint16
+			var groupInt []int32
+			if intGroup {
+				groupInt = b.ints[q.Group]
+			} else {
+				groupCol = b.text[q.Group]
+			}
 			for {
 				z := int(next.Add(1) - 1)
 				if z >= nz {
@@ -512,8 +573,13 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 						hidden++
 						continue
 					}
-					gi := gidx[groupCol[i]]
-					if gi < 0 {
+					var gi int8
+					if intGroup {
+						gi = gIntIdx(gidx, groupInt[i], gmin)
+					} else {
+						gi = gidx[groupCol[i]]
+					}
+					if gi < 0 || !keyOK(uint32(i)) {
 						continue
 					}
 					sc := scoreCol[i]
@@ -547,15 +613,27 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 		}
 		sel := filterRange(fs, tl.text, tl.ints, 0, tl.n, make([]int32, 0, min(tl.n, SegChunkRows)))
 		st.ColBytes += int64(tl.n) * int64(rowBytes)
-		scoreCol, groupCol := tl.ints[q.Score], tl.text[q.Group]
+		scoreCol := tl.ints[q.Score]
+		var groupCol []uint16
+		var groupInt []int32
+		if intGroup {
+			groupInt = tl.ints[q.Group]
+		} else {
+			groupCol = tl.text[q.Group]
+		}
 		for _, i := range sel {
 			if tl.tomb[i] || t.TailDead.Get(int(i)) {
 				st.TailDead++
 				continue
 			}
 			st.TailPassed++
-			gi := gidx[groupCol[i]]
-			if gi < 0 {
+			var gi int8
+			if intGroup {
+				gi = gIntIdx(gidx, groupInt[i], gmin)
+			} else {
+				gi = gidx[groupCol[i]]
+			}
+			if gi < 0 || !keyOK(uint32(b.n+int(i))) {
 				continue
 			}
 			sc := scoreCol[i]
@@ -626,4 +704,16 @@ func cmpEntries(c *r2ctx, a, b *r2entry) int {
 
 func sortEntries(c *r2ctx, e []r2entry) {
 	slices.SortFunc(e, func(a, b r2entry) int { return cmpEntries(c, &a, &b) })
+}
+
+// gIntIdx maps an integer group value to its group index (-1: not asked, or NULL).
+func gIntIdx(gidx []int8, v int32, gmin int64) int8 {
+	if v == segNullInt {
+		return -1
+	}
+	d := int64(v) - gmin
+	if d < 0 || d >= int64(len(gidx)) {
+		return -1
+	}
+	return gidx[d]
 }

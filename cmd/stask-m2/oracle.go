@@ -66,7 +66,11 @@ type Config struct {
 	Force                                           bool
 	GateLog, DiskPath                               string
 	MinFreeGB                                       float64
-	LoadMode, Exec, Iso                             string
+	LoadMode, Exec, Iso, RefName                    string
+	Columnar                                        bool
+	Tear                                            int
+	ProbeWorkers                                    int
+	ProbeGap                                        time.Duration
 }
 
 func (c *Config) Query(name string, page int) string {
@@ -209,7 +213,15 @@ func (r *Run) workerOracle(ctx context.Context, baseline int64) {
 
 // ---------------------------------------------------------------- read-your-writes probe
 
-func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
+func (r *Run) workerProbe(ctx context.Context, probes []Sim, wid, nw int) {
+	// worker wid of nw takes the probe sims with index = wid (mod nw): no two writers touch the same sim
+	var mine []Sim
+	for i, p := range probes {
+		if i%nw == wid {
+			mine = append(mine, p)
+		}
+	}
+	probes = mine
 	if len(probes) == 0 || r.cfg.Probes == 0 {
 		return
 	}
@@ -217,21 +229,27 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
 	defer w.Drop()
 	defer rd.Drop()
 	rc := r.NewRecorder()
-	gap := r.cfg.Duration * 9 / 10 / time.Duration(r.cfg.Probes)
-	for i := 0; i < r.cfg.Probes && ctx.Err() == nil; i++ {
+	nprobes := r.cfg.Probes / nw
+	gap := r.cfg.Duration * 9 / 10 / time.Duration(max(1, nprobes))
+	if r.cfg.ProbeGap >= 0 {
+		gap = r.cfg.ProbeGap
+	}
+	for i := 0; i < nprobes && ctx.Err() == nil; i++ {
 		sim := probes[i%len(probes)]
-		val := 11 + i%990
+		val := 11 + (i*nw+wid)%990
 		txid := r.txid.Add(1)
 		p := &Payload{Kind: "probe", TS: fmtTS(time.Now()), Nums: []string{sim.Number}, Val: val}
 		r.gate.RLock()
 		t0 := time.Now()
-		res := w.RunTx(ctx, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txc, txcancel := txContext(ctx)
+		res := w.RunTx(txc, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txcancel()
 		r.gate.RUnlock()
 		if res.Err != nil || res.Noop {
+			if res.Unknown {
+				r.unknown.Store(txid, "probe")
+			}
 			if ctx.Err() == nil {
-				if res.Unknown {
-					r.unknown.Store(txid, "probe")
-				}
 				rc.Add("probe_write", r.Phase(), time.Since(t0), ErrCode(res.Err))
 			}
 			continue
@@ -256,6 +274,22 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
   FROM sims WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND status = 'available' AND carrier_id IN (1,2,3) AND number = '%s') t WHERE rn <= 1`, sim.Number))
 		if err == nil {
 			r.Check("read_your_writes_r2", len(rows) == 1 && rows[0][1] == strconv.Itoa(val), "probe %d sim %s wrote store_rate=%d, R2 read %v", i, sim.Number, val, rows)
+		} else if ctx.Err() == nil {
+			rd.Drop()
+		}
+		// R2 page shape (quota pages over the carriers, filters identical to R2 plus store_rate = val): the form the
+		// hybrid path recognises; the probe sim must be among the rows with the value it just wrote
+		rows, err = QueryText(ctx, c, fmt.Sprintf(`SELECT t.number, t.store_rate FROM (
+  SELECT number, carrier_id, store_rate, row_number() OVER (PARTITION BY carrier_id ORDER BY store_rate DESC, md5(number || '42'), number) AS rn
+  FROM sims WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND status = 'available' AND carrier_id IN (1,2,3) AND store_rate = %d) t
+WHERE (t.carrier_id = 1 AND t.rn BETWEEN 1 AND 100) OR (t.carrier_id = 2 AND t.rn BETWEEN 1 AND 100) OR (t.carrier_id = 3 AND t.rn BETWEEN 1 AND 100)
+ORDER BY t.store_rate DESC, md5(t.number || '42'), t.number`, val))
+		if err == nil {
+			seen := false
+			for _, row := range rows {
+				seen = seen || (row[0] == sim.Number && row[1] == strconv.Itoa(val))
+			}
+			r.Check("read_your_writes_r2_page", seen, "probe %d sim %s wrote store_rate=%d, the R2 page with store_rate = %d has %d rows without it", i, sim.Number, val, val, len(rows))
 		} else if ctx.Err() == nil {
 			rd.Drop()
 		}
@@ -358,7 +392,8 @@ func (r *Run) JournalChecks(ctx context.Context, jr []JRow, tag string, ackedBef
 		e, ok := exp[id]
 		if !ok {
 			extra++
-			exs = fmt.Sprintf("order %d has no journal row", id)
+			sp, _ := r.suspect.Load(id)
+			exs = fmt.Sprintf("order %d has no journal row; attempts on it: %v", id, sp)
 		} else if e != x[1] {
 			bad++
 			sp, _ := r.suspect.Load(id)
@@ -546,3 +581,83 @@ func Barrier(ctx context.Context, cfg *Config, sutDSN, refDSN string) []QCompare
 	}
 	return out
 }
+
+// ---------------------------------------------------------------- tear test: one snapshot, several tables
+//
+// A read-only REPEATABLE READ transaction reads, at ONE snapshot: an R2 page (hybrid path on STASK -hybrid), then the
+// invariants that span orders + order_items + stock (q13, orphans, totals, reserved = open items), then the same R2
+// page again. The writers (T) change those tables together in one transaction each; a read that saw one table
+// before and another after a commit would violate an invariant, and the second R2 page must equal the first.
+func (r *Run) workerTear(ctx context.Context, id int, baseline int64) {
+	s := &Sess{dsn: r.sut}
+	defer s.Drop()
+	rc := r.NewRecorder()
+	page := 1 + id%3
+	for ctx.Err() == nil {
+		sleepCtx(ctx, 100*time.Millisecond)
+		c, err := s.Conn(ctx)
+		if err != nil {
+			continue
+		}
+		t0 := time.Now()
+		bad := func(err error) bool {
+			if err == nil || ctx.Err() != nil {
+				return err != nil
+			}
+			r.Count("tear_query_errors", 1)
+			r.Count("tear_query_err: "+trunc(err.Error(), 90), 1)
+			c.Exec(context.Background(), "ROLLBACK")
+			if ErrCode(err) == "conn" {
+				s.Drop()
+			}
+			return true
+		}
+		if _, err := c.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"); bad(err) {
+			continue
+		}
+		q := R2Query(page, 1, "")
+		first, err := QueryText(ctx, c, q)
+		if bad(err) {
+			continue
+		}
+		rows13, err := QueryText(ctx, c, r.cfg.Query("q13_stock_invariant", 0))
+		if bad(err) {
+			continue
+		}
+		okAll := true
+		r.Check("tear_q13_at_one_snapshot", len(rows13) == 0, "%d rows differ, first %v", len(rows13), first_(rows13))
+		for _, x := range []struct{ name, sql string }{{"tear_no_orphan_items", sqlOrphanItems}, {"tear_no_order_without_items", sqlEmptyOrders}, {"tear_order_total_equals_items", sqlTotals}} {
+			v, err := one(ctx, c, x.sql)
+			if bad(err) {
+				okAll = false
+				break
+			}
+			r.Check(x.name, v[0] == "0", "count=%s", v[0])
+		}
+		if !okAll {
+			continue
+		}
+		v, err := one(ctx, c, sqlReservedSum)
+		if bad(err) {
+			continue
+		}
+		a, _ := strconv.ParseInt(strings.Split(v[0], ".")[0], 10, 64)
+		b, _ := strconv.ParseInt(v[1], 10, 64)
+		r.Check("tear_reserved_equals_open_items", a-baseline == b, "sum(stock.reserved)-baseline=%d but open T order items=%d", a-baseline, b)
+		second, err := QueryText(ctx, c, q)
+		if bad(err) {
+			continue
+		}
+		same := len(first) == len(second)
+		for i := 0; same && i < len(first); i++ {
+			same = strings.Join(first[i], "|") == strings.Join(second[i], "|")
+		}
+		r.Check("tear_r2_page_repeatable_in_snapshot", same, "R2 page %d read twice in one REPEATABLE READ transaction differs (%d vs %d rows)", page, len(first), len(second))
+		_, err = c.Exec(ctx, "COMMIT")
+		bad(err)
+		rc.Add("tear_tx", r.Phase(), time.Since(t0), "")
+		r.Count("tear_snapshots", 1)
+	}
+}
+
+func first_(rows [][]string) any { return first(rows) }

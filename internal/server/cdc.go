@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -110,6 +111,12 @@ func (s *Server) cdcStream(w http.ResponseWriter, r *http.Request) {
 	found := false
 	for _, si := range s.P.E.Slots() {
 		found = found || si.Name == slot
+		if si.Name == slot && si.Invalid != "" {
+			// answer before the stream starts: once the 200 is sent the consumer
+			// would see an error line inside a "successful" stream (docs/33)
+			cdcFail(w, fmt.Errorf("%w: %s", core.ErrSlotInvalid, si.Invalid))
+			return
+		}
 	}
 	if !found {
 		cdcFail(w, core.ErrNoSlot)

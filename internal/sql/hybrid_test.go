@@ -460,3 +460,64 @@ func TestHybridExplicitTxPinsItsState(t *testing.T) {
 		t.Fatal("after COMMIT the new rows must be visible")
 	}
 }
+
+// The harness shape (scripts/m2-harness): integer partition column, dimension
+// tables joined OUTSIDE the derived table by integer keys. Row for row equal
+// to the row executor, after tail changes, after a dimension change, and the
+// INNER JOIN drops page rows whose dimension row is missing.
+func hyOuterQuery(page int) string {
+	lo := func(q int) string { return fmt.Sprintf("t.rn BETWEEN %d AND %d", (page-1)*q+1, page*q) }
+	return fmt.Sprintf(`SELECT t.number, c.code, st.name, t.price, t.store_rate FROM (
+  SELECT number, carrier_id, store_id, price, store_rate,
+         row_number() OVER (PARTITION BY carrier_id ORDER BY store_rate DESC, md5(number || '42'), number) AS rn
+  FROM sims WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND status = 'available' AND carrier_id IN (1,2,3)) t
+JOIN carriers c ON c.id = t.carrier_id JOIN stores st ON st.id = t.store_id
+WHERE (t.carrier_id = 1 AND %s) OR (t.carrier_id = 2 AND %s) OR (t.carrier_id = 3 AND %s)
+ORDER BY t.store_rate DESC, md5(t.number || '42'), t.number`, lo(30), lo(50), lo(20))
+}
+
+func TestHybridIntGroupOuterJoins(t *testing.T) {
+	e := newEngine(t)
+	hs, rs := NewSession(e), NewSession(e)
+	mustq(t, rs, `CREATE TABLE sims (number TEXT PRIMARY KEY, carrier_id INT NOT NULL, store_id INT NOT NULL, category TEXT NOT NULL, price INT NOT NULL, store_rate INT NOT NULL, status TEXT NOT NULL) WITH (columnar = on)`)
+	mustq(t, rs, `CREATE TABLE carriers (id INT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL)`)
+	mustq(t, rs, `CREATE TABLE stores (id INT PRIMARY KEY, name TEXT NOT NULL)`)
+	mustq(t, rs, `INSERT INTO carriers VALUES (1,'VT','Viettel'),(2,'MB','Mobi'),(3,'VN','Vina')`)
+	mustq(t, rs, `INSERT INTO stores SELECT g, 'store' || g::text FROM generate_series(1, 40) g`)
+	mustq(t, rs, `INSERT INTO sims SELECT '09' || lpad(g::text, 9, '0'), 1 + g % 3, 1 + g % 40,
+  (ARRAY['TAM_HOA','LOC_PHAT','THAN_TAI','PHONG_THUY','THUONG'])[1 + g % 5],
+  500000 + ((g::bigint*7919) % 4000000)::int, (5 + (g::bigint*31) % 6)::int,
+  CASE WHEN g % 7 = 0 THEN 'sold' ELSE 'available' END FROM generate_series(0, 29999) g`)
+	h := NewHybridLogf(e, t.Logf)
+	hs.Hybrid = h
+	v := &hyEnv{t: t, hy: hs, row: rs, h: h}
+	v.sync()
+	check := func(label string) {
+		for page := 1; page <= 3; page++ {
+			rep := v.cmp(fmt.Sprintf("%s page %d", label, page), hyOuterQuery(page))
+			if rep.plan == nil || rep.plan.post == nil || !rep.plan.groupInt {
+				t.Fatalf("%s: not the int-group/outer-join plan", label)
+			}
+		}
+	}
+	check("base")
+	mustq(t, rs, `UPDATE sims SET store_rate = 10 WHERE number IN ('090000000001','090000000002','090000000003','090000000010')`)
+	mustq(t, rs, `UPDATE sims SET status = 'sold' WHERE category = 'TAM_HOA' AND carrier_id = 2 AND price < 1500000`)
+	mustq(t, rs, `UPDATE sims SET carrier_id = 3 WHERE number IN (SELECT number FROM sims WHERE carrier_id = 1 AND category = 'TAM_HOA' LIMIT 30)`)
+	check("after tail")
+	// a store disappears: its page rows leave the output (INNER JOIN), the ranks do not move
+	mustq(t, rs, `DELETE FROM stores WHERE id IN (1, 2, 3)`)
+	check("after dimension delete")
+	mustq(t, rs, `UPDATE carriers SET code = 'VTX' WHERE id = 1`)
+	check("after dimension rename")
+	// a primary key range (the frozen sub-population of the harness), also over tail changes
+	for _, kr := range []string{"AND number >= '090000015000'", "AND number > '090000010000' AND number <= '090000012000'", "AND number BETWEEN '090000005000' AND '090000007000'"} {
+		q := strings.Replace(hyOuterQuery(1), "AND carrier_id IN (1,2,3))", "AND carrier_id IN (1,2,3) "+kr+")", 1)
+		if q == hyOuterQuery(1) {
+			t.Fatal("test query not rewritten")
+		}
+		v.cmp("key range "+kr, q)
+		mustq(t, rs, `UPDATE sims SET store_rate = 10 WHERE number IN ('090000015001','090000015002','090000011000','090000006000')`)
+		v.cmp("key range after tail "+kr, q)
+	}
+}

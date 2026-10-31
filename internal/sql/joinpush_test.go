@@ -225,3 +225,55 @@ func TestJoinPushExplain(t *testing.T) {
 	has(e, "Seq Scan on sims")
 	lacks(e, "pushed below the join", "Inner Index Lookup")
 }
+
+// A scan with a pushed filter (and a join) that holds more than the statement budget is an error,
+// never a result that silently lacks rows (the parallel-scan truncation bug of r2perf).
+func TestJoinPushOverBudgetIsAnError(t *testing.T) {
+	s := joinPushSession(t)
+	defer joinPushOff.Store(false)
+	run(t, s, `CREATE TABLE bigb (id BIGINT PRIMARY KEY, cid INT, v TEXT)`)
+	run(t, s, `INSERT INTO bigb SELECT g, g % 5 + 1, repeat('x', 100) FROM generate_series(1, 40000) g`)
+	defer func(q, n int64, d string) { QueryMemLimit, SQLMemLimit, SpillDir = q, n, d }(QueryMemLimit, SQLMemLimit, SpillDir)
+	SQLMemLimit, SpillDir = 4<<30, ""
+	for _, q := range []string{
+		`SELECT b.id, b.v, c.name FROM bigb b JOIN carriers c ON c.id = b.cid WHERE b.id > 100`,
+		`SELECT b.id, b.v, c.name FROM carriers c LEFT JOIN bigb b ON c.id = b.cid AND b.id > 100`,
+		`SELECT b.id, b.v, c.name FROM bigb b JOIN carriers c ON c.id = b.cid WHERE b.v LIKE 'xx%' AND b.id < 39990`,
+	} {
+		for _, off := range []bool{false, true} {
+			joinPushOff.Store(off)
+			QueryMemLimit = 0
+			full, err := tryRun(s, q)
+			if err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+			failed := 0
+			for lim := int64(1 << 20); lim < 12<<20; lim += 700001 {
+				QueryMemLimit = lim
+				res, err := tryRun(s, q)
+				switch {
+				case code(err) == "53200":
+					failed++
+				case err != nil:
+					t.Fatalf("off=%v limit %d: %v", off, lim, err)
+				case len(res.Rows) != len(full.Rows):
+					t.Fatalf("off=%v limit %d: %d rows of %d without an error: %s", off, lim, len(res.Rows), len(full.Rows), q)
+				}
+			}
+			if failed == 0 {
+				t.Errorf("off=%v: no limit failed for %s (the budget is not applied)", off, q)
+			}
+		}
+	}
+}
+
+// the spill executor reads the filters pushed to the scans too (TestSpillMatchesMemory runs these)
+func init() {
+	spillQueries = append(spillQueries,
+		`SELECT a.id, b.id FROM a JOIN b ON a.k = b.k WHERE a.id < 3000 AND b.w > 20 ORDER BY a.id, b.id`,
+		`SELECT a.id, b.id FROM a LEFT JOIN b ON a.k = b.k AND b.w > 90 WHERE a.id % 7 = 0 ORDER BY a.id, b.id`,
+		`SELECT a.id, b.id FROM a LEFT JOIN b ON a.k = b.k WHERE b.w > 90 ORDER BY a.id, b.id`,
+		`SELECT a.id, b.id FROM a FULL JOIN b ON a.k = b.k AND b.w > 50 AND a.f > 10 ORDER BY a.id, b.id`,
+		`SELECT a.id, b.id FROM a JOIN b ON a.k = b.k WHERE a.id IN (5, 6, 7, 8000) ORDER BY a.id, b.id`,
+	)
+}

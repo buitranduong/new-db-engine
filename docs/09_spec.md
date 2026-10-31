@@ -47,7 +47,7 @@ Quy tắc khi mở:
 
 ## 3. Segment log
 
-**Cấp phát trước.** Segment được tạo đủ kích thước `segMax` (mặc định 64 MiB từ nhánh c1seg, trước đó 256 MiB; tối đa 2^32; cùng giá trị trên mọi node và khi mở lại thư mục dữ liệu đã có) bằng `fallocate`, nên phần chưa ghi toàn là byte 0. Trước khi tạo segment mới, segment trước đã được `fdatasync`, và thư mục được fsync sau khi tạo.
+**Cấp phát trước.** Segment được tạo đủ kích thước `segMax` (mặc định 64 MiB, trước đây 256 MiB; tối đa 2^32; mọi node của một cụm phải dùng cùng giá trị; mở lại thư mục cũ với giá trị khác vẫn đọc được: segment cũ giữ kích thước đã ghi, segment mới theo giá trị hiện hành) bằng `fallocate`, nên phần chưa ghi toàn là byte 0. Trước khi tạo segment mới, segment trước đã được `fdatasync`, và thư mục được fsync sau khi tạo.
 
 **Frame:**
 

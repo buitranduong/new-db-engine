@@ -139,7 +139,7 @@ Bài diễn tập tự động: `TestCutoverFailbackRehearsal` (PostgreSQL 16 tr
 
 ### 3.1 Khởi động
 
-Mỗi nút một thư mục dữ liệu **riêng** và cùng `-segment-mb`:
+Mỗi nút một thư mục dữ liệu **riêng** và cùng `-segment-mb` (mặc định mới là 64; cụm dựng trước đó bằng mặc định cũ 256 phải ghi rõ `-segment-mb 256` trên mọi nút cho tới khi dựng lại, vì các nút phải trùng cỡ segment):
 
 ```sh
 # nút 1 (nút 2, 3: đổi -raft-id, -dir, -raft-listen, -pg-addr)

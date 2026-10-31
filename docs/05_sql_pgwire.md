@@ -402,6 +402,8 @@ Hạng mục P5.1 của lộ trình. Mã nguồn: `internal/pgwire/auth.go`, tes
 | `-pg-tls-cert`, `-pg-tls-key` | File PEM của chứng chỉ và khoá. Phải đặt cùng nhau. Khi có, server trả lời `SSLRequest` bằng `S` rồi bắt tay TLS (tối thiểu TLS 1.2). |
 | `-pg-tls-require` | Từ chối kết nối không mã hoá bằng FATAL `28000` (`no pg_hba.conf entry for host ..., no encryption`), giống `pg_hba.conf` chỉ có dòng `hostssl`. Cần có chứng chỉ. |
 | `-pg-auth` | `trust`, `password` (cleartext) hoặc `scram`. Để rỗng thì giữ hành vi cũ: có `-pg-password` là `password`, không có là `trust`. `password` và `scram` đều cần `-pg-password`. |
+| `-pg-password-file` | File chứa `-pg-password` (bỏ khoảng trắng cuối): giữ mật khẩu ngoài danh sách tiến trình. Không đặt cùng `-pg-password` (docs/21 §7). |
+| `-pg-hba` | Danh sách cho phép kiểu `pg_hba.conf`: `host\|hostssl\|hostnossl DATABASE USER ADDRESS METHOD`, khớp đầu tiên thắng, không khớp là từ chối `28000` trước xác thực; METHOD cũng là yêu cầu tối thiểu với `-pg-auth` (docs/21 §7). |
 | `-pg-password` | Mật khẩu chung cho mọi user. Với `scram`, server tạo verifier khi khởi động (salt ngẫu nhiên 16 byte, 4096 vòng PBKDF2, như `scram_iterations` mặc định của PostgreSQL) và không dùng lại mật khẩu gốc khi xác thực. |
 
 Ví dụ:

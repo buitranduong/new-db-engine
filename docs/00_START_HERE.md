@@ -4,6 +4,12 @@ File này để **bất kỳ phiên làm việc mới nào** (người hay agent
 
 Thứ tự đọc: `00_START_HERE` → `STATUS` → `AGENT_PROTOCOL` → `PROCESS` (nhật ký quyết định) → `14_plan_target_actual` (bằng chứng chi tiết) → `15_target_workload` → `16_tiered_engine_vision`.
 
+## 0. Mô tả ngắn (người dùng chốt, 2026-10-31)
+
+STASK là một engine viết mới bằng Go (không dùng mã PostgreSQL), nói giao thức và SQL của PostgreSQL nên psql, pgjdbc, pgx, Liquibase dùng được nguyên vẹn. Lõi là **một log bền duy nhất** cùng **chỉ mục chính nằm trong RAM** để tra cứu điểm nhanh như Redis. Trên cùng dữ liệu đó là các **view dẫn xuất**: view cột cho gộp, đếm, facet kiểu ClickHouse; view trigram cho tìm chuỗi con kiểu Elasticsearch; view chuỗi thời gian và lịch sử. Một bản dữ liệu, một lần khôi phục, không phải đồng bộ giữa nhiều hệ thống.
+
+Cách hiểu đúng các so sánh: STASK **cover chức năng** của các hệ đó cho bài toán này. "Đạt hiệu năng như" thì chưa chứng minh: số đo thật chỉ có sau đợt kiểm nghiệm cuối (`docs/24_final_measurement.md`, `PROCESS` D32/D34). Superset và Jmix không phải mục tiêu bắt buộc; Jmix chỉ là một ca thử driver.
+
 ## 1. Ai cần gì (bối cảnh thật)
 
 Người đặt bài toán vận hành hệ thống bán SIM viễn thông:

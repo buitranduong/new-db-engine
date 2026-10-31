@@ -7,6 +7,16 @@ PostgreSQL wire protocol, so `psql`, JDBC, pgx and most ORMs can connect to it,
 and it is built around one idea: **the write-ahead log is the single source of
 truth.**
 
+In one paragraph: STASK is a from-scratch Go engine (it does not use PostgreSQL
+code) that speaks the PostgreSQL wire protocol and SQL, so psql, pgjdbc, pgx and
+Liquibase work unchanged. Its core is one durable log plus an in-RAM primary
+index for Redis-style point lookups. On the same data it keeps derived views: a
+columnar view for ClickHouse-style aggregates and facets, a trigram view for
+Elasticsearch-style substring search, and time-series and history views. One copy
+of the data and one recovery path instead of several systems to keep in sync.
+The claim is functional coverage; performance parity is not claimed until the
+final verification phase (see `docs/24_final_measurement.md`).
+
 One process (`staskd`) owns one authoritative, segmented log. The same log is the
 WAL and the value store. On top of it sit an MVCC primary index and three derived
 representations (columnar, full-text search, time-series) that are fed one way,

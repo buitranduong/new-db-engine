@@ -2,6 +2,7 @@
 
 STASK is an experimental tiered database engine in Go (log as the single source of truth, derived columnar/search/history views, PostgreSQL wire compatibility). It exists to replace a PostgreSQL + CDC + 2x Elasticsearch + Superset-copy stack for a SIM-card warehouse/CRM/web shop. Do not ask the user to repeat context: it is in the docs.
 
+0. If the user only says "tiếp tục" (continue), `docs/27_handoff.md` is the single source for their standing rules, the environment, the live state and the next queue. Your own memory is not the source of truth; if you learn a new standing rule, write it into that file.
 1. Read, in order: `docs/00_START_HERE.md`, `docs/STATUS.md`, `docs/AGENT_PROTOCOL.md`, `docs/PROCESS.md`, then `docs/14_plan_target_actual.md`.
 2. Work only through branches/worktrees (`git worktree add ~/wt/<name> -b <name>`). Only the orchestrator merges into `main` and pushes.
 3. Build binaries with `go build -o bin-main/ ./cmd/...` (never trust `bin/`). `go build ./...` does not write binaries.

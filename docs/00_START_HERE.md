@@ -2,7 +2,7 @@
 
 File này để **bất kỳ phiên làm việc mới nào** (người hay agent, sau khi hết giới hạn hay đổi agent) nắm đủ ngữ cảnh mà không cần người dùng nhắc lại. Trạng thái nằm trong **git và docs/**, không nằm trong cuộc trò chuyện.
 
-Thứ tự đọc: `00_START_HERE` → `STATUS` → `AGENT_PROTOCOL` → `PROCESS` (nhật ký quyết định) → `14_plan_target_actual` (bằng chứng chi tiết) → `15_target_workload` → `16_tiered_engine_vision`.
+Thứ tự đọc: `00_START_HERE` → `27_handoff` (quy tắc người dùng + trạng thái sống) → `STATUS` → `AGENT_PROTOCOL` → `PROCESS` (nhật ký quyết định) → `14_plan_target_actual` (bằng chứng chi tiết) → `15_target_workload` → `16_tiered_engine_vision`.
 
 ## 0. Mô tả ngắn (người dùng chốt, 2026-10-31)
 
@@ -61,7 +61,7 @@ Tổng: khoảng 50k dòng mã, 11,7k dòng test (23%).
 - **Build bằng `go build -o bin-main/ ./cmd/...`**, không dùng `bin/` (cũ). `go build ./...` không ghi binary; đã từng làm sai kết quả đo.
 - **Không có bằng chứng thì không ghi "xong"** (docs/14). Bằng chứng là test, probe `claimcheck`, `pgdiff`, hoặc số đo tái lập được.
 - **Mọi nhánh vào `main` qua `scripts/merge-gate.sh`** (gofmt, build, vet, test, `-race` tuỳ chọn, `claimcheck` không tụt).
-- VM chia sẻ: 8 core, 31 GB RAM, đĩa 57 GB (hay đầy); benchmark chuẩn cần máy riêng, chưa có.
+- VM DÀNH RIÊNG cho dự án: 8 core, 31 GB RAM, đĩa 57 GB (hay đầy); đo hiệu năng chạy độc quyền trên chính VM này (D32), đĩa sẽ được cấp thêm ~50 GB ở bước đo cuối.
 
 ## 6. Bản đồ tài liệu
 

@@ -76,6 +76,7 @@ Dọn dẹp: <đã xoá gì>
 
 ## 8. Khi hết giới hạn hoặc đổi agent (tiếp tục không cần người dùng nhắc lại)
 
+0. Người dùng chỉ nói "tiếp tục": đọc `docs/27_handoff.md` (quy tắc người dùng đã dặn, môi trường, vòng lặp điều phối, trạng thái sống, hàng việc, việc chờ người dùng) và làm tiếp đúng hàng việc đó.
 1. Đọc theo thứ tự: `docs/00_START_HERE` → `STATUS` → `AGENT_PROTOCOL` → `PROCESS` → `14`.
 2. Chạy `git status`, `git branch -vv`, `git worktree list`; đối chiếu với `STATUS §6`.
 3. Xem tiến trình nền: `pgrep -af staskd`, `docker ps`, `df -h /`; **đừng giết thứ không nhận ra**.

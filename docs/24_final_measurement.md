@@ -27,15 +27,16 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 ## 3. Thứ tự đo (tuần tự, mỗi phép đo trọn trước khi sang phép tiếp)
 
 1. **Bộ nhớ từng cấu trúc** (`scripts/memmap.sh`, `cmd/memmap`): L1/L2/L3 (+L4); trigram dùng đầu số thật (090/091/098...). Kết quả quyết định cấu hình (RAM hay `index_storage=disk`).
-2. **Tra cứu và truy vấn nền** (`scripts/simbench.sh` trên bản đóng băng, so với PG16 có `pg_trgm`): điểm, tiền tố, hậu tố, chứa (kiểu `LIKE`), facet, đếm, lịch sử một SIM; nền và trong lúc nhập.
-3. **Nhập Excel hằng ngày** (`cmd/staskimport`, chế độ binary/text/insert): L3 và L4 hàng triệu dòng; thông lượng, độ trễ nền trong lúc nhập, tốc độ view bắt kịp.
-4. **Làn công việc:** `-heavy-workers` (0 so với tự động), `-heavy-share`; p99 tra cứu khi có truy vấn nặng (rủi ro đã biết: p99 43 -> 313 ms ở 20M khi GC).
-5. **Chỉ mục đĩa `pindex` trên đĩa thật** (điều kiện D29 số 3): đọc điểm với truy cập lệch, nhập ngẫu nhiên cập nhật chỉ mục phụ, tỉ lệ trúng cache; so với chỉ mục RAM.
-6. **Lịch sử:** `HistStoreScale`, dung lượng theo số phiên bản/SIM (chờ số thật của người dùng; mặc định 5 và 50 phiên bản), TTL 60 ngày bỏ nguyên segment.
-7. **Chi phí tính năng:** COLLATE, khoá dòng (UPDATE/DELETE lấy một khoá mỗi dòng), audit log bật/tắt, backup mã hoá, nén.
-8. **Driver và ứng dụng thật (tuỳ chọn):** thời gian các thao tác chính qua pgjdbc/Hibernate; Jmix CRM chỉ là một ca thử, so với PG16.
-9. **Ổn định:** tải hỗn hợp liên tục >= 2 giờ ở L3 (bản đủ 7 ngày chạy trong chế độ bóng, không thuộc đợt này).
-10. **Khôi phục:** thời gian restore và PITR ở L3 (RTO), cụm 3 nút: mất một nút dưới tải.
+2. **Truy vấn đích: MỘT câu nhiều điều kiện có phân trang** (hình dạng truy vấn chính của bài toán, người dùng 2026-10-31): lọc đồng thời nhiều cột (tiền tố/hậu tố/chứa kiểu `LIKE`, khoảng giá, trạng thái, nhà mạng, ngày cập nhật, kết hợp `AND`/`OR`), `ORDER BY` một hoặc nhiều cột, trang đầu và trang sâu bằng `LIMIT/OFFSET` và bằng phân trang theo khoá (`WHERE (k) > (last) ORDER BY k LIMIT n`), kèm tổng số dòng (`count(*) OVER()` hoặc câu `count` riêng); độ chọn lọc từ rất cao đến thấp; nền và trong lúc nhập. Đối chiếu PostgreSQL 16 (có `pg_trgm`) và, cho phần gộp/đếm trên view cột, ClickHouse. Bộ truy vấn mẫu nằm ở `scripts/suite` nhóm 06/11 và `cmd/simbench`.
+3. **Tra cứu điểm và truy vấn nền** (`scripts/simbench.sh` trên bản đóng băng, so với PG16 có `pg_trgm`): điểm, tiền tố, hậu tố, chứa (kiểu `LIKE`), facet, đếm, lịch sử một SIM; nền và trong lúc nhập.
+4. **Nhập Excel hằng ngày** (`cmd/staskimport`, chế độ binary/text/insert): L3 và L4 hàng triệu dòng; thông lượng, độ trễ nền trong lúc nhập, tốc độ view bắt kịp.
+5. **Làn công việc:** `-heavy-workers` (0 so với tự động), `-heavy-share`; p99 tra cứu khi có truy vấn nặng (rủi ro đã biết: p99 43 -> 313 ms ở 20M khi GC).
+6. **Chỉ mục đĩa `pindex` trên đĩa thật** (điều kiện D29 số 3): đọc điểm với truy cập lệch, nhập ngẫu nhiên cập nhật chỉ mục phụ, tỉ lệ trúng cache; so với chỉ mục RAM.
+7. **Lịch sử:** `HistStoreScale`, dung lượng theo số phiên bản/SIM (chờ số thật của người dùng; mặc định 5 và 50 phiên bản), TTL 60 ngày bỏ nguyên segment.
+8. **Chi phí tính năng:** COLLATE, khoá dòng (UPDATE/DELETE lấy một khoá mỗi dòng), audit log bật/tắt, backup mã hoá, nén.
+9. **Driver và ứng dụng thật (tuỳ chọn):** thời gian các thao tác chính qua pgjdbc/Hibernate; Jmix CRM chỉ là một ca thử, so với PG16.
+10. **Ổn định:** tải hỗn hợp liên tục >= 2 giờ ở L3 (bản đủ 7 ngày chạy trong chế độ bóng, không thuộc đợt này).
+11. **Khôi phục:** thời gian restore và PITR ở L3 (RTO), cụm 3 nút: mất một nút dưới tải.
 
 ## 4. Cách ghi kết quả
 

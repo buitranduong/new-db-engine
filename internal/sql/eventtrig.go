@@ -130,6 +130,8 @@ func ddlEventTag(st Stmt) (string, bool) {
 		return "DROP TRIGGER", true
 	case *CreatePublication:
 		return "CREATE PUBLICATION", true
+	case *AlterPublication:
+		return "ALTER PUBLICATION", true
 	case *DropPublication:
 		return "DROP PUBLICATION", true
 	case *CommentOn:

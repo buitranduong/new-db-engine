@@ -156,6 +156,44 @@ func (e *Engine) CreatePublication(p Publication) error {
 	})
 }
 
+// AlterPublication changes a publication in place (ALTER PUBLICATION): mod
+// edits a copy, which is stored if mod succeeds. Added tables must exist.
+func (e *Engine) AlterPublication(name string, mod func(p *Publication) error) error {
+	return e.updateCDCCatalog(func(c *cdcCatalog) error {
+		for i := range c.Publications {
+			if c.Publications[i].Name != name {
+				continue
+			}
+			p := c.Publications[i]
+			p.Tables = slices.Clone(p.Tables)
+			if err := mod(&p); err != nil {
+				return err
+			}
+			for _, t := range p.Tables {
+				if _, err := e.Table(t); err != nil {
+					return err
+				}
+			}
+			sort.Strings(p.Tables)
+			p.Tables = slices.Compact(p.Tables)
+			if p.Name != name {
+				if !slotNameRe.MatchString(p.Name) {
+					return fmt.Errorf("invalid publication name %q (lower case letters, digits and _, at most 63)", p.Name)
+				}
+				for _, q := range c.Publications {
+					if q.Name == p.Name {
+						return ErrPublicationExists
+					}
+				}
+			}
+			c.Publications[i] = p
+			sort.Slice(c.Publications, func(i, j int) bool { return c.Publications[i].Name < c.Publications[j].Name })
+			return nil
+		}
+		return ErrNoPublication
+	})
+}
+
 // DropPublication removes a publication.
 func (e *Engine) DropPublication(name string) error {
 	return e.updateCDCCatalog(func(c *cdcCatalog) error {

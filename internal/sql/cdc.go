@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -905,26 +906,51 @@ func (s *Session) cdcDDL(st Stmt) (*Result, error) {
 	case *CreatePublication:
 		p := core.Publication{Name: st.Name, AllTables: st.AllTables, Tables: st.Tables, Insert: true, Update: true, Delete: true}
 		if st.Publish != "" {
-			p.Insert, p.Update, p.Delete, p.NoTruncate = false, false, false, true
-			for _, op := range strings.Split(st.Publish, ",") {
-				switch strings.ToLower(strings.TrimSpace(op)) {
-				case "insert":
-					p.Insert = true
-				case "update":
-					p.Update = true
-				case "delete":
-					p.Delete = true
-				case "truncate":
-					p.NoTruncate = false
-				default:
-					return nil, errf(codeSyntax, "unrecognized \"publish\" value: %q", op)
-				}
+			if err := setPublish(&p, st.Publish); err != nil {
+				return nil, err
 			}
 		}
 		if err := s.E.CreatePublication(p); err != nil {
 			return nil, cdcErr(err)
 		}
 		return &Result{Tag: "CREATE PUBLICATION"}, nil
+	case *AlterPublication:
+		err := s.E.AlterPublication(st.Name, func(p *core.Publication) error {
+			switch st.Action {
+			case "add", "set", "drop":
+				if p.AllTables {
+					return errf("22023", "publication %q is defined as FOR ALL TABLES", p.Name)
+				}
+				switch st.Action {
+				case "add":
+					p.Tables = append(p.Tables, st.Tables...)
+				case "set":
+					p.Tables = st.Tables
+				case "drop":
+					var keep []string
+					for _, t := range p.Tables {
+						if !slices.Contains(st.Tables, t) {
+							keep = append(keep, t)
+						}
+					}
+					for _, t := range st.Tables {
+						if !slices.Contains(p.Tables, t) {
+							return errf("42704", "relation %q is not part of the publication", t)
+						}
+					}
+					p.Tables = keep
+				}
+			case "options":
+				return setPublish(p, st.Publish)
+			case "rename":
+				p.Name = st.RenameTo
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, cdcErr(err)
+		}
+		return &Result{Tag: "ALTER PUBLICATION"}, nil
 	case *DropPublication:
 		err := s.E.DropPublication(st.Name)
 		if errors.Is(err, core.ErrNoPublication) && st.IfExists {
@@ -941,6 +967,26 @@ func (s *Session) cdcDDL(st Stmt) (*Result, error) {
 		return &Result{Tag: "ALTER TABLE"}, nil
 	}
 	return nil, fmt.Errorf("cdcDDL: %T", st)
+}
+
+// setPublish applies a publish = 'insert, update, ...' list.
+func setPublish(p *core.Publication, list string) error {
+	p.Insert, p.Update, p.Delete, p.NoTruncate = false, false, false, true
+	for _, op := range strings.Split(list, ",") {
+		switch strings.ToLower(strings.TrimSpace(op)) {
+		case "insert":
+			p.Insert = true
+		case "update":
+			p.Update = true
+		case "delete":
+			p.Delete = true
+		case "truncate":
+			p.NoTruncate = false
+		default:
+			return errf(codeSyntax, "unrecognized \"publish\" value: %q", op)
+		}
+	}
+	return nil
 }
 
 func cdcErr(err error) error {

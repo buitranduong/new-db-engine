@@ -286,7 +286,7 @@ func (tx *Tx) add(op WriteOp) error {
 		return ErrTxDone
 	}
 	if tx.unindexed {
-		return errors.New("tx: InsertUnique cannot be mixed with other writes")
+		return coded("0A000", "this statement cannot be mixed with other writes of the transaction")
 	}
 	p0, err := tx.e.pendingOf(op)
 	if err != nil {

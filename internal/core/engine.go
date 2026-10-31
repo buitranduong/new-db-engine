@@ -35,7 +35,7 @@ var (
 	ErrNoTable    = errors.New("no such table")
 	ErrAppendOnly = errors.New("table is append-only: only inserts are allowed")
 	ErrTxDone     = errors.New("transaction already finished")
-	ErrClosed     = errors.New("engine closed")
+	ErrClosed     = &CodedError{Code: "57P01", Msg: "engine closed"}
 	// ErrUnknownOutcome is returned when the log failed mid-commit: the
 	// transaction was not acknowledged and may or may not survive restart.
 	ErrUnknownOutcome = errors.New("storage failure during commit: outcome unknown, writes disabled until restart")
@@ -1887,7 +1887,7 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 				pendingDDL = pendingDDL || x.ddlNames[r.ddl.Name]
 			}
 			if exists || b.ddlNames[r.ddl.Name] || pendingDDL {
-				finishReq(r, fmt.Errorf("table %q already exists", r.ddl.Name))
+				finishReq(r, coded("42P07", "table %q already exists", r.ddl.Name))
 				continue
 			}
 		}

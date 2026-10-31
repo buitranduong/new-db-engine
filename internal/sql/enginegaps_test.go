@@ -1,6 +1,11 @@
 package sql
 
-import "testing"
+import (
+	"testing"
+
+	"stask/internal/core"
+	"stask/internal/schema"
+)
 
 func one(t *testing.T, s *Session, q string) string {
 	t.Helper()
@@ -233,4 +238,20 @@ func TestGapsSerializableScan(t *testing.T) {
 	one(t, a, `SELECT count(*) FROM sc`)
 	run(t, b, `INSERT INTO sc VALUES (10, 9)`)
 	run(t, a, `COMMIT`)
+}
+
+func TestGapsCodedEngineErrors(t *testing.T) {
+	e := newEngine(t)
+	s := NewSession(e)
+	run(t, s, `CREATE TABLE ce (id INT PRIMARY KEY, v TEXT)`)
+	run(t, s, `CREATE INDEX ce_v ON ce (v)`)
+	if err := e.CreateIndex("ce", schema.IndexDef{Name: "ce_v", Columns: []string{"v"}}); err == nil || AsError(err).Code != "42P07" {
+		t.Fatalf("duplicate index: %v", err)
+	}
+	if err := e.DropIndex("ce", "nope"); err == nil || AsError(err).Code != "42704" {
+		t.Fatalf("missing index: %v", err)
+	}
+	if AsError(core.ErrClosed).Code != "57P01" {
+		t.Fatal("ErrClosed")
+	}
 }

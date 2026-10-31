@@ -93,3 +93,10 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 - Thay D31 pha 1: không lặp vòng đo–sửa hiệu năng giữa chừng (mỗi vòng 3–10 phút, cả tiếng cho một vấn đề). Phủ tính năng Làn B trước (pgparity, txddl2, pgcmds), đóng băng, rồi đo và tối ưu từng phần.
 - Ngoại lệ: chỉ sửa hiệu năng khi nó chặn đúng đắn hoặc là lỗi rõ ràng. `lanefix` (làn nặng) được đóng gói, gộp sau cổng, và các số đo chưa chạy lại ghi vào danh sách đo cuối.
 - Danh sách đo cuối: simbench trên bản đóng băng (lanes: facet/đếm bị chậm khi làn nặng bão hòa; `-heavy-workers` mặc định; phiên bản cuối của khoá dạng truy vấn), memmap (công cụ chưa có), 3 điều kiện D29 cho pindex, GC lịch sử. Mọi phép đo vẫn qua scripts/perf-run.sh.
+
+## D33 — Sau đợt phủ mã (2026-10-31)
+- D18 sửa: Raft đã nối vào engine; đường HA chốt là cụm Raft 3 nút (bằng chứng: replica bất đồng bộ mất ghi đã xác nhận khi kill -9; cụm Raft 46 813 ghi xác nhận, 0 mất). Còn thiếu: đổi thành viên cụm, PITR trong cụm, kiểm với pgjdbc thật.
+- `staskd -heavy-workers` mặc định giữ TẮT (0) cho tới khi đo cuối (D32): agent aggfacet đổi sang tự động nhưng chưa đo; Phụ lục O ghi p99 ghi 43 -> 313 ms ở 20M khi bật làn nặng.
+- Chấp nhận phụ thuộc excelize v2.11.0 (BSD-3) và việc nâng x/crypto, x/net, x/sync, x/text, go 1.25.0.
+- Chấp nhận thay đổi định dạng cộng thêm (omitempty/có phiên bản): IndexDef.Storage, Column.Collation, IndexDef.Colls, meta trigger/hàm nạp chồng, loại danh mục `collation`, cờ First của histstore. Bản cũ đọc dữ liệu mới không hỏng nhưng không thấy tính năng mới.
+- Mặc định `-collation` = C. Bật `en_US.utf8` khớp 100% PG16 glibc trên 5 tập thử; chọn theo `datcollate` của PG production (chờ người dùng).

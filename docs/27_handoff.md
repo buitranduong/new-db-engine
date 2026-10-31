@@ -38,15 +38,14 @@ An toàn:
 5. Sau khi gộp: gỡ worktree/nhánh, chạy `scripts/reap.sh` (`AGENT_PROTOCOL §9`). Agent đã báo cáo thì đóng; việc mới = agent mới với mô tả đầy đủ.
 6. Khi người dùng hỏi tiến độ: bảng % theo hạng mục (nói rõ đó là ước lượng), việc đang chạy, việc cần họ.
 
-## 4. Trạng thái sống (cập nhật 2026-10-31)
+## 4. Trạng thái sống (cập nhật 2026-10-31, sau integ19)
 
-- `main` = `42340dd` (gate xanh ở `eb41f46`: 603/604 claimcheck; sau đó chỉ thêm tài liệu và script).
-- Phần mã coi như đã đóng, trừ các khoảng trống đã biết (§5). Chưa đo hiệu năng.
-- Đang chờ gộp:
-  - `cifix` (`~/wt/cifix`): sửa test `TestHAMembershipSnapshotJoin` (nén log chạy nền) làm CI đỏ; gate đang chạy `/tmp/gate-cifix.log`.
-  - `jdbcreal` (HEAD `06a750a`): bộ pgjdbc/Hibernate/Liquibase thật (21 đạt, 2 bỏ qua), sửa TimeZone, COPY binary ra, mảng nhiều chiều, bộ lập kế hoạch sắp FROM; chưa qua gate.
-- Đang chạy (agent): `suite` (bộ kịch bản nghiệm thu SQL `scripts/suite`, `docs/25`) và `cdcsuite` (CDC + sự kiện + tải đồng thời `scripts/suite-cdc`, `docs/26`); chỉ cần đúng, chưa đo.
-- Hàng việc tiếp: (1) gộp `cifix` + `jdbcreal` + `suite` + `cdcsuite` vào một nhánh tích hợp, một gate, đẩy, xem CI; (2) sau đó chương trình kiểm nghiệm theo `docs/24` (đo bộ nhớ trước), kèm backlog lỗi do `suite`/`cdcsuite` tìm ra.
+- `main` = `3971e83` (gate `RACE=1` xanh: 603/604 claimcheck, 1909 s; CI GitHub xanh). Không còn nhánh chờ gộp.
+- Phần mã coi như đóng theo D35, trừ các khoảng trống ở §5. Chưa đo hiệu năng.
+- Bộ nghiệm thu đã có: `scripts/pgdiff` (đối chiếu postgres:16), `scripts/suite` (2196 câu, 1698 giống PG16 sau `suitefix`; backlog ở `docs/25`), `scripts/suite-cdc` (11/11 đạt; `docs/26`), bộ pgjdbc/Hibernate/Liquibase thật (`accept/clients/pgjdbc-real`, `scripts/crmdocker`), `accept/security.sh`.
+- Đang chạy: agent `g1` (worktree `~/wt/g1`) chạy lại mọi bộ nghiệm thu trên `main` và viết `docs/28_g1_status.md`, phân loại khác biệt còn lại thành A (kết quả sai, phải sửa), B (chưa hỗ trợ, người dùng chọn ưu tiên), C (chỉ khác thông điệp).
+- Hàng việc tiếp: (1) nhận báo cáo `g1`; sửa nhóm A; đưa nhóm B cho người dùng chọn; (2) đóng G1 khi nhóm A rỗng và B/C đã giải thích; (3) G2 (diễn tập restore/PITR, `kill -9` lặp, mất nút Raft, bảo mật); (4) G3 theo `docs/24` (cấp thêm ~50 GB đĩa trước bậc 50M).
+- Bài học quy trình: đẩy dồn dập huỷ lần chạy CI trước; mỗi tích hợp đẩy MỘT lần rồi chờ CI. Ghi dòng phụ lục `docs/14` TRƯỚC `git add` khi gộp.
 
 ## 5. Khoảng trống mã đã biết (cố ý chưa làm trước khi có số đo)
 

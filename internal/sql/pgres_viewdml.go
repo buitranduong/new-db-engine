@@ -79,6 +79,9 @@ func (s *Session) viewDML(st Stmt) (Stmt, error) {
 	if !ok {
 		return st, nil
 	}
+	if _, isDelete := st.(*Delete); !isDelete {
+		s.noteViewCheck(name, sv)
+	}
 	switch q := st.(type) {
 	case *Insert:
 		n := *q

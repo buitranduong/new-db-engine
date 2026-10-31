@@ -253,9 +253,14 @@ type Table struct {
 	// MatView is the SQL of a materialized view's query (the table holds its
 	// rows); MatUnpopulated: created or refreshed WITH NO DATA. Unlogged:
 	// CREATE UNLOGGED TABLE (kept for the catalogs; rows are logged like any).
-	MatView        string `json:"matview,omitempty"`
-	MatUnpopulated bool   `json:"mat_unpopulated,omitempty"`
-	Unlogged       bool   `json:"unlogged,omitempty"`
+	// Partitioned: a table declared PARTITION BY; PartPreds are the conditions of its partitions (a row must
+	// satisfy one) and PartDefault says a DEFAULT partition takes the rest (partition.go). Additive.
+	Partitioned    bool     `json:"partitioned,omitempty"`
+	PartPreds      []string `json:"part_preds,omitempty"`
+	PartDefault    bool     `json:"part_default,omitempty"`
+	MatView        string   `json:"matview,omitempty"`
+	MatUnpopulated bool     `json:"mat_unpopulated,omitempty"`
+	Unlogged       bool     `json:"unlogged,omitempty"`
 
 	idx map[string]int
 	// lastAdd is the newest AddedLSN of the columns: rows from that LSN

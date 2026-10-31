@@ -31,6 +31,7 @@ type CreateView struct {
 	Cols      []string
 	Query     Stmt
 	Text      string // the SQL text of Query
+	CheckOpt  string // WITH [CASCADED|LOCAL] CHECK OPTION: "cascaded", "local" or ""
 }
 
 // DropView is DROP VIEW [IF EXISTS] name [, ...] [CASCADE | RESTRICT].
@@ -89,6 +90,20 @@ func (p *parser) createView() (st Stmt, ok bool, err error) {
 		return nil, true, err
 	}
 	c.Text = strings.TrimSpace(p.src[start:p.peek().pos])
+	if p.acceptKw("with") {
+		c.CheckOpt = "cascaded"
+		if p.acceptKw("local") {
+			c.CheckOpt = "local"
+		} else {
+			p.acceptKw("cascaded")
+		}
+		if err := p.expectKw("check"); err != nil {
+			return nil, true, err
+		}
+		if err := p.expectKw("option"); err != nil {
+			return nil, true, err
+		}
+	}
 	return c, true, nil
 }
 
@@ -268,6 +283,17 @@ func (s *Session) createView(st *CreateView) (*Result, error) {
 	if err := s.E.PutView(def, st.OrReplace); err != nil {
 		return nil, AsError(err)
 	}
+	if st.CheckOpt != "" {
+		if _, ok := s.simpleViewOf(st.Name); !ok {
+			if !exists {
+				_ = s.E.DropViews([]string{st.Name})
+			}
+			return nil, errf(codeFeature, "WITH CHECK OPTION is supported only on automatically updatable views")
+		}
+	}
+	if err := s.setViewOption(st.Name, st.CheckOpt); err != nil {
+		return nil, err
+	}
 	return &Result{Tag: "CREATE VIEW"}, nil
 }
 
@@ -351,6 +377,9 @@ func (s *Session) dropViews(st *DropView) (*Result, error) {
 		return nil, AsError(err)
 	}
 	for _, n := range append(names, cascaded...) { // their INSTEAD OF triggers go with them
+		if err := s.setViewOption(n, ""); err != nil {
+			return nil, err
+		}
 		if err := s.E.DropTableTriggers(n); err != nil {
 			return nil, AsError(err)
 		}

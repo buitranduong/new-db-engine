@@ -328,6 +328,11 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 			start = !alnum
 		}
 		return TextD(b.String()), nil
+	case "stask_hash_part": // HASH partition membership (partition.go): the bound of a partition is a view condition
+		if err := nargs(3, 3); err != nil {
+			return Null, err
+		}
+		return BoolD(partHashMatch(args[0], args[1].I, args[2].I)), nil
 	case "md5":
 		if err := nargs(1, 1); err != nil {
 			return Null, err

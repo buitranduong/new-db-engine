@@ -788,6 +788,11 @@ func (s *Session) updateRow(tx *core.Tx, t *schema.Table, tgs []*core.Trigger, o
 			return nil, nil
 		}
 	}
+	if s.vchk != nil {
+		if err := s.vchk.check(t, upd); err != nil {
+			return nil, err
+		}
+	}
 	if ok, nk := t.KeyOf(old), t.KeyOf(upd); ok != nk {
 		if _, exists, err := tx.Get(t.Name, nk); err != nil {
 			return nil, err

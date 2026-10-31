@@ -53,7 +53,8 @@ type Result struct {
 // Session holds per-connection state: the open transaction and settings.
 type Session struct {
 	E           *core.Engine
-	prng        pgPRNG // random() / setseed()
+	vchk        *viewCheck // WITH CHECK OPTION of the view the running DML went through (viewcheck.go)
+	prng        pgPRNG     // random() / setseed()
 	tx          *core.Tx
 	txid        pgTxid               // txid_current() of the current transaction (pgcmds.go)
 	plDepth     int                  // nesting of user functions being run (plsql.go)
@@ -819,6 +820,9 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 	if rw, err := s.viewDML(st); err != nil {
 		return nil, err
 	} else {
+		if s.vchk != nil {
+			defer func() { s.vchk = nil }()
+		}
 		st = rw
 	}
 	st = s.applyColumnCollations(st) // columns declared COLLATE (collddl.go)
@@ -2095,6 +2099,11 @@ func checkRow(t *schema.Table, r schema.Row) error {
 	if err := computeGenerated(t, r); err != nil {
 		return err
 	}
+	if t.Partitioned {
+		if err := checkPartition(t, r); err != nil {
+			return err
+		}
+	}
 	if err := checkUserCols(t, r); err != nil {
 		return err
 	}
@@ -2369,7 +2378,11 @@ func (s *Session) buildInsertRow(t *schema.Table, cols []int, exprs []Expr, ctx 
 			}
 		}
 	}
-	return s.buildRow(t, rc, vals)
+	r, err := s.buildRow(t, rc, vals)
+	if err == nil && s.vchk != nil {
+		err = s.vchk.check(t, r)
+	}
+	return r, err
 }
 
 func (s *Session) applySet(t *schema.Table, ctx *evalCtx, old schema.Row, set []Assign) (schema.Row, error) {

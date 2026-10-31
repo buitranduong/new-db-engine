@@ -66,3 +66,70 @@ func TestGeneratedColumns(t *testing.T) {
 	mustq(t, s, `INSERT INTO gl3 (id, a, b) VALUES (1, 1, 7)`)
 	ddlWantRows(t, s, `SELECT b FROM gl3`, "7")
 }
+
+func TestPartitionBoundsEnforced(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE TABLE pl (country text, n int) PARTITION BY LIST (country)`)
+	wantErr(t, s, `INSERT INTO pl VALUES ('FR', 1)`, "23514") // no partition at all
+	mustq(t, s, `CREATE TABLE pl_us PARTITION OF pl FOR VALUES IN ('US')`)
+	wantErr(t, s, `INSERT INTO pl VALUES ('FR', 2)`, "23514")
+	wantErr(t, s, `INSERT INTO pl_us VALUES ('DE', 3)`, "23514")
+	mustq(t, s, `INSERT INTO pl VALUES ('US', 1)`)
+	wantErr(t, s, `UPDATE pl_us SET country = 'DE'`, "23514")
+	wantErr(t, s, `UPDATE pl SET country = 'DE'`, "23514")
+	ddlWantRows(t, s, `SELECT count(*) FROM pl`, "1")
+
+	// DEFAULT partition takes the rest and shrinks when a partition is added
+	mustq(t, s, `CREATE TABLE pl_def PARTITION OF pl DEFAULT`)
+	wantErr(t, s, `CREATE TABLE pl_def2 PARTITION OF pl DEFAULT`, "42P17")
+	mustq(t, s, `INSERT INTO pl VALUES ('FR', 2), ('US', 5)`)
+	ddlWantRows(t, s, `SELECT n FROM pl_def`, "2")
+	wantErr(t, s, `CREATE TABLE pl_fr PARTITION OF pl FOR VALUES IN ('FR')`, "23514") // the default holds an FR row
+	wantErr(t, s, `CREATE TABLE pl_us2 PARTITION OF pl FOR VALUES IN ('US', 'CA')`, "42P17")
+
+	// DETACH keeps the rows in a table of its own; ATTACH checks the bound
+	mustq(t, s, `ALTER TABLE pl DETACH PARTITION pl_us`)
+	ddlWantRows(t, s, `SELECT count(*) FROM pl_us`, "2")
+	ddlWantRows(t, s, `SELECT count(*) FROM pl`, "1")
+	mustq(t, s, `INSERT INTO pl_us VALUES ('XX', 1)`)
+	wantErr(t, s, `ALTER TABLE pl ATTACH PARTITION pl_us FOR VALUES IN ('US')`, "23514")
+	mustq(t, s, `DELETE FROM pl_us WHERE country = 'XX'`)
+	mustq(t, s, `ALTER TABLE pl ATTACH PARTITION pl_us FOR VALUES IN ('US')`)
+	mustq(t, s, `DROP TABLE pl_us`)
+	ddlWantRows(t, s, `SELECT count(*) FROM pl`, "1")
+
+	// RANGE, with overlap detection and NULL keys
+	mustq(t, s, `CREATE TABLE pr (d date, v int) PARTITION BY RANGE (d)`)
+	mustq(t, s, `CREATE TABLE pr1 PARTITION OF pr FOR VALUES FROM ('2024-01-01') TO ('2024-02-01')`)
+	mustq(t, s, `CREATE TABLE pr2 PARTITION OF pr FOR VALUES FROM ('2024-02-01') TO ('2024-03-01')`)
+	wantErr(t, s, `CREATE TABLE pr3 PARTITION OF pr FOR VALUES FROM ('2024-01-15') TO ('2024-02-15')`, "42P17")
+	wantErr(t, s, `INSERT INTO pr VALUES ('2025-01-05', 1)`, "23514")
+	wantErr(t, s, `INSERT INTO pr VALUES (NULL, 1)`, "23514")
+	mustq(t, s, `INSERT INTO pr VALUES ('2024-01-05', 1)`)
+	mustq(t, s, `UPDATE pr SET d = '2024-02-10'`) // the row moves to pr2
+	ddlWantRows(t, s, `SELECT count(*) FROM pr1`, "0")
+	ddlWantRows(t, s, `SELECT count(*) FROM pr2`, "1")
+
+	// HASH
+	mustq(t, s, `CREATE TABLE ph (id int, v int) PARTITION BY HASH (id)`)
+	mustq(t, s, `CREATE TABLE ph0 PARTITION OF ph FOR VALUES WITH (MODULUS 2, REMAINDER 0)`)
+	mustq(t, s, `CREATE TABLE ph1 PARTITION OF ph FOR VALUES WITH (MODULUS 2, REMAINDER 1)`)
+	wantErr(t, s, `CREATE TABLE ph1b PARTITION OF ph FOR VALUES WITH (MODULUS 2, REMAINDER 1)`, "42P17")
+	mustq(t, s, `INSERT INTO ph SELECT x, x FROM generate_series(1, 50) x`)
+	ddlWantRows(t, s, `SELECT (SELECT count(*) FROM ph0) + (SELECT count(*) FROM ph1), (SELECT count(*) FROM ph)`, "50,50")
+}
+
+func TestViewCheckOption(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE TABLE vt (id int PRIMARY KEY, a int)`)
+	mustq(t, s, `CREATE VIEW vc AS SELECT id, a FROM vt WHERE a > 0 WITH CHECK OPTION`)
+	mustq(t, s, `INSERT INTO vc VALUES (1, 5)`)
+	wantErr(t, s, `INSERT INTO vc VALUES (2, -5)`, "44000")
+	wantErr(t, s, `UPDATE vc SET a = -1`, "44000")
+	mustq(t, s, `UPDATE vc SET a = 7`)
+	ddlWantRows(t, s, `SELECT a FROM vt`, "7")
+	mustq(t, s, `CREATE VIEW vn AS SELECT id, a FROM vt WHERE a > 0`)
+	mustq(t, s, `INSERT INTO vn VALUES (3, -3)`) // no option: accepted, invisible through the view
+	ddlWantRows(t, s, `SELECT count(*) FROM vn`, "1")
+	wantErr(t, s, `CREATE VIEW vj AS SELECT a.id FROM vt a JOIN vt b ON a.id = b.id WITH CHECK OPTION`, "0A000")
+}

@@ -12,6 +12,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 - 2026-10-31, về phạm vi: "tôi chỉ mô tả rõ lại mà mỗi lần với bạn như là 1 lần điều chỉnh lệch hướng vậy? chỉ có việc thu gọn lại đích đến là tôi thay đổi do lo sợ bạn ko đạt được nhiều tiêu chí như vậy."
 - 2026-10-31, về rủi ro: "Cả tốc độ thực hiện và quy trình test tôi cảm nhận rất thấy rủi do từ bạn (dù lúc đầu là khả thi) vì bạn cứ chăm chăm tốc độ vào 1 tiêu chí mà quên mất các tiêu chí liên quan."
 - 2026-10-31, về R: "VD tôi nói R là tuyệt đối ưu tiên. Nhưng R có nhiều loại R. R đơn giản thì chỉ là lấy danh sách -> chi tiết bản ghi. R phức tạp có kiểu willcard hay trọng số, tỉ lệ ưu tiên (kết hợp ES + clickhouse)"
+- 2026-10-31, về vai trò của ES và Redis: "ES và Radis hoàn toàn có thể dùng chung với engine này và ko giẫm chân tôi quan niệm như vậy. vừa là tách vai trò nhiệm vụ. Nhưng nếu ko có nhu cầu làm search (nhất là văn bản) thì chỉ cần engine trong phần lớn nhu cầu là đã đủ. Đảm bảo sợ đơn giản trong vận hành mà vẫn đảm bảo tốc độ đủ nhanh"
 - 2026-10-31, về cú pháp: "lệnh nào ít dùng (function, procedure ..etc) bỏ qua trong giai đoạn này"; lệnh SQL "đâu có sáng tạo ra mà dựa trên cú pháp có sẵn chỉ convert".
 
 ## 2. Yêu cầu rút ra (diễn giải của agent; người dùng sửa nếu sai)
@@ -28,6 +29,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | H1 | Lịch sử 60 ngày mỗi SIM | histstore |
 | I1 | Nhập hàng triệu dòng Excel mỗi ngày không làm gián đoạn R | `staskimport` + làn |
 | P1 | Tương thích cú pháp PostgreSQL thông dụng (bỏ function/procedure tự định nghĩa và thứ hiếm) | `scripts/suite`, `pgdiff` |
+| O1 | Đơn giản trong vận hành mà vẫn đủ nhanh: chỉ riêng engine phải đáp ứng phần lớn nhu cầu; ES/Redis (nếu bạn dùng) là công cụ chung tách vai trò, engine KHÔNG cần tự làm thay phần tìm kiếm văn bản (xếp hạng toàn văn, bộ rút gốc từ) khi chưa có nhu cầu | ít thành phần, ít cấu hình, một đường backup/restore; tìm văn bản là tuỳ chọn, ưu tiên thấp nhất |
 | S1 | An toàn dữ liệu và bảo mật (không mất dữ liệu đã xác nhận, restore, PITR, TLS, audit, mã hoá backup) | G2 |
 
 ## 3. Truy vết yêu cầu -> bài test (cập nhật khi có thay đổi)
@@ -42,6 +44,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | H1 | `histstore` tests, `HistStoreScale` | đo quy mô G3 |
 | I1 | `cmd/staskimport` tests, `scripts/suite-cdc` | đo G3 |
 | P1 | `scripts/suite` (1698/2196 sau `suitefix`), `pgdiff` | các nhóm `compat-*` đang làm |
+| O1 | `docs/21_operations.md`, `/metrics`, `/v1/ready`, `staskctl` | kiểm đếm số thành phần phải vận hành cho mỗi kịch bản (một nút, cụm 3 nút) |
 | S1 | `accept/security.sh`, `kill9.sh`, `pitr.sh`, `scripts/suite-cdc` | diễn tập G2 |
 
 Quy tắc bảo trì: khi người dùng nói thêm điều gì, chỉ THÊM dòng nguyên văn vào §1, rồi chỉnh §2 và §3 nếu cần; không viết lại các tài liệu khác.

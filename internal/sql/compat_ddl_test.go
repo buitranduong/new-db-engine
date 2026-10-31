@@ -198,3 +198,17 @@ func TestSearchPathResolution(t *testing.T) {
 
 	mustq(t, s, `DROP SCHEMA s CASCADE`)
 }
+
+func TestExpressionIndexesDateTruncSubstr(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE TABLE ti (id int PRIMARY KEY, ts timestamp, name text, code varchar(20))`)
+	mustq(t, s, `INSERT INTO ti SELECT x, timestamp '2024-01-01' + (x || ' hours')::interval, 'name' || x, 'AB' || (x % 7) || 'zz' FROM generate_series(1, 200) x`)
+	mustq(t, s, `CREATE INDEX ti_d ON ti (date_trunc('day', ts))`)
+	mustq(t, s, `CREATE INDEX ti_s ON ti (substr(code, 1, 3))`)
+	wantErr(t, s, `CREATE INDEX ti_bad ON ti (date_trunc('foo', ts))`, "0A000")
+	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE date_trunc('day', ts) = '2024-01-03'`, "24")
+	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE substr(code, 1, 3) = 'AB3'`, "29")
+	mustq(t, s, `INSERT INTO ti VALUES (500, '2024-03-03 10:00', 'zz', 'AB9xx')`)
+	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE date_trunc('day', ts) = '2024-03-03'`, "1")
+	ddlWantRows(t, s, `SELECT count(*) FROM ti WHERE substr(code, 1, 3) = 'AB9'`, "29")
+}

@@ -96,6 +96,32 @@ func (p *parser) createIndex() (st Stmt, ok bool, err error) {
 			return nil, true, err
 		}
 		fn := ""
+		if (col == "date_trunc" || col == "substr" || col == "substring") && p.isOp("(") {
+			f, c2, err := p.indexCallConst(col)
+			if err != nil {
+				return nil, true, err
+			}
+			fn, col = f, c2
+			if paren {
+				if err = p.expectOp(")"); err != nil {
+					return nil, true, errf(codeFeature, "indexes on expressions are limited to a function of one column")
+				}
+			}
+			c.Cols = append(c.Cols, col)
+			c.Exprs = append(c.Exprs, fn)
+			coll, err := p.lastCollName()
+			if err != nil {
+				return nil, true, err
+			}
+			c.Colls = append(c.Colls, coll)
+			if err = p.indexElemTail(); err != nil {
+				return nil, true, err
+			}
+			if !p.acceptOp(",") {
+				break
+			}
+			continue
+		}
 		if p.acceptOp("(") {
 			f, ok := schema.CanonExprFunc(col)
 			if !ok {

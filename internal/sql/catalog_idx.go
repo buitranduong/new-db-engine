@@ -84,6 +84,15 @@ func elemDef(t *schema.Table, ix schema.IndexDef, k int) string {
 	if fn == "" {
 		return col + coll
 	}
+	if j, ok := t.Col(ix.Columns[k]); ok && ctypeOf(t, j) == schema.TString && strings.HasPrefix(fn, "substr:") {
+		col = "(" + col + ")::text"
+	}
+	if strings.HasPrefix(fn, "date_trunc:") {
+		return fmt.Sprintf("date_trunc('%s'::text, %s)", strings.TrimPrefix(fn, "date_trunc:"), col) + coll
+	}
+	if strings.HasPrefix(fn, "substr:") {
+		return "substr(" + col + ", " + strings.Join(strings.Split(strings.TrimPrefix(fn, "substr:"), ":"), ", ") + ")" + coll
+	}
 	if fn == "btrim" {
 		fn = "TRIM(BOTH FROM %s)"
 	} else if fn == "length" {

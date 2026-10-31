@@ -123,11 +123,12 @@ func boundsOf(t *schema.Table, alias string, where Expr, ctx *evalCtx) map[strin
 	types := map[string]schema.ColType{} // bound key -> type of the indexed value
 	colOf := func(x Expr) (string, bool) {
 		fn := ""
-		if f, ok := x.(*Func); ok && len(f.Args) == 1 && !f.Star && !f.Distinct && f.Filter == nil && len(f.Order) == 0 && len(f.Within) == 0 {
-			if fn, ok = schema.CanonExprFunc(f.Name); !ok {
+		if f, ok := x.(*Func); ok {
+			canon, arg, ok := indexCall(f)
+			if !ok {
 				return "", false
 			}
-			x = f.Args[0]
+			fn, x = canon, arg
 		}
 		c, ok := x.(*ColRef)
 		if !ok || c.Table == "excluded" || c.Table != "" && c.Table != t.Name && c.Table != alias {
@@ -501,12 +502,12 @@ func orderColumns(st *Select, items []SelItem, orderOut []int, t *schema.Table, 
 			x = items[orderOut[i]].X
 		}
 		fn := ""
-		if f, isFn := x.(*Func); isFn && len(f.Args) == 1 && f.Over == nil && f.Filter == nil { // ORDER BY lower(col): an expression index
-			canon, ok := schema.CanonExprFunc(f.Name)
+		if f, isFn := x.(*Func); isFn { // ORDER BY lower(col): an expression index
+			canon, arg, ok := indexCall(f)
 			if !ok {
 				return nil, false
 			}
-			fn, x = canon, f.Args[0]
+			fn, x = canon, arg
 		}
 		c, ok := x.(*ColRef)
 		if !ok || c.Table != "" && c.Table != t.Name && c.Table != alias {

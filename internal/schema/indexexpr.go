@@ -2,6 +2,7 @@ package schema
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -56,6 +57,107 @@ func textFn(f func(string) string) exprFunc {
 	}
 }
 
+// TruncHook is date_trunc on microseconds; the SQL layer sets it (the package that has it imports this one).
+var TruncHook func(unit string, micros int64) (int64, error)
+
+// Functions with constant arguments are stored with them, joined by ":": "date_trunc:day" for
+// date_trunc('day', ts) on a timestamp column, "substr:1:4" for substr(col, 1, 4) (the length is
+// optional). Both are immutable in PostgreSQL (date_trunc only on timestamp without time zone).
+
+// paramExpr resolves a stored name with arguments.
+func paramExpr(name string) (exprFunc, bool) {
+	parts := strings.Split(name, ":")
+	switch parts[0] {
+	case "date_trunc":
+		if len(parts) != 2 || TruncHook == nil {
+			return exprFunc{}, false
+		}
+		unit := parts[1]
+		return exprFunc{
+			out: func(in ColType) (ColType, bool) { return TTimestamp, in == TTimestamp },
+			fn: func(v Value) Value {
+				r, err := TruncHook(unit, v.I)
+				if err != nil {
+					return v
+				}
+				return Value{I: r}
+			},
+		}, true
+	case "substr":
+		if len(parts) < 2 || len(parts) > 3 {
+			return exprFunc{}, false
+		}
+		start, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return exprFunc{}, false
+		}
+		length := int64(-1)
+		if len(parts) == 3 {
+			if length, err = strconv.ParseInt(parts[2], 10, 64); err != nil || length < 0 {
+				return exprFunc{}, false
+			}
+		}
+		return exprFunc{
+			out: func(in ColType) (ColType, bool) { return TText, textIn(in) },
+			fn:  func(v Value) Value { return Value{S: substrRunes(v.S, start, length)} },
+		}, true
+	}
+	return exprFunc{}, false
+}
+
+// substrRunes is substr(s, start[, length]) with PostgreSQL's semantics (1-based, characters; a
+// start before 1 shortens the length; length < 0 means to the end).
+func substrRunes(s string, start, length int64) string {
+	r := []rune(s)
+	end := int64(len(r)) + 1
+	if length >= 0 {
+		end = start + length
+	}
+	if start < 1 {
+		start = 1
+	}
+	if end > int64(len(r))+1 {
+		end = int64(len(r)) + 1
+	}
+	if end <= start {
+		return ""
+	}
+	return string(r[start-1 : end-1])
+}
+
+// lookupExpr finds an index function by its stored name.
+func lookupExpr(name string) (exprFunc, bool) {
+	if f, ok := exprFuncs[name]; ok {
+		return f, true
+	}
+	return paramExpr(name)
+}
+
+// CanonExprCall is the stored name of fn(args) where args are the constants besides the column:
+// date_trunc('day', col) is ("date_trunc", ["day"]), substr(col, 1, 4) is ("substr", ["1", "4"]).
+func CanonExprCall(fn string, consts []string) (string, bool) {
+	var name string
+	switch strings.ToLower(fn) {
+	case "date_trunc":
+		if len(consts) != 1 || TruncHook == nil {
+			return "", false
+		}
+		if _, err := TruncHook(consts[0], 0); err != nil {
+			return "", false
+		}
+		name = "date_trunc:" + strings.ToLower(consts[0])
+	case "substr", "substring":
+		if len(consts) < 1 || len(consts) > 2 {
+			return "", false
+		}
+		name = "substr:" + strings.Join(consts, ":")
+	default:
+		return "", false
+	}
+	_, ok := paramExpr(name)
+	return name, ok
+}
+
 // CanonExprFunc maps a function name as written to the name stored in
 // IndexDef.Exprs, ok=false if it cannot be indexed.
 func CanonExprFunc(name string) (string, bool) {
@@ -71,7 +173,7 @@ func CanonExprFunc(name string) (string, bool) {
 
 // ExprResultType is the type of fn applied to a column of type in.
 func ExprResultType(fn string, in ColType) (ColType, bool) {
-	f, ok := exprFuncs[fn]
+	f, ok := lookupExpr(fn)
 	if !ok {
 		return 0, false
 	}
@@ -83,7 +185,8 @@ func ApplyExpr(fn string, v Value) Value {
 	if v.Null || fn == "" {
 		return v
 	}
-	return exprFuncs[fn].fn(v)
+	f, _ := lookupExpr(fn)
+	return f.fn(v)
 }
 
 // ElemExpr is the function of element k ("" for a plain column).

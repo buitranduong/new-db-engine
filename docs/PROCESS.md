@@ -119,4 +119,4 @@ Quyết định kèm theo:
 - Mã hoá cấp engine (log, segment, chỉ mục) KHÔNG làm cho tới khi đo xong (đổi định dạng đĩa và đường mmap); nền là LUKS2 + backup AES-256-GCM.
 - Superset và Jmix không phải mục tiêu bắt buộc (người dùng, 2026-10-31); niềm tin vào engine đến từ kiểm chứng đa agent (Claude, Gemini, ChatGPT), không phải thời gian chạy. Không điều chỉnh hướng trước khi có kết quả cuối của TẤT CẢ tiêu chí.
 - Java không phải rào cản: pgjdbc/Hibernate thật chạy trong Docker (eclipse-temurin:17) trên VM, như một bài thử driver.
-
+- Ngân sách thời gian (người dùng, 2026-10-31): khoảng 100 giờ xây engine, khoảng 300 giờ kiểm nghiệm trước prod, có thêm agent khác (Gemini, ChatGPT) cùng kiểm chứng. Đợt đo cuối vì vậy là một chương trình kiểm nghiệm dài; mọi phép thử phải tái lập được bởi agent không viết ra mã.

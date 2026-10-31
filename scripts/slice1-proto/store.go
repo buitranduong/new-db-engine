@@ -246,12 +246,12 @@ type Dim struct {
 // ---- published state ---------------------------------------------------------
 
 type tailCols struct {
-	n    int
-	keys []byte
+	n              int
+	keys           []byte
 	cat, tel, rate []uint8
-	price []int32
-	lsn  []uint64
-	tomb []bool
+	price          []int32
+	lsn            []uint64
+	tomb           []bool
 }
 
 func (t *tailCols) Key(i int) []byte { return t.keys[i*KeyLen : i*KeyLen+KeyLen] }

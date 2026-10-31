@@ -18,9 +18,9 @@ type entry struct {
 }
 
 type heap struct {
-	cap  int
-	e    []entry
-	st   *State
+	cap int
+	e   []entry
+	st  *State
 }
 
 func (h *heap) hashOf(x *entry) *[16]byte {
@@ -102,15 +102,15 @@ type Out struct {
 
 type R2Stats struct {
 	ScannedBase, ScannedTail, Passed int64
-	ChunksRead, ChunksPruned           int
+	ChunksRead, ChunksPruned         int
 }
 
 type R2Q struct {
-	Cat      uint8
-	Lo, Hi   int32
-	Page     int
-	Quota    [3]int
-	Workers  int
+	Cat     uint8
+	Lo, Hi  int32
+	Page    int
+	Quota   [3]int
+	Workers int
 }
 
 // R2 runs the query on one immutable State.

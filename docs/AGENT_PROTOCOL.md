@@ -96,3 +96,12 @@ Dọn dẹp: <đã xoá gì>
 - Ghi tiền lệ tìm được (tên hệ thống + điều rút ra) vào dòng plan-target-actual của nhiệm vụ. Không có tiền lệ thì ghi rõ "không tìm thấy".
 - Ngoại lệ duy nhất có thể không có tiền lệ: **giải pháp tối ưu hiệu năng**; ở đó đo (đúng lúc, theo D32) thay vì suy đoán.
 - Ví dụ rút ra bài học: chuỗi lỗi "address already in use" kéo dài hàng giờ, nguyên nhân là dải cổng tạm `1024-65535` đè lên cổng test, một điều được biết rộng rãi (`ip_local_reserved_ports`).
+
+## 9. Giải phóng sau khi xong (người dùng, 2026-10-31)
+
+Agent xong việc thì không để lại gì chạy trên VM. Ba lớp:
+
+1. **Agent tự dọn trước khi báo cáo.** Chỉ dừng tiến trình do chính nó bật (ghi PID lúc bật; không dùng `pkill -f` theo mẫu rộng). Không viết vòng chờ `pgrep -f "<lệnh>"`: dòng lệnh của chính vòng chờ chứa mẫu đó nên `pgrep` thấy chính nó và vòng lặp không bao giờ kết thúc. Chờ tiến trình bằng PID (`while kill -0 $pid`, hoặc `wait $pid`) hay đọc file kết thúc (`GATE_EXIT`). Xoá thư mục tạm và container do mình tạo.
+2. **Orchestrator sau khi gộp:** gỡ worktree và nhánh (`git worktree remove`, `git branch -D`), xoá nhánh từ xa nếu có, rồi chạy `scripts/reap.sh` (chạy khô) để thấy phần còn sót; `scripts/reap.sh --kill` chỉ dừng các tín hiệu đã biết (vòng chờ mồ côi, máy chủ test cũ hơn `REAP_MIN` phút, ngoài mọi gate và perf-run đang chạy). Không đụng docker hay thư mục dữ liệu.
+3. **Agent đã xong thì không giao việc tiếp trên cùng phiên.** Việc mới là một agent mới với bản mô tả đầy đủ; phiên cũ đã báo cáo thì coi là đóng.
+

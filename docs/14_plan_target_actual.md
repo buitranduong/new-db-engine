@@ -1708,3 +1708,30 @@ Tests run (plain, VM): `go test -p 2 ./internal/audit ./internal/seccrypt ./inte
 | Task | Plan | Target | Actual |
 |---|---|---|---|
 | CI red on every run since `raftmem` | Find the failing test from the GitHub annotations (no log access without login), reproduce, fix at the root | CI green on `main` | Root cause: `TestHAMembershipSnapshotJoin` checked at once that the Raft log was compacted; compaction is a background task, so on a fast machine the 300 writes finished first and the test failed in 1.5 s (passed on the VM, which is slower). Test now waits up to 60 s while feeding entries. `ci.yml` prints `FAIL` and `_test.go:N:` lines as annotations. Gate (`RACE=1`, `internal/cluster` included): 603 probes, 1918 s, no race. Lesson: after every push, read the CI result (`docs/27 §2`). |
+
+## Appendix JR. Branch `jdbcreal`: real pgjdbc / Hibernate / Liquibase / Jmix CRM against STASK (2026-10-31, base `main` @ fd1c79a)
+
+**Plan.** Generic PostgreSQL-driver compatibility, correctness only (no performance measurement, AGENT_PROTOCOL section 6). Vehicle: the real Jmix 2.8.1 CRM (REST/React) with its prod-copy data loaded into STASK, plus a standalone JUnit suite (`accept/clients/pgjdbc-real`, pgjdbc, Hibernate, Liquibase) run in a pinned `eclipse-temurin:17.0.13_11-jdk` container with a checksum-verified Gradle zip (`scripts/crmdocker/`). Nothing is installed on the VM host; no customer data, password or key is in the repo (the DB password is random, in `~/jdbcreal-run/env.sh`, outside git).
+
+**Target.** (1) CRM boots on STASK, 473/473 changesets, data equal to the source; backend API works. (2) pgjdbc checks: PESSIMISTIC_WRITE (FOR UPDATE, NOWAIT, SKIP LOCKED), optimistic lock, JDBC batch, binary parameters, server-prepared statement cache and DDL, CopyManager COPY IN/OUT text and binary, arrays, timestamps in 7 JVM zones, getGeneratedKeys, fetchSize cursors, targetServerType on a 3-node cluster.
+
+**Actual.**
+
+| Check | Result |
+|---|---|
+| CRM boot | Liquibase ran on STASK; second boot "Database is up to date"; `Started CRMApplication`. Prod-copy load: 89 tables compared with the PostgreSQL source, 0 different (`verify.log`). |
+| CRM REST exercise (`scripts/crmdocker/exercise.py`) | ALL PASS: optimistic race (1x200, rest 409), 48 parallel creates, create/cancel maintenance from tasks, duplicate refused with 409. |
+| Standalone suite, single node | 21 passed, 2 skipped (cluster-only), 0 failed; same suite on postgres:16 passes (reference run, so a failure would be a test bug). |
+| 3-node cluster | `primarySecondaryAnyRouting` pass; `kill -9` of the leader, `newLeaderFoundAfterKill` pass (pgjdbc finds the new primary with `targetServerType=primary`). |
+
+**Gaps found and fixed (each with a regression test).**
+
+1. *Prepared statement after DDL.* PostgreSQL re-plans a cached statement after a schema change and, when the result row type changed, fails with `0A000 cached plan must not change result type` (routine `RevalidateCachedQuery`, plancache.c); pgjdbc retries on exactly that. STASK ran the old plan and sent rows that did not match the RowDescription the client held. Fix: schema epoch in the engine, revalidation in `execute`, `R` (routine) field in ErrorResponse. Test: `TestCachedPlanMustNotChangeResultType`. Also `pg_prepared_statements` (view in PostgreSQL docs) for wire and SQL-level statements.
+2. *Session time zone.* PostgreSQL: the `TimeZone` startup parameter sets the session zone (pgjdbc sends the JVM zone), `SET TIME ZONE x` is the same as `SET TIMEZONE TO x`, timestamptz input without offset is read and output printed in that zone, and TimeZone is GUC_REPORT so every change is announced with ParameterStatus (protocol docs, guc_tables.c). STASK ignored the startup parameter, parsed `SET TIME ZONE` as variable `time`, `RESET TIME ZONE` was a syntax error, and casts/`date_trunc`/`extract` always used UTC. Fix: `tz.go`, startup + ParameterStatus in pgwire, parser. Tests: `TestSetTimeZoneTwoWords`, `TestTimeZoneStartupAndParameterStatus`; JUnit `timestampsRoundTripInEveryJvmZone` (7 zones, text and binary).
+3. *COPY TO STDOUT (FORMAT binary).* Was 0A000. Fix per PostgreSQL `copyto.c` (PGCOPY signature, int16 field count, int32 length or -1, trailer -1). Test: `TestCopyToBinaryRoundTrip`, JUnit `binaryCopyInAndOut`. COPY FROM now stores through the session zone like INSERT.
+4. *Multi-dimensional array literals* (`setObject(int[][])`, `{{1,2},{3,4}}`) were split at every comma. Fix: per-leaf coercion. Test: `TestMultiDimArrayColumnWrites`.
+5. *Comma-FROM lists in a join-hostile order* (EclipseLink/Hibernate cross joins with the join conditions in WHERE): planner reorders; `SELECT *` keeps column order. Test: `joinorder_test.go`. (Correctness of results unchanged; this avoids a cross-product blow-up that made the CRM unusable. Not measured.)
+
+**Remaining / not proven.** CRM was not rebooted on the final binary after fix 2 (its JVM runs in UTC, so the startup parameter path is covered by the JUnit suite, not by the app). PL/pgSQL `UPDATE OF` trigger from Appendix V is already merged in the base. Hibernate was driven only through the standalone suite, not through the CRM (the CRM uses EclipseLink). No performance numbers by design.
+
+Reproduce: `scripts/crmdocker/setup.sh`, then `scripts/crmdocker/run-pgjdbc.sh [single|cluster|pg]`; `go test ./internal/sql ./internal/pgwire -run "TimeZone|CachedPlan|CopyToBinary|MultiDim"`.

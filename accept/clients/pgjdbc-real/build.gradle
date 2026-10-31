@@ -1,0 +1,22 @@
+plugins { id 'java' }
+repositories { mavenCentral() }
+java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
+dependencies {
+    testImplementation 'org.postgresql:postgresql:42.7.10'
+    testImplementation 'org.hibernate.orm:hibernate-core:6.6.4.Final'
+    testImplementation 'org.liquibase:liquibase-core:4.31.1'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+}
+test {
+    useJUnitPlatform()
+    testLogging { events 'passed', 'failed', 'skipped'; exceptionFormat 'full'; showStandardStreams = false }
+    systemProperty 'stask.url', System.getenv('STASK_URL') ?: ''
+    systemProperty 'stask.user', System.getenv('STASK_USER') ?: 'app'
+    systemProperty 'stask.password', System.getenv('STASK_PASSWORD') ?: ''
+    systemProperty 'stask.cluster', System.getenv('STASK_CLUSTER') ?: ''
+    systemProperty 'stask.phase', System.getenv('STASK_PHASE') ?: '1'
+    systemProperty 'stask.resources', System.getenv('CRM_RESOURCES') ?: ''
+    outputs.upToDateWhen { false }
+}

@@ -339,6 +339,9 @@ func (p *parser) statement() (Stmt, error) {
 				break
 			}
 		}
+		if len(name) == 1 && strings.EqualFold(name[0], "time") && p.acceptKw("zone") { // SET TIME ZONE v
+			name[0] = "time zone"
+		}
 		// SET TRANSACTION ISOLATION LEVEL ..., SET x TO v, SET x = v
 		var val []string
 		if !p.acceptKw("to") {

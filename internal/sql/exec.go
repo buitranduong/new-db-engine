@@ -84,8 +84,13 @@ type Session struct {
 	notes     []Notification   // NOTIFY of the current transaction
 	currvals  map[string]int64 // currval: the last nextval of each sequence
 	prepared  map[string]Stmt  // SQL-level PREPARE (prepare.go)
-	lastSeq   string           // lastval's sequence
-	listenOps []listenOp       // LISTEN/UNLISTEN of the current transaction
+	tzName    string           // TimeZone the cached tzLoc was built for (tz.go)
+	tzLoc     *time.Location
+	preparedQ map[string]prepInfo // text and time of the SQL-level PREPAREs (pg_prepared_statements)
+	// WirePrepared lists the named statements of the extended protocol (set by pgwire; pg_prepared_statements).
+	WirePrepared func() []PreparedInfo
+	lastSeq      string     // lastval's sequence
+	listenOps    []listenOp // LISTEN/UNLISTEN of the current transaction
 
 	ctl stmtCtl // cancel and timeouts of the running statement (cancel.go)
 
@@ -605,8 +610,14 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 			s.tx.SetReadCommitted(level == "read committed")
 		}
 		return &Result{Tag: "SET"}, nil
-	case "time zone":
+	case "time zone", "timezone":
 		name = "timezone"
+		tz, err := normTimeZone(st.Value)
+		if err != nil {
+			return nil, err
+		}
+		s.vars["timezone"] = tz
+		return &Result{Tag: "SET"}, nil
 	case "statement_timeout", "idle_in_transaction_session_timeout", "idle_session_timeout":
 		return s.setTimeout(name, st.Value)
 	case MinLSNVar:
@@ -2059,7 +2070,7 @@ func (s *Session) buildRow(t *schema.Table, cols []int, vals []Datum) (schema.Ro
 		r[i].Null = true
 	}
 	for i, ci := range cols {
-		v, err := toValueCol(&t.Columns[ci], vals[i])
+		v, err := s.valCol(&t.Columns[ci], vals[i])
 		if err != nil {
 			return nil, err
 		}
@@ -2326,7 +2337,7 @@ func (s *Session) applySet(t *schema.Table, ctx *evalCtx, old schema.Row, set []
 		if err != nil {
 			return nil, err
 		}
-		if upd[i], err = toValueCol(&t.Columns[i], v); err != nil {
+		if upd[i], err = s.valCol(&t.Columns[i], v); err != nil {
 			return nil, err
 		}
 	}

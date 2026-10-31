@@ -84,7 +84,7 @@ func (s *Session) targetRows(tx *core.Tx, t *schema.Table, table, alias string, 
 	for _, r := range res.Rows {
 		row := make(schema.Row, nc)
 		for i, c := range t.Columns {
-			if row[i], err = toValueCol(&c, r[i]); err != nil {
+			if row[i], err = s.valCol(&c, r[i]); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -193,7 +193,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 	for ri, old := range rows {
 		upd := append(schema.Row(nil), old...)
 		for i, ci := range cols {
-			if upd[ci], err = toValueCol(&t.Columns[ci], vals[ri][i]); err != nil {
+			if upd[ci], err = s.valCol(&t.Columns[ci], vals[ri][i]); err != nil {
 				return nil, err
 			}
 		}

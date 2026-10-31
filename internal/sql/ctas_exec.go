@@ -575,7 +575,7 @@ func (s *Session) refreshMat(tx *core.Tx, st *RefreshMat, params []Datum) (*Resu
 	for _, r := range res.Rows {
 		row := make(schema.Row, len(t.Columns))
 		for j, ci := range vis {
-			if row[ci], err = toValueCol(&t.Columns[ci], r[j]); err != nil {
+			if row[ci], err = s.valCol(&t.Columns[ci], r[j]); err != nil {
 				return nil, err
 			}
 		}

@@ -71,6 +71,8 @@ type Session struct {
 	ev          *evState             // the event trigger function being run
 	inCascade   bool                 // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
 	txLevel     string               // isolation level of the explicit transaction (readcommitted.go)
+	txRU        bool                 // the level was asked as READ UNCOMMITTED (it runs as READ COMMITTED, SHOW says what was asked)
+	txQueried   bool                 // a query ran in the explicit transaction: SET TRANSACTION ISOLATION LEVEL is too late (25001)
 	spilled     bool                 // the last query ran in spill mode (EXPLAIN ANALYZE)
 	rep         *repairRec           // occ_repair.go: the autocommit statement being run
 	failed      bool                 // an error occurred inside the explicit transaction
@@ -79,14 +81,15 @@ type Session struct {
 
 	// PID identifies the session to listeners (the wire protocol's
 	// backend process id).
-	PID       int32
-	listener  *Listener
-	notes     []Notification   // NOTIFY of the current transaction
-	currvals  map[string]int64 // currval: the last nextval of each sequence
-	prepared  map[string]Stmt  // SQL-level PREPARE (prepare.go)
-	tzName    string           // TimeZone the cached tzLoc was built for (tz.go)
-	tzLoc     *time.Location
-	preparedQ map[string]prepInfo // text and time of the SQL-level PREPAREs (pg_prepared_statements)
+	PID         int32
+	listener    *Listener
+	notes       []Notification   // NOTIFY of the current transaction
+	currvals    map[string]int64 // currval: the last nextval of each sequence
+	prepared    map[string]Stmt  // SQL-level PREPARE (prepare.go)
+	tzName      string           // TimeZone the cached tzLoc was built for (tz.go)
+	tzLoc       *time.Location
+	prepNParams map[string]prepSig  // declared parameter count and types of the SQL-level PREPAREs
+	preparedQ   map[string]prepInfo // text and time of the SQL-level PREPAREs (pg_prepared_statements)
 	// WirePrepared lists the named statements of the extended protocol (set by pgwire; pg_prepared_statements).
 	WirePrepared func() []PreparedInfo
 	lastSeq      string     // lastval's sequence
@@ -97,6 +100,7 @@ type Session struct {
 	trigDepth int                  // nesting of row triggers being run (trigger.go)
 	role      string               // role the session runs as; "" = bootstrap superuser (roles.go)
 	needCache map[Stmt]cachedNeeds // privileges each statement needs
+	lastQ     string               // text of the statement that is running (pendingQ is cleared when it starts)
 	pendingQ  string               // text of the statement about to run (SetQuery)
 	act       *Activity            // pg_stat_activity entry (activity.go)
 
@@ -187,6 +191,12 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
 		}
 	}
+	if s.explicit {
+		switch st.(type) {
+		case *Select, *SetOp, *Insert, *Update, *Delete, *Merge, *WithDML:
+			s.txQueried = true
+		}
+	}
 	if s.role != "" && !s.djBypass { // djBypass: a journaled step, already authorized as part of its statement
 		if err := s.authorize(st); err != nil {
 			s.markFailed()
@@ -224,6 +234,10 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		}
 		iso := core.SnapshotIsolation
 		level := st.Iso
+		s.txRU = level == "read uncommitted"
+		if s.txRU {
+			level = "read committed"
+		}
 		if level == "" {
 			level = isoLevel(s.vars["default_transaction_isolation"])
 		}
@@ -315,6 +329,9 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		if name == "transaction_isolation" {
 			if s.explicit && s.txLevel != "" {
 				v = s.txLevel
+				if s.txRU && v == "read committed" {
+					v = "read uncommitted"
+				}
 			} else if d := isoLevel(s.vars["default_transaction_isolation"]); d != "" {
 				v = d
 			}
@@ -604,6 +621,11 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 			return &Result{Tag: "SET"}, nil
 		}
 		if s.explicit && level != "" {
+			if s.txQueried {
+				s.markFailed()
+				return nil, errf(codeActiveTx, "SET TRANSACTION ISOLATION LEVEL must be called before any query")
+			}
+			s.txRU = strings.Contains(val, "read uncommitted")
 			if level == "serializable" && s.tx.Iso() != core.Serializable {
 				s.tx.Abort()
 				s.tx = s.begin(core.Serializable)
@@ -648,6 +670,10 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 			return nil, errf(codeInvalidParameter, "invalid value for parameter \"sql_dialect\": %q (postgres or clickhouse)", val)
 		}
 		st.Value = val
+	}
+	if err := checkGUC(name, strings.Trim(st.Value, "'\"")); err != nil {
+		s.markFailed()
+		return nil, err
 	}
 	s.vars[name] = strings.Trim(st.Value, "'\"")
 	return &Result{Tag: "SET"}, nil
@@ -1428,8 +1454,10 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 	}
 	items, cols, aggs := plan.items, plan.cols, plan.aggs
 	grouped := len(aggs) > 0 || len(st.GroupBy) > 0
-	if st.Where != nil && hasAgg(st.Where) {
-		return nil, errf(codeGrouping, "aggregate functions are not allowed in WHERE")
+	if st.Where != nil {
+		if err := whereFuncErr(st.Where); err != nil {
+			return nil, err
+		}
 	}
 	if grouped {
 		if err := checkGrouping(items, st, aggs, sc.t); err != nil {
@@ -1453,6 +1481,11 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 					orderOut[i] = j
 					break
 				}
+			}
+		}
+		if orderOut[i] < 0 {
+			if err := distinctOrderErr(st, items, o.X); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1507,6 +1540,9 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 			return nil, err
 		}
 		offset = v.I
+		if offset < 0 && !s.clickHouse() {
+			return nil, errf("2201X", "OFFSET must not be negative")
+		}
 	}
 
 	lk, err := s.fastRowLocker(tx, st, sc.t, sc.alias)
@@ -2200,6 +2236,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if st.OnConflict != nil {
 		if arb, err = resolveArbiter(t, st.OnConflict); err != nil {
 			return nil, err
+		}
+	}
+	for _, r := range st.Rows { // PostgreSQL: all VALUES lists must have the same length
+		if len(r) != len(st.Rows[0]) {
+			return nil, errf(codeSyntax, "VALUES lists must all be the same length")
 		}
 	}
 	n := 0

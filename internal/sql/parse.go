@@ -305,7 +305,7 @@ func (p *parser) statement() (Stmt, error) {
 				case p.acceptKw("read", "committed"):
 					b.Iso = "read committed"
 				case p.acceptKw("read", "uncommitted"):
-					b.Iso = "read committed"
+					b.Iso = "read uncommitted"
 				default:
 					return nil, p.errHere("unknown isolation level %q", p.peek().s)
 				}

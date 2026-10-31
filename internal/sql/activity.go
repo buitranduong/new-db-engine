@@ -189,6 +189,9 @@ func redacted(st Stmt) string {
 
 func (s *Session) beginStmt(st Stmt) time.Time {
 	now := time.Now()
+	if s.pendingQ != "" {
+		s.lastQ = s.pendingQ // PREPARE keeps its own text (pg_prepared_statements.statement)
+	}
 	if a := s.act; a != nil {
 		ns := now.UnixNano()
 		q := s.pendingQ

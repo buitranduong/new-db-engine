@@ -404,7 +404,7 @@ func (p *parser) mergeStmt() (Stmt, error) {
 		w := MergeWhen{}
 		if p.acceptKw("not", "matched") {
 			if p.acceptKw("by", "source") {
-				return nil, errf(codeFeature, "WHEN NOT MATCHED BY SOURCE is not supported (PostgreSQL 17)")
+				return nil, errf(codeSyntax, "syntax error at or near \"BY\" (WHEN NOT MATCHED BY SOURCE is PostgreSQL 17)")
 			}
 			p.acceptKw("by", "target")
 		} else if p.acceptKw("matched") {

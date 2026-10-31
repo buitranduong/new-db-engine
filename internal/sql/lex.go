@@ -5,6 +5,7 @@ package sql
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -110,8 +111,33 @@ func lex(src string) ([]token, error) {
 			out = append(out, token{tParam, src[start+1 : i], start})
 		case isDigit(c) || c == '.' && i+1 < len(src) && isDigit(src[i+1]):
 			start := i
-			for i < len(src) && (isDigit(src[i]) || src[i] == '.') {
-				i++
+			if c == '0' && i+1 < len(src) && strings.IndexByte("xXoObB", src[i+1]) >= 0 { // 0x1F, 0o17, 0b101 (PostgreSQL 16)
+				j := i + 2
+				for j < len(src) && (isHexByte(src[j]) || src[j] == '_') {
+					j++
+				}
+				v, perr := strconv.ParseUint(strings.ToLower(src[i:j]), 0, 64)
+				if perr != nil {
+					kind := map[byte]string{'x': "hexadecimal", 'o': "octal", 'b': "binary"}[src[i+1]|0x20]
+					return nil, syntaxErr(start, fmt.Sprintf("invalid %s integer at or near %q", kind, src[i:j]))
+				}
+				out = append(out, token{tNumber, strconv.FormatUint(v, 10), start})
+				i = j
+				if i < len(src) && (src[i] == '_' || unicode.IsLetter(rune(src[i]))) {
+					return nil, syntaxErr(start, fmt.Sprintf("trailing junk after numeric literal at or near %q", src[start:i+1]))
+				}
+				continue
+			}
+			seenDot := false
+			for i < len(src) {
+				if isDigit(src[i]) || src[i] == '_' && i > start && isDigit(src[i-1]) && i+1 < len(src) && isDigit(src[i+1]) {
+					i++
+				} else if src[i] == '.' && !seenDot && !(i+1 < len(src) && src[i+1] == '.') { // 1..n is 1, .., n
+					seenDot = true
+					i++
+				} else {
+					break
+				}
 			}
 			if i < len(src) && (src[i] == 'e' || src[i] == 'E') {
 				j := i + 1
@@ -125,7 +151,10 @@ func lex(src string) ([]token, error) {
 					}
 				}
 			}
-			out = append(out, token{tNumber, src[start:i], start})
+			if i < len(src) && (src[i] == '_' || src[i] == 'e' || src[i] == 'E') {
+				return nil, syntaxErr(start, fmt.Sprintf("trailing junk after numeric literal at or near %q", src[start:i+1]))
+			}
+			out = append(out, token{tNumber, strings.ReplaceAll(src[start:i], "_", ""), start})
 		case c == '_' || c < utf8.RuneSelf && unicode.IsLetter(rune(c)) || c >= utf8.RuneSelf:
 			start := i
 			for i < len(src) {
@@ -174,6 +203,8 @@ func lex(src string) ([]token, error) {
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func isHexByte(c byte) bool { return isDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
 
 // dollarTagEnd is the index of the closing '$' of a dollar-quote tag that
 // starts at src[i] ($$ or $name$), or -1 if there is none ($1 is a parameter).

@@ -281,7 +281,10 @@ type Expr interface{ expr() }
 
 type Lit struct{ V Datum }
 type Param struct{ N int } // 1-based
-type ColRef struct{ Table, Name string }
+type ColRef struct {
+	Table, Name string
+	Pos         int // 1-based slot of the FROM row, set by SELECT * for a column name that occurs twice (query.go)
+}
 type Unary struct {
 	Op string // "-", "not"
 	X  Expr

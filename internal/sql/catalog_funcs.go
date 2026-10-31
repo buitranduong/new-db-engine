@@ -210,6 +210,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	switch name {
 	case "has_table_privilege", "has_schema_privilege", "has_database_privilege", "has_sequence_privilege",
 		"has_column_privilege", "has_any_column_privilege":
+		if err := s.hasPrivilegeErrors(name, args); err != nil {
+			return Null, err
+		}
 		return s.hasPrivilege(name, args), nil
 	case "current_user", "session_user", "current_role":
 		return TextD(s.sqlUser(name)), nil

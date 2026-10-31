@@ -3,6 +3,8 @@ package sql
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"stask/internal/core"
 )
@@ -67,8 +69,14 @@ type Notice struct {
 func (e *Error) Error() string { return e.Msg }
 
 func errf(code, format string, a ...any) *Error {
-	return &Error{Code: code, Msg: fmt.Sprintf(format, a...)}
+	msg := fmt.Sprintf(format, a...)
+	if code != codeUndefinedTable && code != codeUndefinedObject && strings.Contains(msg, ".") {
+		msg = relQualRE.ReplaceAllString(msg, `$1 "$3"`) // PostgreSQL names a relation in a message without its schema
+	}
+	return &Error{Code: code, Msg: msg}
 }
+
+var relQualRE = regexp.MustCompile(`\b(relation|table|index|sequence|view) "([a-z_][a-z0-9_$]*)\.([^"]+)"`)
 
 func syntaxErr(pos int, msg string) *Error {
 	return &Error{Code: codeSyntax, Msg: msg, Pos: pos + 1}

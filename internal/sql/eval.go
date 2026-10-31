@@ -32,17 +32,17 @@ func (sc *scope) resolve(c *ColRef) (int, error) {
 		if i, ok := sc.merged[key]; ok {
 			return i, nil
 		}
-		return 0, errf(codeUndefinedColumn, "column %q does not exist", c.Name)
+		return 0, colMissing(c)
 	}
 	if sc.t == nil {
-		return 0, errf(codeUndefinedColumn, "column %q does not exist", c.Name)
+		return 0, colMissing(c)
 	}
 	if c.Table != "" && c.Table != sc.t.Name && c.Table != sc.alias && c.Table != "excluded" {
 		return 0, errf(codeUndefinedTable, "missing FROM-clause entry for table %q", c.Table)
 	}
 	i, ok := sc.t.Col(c.Name)
 	if !ok {
-		return 0, errf(codeUndefinedColumn, "column %q does not exist", c.Name)
+		return 0, colMissing(c)
 	}
 	return i, nil
 }

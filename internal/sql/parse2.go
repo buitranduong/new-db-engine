@@ -177,6 +177,9 @@ func (p *parser) queryStmt1() (Stmt, error) {
 		}
 	}
 done:
+	if _, isSet := q.(*SetOp); isSet && len(locks) > 0 {
+		return nil, errf(codeFeature, "FOR UPDATE is not allowed with UNION/INTERSECT/EXCEPT")
+	}
 	if sel, ok := q.(*Select); ok && sel.OrderBy == nil && sel.Limit == nil && sel.Offset == nil && sel.LimitBy == nil &&
 		(sel.With == nil || with == nil) {
 		sel.OrderBy, sel.Limit, sel.Offset, sel.LimitBy, sel.ForUpd = order, limit, offset, limitBy, forUpd

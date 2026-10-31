@@ -238,7 +238,11 @@ func (a *basicAgg) add(args, _ []Datum) error {
 			if a.kind == KNull {
 				a.best = IntervalD(0, 0)
 			}
-			a.best = IntervalD(int64(a.best.F+v.F), a.best.I+v.I)
+			nb, err := ivAdd(a.best, v, 1)
+			if err != nil {
+				return err
+			}
+			a.best = nb
 		default:
 			f, err := coerce(v, KFloat)
 			if err != nil {
@@ -277,7 +281,7 @@ func (a *basicAgg) result() (Datum, error) {
 		return NumericD(x), err
 	}
 	if a.kind == KInterval {
-		return IntervalD(int64(a.best.F/float64(a.n)), a.best.I/a.n), nil
+		return divInterval(a.best, float64(a.n)), nil
 	}
 	return FloatD(a.fsum / float64(a.n)), nil
 }

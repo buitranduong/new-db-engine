@@ -72,6 +72,8 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			return KNumeric
 		case l == KInt && r == KInt:
 			return KInt
+		case l == KText && (r == KText || r == KInt): // ranges, bit strings and macaddr8 (exttypes.go)
+			return KText
 		case l == KInt || r == KInt:
 			return KInt
 		}
@@ -100,6 +102,9 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 		case "count", "length", "char_length":
 			return KInt
 		case "avg", "round", "floor", "ceil", "ceiling", "trunc", "extract_epoch", "epoch":
+			if e.Name == "avg" && arg() == KInterval {
+				return KInterval
+			}
 			if e.Name == "round" && len(e.Args) == 1 && arg() == KInt {
 				return KInt
 			}
@@ -108,6 +113,9 @@ func typeOf(x Expr, sc *scope, pk map[int]Kind) Kind {
 			}
 			return KFloat
 		case "sum":
+			if arg() == KInterval {
+				return KInterval
+			}
 			if arg() == KInt {
 				return KInt
 			}

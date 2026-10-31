@@ -264,6 +264,13 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		if oid.I == 0 {
 			return TextD("-"), nil
 		}
+		if len(args) > 1 && !args[1].IsNull() {
+			if m, err := coerce(args[1], KInt); err == nil && m.I >= 0 {
+				if s, ok := extFormatType(uint32(oid.I), int32(m.I)); ok {
+					return TextD(s), nil
+				}
+			}
+		}
 		if t, ok := pgTypeByOID[oid.I]; ok {
 			if oid.I == 1700 && len(args) > 1 && !args[1].IsNull() {
 				if m, err := coerce(args[1], KInt); err == nil && m.I >= 4 {

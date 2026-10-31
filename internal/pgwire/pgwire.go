@@ -1242,6 +1242,9 @@ func (c *conn) dataRow(row []sql.Datum, formats []int16, cols []sql.Column) erro
 		if i < len(cols) && cols[i].OID == oidFloat4 && d.K == sql.KFloat {
 			s = sql.FormatFloat4(d.F)
 		}
+		if d.K == sql.KInterval {
+			s = c.sess.IntervalString(d) // IntervalStyle
+		}
 		m.int32(len(s)).bytes([]byte(s))
 	}
 	return c.send(m)
@@ -1294,6 +1297,9 @@ func decodeParam(oid uint32, f int16, raw []byte) (sql.Datum, error) {
 	case oidText, oidVarchar, oidUnknown, oidName, oidBpchar:
 		return sql.TextD(string(raw)), nil
 	default:
+		if d, ok, err := sql.ExtParamBinary(oid, raw); ok {
+			return d, err
+		}
 		if sql.IsArrayOID(oid) {
 			return decodeArrayParam(oid, raw)
 		}

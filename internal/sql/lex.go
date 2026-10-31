@@ -156,9 +156,14 @@ func lex(src string) ([]token, error) {
 				i += 3
 				continue
 			}
+			if strings.HasPrefix(src[i:], "-|-") {
+				out = append(out, token{tOp, "-|-", start})
+				i += 3
+				continue
+			}
 			switch two {
 			case "<=", ">=", "<>", "!=", "||", "::", "!~", "~*", "->", "==", "<<", ">>", "^@",
-				"#>", "#-", "@>", "<@", "@?", "@@", "?|", "?&", "&&":
+				"#>", "#-", "@>", "<@", "@?", "@@", "?|", "?&", "&&", "&<", "&>":
 				out = append(out, token{tOp, two, start})
 				i += 2
 				continue

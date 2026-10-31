@@ -163,6 +163,9 @@ func decodeBinScalar(oid uint32, raw []byte) (Datum, error) {
 	case tyInet, tyCidr:
 		return inetFromBinary(oid, raw)
 	default: // text, varchar, bpchar, name and the other types held as text
+		if d, ok, err := extFromBinary(oid, raw); ok {
+			return d, err
+		}
 		return TextD(string(raw)), nil
 	}
 	return Null, binBad(oid)

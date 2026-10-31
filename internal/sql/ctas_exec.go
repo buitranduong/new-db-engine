@@ -84,6 +84,15 @@ func colDefFor(c Column, src *schema.Column) (ColDef, error) {
 			cd.Type, cd.PG = "string", "cidr"
 		case tyMacaddr:
 			cd.Type, cd.PG = "string", "macaddr"
+		default:
+			if sp, ok := extCtasSpec(c.OID, c.Mod); ok {
+				cd.Type, cd.PG = "string", sp
+			}
+		}
+	case KInterval:
+		cd.Type, cd.PG = "string", "interval"
+		if c.OID == tyInterval && c.Mod >= 0 {
+			cd.PG = ivSpecString(ivTypmodFromAtt(c.Mod))
 		}
 	case KBool:
 		cd.Type = "bool"

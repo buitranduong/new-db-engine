@@ -2,7 +2,6 @@ package sql
 
 import (
 	"math"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -120,109 +119,6 @@ var intervalUnits = map[string][2]int64{ // months, microseconds per unit
 	"decade": {120, 0}, "decades": {120, 0}, "century": {1200, 0}, "centuries": {1200, 0},
 }
 
-// parseInterval reads PostgreSQL interval input: "1 day 2 hours",
-// "3 mons", "01:02:03", "1 day 02:00:00", "-1 week", "@ 1 day ago".
-func parseInterval(s string) (Datum, bool) {
-	f := strings.Fields(strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "@")))
-	var months, us int64
-	ago := false
-	if len(f) == 0 {
-		return Null, false
-	}
-	for i := 0; i < len(f); i++ {
-		w := f[i]
-		if w == "ago" {
-			ago = true
-			continue
-		}
-		if strings.Contains(w, ":") { // [-]HH:MM[:SS[.fff]]
-			neg := strings.HasPrefix(w, "-")
-			parts := strings.Split(strings.TrimLeft(w, "+-"), ":")
-			var t float64
-			for j, p := range parts {
-				v, err := strconv.ParseFloat(p, 64)
-				if err != nil || j > 2 {
-					return Null, false
-				}
-				t += v * []float64{3600 * usPerSec, 60 * usPerSec, usPerSec}[j]
-			}
-			if neg {
-				t = -t
-			}
-			us += int64(math.Round(t))
-			continue
-		}
-		num := w
-		unit := ""
-		if j := strings.IndexFunc(w, func(r rune) bool { return r >= 'a' && r <= 'z' }); j > 0 {
-			num, unit = w[:j], w[j:] // "2h", "3days"
-		} else if i+1 < len(f) {
-			i++
-			unit = f[i]
-		}
-		v, err := strconv.ParseFloat(num, 64)
-		u, ok := intervalUnits[unit]
-		if err != nil || !ok {
-			return Null, false
-		}
-		months += int64(v * float64(u[0]))
-		us += int64(math.Round(v * float64(u[1])))
-	}
-	if ago {
-		months, us = -months, -us
-	}
-	return IntervalD(months, us), true
-}
-
-// formatInterval prints like PostgreSQL's default (postgres) style.
-func formatInterval(d Datum) string {
-	months, ms := int64(d.F), d.I // ms is in microseconds
-	var parts []string
-	plural := func(n int64, unit string) string {
-		if n == 1 { // PostgreSQL prints "-1 days"
-			return strconv.FormatInt(n, 10) + " " + unit
-		}
-		return strconv.FormatInt(n, 10) + " " + unit + "s"
-	}
-	if y := months / 12; y != 0 {
-		parts = append(parts, plural(y, "year"))
-	}
-	if m := months % 12; m != 0 {
-		parts = append(parts, strconv.FormatInt(m, 10)+" mon"+map[bool]string{true: "", false: "s"}[m == 1])
-	}
-	if days := ms / usPerDay; days != 0 {
-		parts = append(parts, plural(days, "day"))
-		ms -= days * usPerDay
-	}
-	if ms != 0 || len(parts) == 0 {
-		sign := ""
-		if ms < 0 {
-			sign, ms = "-", -ms
-		}
-		t := sign + time.Unix(0, 0).UTC().Add(time.Duration(ms)*time.Microsecond).Format("15:04:05.999999")
-		if ms >= usPerDay {
-			t = sign + strconv.FormatInt(ms/(3600*usPerSec), 10) + time.Unix(0, 0).UTC().Add(time.Duration(ms%(3600*usPerSec))*time.Microsecond).Format(":04:05.999999")
-		}
-		parts = append(parts, t)
-	}
-	return strings.Join(parts, " ")
-}
-
-// addInterval adds n times interval iv to time us (months by the calendar).
-func addInterval(us int64, iv Datum, n int64) int64 {
-	if isInfTime(us) {
-		return us
-	}
-	if m := int64(iv.F) * n; m != 0 {
-		us = addMonths(goTime(us), int(m)).UnixMicro()
-	}
-	return us + iv.I*n
-}
-
-// intervalMs orders intervals as PostgreSQL does: a month counts 30 days
-// (the result is in microseconds).
-func intervalMs(d Datum) int64 { return int64(d.F)*30*usPerDay + d.I }
-
 // timeArith is date/time/interval arithmetic as in PostgreSQL; ok=false
 // when neither side is one of those kinds.
 func timeArith(op string, l, r Datum) (Datum, bool, error) {
@@ -267,9 +163,9 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 		if op == "-" {
 			n = -1
 		}
-		return tsD(tk, addInterval(l.I, r, n)), true, nil
+		return tsD(tk, addIntervalTS(l.I, r, n)), true, nil
 	case l.K == KInterval && tsr && op == "+":
-		return tsD(tk, addInterval(r.I, l, 1)), true, nil
+		return tsD(tk, addIntervalTS(r.I, l, 1)), true, nil
 	case (l.K == KDate && r.K == KDate || isTime(l.K) && isTime(r.K)) && op == "-" && (isInfTime(l.I) || isInfTime(r.I)):
 		if l.K == KDate {
 			return Null, true, errf("22008", "cannot subtract infinite dates")
@@ -289,7 +185,8 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 	case l.K == KInt && r.K == KDate && op == "+":
 		return DateD(r.I + l.I*usPerDay), true, nil
 	case tsl && tsr && op == "-":
-		return IntervalD(0, l.I-r.I), true, nil
+		d, err := justifyHours(IntervalD(0, l.I-r.I))
+		return d, true, err
 	case isTime(l.K) && r.K == KInt && (op == "+" || op == "-"):
 		// integers are milliseconds, as before timestamps had microseconds
 		if op == "-" {
@@ -297,23 +194,35 @@ func timeArith(op string, l, r Datum) (Datum, bool, error) {
 		}
 		return tsD(l.K, l.I+r.I*usPerMs), true, nil
 	case l.K == KInterval && r.K == KInterval && (op == "+" || op == "-"):
+		sg := int64(1)
 		if op == "-" {
-			return IntervalD(int64(l.F-r.F), l.I-r.I), true, nil
+			sg = -1
 		}
-		return IntervalD(int64(l.F+r.F), l.I+r.I), true, nil
+		d, err := ivAdd(l, r, sg)
+		return d, true, err
 	case l.K == KInterval && (op == "*" || op == "/"):
-		if f, ok := num(r); ok {
-			if op == "/" {
-				if f == 0 {
-					return Null, true, errf(codeDivisionByZero, "division by zero")
-				}
-				f = 1 / f
+		if r.K == KText {
+			if x, err := coerce(r, KFloat); err == nil {
+				r = x
+			} else {
+				return Null, true, err
 			}
-			return mulInterval(l, f), true, nil
+		}
+		if f, ok := num(r); ok {
+			d, err := ivCheckedMul(l, f, op == "/")
+			return d, true, err
 		}
 	case r.K == KInterval && op == "*":
+		if l.K == KText {
+			if x, err := coerce(l, KFloat); err == nil {
+				l = x
+			} else {
+				return Null, true, err
+			}
+		}
 		if f, ok := num(l); ok {
-			return mulInterval(r, f), true, nil
+			d, err := ivCheckedMul(r, f, false)
+			return d, true, err
 		}
 	}
 	return Null, true, errf(codeUndefinedFunction, "operator does not exist: %s %s %s", l.K, op, r.K)
@@ -336,13 +245,4 @@ func floorDivInt(a, b int) int {
 		q--
 	}
 	return q
-}
-
-// mulInterval is interval * f as PostgreSQL's interval_mul: the months
-// stay whole and a fractional month becomes 30-day days.
-func mulInterval(iv Datum, f float64) Datum {
-	m := iv.F * f
-	whole := math.Trunc(m)
-	us := float64(iv.I)*f + (m-whole)*30*usPerDay
-	return IntervalD(int64(whole), int64(math.Round(us)))
 }

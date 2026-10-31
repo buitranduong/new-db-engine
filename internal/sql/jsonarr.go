@@ -28,6 +28,7 @@ var otherOps = map[string]string{
 	"@>": "stask_contains", "<@": "stask_contained", "&&": "stask_overlap",
 	"?": "stask_jexists", "?|": "stask_jexists_any", "?&": "stask_jexists_all",
 	"@?": "stask_jpath_exists", "@@": "stask_jpath_match", "#-": "stask_jhash_minus",
+	"&<": "stask_rng_overleft", "&>": "stask_rng_overright", "-|-": "stask_rng_adjacent",
 }
 
 func (p *parser) otherExpr() (Expr, error) {

@@ -1587,6 +1587,8 @@ func staticKind(x Expr, kinds []Kind) Kind {
 			return KInt
 		case l == KNull || r == KNull:
 			return KNull
+		case l == KText && (r == KText || r == KInt): // ranges, bit strings and macaddr8 (exttypes.go)
+			return KText
 		}
 		return KFloat
 	case *IsNull, *InList, *Between, *Like:
@@ -2636,6 +2638,9 @@ func (c *compiler) compileTableFunc(f *FromFunc, sc *qscope) (fromPlan, error) {
 		fp.c = []relCol{{qual: qual, name: name, kind: KInt}}
 		if f.F.Name == "generate_series" {
 			fp.c[0].ty = seriesTy(fp.args)
+			if k := seriesTimeKind(f.F.Args); k != KNull { // generate_series(timestamp, timestamp, interval)
+				fp.c[0].kind = k
+			}
 		}
 	case "stask_history":
 		cols, err := c.historyCols(f.F.Args)
@@ -2769,7 +2774,11 @@ func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([
 		if args[0].IsNull() || args[1].IsNull() {
 			return nil, nil
 		}
-		if args[0].K == KTime || args[0].K == KDate || args[0].K == KText && len(args) == 3 {
+		if args[0].K == KTime || args[0].K == KTimestamp || args[0].K == KDate || args[0].K == KText && len(args) == 3 {
+			rk := KTime
+			if args[0].K == KTimestamp {
+				rk = KTimestamp
+			}
 			start, err := coerce(args[0], KTime)
 			if err != nil {
 				return nil, err
@@ -2782,14 +2791,15 @@ func tableFuncRowsCap(name string, args []Datum, rowCap int64, tick funcTick) ([
 			if err != nil {
 				return nil, err
 			}
-			if intervalMs(step) <= 0 {
-				return nil, errf(codeInvalidParameter, "step size cannot be zero or negative")
+			if step.F == 0 && step.D == 0 && step.I == 0 {
+				return nil, errf(codeInvalidParameter, "step size cannot equal zero")
 			}
-			for t, n := start.I, int64(0); t <= stop.I && n < int64(maxRows); n++ {
-				if err := emit([]Datum{TimeD(t)}); err != nil {
+			down := intervalMs(step) < 0
+			for t, n := start.I, int64(0); (!down && t <= stop.I || down && t >= stop.I) && n < int64(maxRows); n++ {
+				if err := emit([]Datum{tsD(rk, t)}); err != nil {
 					return nil, err
 				}
-				t = addInterval(start.I, step, n+1)
+				t = addIntervalTS(t, step, 1)
 			}
 			return out, nil
 		}

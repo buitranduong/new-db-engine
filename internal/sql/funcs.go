@@ -847,7 +847,7 @@ func (c *evalCtx) callExt(f *Func, args []Datum) (Datum, error) {
 	if d, ok, err := c.callMore(f, args); ok {
 		return d, err
 	}
-	return Null, errf(codeUndefinedFunction, "function %s does not exist", f.Name)
+	return Null, noFunctionErr(f, args)
 }
 
 func sgn(x float64) float64 {

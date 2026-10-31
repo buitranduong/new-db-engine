@@ -155,3 +155,28 @@ Chạy lại trên `staskd` của nhánh với PostgreSQL 16.15 (`scripts/suite/
 | 16_ddl_more (mới) | không chạy được (0 trên 281 trước các sửa) | 281 / 281 |
 
 Các nhóm khác không đổi (06 159, 07 99, 08 87, 09 50, 10 99, 11 89, 12 29). Hai nguyên nhân gốc đã sửa: phân vùng không thực thi biên (A1) và tên trong view/COPY/bảng tạm không theo `search_path` (49 câu lớp B của G1). Còn lại ở các nhóm này là kiểu dữ liệu, hàm, cú pháp toán tử (nhánh khác) và: `pg_indexes.indexdef` không in `DESC`, kiểu cột của view trong `information_schema.columns` (text), `pg_am`/`pg_type` thiếu dòng, `table_privileges` theo `current_user`, INHERITS, `tableoid`.
+
+## 10. DML, transactions and error codes (branch `compat-dml`, from main cd42af1)
+
+Run against the same postgres:16.15 image, `staskd` of the branch on a free port, N=100. PASS includes PASS-MSG. "Before" is `main` cd42af1 re-run the same day (the figures in section 8 are from `suitefix`); "after" is the branch head.
+
+| Group | Statements | PASS before | PASS after |
+|---|---|---|---|
+| 01_ddl_types | 332 | 207 | 207 |
+| 02_indexes | 99 | 72 | 72 |
+| 03_views | 95 | 43 | 43 |
+| 04_dml | 145 | 117 | **145** |
+| 05_transactions | 272 | 254 | **272** |
+| 06_select_basics | 192 | 159 | 159 |
+| 07_joins | 103 | 99 | 101 |
+| 08_aggregates | 101 | 87 | 87 |
+| 09_window | 61 | 50 | 52 |
+| 10_cte_subquery | 115 | 99 | 99 |
+| 11_analytics | 96 | 89 | 89 |
+| 12_text_search | 68 | 29 | 29 |
+| 13_catalog | 123 | 95 | 97 |
+| 14_errors | 394 | 311 | 337 |
+| **Old total** | 2196 | **1711** | **1789** |
+| 18_dml_more (new file `scripts/suite/18_dml_more.sql`) | 289 | n/a | **289** |
+
+What moved: 04 and 05 are now equal to PostgreSQL in every statement (two-phase commit, `ON CONFLICT` on a unique index, MERGE, COPY through `search_path`, `FORCE_QUOTE`, SET TRANSACTION rules, `EXECUTE` arity, `pg_prepared_statements`). 14 gained 26 (SET/SHOW unknown parameters, bad values, maintenance on unknown relations, OFFSET, DISTINCT/ORDER BY, window in WHERE, duplicate alias, numeric lexing, has_table_privilege). Statements still different in 14 are functions, types and regproc casts (other branches) and COPY from server files. No statement that passed before fails now (checked by comparing the two reports). Group 18 covers what the brief lists as new cases: conflict arbiters, DML forms, MERGE, USING joins, GROUP BY key, ~50 error codes, SET/GUC, maintenance commands, 2PC, cursors, locks, EXPLAIN shape.

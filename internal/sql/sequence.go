@@ -370,7 +370,10 @@ func (s *Session) rowValues(t *schema.Table, cols []int, exprs []Expr, ctx *eval
 		case c.Generated != "":
 			return nil, nil, errGeneratedValue(c, false)
 		case c.Identity == "always" && overriding == "":
-			return nil, nil, errf("428C9", "cannot insert a non-DEFAULT value into column %q: column %q is an identity column defined as GENERATED ALWAYS (use OVERRIDING SYSTEM VALUE to override)", c.Name, c.Name)
+			e := errf("428C9", "cannot insert a non-DEFAULT value into column %q", c.Name)
+			e.Detail = fmt.Sprintf("Column %q is an identity column defined as GENERATED ALWAYS.", c.Name)
+			e.Hint = "Use OVERRIDING SYSTEM VALUE to override."
+			return nil, nil, e
 		case c.Identity != "" && overriding == "user":
 			continue
 		}
@@ -563,7 +566,7 @@ func checkConstraints(t *schema.Table, r schema.Row) error {
 			continue
 		}
 		if b, err := coerce(v, KBool); err != nil || !b.Bool() {
-			return errf("23514", "new row for relation %q violates check constraint %q", t.Name, ck.Name)
+			return checkViolation(t, bareName(ck.Name), r)
 		}
 	}
 	return nil

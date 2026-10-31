@@ -72,6 +72,8 @@ type Session struct {
 	ev          *evState             // the event trigger function being run
 	inCascade   bool                 // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
 	txLevel     string               // isolation level of the explicit transaction (readcommitted.go)
+	txRU        bool                 // the level was asked as READ UNCOMMITTED (it runs as READ COMMITTED, SHOW says what was asked)
+	txQueried   bool                 // a query ran in the explicit transaction: SET TRANSACTION ISOLATION LEVEL is too late (25001)
 	spilled     bool                 // the last query ran in spill mode (EXPLAIN ANALYZE)
 	rep         *repairRec           // occ_repair.go: the autocommit statement being run
 	failed      bool                 // an error occurred inside the explicit transaction
@@ -80,14 +82,15 @@ type Session struct {
 
 	// PID identifies the session to listeners (the wire protocol's
 	// backend process id).
-	PID       int32
-	listener  *Listener
-	notes     []Notification   // NOTIFY of the current transaction
-	currvals  map[string]int64 // currval: the last nextval of each sequence
-	prepared  map[string]Stmt  // SQL-level PREPARE (prepare.go)
-	tzName    string           // TimeZone the cached tzLoc was built for (tz.go)
-	tzLoc     *time.Location
-	preparedQ map[string]prepInfo // text and time of the SQL-level PREPAREs (pg_prepared_statements)
+	PID         int32
+	listener    *Listener
+	notes       []Notification   // NOTIFY of the current transaction
+	currvals    map[string]int64 // currval: the last nextval of each sequence
+	prepared    map[string]Stmt  // SQL-level PREPARE (prepare.go)
+	tzName      string           // TimeZone the cached tzLoc was built for (tz.go)
+	tzLoc       *time.Location
+	prepNParams map[string]prepSig  // declared parameter count and types of the SQL-level PREPAREs
+	preparedQ   map[string]prepInfo // text and time of the SQL-level PREPAREs (pg_prepared_statements)
 	// WirePrepared lists the named statements of the extended protocol (set by pgwire; pg_prepared_statements).
 	WirePrepared func() []PreparedInfo
 	lastSeq      string     // lastval's sequence
@@ -98,6 +101,7 @@ type Session struct {
 	trigDepth int                  // nesting of row triggers being run (trigger.go)
 	role      string               // role the session runs as; "" = bootstrap superuser (roles.go)
 	needCache map[Stmt]cachedNeeds // privileges each statement needs
+	lastQ     string               // text of the statement that is running (pendingQ is cleared when it starts)
 	pendingQ  string               // text of the statement about to run (SetQuery)
 	act       *Activity            // pg_stat_activity entry (activity.go)
 
@@ -183,9 +187,15 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 	}
 	if s.failed {
 		switch st.(type) {
-		case *Commit, *Rollback, *RollbackToStmt:
+		case *Commit, *Rollback, *RollbackToStmt, *PrepareTx:
 		default:
 			return nil, errf(codeInFailedTx, "current transaction is aborted, commands ignored until end of transaction block")
+		}
+	}
+	if s.explicit {
+		switch st.(type) {
+		case *Select, *SetOp, *Insert, *Update, *Delete, *Merge, *WithDML:
+			s.txQueried = true
 		}
 	}
 	if s.role != "" && !s.djBypass { // djBypass: a journaled step, already authorized as part of its statement
@@ -211,6 +221,8 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 	switch st := st.(type) {
 	case *WithDML:
 		return s.withDML(st, params)
+	case *PrepareTx, *CommitPrepared:
+		return s.execTwoPhase(st)
 	case *PrepareStmt, *ExecuteStmt, *DeallocateStmt, *MaintStmt:
 		return s.execPrepare(st, params)
 	case *SavepointStmt, *ReleaseStmt, *RollbackToStmt, *DiscardStmt, *ResetStmt, *CommentStmt:
@@ -223,6 +235,10 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		}
 		iso := core.SnapshotIsolation
 		level := st.Iso
+		s.txRU = level == "read uncommitted"
+		if s.txRU {
+			level = "read committed"
+		}
 		if level == "" {
 			level = isoLevel(s.vars["default_transaction_isolation"])
 		}
@@ -314,12 +330,18 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		if name == "transaction_isolation" {
 			if s.explicit && s.txLevel != "" {
 				v = s.txLevel
+				if s.txRU && v == "read committed" {
+					v = "read uncommitted"
+				}
 			} else if d := isoLevel(s.vars["default_transaction_isolation"]); d != "" {
 				v = d
 			}
 		}
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
+		}
+		if name == "work_mem" && (v == "" || v == "0") {
+			v = "4MB" // the PostgreSQL default; 0 here means "no per-statement budget set"
 		}
 		col := name
 		if c, ok := showNames[name]; ok {
@@ -611,6 +633,11 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 			return &Result{Tag: "SET"}, nil
 		}
 		if s.explicit && level != "" {
+			if s.txQueried {
+				s.markFailed()
+				return nil, errf(codeActiveTx, "SET TRANSACTION ISOLATION LEVEL must be called before any query")
+			}
+			s.txRU = strings.Contains(val, "read uncommitted")
 			if level == "serializable" && s.tx.Iso() != core.Serializable {
 				s.tx.Abort()
 				s.tx = s.begin(core.Serializable)
@@ -655,6 +682,10 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 			return nil, errf(codeInvalidParameter, "invalid value for parameter \"sql_dialect\": %q (postgres or clickhouse)", val)
 		}
 		st.Value = val
+	}
+	if err := checkGUC(name, strings.Trim(st.Value, "'\"")); err != nil {
+		s.markFailed()
+		return nil, err
 	}
 	s.vars[name] = strings.Trim(st.Value, "'\"")
 	return &Result{Tag: "SET"}, nil
@@ -1455,11 +1486,13 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 	}
 	items, cols, aggs := plan.items, plan.cols, plan.aggs
 	grouped := len(aggs) > 0 || len(st.GroupBy) > 0
-	if st.Where != nil && hasAgg(st.Where) {
-		return nil, errf(codeGrouping, "aggregate functions are not allowed in WHERE")
+	if st.Where != nil {
+		if err := whereFuncErr(st.Where); err != nil {
+			return nil, err
+		}
 	}
 	if grouped {
-		if err := checkGrouping(items, st, aggs); err != nil {
+		if err := checkGrouping(items, st, aggs, sc.t); err != nil {
 			return nil, err
 		}
 	}
@@ -1480,6 +1513,11 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 					orderOut[i] = j
 					break
 				}
+			}
+		}
+		if orderOut[i] < 0 {
+			if err := distinctOrderErr(st, items, o.X); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1534,6 +1572,9 @@ func (s *Session) selectRows(tx *core.Tx, st *Select, params []Datum) (*Result, 
 			return nil, err
 		}
 		offset = v.I
+		if offset < 0 && !s.clickHouse() {
+			return nil, errf("2201X", "OFFSET must not be negative")
+		}
 	}
 
 	lk, err := s.fastRowLocker(tx, st, sc.t, sc.alias)
@@ -1956,12 +1997,29 @@ func itemName(it SelItem) string {
 
 // checkGrouping rejects column references outside aggregates that are not
 // GROUP BY expressions.
-func checkGrouping(items []SelItem, st *Select, aggs []*Func) error {
+func checkGrouping(items []SelItem, st *Select, aggs []*Func, t *schema.Table) error {
 	grouped := map[string]bool{}
 	for _, g := range st.GroupBy {
 		grouped[exprKey(g)] = true
 		if c, ok := g.(*ColRef); ok {
 			grouped["col:"+c.Name] = true
+		}
+	}
+	// functional dependence (PostgreSQL, docs "GROUP BY"): grouping by every column of the primary key of the
+	// table lets the select list name any column of that table
+	if t != nil && t.HasPK() {
+		keyCols := t.KeyCols
+		if len(keyCols) == 0 {
+			keyCols = []string{t.Key}
+		}
+		all := true
+		for _, k := range keyCols {
+			all = all && grouped["col:"+k]
+		}
+		if all {
+			for i := range t.Columns {
+				grouped["col:"+t.Columns[i].Name] = true
+			}
 		}
 	}
 	var check func(x Expr) error
@@ -2122,7 +2180,7 @@ func checkRow(t *schema.Table, r schema.Row) error {
 	}
 	for i, c := range t.Columns {
 		if r[i].Null && (c.NotNull || i == t.KeyIndex()) && !(c.Hidden && t.Composite()) {
-			return errf(codeNotNullViolation, "null value in column %q of relation %q violates not-null constraint", c.Name, t.Name)
+			return notNullViolation(t, c.Name, r)
 		}
 	}
 	if len(t.Checks) > 0 {
@@ -2214,12 +2272,18 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
+	var arb *arbiter
 	if st.OnConflict != nil {
-		if err := checkConflictTarget(t, st.OnConflict.Target); err != nil {
+		if arb, err = resolveArbiter(t, st.OnConflict); err != nil {
 			return nil, err
 		}
 		if err := checkSetGenerated(t, st.OnConflict.Set); err != nil {
 			return nil, err
+		}
+	}
+	for _, r := range st.Rows { // PostgreSQL: all VALUES lists must have the same length
+		if len(r) != len(st.Rows[0]) {
+			return nil, errf(codeSyntax, "VALUES lists must all be the same length")
 		}
 	}
 	n := 0
@@ -2248,14 +2312,15 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			if built[ri], err = s.buildInsertRow(t, cols, exprs, ctx, defaults, st); err != nil {
 				return nil, err
 			}
-			key := t.KeyOf(built[ri])
+			key, old, ok, err := arb.find(tx, t, built[ri])
+			if err != nil {
+				return nil, err
+			}
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			if old, ok, err := tx.Get(t.Name, key); err != nil {
-				return nil, err
-			} else if ok {
+			if ok {
 				existing = append(existing, old)
 			}
 		}
@@ -2303,15 +2368,22 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			}
 			continue
 		}
-		existing, exists, err := tx.Get(t.Name, key)
+		var existing schema.Row
+		var exists bool
+		ekey := key // the key of the row this statement affects: the conflicting row, when there is one
+		if arb != nil {
+			ekey, existing, exists, err = arb.find(tx, t, row)
+		} else {
+			existing, exists, err = tx.Get(t.Name, key)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if exists {
 			switch {
-			case st.OnConflict == nil || inserted[key] && st.OnConflict.Set != nil:
-				if inserted[key] && st.OnConflict != nil {
-					return nil, errf("21000", "ON CONFLICT DO UPDATE command cannot affect row a second time")
+			case st.OnConflict == nil || inserted[ekey] && st.OnConflict.Set != nil:
+				if inserted[ekey] && st.OnConflict != nil {
+					return nil, secondTimeErr("ON CONFLICT DO UPDATE", "rows proposed for insertion within the same command have duplicate constrained values")
 				}
 				return nil, dupKeyErr(t, key)
 			case st.OnConflict.DoNothing:
@@ -2331,7 +2403,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			if err != nil {
 				return nil, err
 			}
-			if t.KeyOf(upd) != key {
+			if t.KeyOf(upd) != ekey {
 				return nil, errf(codeFeature, "ON CONFLICT DO UPDATE cannot change the primary key")
 			}
 			restore := s.pushSetCols(assignCols(st.OnConflict.Set))
@@ -2351,7 +2423,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 				return nil, err
 			}
 		}
-		inserted[key] = true
+		inserted[ekey] = true
 		n++
 		ctx.excluded = nil
 		if err := s.returning(sc, ctx, st.Returning, row, res); err != nil {

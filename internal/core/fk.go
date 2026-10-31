@@ -342,6 +342,41 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 	if ixName == "" {
 		return "", false, coded("42830", "there is no unique constraint matching given keys for referenced table %q", psch.Name)
 	}
+	return tx.findByIndex(parent, ixName, refCols, vals)
+}
+
+// FindByUnique looks up the row of table whose columns cols (the columns of a plain unique index) equal
+// vals, as this transaction sees it (own writes first, then the snapshot): the conflicting row of
+// INSERT .. ON CONFLICT on a unique index that is not the primary key. A NULL value never conflicts.
+func (tx *Tx) FindByUnique(table, ixName string, vals []schema.Value) (key string, found bool, err error) {
+	if err := tx.check(); err != nil {
+		return "", false, err
+	}
+	t, err := tx.e.Table(table)
+	if err != nil {
+		return "", false, err
+	}
+	sch := t.Schema()
+	var cols []string
+	for _, ix := range sch.Indexes {
+		if ix.Name == ixName {
+			cols = ix.Columns
+		}
+	}
+	if cols == nil || len(cols) != len(vals) {
+		return "", false, coded("42P10", "there is no unique or exclusion constraint matching the ON CONFLICT specification")
+	}
+	for _, v := range vals {
+		if v.Null {
+			return "", false, nil
+		}
+	}
+	return tx.findByIndex(t, ixName, cols, vals)
+}
+
+// findByIndex is the lookup of findParent through unique index ixName over refCols.
+func (tx *Tx) findByIndex(parent *TableState, ixName string, refCols []string, vals []schema.Value) (key string, found bool, err error) {
+	psch := parent.Schema()
 	match := func(r schema.Row) bool {
 		for i, rc := range refCols {
 			pi, _ := psch.Col(rc)

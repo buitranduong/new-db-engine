@@ -391,6 +391,9 @@ func (s *Session) Describe(st Stmt) (*Description, error) {
 	case *Explain:
 		d.HasRows = true
 		d.Cols = []Column{{Name: "QUERY PLAN", Kind: KText}}
+		if st.Opts.Format == "json" {
+			d.Cols[0] = Column{Name: "QUERY PLAN", Kind: KJSON, OID: 114}
+		}
 		pk := s.deepKinds(st.Stmt)
 		d.Params = make([]Kind, maxParamAny(st))
 		for i := range d.Params {

@@ -862,6 +862,14 @@ func (c *conn) sendError(e *sql.Error) {
 	if e.Pos > 0 {
 		m.byte1('P').str(strconv.Itoa(e.Pos))
 	}
+	for _, f := range []struct {
+		b byte
+		s string
+	}{{'s', e.Schema}, {'t', e.Table}, {'c', e.Column}, {'d', e.DataType}, {'n', e.Constraint}} {
+		if f.s != "" {
+			m.byte1(f.b).str(f.s)
+		}
+	}
 	if e.Routine != "" {
 		m.byte1('R').str(e.Routine)
 	}

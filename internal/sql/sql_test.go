@@ -388,8 +388,8 @@ func TestInsertDuplicateKeys(t *testing.T) {
 	run(t, s, `CREATE TABLE k (id BIGINT PRIMARY KEY, v TEXT)`)
 	run(t, s, `INSERT INTO k VALUES (1, 'a')`)
 	_, err := tryRun(s, `INSERT INTO k VALUES (2, 'b'), (1, 'c')`)
-	want := `duplicate key value violates unique constraint "k_pkey": Key (id)=(1) already exists`
-	if code(err) != codeUniqueViolation || AsError(err).Msg != want {
+	want := `duplicate key value violates unique constraint "k_pkey"`
+	if code(err) != codeUniqueViolation || AsError(err).Msg != want || AsError(err).Detail != "Key (id)=(1) already exists." {
 		t.Fatalf("autocommit: %v", err)
 	}
 	if got := render(run(t, s, `SELECT count(*) FROM k`)); got != "1" {

@@ -833,9 +833,9 @@ func checkConflictTarget(t *schema.Table, target []string) error {
 	if len(t.KeyCols) > 0 && sameColumnSet(t.KeyCols, target) { // composite PRIMARY KEY (nopk)
 		return nil
 	}
-	for _, ix := range t.Indexes {
-		if ix.Unique && !ix.HasExpr() && len(ix.Where) == 0 && slices.Equal(ix.Columns, target) {
-			return errf(codeFeature, "ON CONFLICT on the unique index %q is not supported: name the primary key", ix.Name)
+	for i, ix := range t.Indexes {
+		if ix.Unique && !ix.HasExpr() && len(ix.Where) == 0 && sameColumnSet(ix.Columns, target) {
+			return &arbIndex{ix: &t.Indexes[i]}
 		}
 	}
 	return errf("42P10", "there is no unique or exclusion constraint matching the ON CONFLICT specification")

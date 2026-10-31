@@ -35,6 +35,9 @@ type mergeClause struct {
 }
 
 func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error) {
+	if err := checkMergeWhens(st.Whens); err != nil {
+		return nil, err
+	}
 	t, err := s.table(st.Table)
 	if err != nil {
 		return nil, err
@@ -124,18 +127,9 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 			}
 		}
 	}
-	res, err := s.runQuery(tx, q, params)
-	if err != nil {
-		return nil, err
-	}
-	sc := &scope{t: t, alias: st.Alias}
-	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
-	tgs := s.E.Triggers(t.Name)
-	touched := map[string]bool{}
-	n := 0
-	for _, r := range res.Rows {
+	// choose is the first WHEN clause that fits a row of the join result
+	choose := func(r []Datum) *mergeClause {
 		matched := !r[nt].IsNull() && r[nt].I != 0
-		var mc *mergeClause
 		for _, c := range clauses {
 			if c.w.Matched != matched {
 				continue
@@ -146,9 +140,60 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 					continue
 				}
 			}
-			mc = c
-			break
+			return c
 		}
+		return nil
+	}
+	// The target rows that WHEN MATCHED will update or delete are locked before anything is written
+	// (writelock.go), so a concurrent writer is waited for and the join is computed again on the
+	// newer version (READ COMMITTED); WHEN NOT MATCHED .. INSERT stays optimistic, as in PostgreSQL
+	// (a concurrent insert of the same key is a unique violation there too).
+	mode, locking := lmNoKeyUpdate, false
+	for _, c := range clauses {
+		switch c.w.Action {
+		case "delete":
+			mode, locking = lmUpdate, true
+		case "update":
+			locking = true
+			if setTouchesKey(t, c.w.Set) {
+				mode = lmUpdate
+			}
+		}
+	}
+	var res *Result
+	compute := func() ([]schema.Row, error) {
+		var err error
+		if res, err = s.runQuery(tx, q, params); err != nil {
+			return nil, err
+		}
+		if !locking || len(s.E.Triggers(t.Name)) > 0 {
+			return nil, nil
+		}
+		var rows []schema.Row
+		for _, r := range res.Rows {
+			if mc := choose(r); mc == nil || mc.w.Action != "update" && mc.w.Action != "delete" {
+				continue
+			}
+			old := make(schema.Row, nt)
+			for i := range t.Columns {
+				if old[i], err = s.valCol(&t.Columns[i], r[i]); err != nil {
+					return nil, err
+				}
+			}
+			rows = append(rows, old)
+		}
+		return rows, nil
+	}
+	if err := s.lockedRows(tx, t, mode, compute); err != nil {
+		return nil, err
+	}
+	sc := &scope{t: t, alias: st.Alias}
+	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
+	tgs := s.E.Triggers(t.Name)
+	touched := map[string]bool{}
+	n := 0
+	for _, r := range res.Rows {
+		mc := choose(r)
 		if mc == nil || mc.w.Action == "nothing" {
 			continue
 		}
@@ -162,7 +207,7 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 			}
 			key := t.KeyOf(old)
 			if touched[key] {
-				return nil, errf("21000", "MERGE command cannot affect row a second time")
+				return nil, secondTimeErr("MERGE", "rows proposed for insertion within the same command have duplicate constrained values")
 			}
 			touched[key] = true
 			if mc.w.Action == "delete" {

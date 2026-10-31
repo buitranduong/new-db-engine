@@ -13,7 +13,7 @@ import (
 
 func init() {
 	for n, k := range map[string]Kind{
-		"txid_current": KInt, "inet_client_port": KInt, "inet_server_port": KInt,
+		"txid_current": KInt, "pg_current_xact_id": KInt, "inet_client_port": KInt, "inet_server_port": KInt,
 		"inet_client_addr": KText, "inet_server_addr": KText, "pg_size_pretty": KText,
 	} {
 		catalogFuncKinds[n] = k
@@ -32,7 +32,7 @@ var txidSeq atomic.Int64
 
 func (s *Session) pgcmdsScalar(name string, args []Datum) (Datum, error) {
 	switch name {
-	case "txid_current":
+	case "txid_current", "pg_current_xact_id":
 		if s.explicit && s.tx != nil {
 			if s.txid.tx != s.tx {
 				s.txid = pgTxid{tx: s.tx, id: txidSeq.Add(1) + 700}

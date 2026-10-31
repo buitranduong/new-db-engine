@@ -118,10 +118,11 @@ type Assign struct {
 }
 
 type OnConflict struct {
-	Target    []string // ON CONFLICT (cols); nil: none given
-	DoNothing bool
-	Set       []Assign
-	Where     Expr
+	Target     []string // ON CONFLICT (cols); nil: none given
+	Constraint string   // ON CONFLICT ON CONSTRAINT name
+	DoNothing  bool
+	Set        []Assign
+	Where      Expr
 }
 
 type Insert struct {
@@ -285,7 +286,10 @@ type Expr interface{ expr() }
 
 type Lit struct{ V Datum }
 type Param struct{ N int } // 1-based
-type ColRef struct{ Table, Name string }
+type ColRef struct {
+	Table, Name string
+	Pos         int // 1-based slot of the FROM row, set by SELECT * for a column name that occurs twice (query.go)
+}
 type Unary struct {
 	Op string // "-", "not"
 	X  Expr

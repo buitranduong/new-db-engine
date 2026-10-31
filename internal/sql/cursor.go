@@ -355,6 +355,7 @@ func (c *cursor) ensureTotal() error {
 
 func (c *cursor) noScrollErr() error {
 	e := errf("55000", "cursor can only scan forward")
+	e.Hint = "Declare it with SCROLL option to enable backward scan."
 	return e
 }
 

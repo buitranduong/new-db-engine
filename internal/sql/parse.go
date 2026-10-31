@@ -192,6 +192,12 @@ func (p *parser) statement() (Stmt, error) {
 		return nil, p.errHere("syntax error at or near %q", t.s)
 	}
 	switch t.s {
+	case "prepare", "commit", "end", "rollback", "abort":
+		if st, ok, err := p.parseTwoPhase(); ok {
+			return st, err
+		}
+	}
+	switch t.s {
 	case "select", "with", "values", "table":
 		return intoWrap(p.queryStmt())
 	case "insert":
@@ -301,7 +307,7 @@ func (p *parser) statement() (Stmt, error) {
 				case p.acceptKw("read", "committed"):
 					b.Iso = "read committed"
 				case p.acceptKw("read", "uncommitted"):
-					b.Iso = "read committed"
+					b.Iso = "read uncommitted"
 				default:
 					return nil, p.errHere("unknown isolation level %q", p.peek().s)
 				}
@@ -568,7 +574,7 @@ func (p *parser) createStmt() (Stmt, error) {
 				return nil, err
 			}
 			if c.Key != "" || c.KeyCols != nil {
-				return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
+				return nil, errf("42P16", "multiple primary keys for table %q are not allowed", c.Name)
 			}
 			c.PKName = cname
 			if len(cols) == 1 {
@@ -586,7 +592,7 @@ func (p *parser) createStmt() (Stmt, error) {
 			}
 			if cd.Primary {
 				if c.Key != "" || c.KeyCols != nil {
-					return nil, errf(codeSyntax, "multiple primary keys for table %q are not allowed", c.Name)
+					return nil, errf("42P16", "multiple primary keys for table %q are not allowed", c.Name)
 				}
 				c.Key = cd.Name
 				c.PKName = cd.PKName
@@ -1063,8 +1069,8 @@ func (p *parser) insertStmt() (Stmt, error) {
 					oc.Target = append(oc.Target, "") // an expression target: never matches
 				}
 			}
-		} else if p.acceptKw("on", "constraint") { // the target is always the primary key
-			if _, err := p.ident(); err != nil {
+		} else if p.acceptKw("on", "constraint") {
+			if oc.Constraint, err = p.ident(); err != nil {
 				return nil, err
 			}
 		}
@@ -1210,6 +1216,7 @@ func (p *parser) updateStmt() (Stmt, error) {
 	p.next()
 	u := &Update{}
 	var err error
+	p.acceptKw("only") // no inheritance children to leave out
 	if u.Table, u.Alias, err = p.tableAlias(); err != nil {
 		return nil, err
 	}
@@ -1240,6 +1247,7 @@ func (p *parser) deleteStmt() (Stmt, error) {
 	}
 	d := &Delete{}
 	var err error
+	p.acceptKw("only")
 	if d.Table, d.Alias, err = p.tableAlias(); err != nil {
 		return nil, err
 	}

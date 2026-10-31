@@ -213,6 +213,9 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 	switch name {
 	case "has_table_privilege", "has_schema_privilege", "has_database_privilege", "has_sequence_privilege",
 		"has_column_privilege", "has_any_column_privilege":
+		if err := s.hasPrivilegeErrors(name, args); err != nil {
+			return Null, err
+		}
 		return s.hasPrivilege(name, args), nil
 	case "current_user", "session_user", "current_role":
 		return TextD(s.sqlUser(name)), nil
@@ -373,7 +376,7 @@ func (s *Session) catalogScalar(name string, args []Datum) (Datum, error) {
 		return Null, nil
 	case "pg_database_size":
 		return s.pgcmdsDatabaseSize(), nil
-	case "txid_current", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
+	case "txid_current", "pg_current_xact_id", "inet_client_port", "inet_server_port", "pg_size_pretty", "inet_client_addr", "inet_server_addr":
 		return s.pgcmdsScalar(name, args)
 	case "pg_is_other_temp_schema":
 		return BoolD(false), nil

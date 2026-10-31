@@ -218,7 +218,7 @@ func applyTypmod(typ string, d Datum) (Datum, error) {
 	}
 	x, err := numOf(d).Fit(p, sc)
 	if err != nil {
-		return Null, errf(codeNumericOutOfRange, "numeric field overflow: a field with precision %d, scale %d must round to an absolute value less than 10^%d", p, sc, p-sc)
+		return Null, numericOverflow(p, sc)
 	}
 	return NumericD(x), nil
 }

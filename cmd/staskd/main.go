@@ -32,6 +32,7 @@ import (
 	"stask/internal/pgwire"
 	"stask/internal/planner"
 	"stask/internal/proj"
+	"stask/internal/reconcile"
 	"stask/internal/repl"
 	"stask/internal/seccrypt"
 	"stask/internal/server"
@@ -641,8 +642,9 @@ func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.D
 		}
 		log.Printf("history store: backfill from %s: %s", backfillDir, res)
 	}
-	e.Follow(c)
+	hf := e.Follow(c)
 	c.Attach(e)
+	hsrv.ReconcileHistory = func() *reconcile.HistoryView { return histReconcileView(names, hf, hs) }
 	hsrv.HistMetrics = c.Metrics
 	role := "primary"
 	if e.IsReplica() {

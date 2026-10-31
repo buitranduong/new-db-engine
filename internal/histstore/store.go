@@ -95,12 +95,13 @@ type Cursor struct {
 type Store struct {
 	opt Options
 
-	mu         sync.RWMutex // segs, pending, cur, active identity
-	segs       []*segment   // by first bucket
-	pending    []int64      // closed open files waiting to be sealed, ascending
-	cur        int64        // bucket the next entry goes to
-	curOK      bool
-	haveActive bool // an active open file exists (under mu)
+	mu          sync.RWMutex // segs, pending, cur, active identity
+	segs        []*segment   // by first bucket
+	pending     []int64      // closed open files waiting to be sealed, ascending
+	cur         int64        // bucket the next entry goes to
+	curOK       bool
+	haveActive  bool  // an active open file exists (under mu)
+	damagedFrom int64 // commit time of the last intact record before damage found at Open (0: none)
 
 	amu     sync.Mutex // the active open file (writes, flush, fsync, scans)
 	af      *os.File
@@ -295,6 +296,13 @@ func Open(o Options) (*Store, error) {
 		s.cursor, s.cursorW = c, c
 	}
 	s.loadCover()
+	if s.damagedFrom != 0 {
+		s.cover.Gaps = append(s.cover.Gaps, Gap{From: s.damagedFrom, To: s.opt.Now().UnixNano()})
+		s.cover.Known = true
+		if b, err := json.Marshal(s.cover); err == nil {
+			os.WriteFile(s.coverPath(), b, 0o644)
+		}
+	}
 	if !o.Manual {
 		s.wg.Add(1)
 		go s.loop()
@@ -309,9 +317,20 @@ func (s *Store) closeSegs() {
 }
 
 // openActive opens bucket b's open file for appending, cutting a torn tail.
+// A bad record that is followed by intact ones is not a torn tail (a crash
+// damages only the last write): it is damage in the middle of the file. The
+// records after it are cut with it, so the store says so, keeps a copy of
+// the cut bytes, drops its saved position (the follower then re-reads the
+// history from the log that is still on disk) and records a gap in what the
+// store vouches for.
 func (s *Store) openActive(b int64) error {
 	p := filepath.Join(s.opt.Dir, openName(b))
-	good, err := scanOpen(p, func([]Entry) {})
+	var lastTS int64
+	good, err := scanOpen(p, func(es []Entry) {
+		for i := range es {
+			lastTS = max(lastTS, es[i].TS)
+		}
+	})
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -320,6 +339,9 @@ func (s *Store) openActive(b int64) error {
 		return err
 	}
 	if st, err := f.Stat(); err == nil && st.Size() > good {
+		if intactFrameAfter(p, good, st.Size()) {
+			s.noteDamage(p, f, good, st.Size(), lastTS)
+		}
 		if err := f.Truncate(good); err != nil {
 			f.Close()
 			return err
@@ -335,6 +357,52 @@ func (s *Store) openActive(b int64) error {
 	s.haveActive = true
 	s.mu.Unlock()
 	return nil
+}
+
+// maxFrame bounds a frame the writer produces (one buffered write).
+const maxFrame = 1 << 20
+
+// intactFrameAfter reports whether a complete, checksummed frame exists in
+// the file after the first bad one at offset from.
+func intactFrameAfter(path string, from, size int64) bool {
+	const window = 64 << 20
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	n := min(size-from, window)
+	buf := make([]byte, n)
+	if _, err := f.ReadAt(buf, from); err != nil && err != io.EOF {
+		return false
+	}
+	for off := int64(1); off+8 < n; off++ {
+		l := int64(binary.LittleEndian.Uint32(buf[off:]))
+		if l == 0 || l > maxFrame || off+8+l > n {
+			continue
+		}
+		p := buf[off+8 : off+8+l]
+		if crc32.Checksum(p, crcTab) != binary.LittleEndian.Uint32(buf[off+4:]) {
+			continue
+		}
+		if _, ok := decodeFrame(p); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// noteDamage handles damage in the middle of an open file (see openActive).
+func (s *Store) noteDamage(path string, f *os.File, good, size, lastTS int64) {
+	keep := fmt.Sprintf("%s.damaged-%d", path, s.opt.Now().Unix())
+	if b, err := io.ReadAll(io.NewSectionReader(f, good, size-good)); err == nil {
+		os.WriteFile(keep, b, 0o644)
+	}
+	s.opt.Logf("histstore: %s: bad record at offset %d and intact records after it: the %d bytes from there on are dropped (a copy is in %s); "+
+		"history from %s on is incomplete and is marked as a gap; the saved position is discarded so that the history is re-read from the log that is still on disk",
+		filepath.Base(path), good, size-good, filepath.Base(keep), time.Unix(0, lastTS).UTC().Format(time.RFC3339))
+	os.Remove(s.statePath())
+	s.damagedFrom = lastTS
 }
 
 // scanOpen streams the intact frames of an open file and returns the length

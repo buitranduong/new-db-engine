@@ -69,6 +69,8 @@ func main() {
 		err = cmdKeygen(args)
 	case "audit":
 		err = cmdAudit(args)
+	case "reconcile":
+		err = cmdReconcile(args)
 	default:
 		usage()
 	}
@@ -79,7 +81,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: staskctl status|backup|verify|restore|cluster|backup-loop [flags]  (staskctl <cmd> -h)")
+	fmt.Fprintln(os.Stderr, "usage: staskctl status|backup|verify|restore|cluster|backup-loop|reconcile [flags]  (staskctl <cmd> -h)")
 	os.Exit(2)
 }
 

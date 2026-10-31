@@ -19,9 +19,12 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 - 2026-10-31, về lý do cần engine và ngưỡng thời gian: "tôi chỉ cần 1 VD để bạn thấy sự cần thiết engin này. nếu chỉ sử dụng postgres thì trải nghiệm website sẽ cực tệ. tổng phản hồi của website tính từ lúc request đến respon chỉ cho phép trong ngưỡng tôi đa 1~2s. lý tưởng ~1s. Đằng này nguyên db đã mất >1,5s rồi thì bắt buộc phải đồng bộ qua clickhouse (hoặc ES với giải pháp lấy dư rồi cache phân trang)"
 - 2026-10-31, về lý do tồn tại của engine: "tôi quá ấn tượng với tốc độ + độ nén dữ liệu của CH, nhưng data lớn, thay đổi liên tục. -> tôi ko thể bỏ transaction update của postgres được -> vậy nên đó là nguyên nhân thúc đẩy engine tôi muốn thực hiện. còn việc ES, hay radis hay VD cho website chỉ là điển hình thôi"
 - 2026-10-31, về kinh nghiệm thực tế trước đây: "tôi đã từng thực thi mô hình postgres + CDC (kafka) + clickhouse (có cả ES và Redis trợ giúp) với 03 cụm server cấu hình cao gấp đôi thậm trí gấp 3 so với VM cấp cho bạn đang thực hiện. Nó đáp ứng tốt về 1 số tiêu chí tôi đặt ra. Nhưng ko đạt tổng thể, cũng như việc khó khăn trong vận hành đối chiếu khi sảy ra sự cố"
+- 2026-10-31, về giá trị của engine: "engine ko phải tạo ra để lấp đầy khoảng trống DB hay giải pháp. mà nó thúc đẩy những thứ dù chỉ đáp ứng cho 1 dự án lớn (big tech) cả 1triêu USD thì phải tạo ra 1 engine này là xứng đáng"
 - 2026-10-31, về cú pháp: "lệnh nào ít dùng (function, procedure ..etc) bỏ qua trong giai đoạn này"; lệnh SQL "đâu có sáng tạo ra mà dựa trên cú pháp có sẵn chỉ convert".
 
 ## 2. Yêu cầu rút ra (diễn giải của agent; người dùng sửa nếu sai)
+
+**Thước đo thành công (người dùng):** engine không cần lấp mọi khoảng trống của cơ sở dữ liệu nói chung; nó xứng đáng nếu đáp ứng tốt MỘT dự án lớn. Vì vậy thành công chấm theo khối lượng công việc của dự án đó từ đầu đến cuối (SLO-R2, T1, M2, O2, C1), không theo tỉ lệ phủ chung chung.
 
 **Mục đích gốc (người dùng):** tốc độ và độ nén kiểu ClickHouse TRÊN dữ liệu lớn và thay đổi liên tục, mà vẫn giữ giao dịch cập nhật của PostgreSQL. ES, Redis, website chỉ là ví dụ điển hình, không phải yêu cầu riêng.
 

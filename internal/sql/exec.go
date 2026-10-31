@@ -78,7 +78,9 @@ type Session struct {
 	rep         *repairRec           // occ_repair.go: the autocommit statement being run
 	failed      bool                 // an error occurred inside the explicit transaction
 	vars        map[string]string
-	Views       Views // nil: aggregates always scan rows
+	Views       Views     // nil: aggregates always scan rows
+	Hybrid      *Hybrid   // nil: the hybrid path is off (staskd -hybrid, hybrid_exec.go)
+	hyLast      *hyReport // decision of the last R2-shaped statement
 
 	// PID identifies the session to listeners (the wire protocol's
 	// backend process id).
@@ -872,6 +874,9 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 	st = s.applyColumnCollations(st) // columns declared COLLATE (collddl.go)
 	switch st := st.(type) {
 	case *Select:
+		if res, ok, err := s.tryHybrid(tx, st, params); ok { // hybrid_exec.go
+			return res, err
+		}
 		if needsGeneral(st) {
 			return s.runQuery(tx, st, params)
 		}

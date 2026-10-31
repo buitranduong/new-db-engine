@@ -120,3 +120,24 @@ Quyết định kèm theo:
 - Superset và Jmix không phải mục tiêu bắt buộc (người dùng, 2026-10-31); niềm tin vào engine đến từ kiểm chứng đa agent (Claude, Gemini, ChatGPT), không phải thời gian chạy. Không điều chỉnh hướng trước khi có kết quả cuối của TẤT CẢ tiêu chí.
 - Java không phải rào cản: pgjdbc/Hibernate thật chạy trong Docker (eclipse-temurin:17) trên VM, như một bài thử driver.
 - Ngân sách thời gian (người dùng, 2026-10-31): khoảng 100 giờ xây engine, khoảng 300 giờ kiểm nghiệm trước prod, có thêm agent khác (Gemini, ChatGPT) cùng kiểm chứng. Đợt đo cuối vì vậy là một chương trình kiểm nghiệm dài; mọi phép thử phải tái lập được bởi agent không viết ra mã.
+
+## D35 — Đích về duy nhất và luật dừng (2026-10-31, theo lo ngại của người dùng: nhiều tiêu chí mâu thuẫn, vòng lặp tối ưu hiệu năng, "đẽo cày giữa đường")
+
+D35 THAY THẾ cách đọc nhiều tiêu chí rời rạc: bảy tiêu chí D34, bốn tiêu chí A-D và mười phép đo của `docs/24`, các bộ nghiệm thu, gate. Chúng không còn là danh sách song song mà xếp vào ba cổng. Muốn thêm tiêu chí mới phải bỏ hoặc gộp một tiêu chí cũ; mọi thứ ngoài ba cổng là backlog và KHÔNG chặn đích.
+
+**Ba cổng, làm theo thứ tự:**
+1. **G1 Đúng.** Gate xanh (`merge-gate.sh`, CI xanh), `pgdiff` + `scripts/suite` + `scripts/suite-cdc` + bộ pgjdbc thật không còn DIFF chưa giải thích; mỗi DIFF còn lại nằm trong bảng "khoảng trống đã biết" kèm lý do. (Gồm D34-1.)
+2. **G2 An toàn.** Không mất dữ liệu đã xác nhận (kill -9, mất một nút Raft), restore và PITR diễn tập đúng số dòng, `accept/security.sh` xanh, backup mã hoá chạy. (Gồm D34-2, 3, 7.)
+3. **G3 Đủ nhanh.** Chạy `docs/24` MỘT lượt. (Gồm D34-4, 5, 6.)
+
+Đạt cả ba cổng = engine "xong" để vào chế độ bóng; chế độ bóng và chuyển prod là bước vận hành, không phải tiêu chí của engine.
+
+**Khi các mục tiêu mâu thuẫn, thứ tự ưu tiên cố định:** đúng và không mất dữ liệu > bảo mật > tương thích chức năng > hiệu năng. Hiệu năng không bao giờ được đổi lấy tính đúng.
+
+**Luật dừng vòng hiệu năng (chống đẽo cày):**
+- Không có chỉ tiêu tuyệt đối từ người dùng thì tiêu chí duy nhất của G3 là "không tệ hơn PostgreSQL 16 (và ClickHouse khi so view cột) trên cùng dữ liệu, truy vấn, VM". Hơn nữa là tốt, không phải điều kiện.
+- Mỗi hạng mục đo chỉ có tối đa HAI vòng sửa: đo -> sửa -> đo lại -> (sửa lần hai -> đo lại). Sau vòng hai mà còn tệ hơn: dừng, ghi vào bảng giới hạn của engine kèm số đo và nguyên nhân, và đi tiếp. Không mở vòng ba trừ khi người dùng yêu cầu.
+- Không tối ưu ngoài danh sách đo của `docs/24`. Không tối ưu theo suy đoán; chỉ sửa chỗ số đo chỉ ra.
+- Ngân sách thời gian cho G1-G3 nằm trong ~300 giờ kiểm nghiệm; gợi ý chia G1 ~100 giờ, G2 ~100 giờ, G3 ~100 giờ (người dùng có thể đổi). Hết ngân sách của một cổng mà chưa đạt: báo người dùng quyết định, không tự kéo dài.
+- Mỗi lần có kết quả cuối của một cổng mới cho phép điều chỉnh thiết kế (D34); trong lúc chưa có thì không đổi hướng.
+

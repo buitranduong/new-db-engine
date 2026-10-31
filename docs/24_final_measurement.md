@@ -1,4 +1,6 @@
-# 24. Đợt đo hiệu năng cuối (D32)
+# 24. Đợt đo hiệu năng cuối (D32) — là cổng G3 của D35
+
+Tài liệu này là cổng G3 ("Đủ nhanh") của `PROCESS` D35, không phải danh sách tiêu chí song song. Luật dừng: mỗi hạng mục tối đa hai vòng sửa rồi ghi giới hạn và đi tiếp; không tối ưu ngoài danh sách bên dưới.
 
 Đợt đo duy nhất, chạy khi mã đã đóng (PROCESS D32, D34). Mọi phép đo qua `scripts/perf-run.sh` (một việc một lúc, máy phải yên, kết quả bị đánh INVALID nếu không). Không agent nào chạy gate hay build trong lúc đo.
 

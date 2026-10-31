@@ -12,6 +12,7 @@ Cách làm việc:
 - Không đoán mò hướng đi và không tự đưa ngưỡng hay đổi chiến lược trước khi có kết quả cuối của TẤT CẢ tiêu chí (D34). Người dùng nói "tiếp tục" nghĩa là làm tiếp hàng việc ở §3, không phải bắt đầu hướng mới.
 - Phạm vi: engine = cơ chế của hai cơ sở dữ liệu PostgreSQL + ClickHouse. Redis và Elasticsearch KHÔNG coi là cơ sở dữ liệu và không đặt vào thiết kế; từ Redis chỉ học kỹ thuật kiểm soát/nén hiệu năng trên RAM. Không dùng cả hai làm chuẩn, tiêu chí hay hướng phát triển mã tiếp. Mã đã có GIỮ NGUYÊN. Superset và Jmix KHÔNG phải mục tiêu bắt buộc (Jmix chỉ là một ca thử driver). Niềm tin vào engine đến từ kiểm chứng đa agent; không dựa vào "năm tháng chạy thật". Ngân sách: ~100 giờ xây, ~300 giờ kiểm nghiệm trước prod.
 - Hiệu năng: đo MỘT lần ở cuối khi mã đã đóng (D32, `docs/24`); ở các chỗ khác chỉ cần chạy đúng, không lỗi. Không xin thêm tài nguyên giữa chừng. Riêng đĩa: người dùng sẽ cấp thêm ~50 GB khi tới bước đo cuối cùng.
+- ĐÍCH VỀ DUY NHẤT: ba cổng G1 Đúng, G2 An toàn, G3 Đủ nhanh (PROCESS D35). Thứ tự ưu tiên khi mâu thuẫn: đúng/không mất dữ liệu > bảo mật > tương thích > hiệu năng. Mỗi hạng mục hiệu năng tối đa hai vòng sửa rồi ghi giới hạn và đi tiếp; không thêm tiêu chí mới mà không bỏ hoặc gộp một cái cũ.
 - Tài liệu repo phải đủ để đổi agent; đừng lưu quy tắc chỉ ở bộ nhớ riêng.
 
 An toàn:

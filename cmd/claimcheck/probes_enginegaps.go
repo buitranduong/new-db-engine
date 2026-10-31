@@ -38,5 +38,10 @@ func init() {
 		check{"eg_rollback_to_create_temp", "enginegaps", "ddl", pre("BEGIN", "SAVEPOINT sp", "CREATE TEMP TABLE eg_tmp (id INT)", "ROLLBACK TO sp", "CREATE TEMP TABLE eg_tmp (id INT, z INT)", "COMMIT", "SELECT count(z)::text FROM eg_tmp"), "val:0", nil},
 		check{"eg_rollback_refresh_matview", "enginegaps", "ddl", pre("CREATE MATERIALIZED VIEW eg_mv AS SELECT count(*) AS n FROM eg_t", "INSERT INTO eg_t VALUES (2, 'b')", "BEGIN", "REFRESH MATERIALIZED VIEW eg_mv", "ROLLBACK", "SELECT n::text FROM eg_mv"), "val:1", nil},
 		check{"eg_rollback_drop_matview", "enginegaps", "ddl", pre("CREATE MATERIALIZED VIEW eg_mv AS SELECT count(*) AS n FROM eg_t", "BEGIN", "DROP MATERIALIZED VIEW eg_mv", "ROLLBACK", "SELECT n::text FROM eg_mv"), "val:1", nil},
+		check{"ext_eg_any_pk_array", "enginegaps", "dml", pre("INSERT INTO eg_t VALUES (2, 'b'), (3, 'c')", "SELECT string_agg(v, ',' ORDER BY id) FROM eg_t WHERE id = ANY($1)"), "val:a,c", []any{[]int64{1, 3, 99}}},
+		check{"ext_eg_any_empty_array", "enginegaps", "dml", pre("SELECT count(*)::text FROM eg_t WHERE id = ANY($1)"), "val:0", []any{[]int64{}}},
+		check{"eg_after_row_after_statement", "enginegaps", "trigger", pre("~DROP TABLE IF EXISTS eg_lg", "CREATE TABLE eg_lg (n INT)", "CREATE TRIGGER eg_ar AFTER INSERT ON eg_t FOR EACH ROW BEGIN INSERT INTO eg_lg VALUES ((SELECT count(*) FROM eg_t)); END", "INSERT INTO eg_t VALUES (2, 'a'), (3, 'b')", "SELECT string_agg(n::text, ',') FROM eg_lg"), "val:3,3", nil},
+		check{"eg_truncate_trigger", "enginegaps", "trigger", pre("~DROP TABLE IF EXISTS eg_lg", "CREATE TABLE eg_lg (n INT)", "CREATE TRIGGER eg_tt AFTER TRUNCATE ON eg_t FOR EACH STATEMENT BEGIN INSERT INTO eg_lg VALUES (1); END", "TRUNCATE eg_t", "SELECT count(*)::text FROM eg_lg"), "val:1", nil},
+		check{"eg_insert_statement_trigger", "enginegaps", "trigger", pre("~DROP TABLE IF EXISTS eg_lg", "CREATE TABLE eg_lg (n INT)", "CREATE TRIGGER eg_ci AFTER INSERT ON eg_t FOR EACH STATEMENT BEGIN INSERT INTO eg_lg VALUES (1); END", "INSERT INTO eg_t VALUES (5, 'z')", "SELECT count(*)::text FROM eg_lg"), "val:1", nil},
 	)
 }

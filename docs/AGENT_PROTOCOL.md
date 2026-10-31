@@ -90,3 +90,9 @@ Dọn dẹp: <đã xoá gì>
 ## §7. Dấu vết cho mọi nhiệm vụ (kể cả của orchestrator)
 - Mỗi nhiệm vụ, kể cả tích hợp, đo, dọn dẹp, chép dữ liệu, quyết định quy trình, có một dòng plan-target-actual trong docs/14 (phụ lục của nhánh hoặc Phụ lục U) với bằng chứng tái hiện được. Việc không có dòng này coi là chưa làm.
 - Khi một agent báo xong mà thiếu phụ lục, orchestrator bổ sung trước khi gộp.
+
+## §8. Nghiên cứu trước khi tự nghĩ (quyết định của người dùng, 2026-10-31)
+- Khi gặp khó (tương thích, test chập chờn, đồng thời, khôi phục, collation, HA, di chuyển dữ liệu), **tìm trước**: PostgreSQL, CockroachDB, ClickHouse, Hibernate/Jmix và tài liệu chính thức đã giải thế nào; chọn thực hành phổ biến. Phần lớn vấn đề của dự án này là vấn đề đã có lời giải.
+- Ghi tiền lệ tìm được (tên hệ thống + điều rút ra) vào dòng plan-target-actual của nhiệm vụ. Không có tiền lệ thì ghi rõ "không tìm thấy".
+- Ngoại lệ duy nhất có thể không có tiền lệ: **giải pháp tối ưu hiệu năng**; ở đó đo (đúng lúc, theo D32) thay vì suy đoán.
+- Ví dụ rút ra bài học: chuỗi lỗi "address already in use" kéo dài hàng giờ, nguyên nhân là dải cổng tạm `1024-65535` đè lên cổng test, một điều được biết rộng rãi (`ip_local_reserved_ports`).

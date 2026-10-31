@@ -296,6 +296,11 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 		if d, ok, err := c.castCatalog(v, e.Type); ok {
 			return d, err
 		}
+		if loc := c.sessLoc(); loc != time.UTC {
+			if d, ok := tzCast(v, e.Type, loc); ok {
+				return d, nil
+			}
+		}
 		k := kindOfType(e.Type)
 		if k == KInt && v.K == KFloat && !math.IsNaN(v.F) && math.Abs(v.F) < 9.2e18 {
 			return IntD(int64(math.RoundToEven(v.F))), nil
@@ -715,6 +720,11 @@ func (c *evalCtx) call(f *Func) (Datum, error) {
 	if f.Name == "pg_typeof" && len(args) == 1 && args[0].IsNull() { // NULL has the type unknown, not no value
 		if l, ok := f.Args[0].(*Lit); ok && l.V.IsNull() {
 			return TextD("unknown"), nil
+		}
+	}
+	if loc := c.sessLoc(); loc != time.UTC {
+		if v, ok, err := c.tzFunc(f.Name, args, loc); ok {
+			return v, err
 		}
 	}
 	if v, ok, err := c.callUser(f, args); ok {

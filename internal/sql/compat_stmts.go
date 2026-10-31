@@ -80,6 +80,9 @@ func (p *parser) compatStatement(word string) (st Stmt, ok bool, err error) {
 				break
 			}
 		}
+		if len(name) == 1 && strings.EqualFold(name[0], "time") && p.acceptKw("zone") { // RESET TIME ZONE
+			name[0] = "time zone"
+		}
 		return &ResetStmt{Name: strings.ToLower(strings.Join(name, "."))}, true, nil
 	case "comment":
 		p.next()

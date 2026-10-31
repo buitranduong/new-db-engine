@@ -158,6 +158,8 @@ func (p *tablePlan) runAsOf(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	e := qx.s.E
 	var snap uint64
 	var ts core.TimeSnap
+	var ns int64
+	tailOnly := false
 	if p.asOf.lsn {
 		v, err := coerce(d, KInt)
 		if err != nil {
@@ -172,8 +174,13 @@ func (p *tablePlan) runAsOf(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ts, err = e.TimeSnapshot(microsToNanos(v.I)); err != nil {
-			return nil, asOfErr(err)
+		ns = microsToNanos(v.I)
+		if ts, err = e.TimeSnapshot(ns); err != nil {
+			// the log has no mark that far back: the history store may still answer
+			if err != core.ErrSnapshotTooOld || !e.HasAsOfTail() {
+				return nil, asOfErr(err)
+			}
+			tailOnly = true
 		}
 	}
 	cols := p.t.Columns
@@ -206,7 +213,16 @@ func (p *tablePlan) runAsOf(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 		if p.asOf.lsn {
 			r, _, err = e.GetAt(p.t.Name, key, snap)
 		} else {
-			r, _, err = e.GetAtTime(p.t.Name, key, ts)
+			if !tailOnly {
+				r, _, err = e.GetAtTime(p.t.Name, key, ts)
+			}
+			if tailOnly || err == core.ErrSnapshotTooOld && e.HasAsOfTail() {
+				var h core.HistoryEntry
+				var found bool
+				if h, found, err = e.AsOfTime(p.t.Name, key, ns); found {
+					r = h.Row
+				}
+			}
 		}
 		if err != nil {
 			return nil, asOfErr(err)
@@ -220,7 +236,13 @@ func (p *tablePlan) runAsOf(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 	if p.asOf.lsn {
 		err = e.ScanSnapshot(p.t.Name, snap, fn)
 	} else {
-		err = e.ScanSnapshotTime(p.t.Name, ts, fn)
+		if !tailOnly {
+			err = e.ScanSnapshotTime(p.t.Name, ts, fn)
+		}
+		if tailOnly || err == core.ErrSnapshotTooOld && e.HasAsOfTail() {
+			rows, cerr = nil, nil // start over from the history store
+			err = e.ScanAsOfTime(p.t.Name, ns, func(_ string, h core.HistoryEntry) bool { return emit(h.Row) })
+		}
 	}
 	if err == nil {
 		err = cerr

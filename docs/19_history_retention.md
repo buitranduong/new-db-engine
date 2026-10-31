@@ -145,15 +145,15 @@ Nguồn tham khảo thiết kế (không chép mã): phân vùng theo thời gia
 ## 6. Giới hạn và những điều chưa chứng minh (thành thật)
 
 1. **Không có phép đo nào ở quy mô lớn.** Mọi con số ở §3.4 cột "40M × 200" là công thức [tính]. Dữ liệu thử là tổng hợp (hai cận: đều và nhiễu). `TestHistStoreScale` (`STASK_HSBENCH=1`, qua `perf-run.sh`) là bộ đo cho phép đo cuối.
-2. **`AS OF`/`GetAtTime`/`ScanSnapshotTime` chưa dùng kho**: đọc theo thời điểm xa hơn horizon của log vẫn trả `72000`. Chỉ `History`/`stask_history`/`/v1/history` và API của gói (`Versions`, `AsOf`, `ScanTime`) dùng kho.
-3. **Không hỗ trợ replica/cluster** (vị trí lưu là vị trí log của leader; `staskd` từ chối kết hợp). Sau chuyển leader, phải dựng lại kho.
-4. **Không backfill** khi bật (§4).
+2. **[đã xử lý ở §9.1]** **`AS OF`/`GetAtTime`/`ScanSnapshotTime` chưa dùng kho**: đọc theo thời điểm xa hơn horizon của log vẫn trả `72000`. Chỉ `History`/`stask_history`/`/v1/history` và API của gói (`Versions`, `AsOf`, `ScanTime`) dùng kho.
+3. **[replica đã xử lý ở §9.3; nút Raft chưa]** **Không hỗ trợ replica/cluster** (vị trí lưu là vị trí log của leader; `staskd` từ chối kết hợp). Sau chuyển leader, phải dựng lại kho.
+4. **[đã xử lý ở §9.2]** **Không backfill** khi bật (§4).
 5. **Giữ lâu hơn 60 ngày tới 1 ngày** (segment ngày). Nếu cần chính xác hơn: bucket nhỏ hơn và `MergeFactor` nhỏ hơn (chưa có cờ cho `MergeFactor`).
 6. **Quét tệp mở** khi H nhỏ (§4); không có bloom filter; mỗi tra cứu giải nén cả khối 32 KB (≈ 1.000 mục, ~50 µs CPU): đổi `BlockBytes` đổi CPU lấy RAM chỉ mục.
 7. **Tốc độ Apply chưa đo** ở cao điểm nhập Excel (~230k dòng/s, docs/15 §6); nếu kho tụt lại, log bị giữ (an toàn, tốn đĩa) chứ không mất dữ liệu.
-8. **Đĩa đầy**: không kiểm trong kho (log có `PreZero`/fallocate; kho thì không).
+8. **[đã xử lý ở §9.4]** **Đĩa đầy**: không kiểm trong kho (log có `PreZero`/fallocate; kho thì không).
 9. **Không giải quyết** truy vấn phân tích trên toàn bộ lịch sử (đếm thay đổi/ngày): `ScanTime` đọc tuần tự các segment của khoảng đó, nhưng không có SQL `t_history` (docs/15 §7.6).
-10. Nhánh này không sửa `gc.go`: phần "chuỗi sâu" của GC log vẫn như cũ cho bảng không bật kho.
+10. **[đã rà ở §9.6]** Nhánh này không sửa `gc.go`: phần "chuỗi sâu" của GC log vẫn như cũ cho bảng không bật kho.
 
 ## 7. Phép đo cần làm ở cuối (D32)
 
@@ -180,3 +180,53 @@ Nguồn tham khảo thiết kế (không chép mã): phân vùng theo thời gia
 6. **Yêu cầu 60 ngày là bắt buộc nghiệp vụ/pháp lý hay chu kỳ dọn hiện tại**; giữ dư 1 ngày có chấp nhận không; có yêu cầu xoá dữ liệu cá nhân sớm hơn 60 ngày không (kho xoá theo thời gian, không theo khoá).
 7. **Có cần replica/HA cho lịch sử** không (§6 mục 3).
 8. **`updated_at`/`changed_at` của hệ thống hiện tại** là giờ máy chủ hay giờ nhập: STASK dùng giờ commit của chính nó cho bucket.
+
+## 9. Cập nhật nhánh `histimport` (2026-10-31): AS OF, backfill, replica, đĩa đầy, rà `gc.go`
+
+Mọi mục dưới đây là mã + test ở cỡ nhỏ; **không có phép đo quy mô lớn** (D32). Giới hạn §6 các mục 2, 3, 4, 8, 10 được xử lý như sau.
+
+### 9.1 `AS OF` và `GET ?as_of_time=` quá horizon của log (xử lý §6.2)
+
+`core.Engine.AsOfTime(table, key, ns)`: đọc từ log; khi log báo `ErrSnapshotTooOld` thì hỏi hook `SetAsOfTail` (cài bởi `Consumer.Attach`). `internal/sql/asof.go` (`AS OF TIMESTAMP`, `FOR SYSTEM_TIME AS OF`) và `internal/server` (`/v1/get?as_of_time=`) dùng nó; `/v1/history` và `stask_history()` đã dùng kho qua `History` từ trước. Quét cả bảng AS OF thời điểm xa (`ScanAsOfTime`) hỏi từng khoá **đang có trong chỉ mục**: một đọc điểm mỗi khoá, dành cho kiểm toán hiếm; khoá đã bị xoá và không còn trong chỉ mục thì không liệt kê (giới hạn).
+
+**Kho chỉ trả lời khi có thể bảo đảm** (`cover.json`, `Store.AsOfCovered`): trả `ErrSnapshotTooOld` (SQLSTATE 72000) thay vì đáp án sai khi:
+- thời điểm trước `Cover.From` (kho bắt đầu ghi / backfill chỉ phủ từ đó) hoặc quá retention của kho;
+- thời điểm nằm sau một **khoảng hở** (§9.4) mà phiên bản tìm được cũ hơn hết khoảng hở;
+- không tìm thấy phiên bản nào ≤ thời điểm, mà kho không chứng minh được "khoá chưa tồn tại" (`BaseComplete` & chưa hết hạn, hoặc phiên bản đầu của khoá mang cờ `First`).
+Cờ `First` (bit 8 của byte cờ, thêm vào định dạng **do gói này sở hữu**; dữ liệu cũ không có cờ nên bị coi là "không rõ", thận trọng) lấy từ `Op.Prev` không `Ok` lúc ghi. Đây là thay đổi định dạng đĩa nhỏ, tương thích ngược, của `histstore` (không phải log/checkpoint docs/09); ghi để người điều phối biết.
+
+Hệ quả cần biết: sau khi hết hạn lần đầu, lịch sử giữ **60 ngày thay đổi**, không giữ "trạng thái mọi khoá tại mọi thời điểm trong 60 ngày": khoá có phiên bản duy nhất cũ hơn 60 ngày mà trước đó bị log thu hồi thì AS OF giữa chừng trả 72000. Log làm tốt hơn nhờ giữ phiên bản hiện hành tại horizon; kho thả cả segment nên không có tương đương. Khoá không đổi trong cửa sổ vẫn đọc được từ đầu chuỗi trong log.
+
+Test: `TestAsOfBeyondTheLog` (SQL điểm + quét, `AsOfTime`, trước phiên bản đầu, trước coverage, trong khoảng hở), `TestHTTPUsesTheStore` (HTTP `as_of_time`, `/v1/history`, `/metrics`).
+
+### 9.2 Backfill (xử lý §6.4)
+
+- Tự động: khi không có `state.json`, `Consumer.Bootstrap` quét phần log còn trên đĩa (`Engine.ScanLog`), kể cả các bản `KindMove` (giữ nguyên LSN/giờ gốc), ghi vào các bucket quá khứ (`Store.Backfill`: chỉ **nối thêm** khung vào `open-<bucket>.log` của bucket chưa niêm phong và không phải bucket đang ghi; không ghi đè gì), rồi đặt `Cover.From` = giờ bản ghi đầu của **segment cũ thứ hai** của log (đoạn cũ nhất có thể đã bị thu hồi một phần nên không tin) và `BaseComplete`. Test `TestBackfillFromTheLog`.
+- Từ bản sao thư mục dữ liệu (base backup, kho lưu segment cũ): `staskd -hist-store-backfill-dir DIR` (DIR chứa `wal/`; **phải là bản sao**: mở log có thể xoá phần dở của nén segment). Chỉ đọc bảng được liệt kê theo id bảng của engine đang chạy (id không dùng lại). Nếu bản sao kết thúc trước khi coverage của log bắt đầu, khoảng giữa được ghi là **khoảng hở**, không được vá. Test `TestBackfillFromABackup`.
+- Không phục hồi được gì từ log đã bị thu hồi mà không có bản sao: tài liệu nói thẳng, `Cover.From` phản ánh điều đó.
+
+### 9.3 Replica (xử lý §6.3)
+
+`staskd -replica-of ... -hist-store` được phép: follower của kho đọc log **cục bộ của replica**, mang LSN và giờ commit của leader. Kho của replica độc lập với kho của leader (mỗi nơi lưu riêng). Test `TestReplicaHistoryStore` (leader giữ 6 ngày, 30 ngày × 500 khoá; replica có đủ 30 ngày mỗi khoá, AS OF xa hơn log của leader, khởi động lại cả replica và kho không trùng). Khi replica nạp lại base backup (vị trí log đổi), `tryRestore` phát hiện, chạy lại `Bootstrap` và backfill từ log cục bộ.
+**Chưa hỗ trợ: nút Raft** (`-cluster`). `staskd` vẫn từ chối kèm lý do: log của follower Raft có thể bị leader mới cắt, kho sẽ giữ phiên bản chưa từng commit. Cần cách lấy "đã commit" từ `internal/cluster`; chưa làm. Sau chuyển leader trong cặp leader/replica thủ công (promote): kho của replica được promote tiếp tục theo log của chính nó; phiên bản chỉ có trên leader cũ (chưa kịp tới replica) không có trong kho này (và cũng không có trong dữ liệu).
+
+### 9.4 Đĩa đầy (xử lý §6.8): an toàn, báo động, không hỏng
+
+- Trước khi ghi: `MinFreeBytes` (cờ `-hist-store-min-free-mb`, mặc định 512; `-1` tắt) kiểm bằng `statfs` ≤ 2 lần/giây; dưới ngưỡng thì `Append` trả `ErrDiskFull`. Lỗi ghi (ENOSPC, EIO, hỏng fsync) đánh dấu kho `broken`, giữ lại **mọi mục chưa chắc đã xuống đĩa** (`unsynced`), và mỗi 0,5 s thử "chữa": mở lại tệp mở (cắt đuôi rách như sau sự cố), ghi lại các mục giữ, fsync. Không bao giờ để `state.json` vượt quá dữ liệu.
+- `Consumer.Apply` chờ (giữ follower, nên **log bị ghim**) tối đa `-hist-store-stall` (mặc định 10 phút). Quá hạn: ghi **khoảng hở** `[từ, tới]` vào `cover.json` (trong RAM trước, rồi tệp), bỏ các mục, tiếp tục đọc log để log không bị ghim vô hạn sau một đĩa lịch sử đầy (nguy cơ đối nghịch: đĩa log đầy làm hỏng cả cơ sở dữ liệu chính). Khi đĩa có chỗ, khoảng hở đóng lại; các đọc phụ thuộc vào nó trả 72000.
+- Báo động: dòng log `ALERT histstore: ...` (≤ 1 lần/30 s mỗi thông điệp) và `/metrics`: `stask_histstore_broken`, `_in_gap`, `_dropped_entries_total`, `_gaps`, `_alerts_total`, `_free_bytes`, `_disk_bytes`, `_segments`.
+- Bảo trì khi đĩa thấp: chỉ chạy hết hạn (giải phóng chỗ), tạm dừng niêm phong và trộn; lỗi giữa niêm phong/trộn xoá `.tmp`/`.run` dở (không tốn chỗ, không bao giờ dùng lại).
+- Test: `TestDiskFullLosesNothing` (từ chối khi thấp, lỗi ghi chèn vào, chữa, so khớp mô hình từng phiên bản, qua khởi động lại và `Maintain`), `TestDiskFullGap` (quá `StallMax` → khoảng hở, đóng lại khi có chỗ, đọc trong khoảng hở bị từ chối, trước/sau trả lời được).
+- **Chưa kiểm** với đĩa đầy thật (chỉ giả lập `FreeFn` và `FailWrite`); `fsync` lỗi trên Linux có thể làm mất trang bẩn: chúng tôi coi lỗi fsync như mất và ghi lại từ `unsynced`, nhưng chưa thử với hệ thống tệp thật bị đầy.
+
+### 9.5 Tích hợp trong suốt, hết hạn theo segment
+
+`stask_history()`, `/v1/history`, `AS OF` (SQL), `/v1/get?as_of_time=` đều đi qua `Consumer.Attach`; không cần cờ khác. Hết hạn vẫn là `unlink` nguyên segment (`TestExpiryDropsWholeSegments`), nay đồng thời đặt `Cover.Expired`.
+
+### 9.6 Rà `gc.go` cho bảng không bật kho
+
+Đọc `gc.go supersededAfter` và `history.go chainMemo.superseded`: để biết một phiên bản cũ `p` còn cần không, phải đi chuỗi từ đầu khoá xuống tới horizon vì **mỗi phiên bản chỉ trỏ tới phiên bản trước nó (`Prev`), không có con trỏ tới phiên bản sau**; phiên bản cần giữ là cái bị phiên bản *thấp nhất mới hơn horizon* tham chiếu. Chi phí = số phiên bản mới hơn horizon = cả cửa sổ retention. `chainMemo` chỉ cứu khi nhiều bản ghi cùng khoá nằm trong cùng segment nạn nhân. **Kết luận: không gỡ được phần "chuỗi sâu" chỉ bằng đổi mã trong gc.go** mà không (a) thêm con trỏ `Next` vào định dạng log (cấm đổi lặng lẽ, docs/09), hoặc (b) giữ bảng `base[khoá]` bền vững (~2,5-3 GB RAM ở 40M khoá, cần checkpoint riêng: đã cân ở §3.5 và loại). Không sửa `gc.go`. Cách duy nhất đang có để tránh chi phí này: bật kho cho bảng và hạ `history_retention` của log xuống vài giờ (§3, §4).
+
+### 9.7 Còn lại sau nhánh này
+
+- Nút Raft (§9.3), quét AS OF toàn bảng liệt kê cả khoá đã xoá (§9.1), đĩa đầy thật (§9.4), mọi số quy mô lớn (§7), `MergeFactor` chưa có cờ (§6.5).

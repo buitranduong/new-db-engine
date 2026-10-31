@@ -28,6 +28,8 @@ type Server struct {
 	// Raft cluster (internal/cluster); clients and the router find the
 	// leader with it.
 	Cluster func() any
+	// ExtraMetrics, if set, adds lines to /metrics (the history store health).
+	ExtraMetrics func(p func(name, typ, help string, v any))
 
 	txMu  sync.Mutex
 	txs   map[uint64]*txEntry
@@ -271,7 +273,17 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			fail(w, fmt.Errorf("bad as_of_time"))
 			return
 		}
-		row, v, err = s.P.E.GetAsOfTime(table, key, ns)
+		h, found, aerr := s.P.E.AsOfTime(table, key, ns) // continues in the history store beyond the log
+		if aerr != nil {
+			fail(w, aerr)
+			return
+		}
+		if !found {
+			reply(w, 404, map[string]any{"found": false})
+			return
+		}
+		reply(w, 200, map[string]any{"found": true, "row": t.Schema().ToJSON(h.Row), "lsn": h.LSN, "commit_ts": h.TS})
+		return
 	default:
 		row, v, err = s.P.E.Get(table, key)
 	}

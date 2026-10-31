@@ -32,8 +32,18 @@ type Options struct {
 	SyncEvery   time.Duration // fsync interval of the open file (default 1s)
 	Interval    time.Duration // maintenance (seal, merge, expire) interval (default 5s)
 	Manual      bool          // no background goroutine: the caller runs Maintain (tests)
-	Now         func() time.Time
-	Logf        func(string, ...any)
+	// MinFreeBytes: below this much free space on Dir the store stops writing (ErrDiskFull) and
+	// maintenance only expires; default 512 MiB, -1 = never check. FreeFn replaces statfs (tests).
+	MinFreeBytes int64
+	FreeFn       func(dir string) (uint64, error)
+	// StallMax is how long Consumer holds the log follower waiting for the disk before it records
+	// a Gap and drops entries instead (default 10 min): the log must not fill up behind a full
+	// history disk.
+	StallMax time.Duration
+	// FailWrite, if set, is called before every write to the open file (tests inject errors).
+	FailWrite func() error
+	Now       func() time.Time
+	Logf      func(string, ...any)
 }
 
 func (o *Options) fill() {
@@ -54,6 +64,15 @@ func (o *Options) fill() {
 	}
 	if o.Interval <= 0 {
 		o.Interval = 5 * time.Second
+	}
+	if o.MinFreeBytes == 0 {
+		o.MinFreeBytes = 512 << 20
+	}
+	if o.FreeFn == nil {
+		o.FreeFn = statfsFree
+	}
+	if o.StallMax <= 0 {
+		o.StallMax = 10 * time.Minute
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -89,9 +108,12 @@ type Store struct {
 	abucket int64
 	dirty   bool // written since the last fsync
 
-	lastLSN uint64
-	cursor  Cursor
-	cursorW Cursor // last cursor persisted
+	lastLSN  uint64
+	broken   error   // a write failed (amu)
+	unsynced []Entry // appended since the last successful fsync, kept for a rewrite after a failure (amu)
+	lastHeal time.Time
+	cursor   Cursor
+	cursorW  Cursor // last cursor persisted
 
 	maint   sync.Mutex // one Maintain at a time
 	kick    chan struct{}
@@ -100,6 +122,21 @@ type Store struct {
 	closed  bool
 	Stats   Stats
 	statsMu sync.Mutex
+
+	cmu        sync.Mutex // cover
+	cover      Cover
+	coverDirty bool
+
+	hmu          sync.Mutex // health fields
+	lastFreeAt   time.Time
+	lastFree     uint64
+	lastFreeErr  error
+	brokenSince  time.Time
+	inGap        bool
+	dropped      int64
+	alerts       int64
+	lastAlert    string
+	lastAlertLog time.Time
 }
 
 // Stats counts maintenance work (for tests and docs/19 measurements).
@@ -257,6 +294,7 @@ func Open(o Options) (*Store, error) {
 	if c, ok := s.loadState(); ok {
 		s.cursor, s.cursorW = c, c
 	}
+	s.loadCover()
 	if !o.Manual {
 		s.wg.Add(1)
 		go s.loop()
@@ -401,6 +439,22 @@ func (s *Store) LastLSN() uint64 {
 func (s *Store) Append(es []Entry) error {
 	s.amu.Lock()
 	defer s.amu.Unlock()
+	if err := s.healLocked(); err != nil {
+		return err
+	}
+	if err := s.freeCheck(); err != nil {
+		return err
+	}
+	if err := s.appendLocked(es); err != nil {
+		s.breakLocked(err)
+		return fmt.Errorf("%w: %v", ErrDiskFull, err)
+	}
+	s.unsynced = append(s.unsynced, es...)
+	return nil
+}
+
+// appendLocked writes es to the open files (amu held).
+func (s *Store) appendLocked(es []Entry) error {
 	floor := s.lastLSN
 	var batch []Entry
 	var frame []byte
@@ -410,6 +464,11 @@ func (s *Store) Append(es []Entry) error {
 		}
 		frame = appendFrame(frame[:0], batch)
 		batch = batch[:0]
+		if s.opt.FailWrite != nil {
+			if err := s.opt.FailWrite(); err != nil {
+				return err
+			}
+		}
 		if _, err := s.aw.Write(frame); err != nil {
 			return err
 		}
@@ -481,6 +540,7 @@ func (s *Store) syncActiveLocked() error {
 		return err
 	}
 	s.dirty = false
+	s.unsynced = nil
 	return nil
 }
 
@@ -489,7 +549,10 @@ func (s *Store) Flush() error {
 	s.amu.Lock()
 	defer s.amu.Unlock()
 	if s.aw != nil {
-		return s.aw.Flush()
+		if err := s.aw.Flush(); err != nil {
+			s.breakLocked(err)
+			return err
+		}
 	}
 	return nil
 }
@@ -506,9 +569,16 @@ func (s *Store) SetCursor(c Cursor) {
 // state file never claims more than the files hold.
 func (s *Store) Sync() error {
 	s.amu.Lock()
-	err := s.syncActiveLocked()
+	err := s.healLocked()
+	if err == nil {
+		err = s.syncActiveLocked()
+		if err != nil {
+			s.breakLocked(err)
+		}
+	}
 	c := s.cursor
 	s.amu.Unlock()
+	s.flushCover()
 	if err != nil {
 		return err
 	}

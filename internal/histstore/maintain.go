@@ -14,10 +14,19 @@ import (
 func (s *Store) Maintain() error {
 	s.maint.Lock()
 	defer s.maint.Unlock()
+	if err := s.freeCheck(); err != nil {
+		// low on disk: sealing and merging write new files, expiry frees space
+		s.alert("disk low, sealing and merging are paused (expiry still runs): %v", err)
+		return s.expire()
+	}
 	if err := s.sealPending(); err != nil {
+		s.cleanTemp()
+		s.alert("sealing failed: %v", err)
 		return err
 	}
 	if err := s.mergeGroups(); err != nil {
+		s.cleanTemp()
+		s.alert("merging failed: %v", err)
 		return err
 	}
 	return s.expire()
@@ -407,10 +416,12 @@ func (s *Store) expire() error {
 	s.pending = pend
 	if expiredOpen > 0 {
 		s.addStats(func(st *Stats) { st.Expired += expiredOpen })
+		s.UpdateCover(func(c *Cover) { c.Expired = true })
 	}
 	if len(gone) == 0 {
 		return nil
 	}
+	s.UpdateCover(func(c *Cover) { c.Expired = true })
 	s.segs = keep
 	for _, g := range gone {
 		g.close()

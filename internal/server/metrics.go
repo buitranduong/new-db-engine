@@ -51,6 +51,9 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	p("stask_gc_reclaimed_segments_total", "counter", "Log segments reclaimed.", gc.ReclaimedSegments)
 	p("stask_gc_pinned_snapshots", "gauge", "Transaction snapshots holding back reclamation.", gc.PinnedSnapshots)
 	p("stask_gc_oldest_snapshot_age_seconds", "gauge", "Age of the oldest stale transaction snapshot.", float64(gc.OldestSnapshotAgeMs)/1e3)
+	if s.ExtraMetrics != nil {
+		s.ExtraMetrics(p)
+	}
 	s.txMu.Lock()
 	open := len(s.txs)
 	s.txMu.Unlock()

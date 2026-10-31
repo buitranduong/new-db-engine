@@ -237,6 +237,8 @@ type Engine struct {
 	trig trigCache // row triggers (trigger.go)
 	// histTail supplies versions older than the log still holds (histtail.go); nil = none
 	histTail atomic.Pointer[HistoryTailFunc]
+	// asOfTail supplies AS OF reads older than the log keeps (asoftail.go); nil = none
+	asOfTail atomic.Pointer[AsOfTailFunc]
 	// foreign keys (fk.go): the cache of who references whom, and the
 	// committer's record of the newest commit that shared or guarded a key
 	fkCache atomic.Pointer[fkIndex]

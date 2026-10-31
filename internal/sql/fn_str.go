@@ -535,3 +535,34 @@ func parseIdent(s string, strict bool) ([]string, error) {
 	}
 	return parts, nil
 }
+
+// anyArrPattern evaluates `x LIKE|ILIKE|~|~*|!~|!~* ANY|ALL (array)` for one element.
+func anyArrPattern(op string, x, e Datum) (ok, isPat bool, err error) {
+	switch op {
+	case "like", "ilike", "not like", "not ilike":
+		s, p := x.String(), e.String()
+		if strings.HasSuffix(op, "ilike") {
+			s, p = strings.ToLower(s), strings.ToLower(p)
+		}
+		m := likeMatch(s, p)
+		if strings.HasPrefix(op, "not ") {
+			m = !m
+		}
+		return m, true, nil
+	case "~", "~*", "!~", "!~*":
+		fl := ""
+		if strings.HasSuffix(op, "*") {
+			fl = "i"
+		}
+		re, err := pgRegexCompile(e.String(), fl)
+		if err != nil {
+			return false, true, err
+		}
+		m := re.MatchString(x.String())
+		if strings.HasPrefix(op, "!") {
+			m = !m
+		}
+		return m, true, nil
+	}
+	return false, false, nil
+}

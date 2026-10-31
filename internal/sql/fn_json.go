@@ -239,3 +239,22 @@ func init() {
 		return Datum{K: KJSON, S: n.compact()}, nil
 	}})
 }
+
+func init() {
+	// the _tz variants differ from the plain ones only for datetime() comparisons across time zones
+	for _, base := range []string{"jsonb_path_exists", "jsonb_path_match", "jsonb_path_query_array", "jsonb_path_query_first"} {
+		base := base
+		k := KJSONB
+		if strings.HasSuffix(base, "exists") || strings.HasSuffix(base, "match") {
+			k = KBool
+		}
+		regFn(base+"_tz", &fnSig{min: 2, max: 4, kind: k, impl: func(c *evalCtx, a []Datum) (Datum, error) {
+			d, ok, err := jsonPathCall(base, a)
+			if !ok && err == nil {
+				return Null, errf(codeUndefinedFunction, "function %s_tz does not exist", base)
+			}
+			return d, err
+		}})
+	}
+	srfDefs["jsonb_path_query_tz"] = srfDef{[]string{"jsonb_path_query_tz"}, []Kind{KJSONB}}
+}

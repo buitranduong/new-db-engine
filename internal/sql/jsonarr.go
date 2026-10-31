@@ -472,7 +472,7 @@ func arrTyFor(x Expr, kindOf func(Expr) Kind, leaf func(Expr) (pgTy, bool)) pgTy
 			if len(e.Args) == 1 {
 				return arrayTy(elemTyOf(e.Args[0], kindOf, leaf))
 			}
-		case "array_append", "array_remove", "array_replace", "stask_slice", "array_cat":
+		case "array_append", "array_remove", "array_replace", "stask_slice", "array_cat", "trim_array":
 			if len(e.Args) >= 1 {
 				t := arrTyFor(e.Args[0], kindOf, leaf)
 				if e.Name == "array_cat" && len(e.Args) == 2 {
@@ -580,7 +580,7 @@ func newJSONArrAgg(a *aggCall) (aggImpl, bool, error) {
 		return nil, false, nil
 	}
 	if f.Distinct {
-		impl = &distinctAgg{inner: impl, seen: map[string]bool{}}
+		impl = &distinctAgg{inner: impl, seen: map[string]bool{}, sortIn: distinctSorted[a.f.Name]}
 	}
 	return impl, true, nil
 }

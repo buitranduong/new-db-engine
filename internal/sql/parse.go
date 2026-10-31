@@ -1442,6 +1442,18 @@ func (p *parser) predicate() (Expr, error) {
 				return nil, err
 			}
 			l = &Like{X: l, Pat: r, Not: strings.HasPrefix(t.s, "!"), ICase: strings.HasSuffix(t.s, "*")}
+		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*") && (p.peekN(1).s == "any" || p.peekN(1).s == "some" || p.peekN(1).s == "all") && p.peekN(2).s == "(":
+			p.next()
+			all := p.next().s == "all"
+			p.next()
+			arr, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expectOp(")"); err != nil {
+				return nil, err
+			}
+			l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(t.s)}, &Lit{BoolD(all)}}}
 		case t.k == tOp && (t.s == "~" || t.s == "!~" || t.s == "~*" || t.s == "!~*"):
 			p.next()
 			r, err := p.bitExpr()
@@ -1556,6 +1568,23 @@ func (p *parser) predicate() (Expr, error) {
 				}
 			case p.acceptKw("like"), p.acceptKw("ilike"):
 				ic := p.toks[p.i-1].s == "ilike"
+				if (p.isKw("any") || p.isKw("some") || p.isKw("all")) && p.peekN(1).s == "(" { // x LIKE ANY (array)
+					all := p.next().s == "all"
+					p.next()
+					arr, err := p.expr()
+					if err != nil {
+						return nil, err
+					}
+					if err := p.expectOp(")"); err != nil {
+						return nil, err
+					}
+					op := map[bool]string{true: "ilike", false: "like"}[ic]
+					if not {
+						op = "not " + op
+					}
+					l = &Func{Name: "stask_anyarr", Disp: "?column?", Args: []Expr{l, arr, &Lit{TextD(op)}, &Lit{BoolD(all)}}}
+					continue
+				}
 				pat, err := p.bitExpr()
 				if err != nil {
 					return nil, err

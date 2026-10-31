@@ -306,3 +306,43 @@ func init() {
 		return kUnhandled
 	}, impl: func(c *evalCtx, a []Datum) (Datum, error) { return Null, errFnFall }})
 }
+
+// distinctSorted lists the order-sensitive aggregates: with DISTINCT PostgreSQL feeds them the
+// distinct values in sorted order (it sorts to remove the duplicates).
+var distinctSorted = map[string]bool{"array_agg": true, "string_agg": true, "json_agg": true, "jsonb_agg": true,
+	"json_object_agg": true, "jsonb_object_agg": true}
+
+// feedSorted adds the buffered DISTINCT rows to inner in argument order.
+func feedSorted(inner aggImpl, rows [][2][]Datum) error {
+	var serr error
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i][0], rows[j][0]
+		for k := 0; k < len(a) && k < len(b); k++ {
+			switch {
+			case a[k].IsNull() && b[k].IsNull():
+				continue
+			case a[k].IsNull():
+				return false
+			case b[k].IsNull():
+				return true
+			}
+			c, err := compare(a[k], b[k])
+			if err != nil && serr == nil {
+				serr = err
+			}
+			if c != 0 {
+				return c < 0
+			}
+		}
+		return false
+	})
+	if serr != nil {
+		return serr
+	}
+	for _, r := range rows {
+		if err := inner.add(r[0], r[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}

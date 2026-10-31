@@ -277,9 +277,22 @@ func TestHAMembershipSnapshotJoin(t *testing.T) {
 			t.Fatalf("write %d: %v", i, o)
 		}
 	}
-	_, ls := c.waitLeader(30 * time.Second)
-	if ls.First <= 1 {
-		t.Fatalf("the Raft log was not compacted (first index %d): the test does not exercise the snapshot path", ls.First)
+	// Compaction runs in the background after the writes are applied, so wait
+	// for it (a fast machine finishes the 300 writes before it has run) and keep
+	// feeding entries, which is what triggers it.
+	var ls Status
+	for i, end := 0, time.Now().Add(60*time.Second); ; i++ {
+		_, ls = c.waitLeader(30 * time.Second)
+		if ls.First > 1 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the Raft log was not compacted (first index %d): the test does not exercise the snapshot path", ls.First)
+		}
+		if o := c.write(fmt.Sprintf("s-extra-%d", i), 1000+i, 20*time.Second); o != acked {
+			t.Fatalf("extra write %d: %v", i, o)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 	n4 := c.newJoiner()
 	c.start(n4)

@@ -104,7 +104,7 @@ Ghi theo thứ tự thời gian. Quyết định được **người điều ph�
 ## D34 — Tiêu chí sẵn sàng cho prod, và các quyết định sau đợt phủ mã thứ hai (2026-10-31)
 
 Engine được coi là sẵn sàng cho prod khi đạt CẢ BẢY tiêu chí (mỗi tiêu chí kiểm tra được bằng một phép thử):
-1. Đúng: CRM Jmix thật chạy trọn quy trình qua React UI và pgjdbc/Hibernate thật; pgdiff không còn khác biệt ngoài thông điệp lỗi.
+1. Đúng: pgdiff với PostgreSQL 16 không còn khác biệt ngoài thông điệp lỗi; các driver PostgreSQL thật (pgjdbc, pgx) chạy đúng. Ứng dụng Jmix CRM chỉ là một bộ dữ liệu và ca thử tuỳ chọn, không bắt buộc.
 2. Không mất dữ liệu: kill -9 ngẫu nhiên khi đang ghi, mất nút Raft, mọi ghi đã xác nhận còn nguyên; lặp lại dài ngày.
 3. Khôi phục được: restore và PITR diễn tập trên bản sao dữ liệu prod, đúng số dòng, trong thời gian chấp nhận được.
 4. Đạt tốc độ: ở 30-50M dòng, p99 tra cứu, thông lượng nhập Excel hằng ngày, truy vấn đếm/tìm kiếm đạt chỉ tiêu docs/ (đợt đo cuối, D32).
@@ -117,6 +117,6 @@ Engine được coi là sẵn sàng cho prod khi đạt CẢ BẢY tiêu chí (m
 Quyết định kèm theo:
 - Gate chạy một lần một phiên (flock); agent không chạy gate đầy đủ, orchestrator chạy một gate cho mỗi lần tích hợp. Bước `-race` có `internal/cluster`, timeout 40 phút.
 - Mã hoá cấp engine (log, segment, chỉ mục) KHÔNG làm cho tới khi đo xong (đổi định dạng đĩa và đường mmap); nền là LUKS2 + backup AES-256-GCM.
-- Superset để cuối cùng (người dùng, 2026-10-31).
-- Java không phải rào cản: CRM và pgjdbc thật chạy trong Docker (eclipse-temurin:17) trên VM.
+- Superset và Jmix không phải mục tiêu bắt buộc (người dùng, 2026-10-31); niềm tin vào engine đến từ kiểm chứng đa agent (Claude, Gemini, ChatGPT), không phải thời gian chạy. Không điều chỉnh hướng trước khi có kết quả cuối của TẤT CẢ tiêu chí.
+- Java không phải rào cản: pgjdbc/Hibernate thật chạy trong Docker (eclipse-temurin:17) trên VM, như một bài thử driver.
 

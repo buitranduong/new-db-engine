@@ -31,7 +31,7 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 5. **Chỉ mục đĩa `pindex` trên đĩa thật** (điều kiện D29 số 3): đọc điểm với truy cập lệch, nhập ngẫu nhiên cập nhật chỉ mục phụ, tỉ lệ trúng cache; so với chỉ mục RAM.
 6. **Lịch sử:** `HistStoreScale`, dung lượng theo số phiên bản/SIM (chờ số thật của người dùng; mặc định 5 và 50 phiên bản), TTL 60 ngày bỏ nguyên segment.
 7. **Chi phí tính năng:** COLLATE, khoá dòng (UPDATE/DELETE lấy một khoá mỗi dòng), audit log bật/tắt, backup mã hoá, nén.
-8. **CRM Jmix thật:** thời gian các màn hình/API chính qua React UI so với cùng CRM trên PG16.
+8. **Driver và ứng dụng thật (tuỳ chọn):** thời gian các thao tác chính qua pgjdbc/Hibernate; Jmix CRM chỉ là một ca thử, so với PG16.
 9. **Ổn định:** tải hỗn hợp liên tục >= 2 giờ ở L3 (bản đủ 7 ngày chạy trong chế độ bóng, không thuộc đợt này).
 10. **Khôi phục:** thời gian restore và PITR ở L3 (RTO), cụm 3 nút: mất một nút dưới tải.
 

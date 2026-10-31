@@ -6,7 +6,7 @@ Mọi dòng có bằng chứng tái lập được. Chi tiết từng task: `14_
 
 **Mã gần đầy đủ** ở `main` `eb41f46` (gate `RACE=1` xanh, claimcheck 603/604). Đã gộp thêm so với bản trước: kiểu composite, `UPDATE SET (a,b)=(SELECT…)`, event trigger, hoàn tác DDL, khoá dòng (UPDATE/DELETE chờ, 40P01, `NOWAIT`), cursor snapshot, thêm/bớt nút Raft và PITR trong cụm, COPY nhị phân cho `staskimport`, nén arena chỉ mục RAM, audit log, backup mã hoá AES-256-GCM, mTLS trên đường thêm nút, sửa lỗi cạn pool của `pindex`. CRM Jmix thật chạy được (473/473 changeset, 91 bảng, 768.241 dòng, 0 sai checksum).
 
-**Đang làm:** `jdbcreal` chạy CRM Jmix và pgjdbc/Hibernate thật trong Docker (Java không phải rào cản).
+**Đang làm:** `jdbcreal` thử pgjdbc/Hibernate thật trong Docker như một bài thử driver (Jmix chỉ là ca thử tuỳ chọn, không phải mục tiêu).
 
 **Còn lại (mã):** mã hoá cấp engine (quyết định: không, dùng LUKS2), row-level security (`CREATE POLICY` hiện báo lỗi rõ), nén posting trigram (chỉ có thiết kế), learner/chuyển leader của Raft, khoá dòng cho INSERT/MERGE/COPY, file chỉ mục đĩa chưa tự co.
 

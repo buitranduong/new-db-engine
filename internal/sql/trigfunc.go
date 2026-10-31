@@ -177,30 +177,7 @@ func (s *Session) runTriggerFunc(tx *core.Tx, t *schema.Table, tg *core.Trigger,
 // withStmtTriggers runs f (an INSERT, UPDATE or DELETE statement on table) between the BEFORE
 // and AFTER statement-level triggers of that table.
 func (s *Session) withStmtTriggers(tx *core.Tx, table, event string, f func() (*Result, error)) (*Result, error) {
-	tgs := s.E.Triggers(table)
-	if tgs == nil || s.noTrig {
-		return f()
-	}
-	has := false
-	for _, tg := range tgs {
-		if tg.Statement() && slices.Contains(tg.Events, event) {
-			has = true
-		}
-	}
-	if !has {
-		return f()
-	}
-	if err := s.fireStmtTriggers(tx, table, tgs, "before", event); err != nil {
-		return nil, err
-	}
-	res, err := f()
-	if err != nil {
-		return nil, err
-	}
-	if err := s.fireStmtTriggers(tx, table, tgs, "after", event); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return s.withStmtEvents(tx, table, []string{event}, f)
 }
 
 func (s *Session) fireStmtTriggers(tx *core.Tx, table string, tgs []*core.Trigger, timing, event string) error {

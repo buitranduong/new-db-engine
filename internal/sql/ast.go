@@ -1,5 +1,7 @@
 package sql
 
+import "sync/atomic"
+
 // ---- statements ----
 
 type Stmt interface{ stmt() }
@@ -295,6 +297,7 @@ type InList struct {
 	X    Expr
 	List []Expr
 	Not  bool
+	memo atomic.Pointer[inMemo] // anyparam.go: sorted constant items of a long list
 }
 type Between struct {
 	X, Lo, Hi Expr

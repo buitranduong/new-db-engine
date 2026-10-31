@@ -703,6 +703,9 @@ func (t *Table) Convert(from *Table, r Row) Row {
 		switch {
 		case j >= 0 && j < len(r):
 			out[i] = r[j]
+			if ft := from.Columns[j].T; ft != c.T {
+				out[i] = ConvertValue(ft, c.T, r[j]) // ALTER COLUMN TYPE since the row was built
+			}
 		case c.Missing != nil:
 			out[i] = *c.Missing
 		default:

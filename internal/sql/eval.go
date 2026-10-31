@@ -205,6 +205,19 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return Null, err
 		}
 		sawNull := false
+		if m := c.inMemoFor(e); m != nil && v.K == m.kind {
+			found, err := m.has(v)
+			if err != nil {
+				return Null, err
+			}
+			switch {
+			case found:
+				return BoolD(!e.Not), nil
+			case m.sawNull:
+				return Null, nil
+			}
+			return BoolD(e.Not), nil
+		}
 		for _, it := range e.List {
 			w, err := c.eval(it)
 			if err != nil {
@@ -353,6 +366,10 @@ func (c *evalCtx) eval(x Expr) (Datum, error) {
 			return Null, errf(codeGrouping, "aggregate functions are not allowed here")
 		}
 		return c.call(e)
+	}
+	switch x.(type) {
+	case *Subquery, *Exists, *InSub, *AnyAll:
+		return Null, errf(codeFeature, "subqueries are not supported in this context")
 	}
 	return Null, errf(codeInternal, "unknown expression %T", x)
 }

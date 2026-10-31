@@ -148,7 +148,7 @@ func (s *Session) dropTypes(st *ObjDDL) (*Result, error) {
 			return nil, errf("2BP01", "cannot drop type %s because other objects depend on it", ut.Name)
 		}
 		for _, c := range s.typeDepCols(ut) {
-			if _, err := s.alterTable(&AlterTable{Name: c[0], Actions: []AlterAction{{Kind: "drop_column", Column: c[1]}}}); err != nil {
+			if _, err := s.cdAlter(&AlterTable{Name: c[0], Actions: []AlterAction{{Kind: "drop_column", Column: c[1]}}}); err != nil {
 				return nil, err
 			}
 			res.Notice = strings.Trim(res.Notice+"; drop cascades to column "+c[1]+" of table "+c[0], "; ")
@@ -564,18 +564,18 @@ func (s *Session) dropSchemas(st *ObjDDL) (*Result, error) {
 			return nil, errf("2BP01", "cannot drop schema %s because other objects depend on it", n)
 		}
 		if len(views) > 0 {
-			if _, err := s.dropViews(&DropView{Names: views, Cascade: true}); err != nil {
+			if _, err := s.cdDrop(&DropView{Names: views, Cascade: true}); err != nil {
 				return nil, err
 			}
 		}
 		if len(tables) > 0 {
-			if _, err := s.dropOrTruncate(&DropTable{Names: tables, Cascade: true}); err != nil {
+			if _, err := s.cdDrop(&DropTable{Names: tables, Cascade: true}); err != nil {
 				return nil, err
 			}
 			s.dropRelComments(tables...)
 		}
 		if len(seqs) > 0 {
-			if _, err := s.seqDDL(&DropSequence{Names: seqs}); err != nil {
+			if _, err := s.cdDrop(&DropSequence{Names: seqs}); err != nil {
 				return nil, err
 			}
 		}

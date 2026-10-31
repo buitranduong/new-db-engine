@@ -512,7 +512,7 @@ func rebuild(x Expr, f func(Expr) (Expr, error)) (Expr, error) {
 	case *IsNull:
 		out = &IsNull{m(e.X), e.Not}
 	case *InList:
-		out = &InList{m(e.X), ms(e.List), e.Not}
+		out = &InList{X: m(e.X), List: ms(e.List), Not: e.Not}
 	case *Between:
 		out = &Between{m(e.X), m(e.Lo), m(e.Hi), e.Not, e.Coll}
 	case *Like:

@@ -52,19 +52,23 @@ type Result struct {
 
 // Session holds per-connection state: the open transaction and settings.
 type Session struct {
-	E        *core.Engine
-	prng     pgPRNG // random() / setseed()
-	tx       *core.Tx
-	txid     pgTxid     // txid_current() of the current transaction (pgcmds.go)
-	plDepth  int        // nesting of user functions being run (plsql.go)
-	setCols  []string   // columns the running UPDATE assigns, for UPDATE OF triggers (trigfunc.go); nil: unknown
-	plNotice string     // the last RAISE NOTICE message of the running DO / CALL
-	explicit bool       // inside BEGIN ... COMMIT
-	spilled  bool       // the last query ran in spill mode (EXPLAIN ANALYZE)
-	rep      *repairRec // occ_repair.go: the autocommit statement being run
-	failed   bool       // an error occurred inside the explicit transaction
-	vars     map[string]string
-	Views    Views // nil: aggregates always scan rows
+	E           *core.Engine
+	prng        pgPRNG // random() / setseed()
+	tx          *core.Tx
+	txid        pgTxid      // txid_current() of the current transaction (pgcmds.go)
+	plDepth     int         // nesting of user functions being run (plsql.go)
+	setCols     []string    // columns the running UPDATE assigns, for UPDATE OF triggers (trigfunc.go); nil: unknown
+	plNotice    string      // the last RAISE NOTICE message of the running DO / CALL
+	afterQ      *afterQueue // AFTER ROW triggers of the running statement (trigstmt.go)
+	inTruncTrig bool        // TRUNCATE is being run by truncateTriggered
+	explicit    bool        // inside BEGIN ... COMMIT
+	inCascade   bool        // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
+	txLevel     string      // isolation level of the explicit transaction (readcommitted.go)
+	spilled     bool        // the last query ran in spill mode (EXPLAIN ANALYZE)
+	rep         *repairRec  // occ_repair.go: the autocommit statement being run
+	failed      bool        // an error occurred inside the explicit transaction
+	vars        map[string]string
+	Views       Views // nil: aggregates always scan rows
 
 	// PID identifies the session to listeners (the wire protocol's
 	// backend process id).
@@ -169,6 +173,11 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		s.markFailed()
 		return nil, errf("25006", "cannot execute %s in a read-only transaction", what)
 	}
+	if tr, ok := st.(*Truncate); ok {
+		if res, handled, err := s.truncateTriggered(tr, params); handled {
+			return res, err
+		}
+	}
 	if s.explicit && !s.djBypass {
 		if res, done, err := s.txDDL(st, params); done {
 			return res, err
@@ -188,10 +197,16 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 			return &Result{Tag: "BEGIN", Notice: "there is already a transaction in progress"}, nil
 		}
 		iso := core.SnapshotIsolation
-		if st.Iso == "serializable" || st.Iso == "" && s.vars["default_transaction_isolation"] == "serializable" {
+		level := st.Iso
+		if level == "" {
+			level = isoLevel(s.vars["default_transaction_isolation"])
+		}
+		if level == "serializable" {
 			iso = core.Serializable
 		}
 		s.tx, s.explicit, s.failed = s.begin(iso), true, false
+		s.txLevel = level
+		s.tx.SetReadCommitted(level == "read committed")
 		s.readOnly = st.ReadOnly || s.vars["default_transaction_read_only"] == "on"
 		if st.Start {
 			return &Result{Tag: "START TRANSACTION"}, nil
@@ -228,6 +243,7 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		lsn, err := tx.Commit()
 		if err != nil {
 			s.ddlUndo()
+			s.afterTxEnd(false)
 			return nil, AsError(err)
 		}
 		warn := s.ddlAfterCommit()
@@ -270,8 +286,12 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		if name == "default_transaction_read_only" && s.E != nil && s.E.ReadOnly() {
 			v = "on"
 		}
-		if name == "transaction_isolation" && s.explicit && s.tx.Iso() == core.Serializable {
-			v = "serializable"
+		if name == "transaction_isolation" {
+			if s.explicit && s.txLevel != "" {
+				v = s.txLevel
+			} else if d := isoLevel(s.vars["default_transaction_isolation"]); d != "" {
+				v = d
+			}
 		}
 		if !ok {
 			return nil, errf("42704", "unrecognized configuration parameter %q", st.Name)
@@ -526,6 +546,9 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		local.Local = false
 		return s.set(&local)
 	}
+	if name == "characteristics" { // SET SESSION CHARACTERISTICS AS ...: the parser took SESSION
+		name = "session characteristics"
+	}
 	switch name {
 	case "transaction", "session characteristics":
 		if strings.Contains(val, "read only") || strings.Contains(val, "read write") {
@@ -546,13 +569,21 @@ func (s *Session) set(st *SetVar) (*Result, error) {
 		}
 		// SET TRANSACTION ISOLATION LEVEL x / SET SESSION CHARACTERISTICS AS TRANSACTION ...
 		val = strings.TrimPrefix(strings.TrimPrefix(val, "as transaction "), "isolation level ")
+		level := isoLevel(val)
 		if name == "session characteristics" {
-			s.vars["default_transaction_isolation"] = val
+			if level == "" {
+				level = val
+			}
+			s.vars["default_transaction_isolation"] = level
 			return &Result{Tag: "SET"}, nil
 		}
-		if s.explicit && val == "serializable" && s.tx.Iso() != core.Serializable {
-			s.tx.Abort()
-			s.tx = s.begin(core.Serializable)
+		if s.explicit && level != "" {
+			if level == "serializable" && s.tx.Iso() != core.Serializable {
+				s.tx.Abort()
+				s.tx = s.begin(core.Serializable)
+			}
+			s.txLevel = level
+			s.tx.SetReadCommitted(level == "read committed")
 		}
 		return &Result{Tag: "SET"}, nil
 	case "time zone":
@@ -2072,6 +2103,16 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	if st, err = s.valuesSubqueries(tx, st, params); err != nil {
+		return nil, err
+	}
+	if len(st.Returning) > 0 {
+		ins := *st
+		if ins.Returning, err = s.returningSubqueries(tx, st.Returning, params); err != nil {
+			return nil, err
+		}
+		st = &ins
+	}
 	sc := &scope{t: t}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	tgs := s.E.Triggers(t.Name)
@@ -2279,11 +2320,18 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(st.Returning) > 0 {
+		upd := *st
+		if upd.Returning, err = s.returningSubqueries(tx, st.Returning, params); err != nil {
+			return nil, err
+		}
+		st = &upd
+	}
 	defer s.pushSetCols(assignCols(st.Set))()
 	if st.From != nil || hasSubquery(st.Where) || setHasSubquery(st.Set) {
 		return s.updateGeneral(tx, t, st, params)
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	rows, err := s.matching(tx, t, ctx, st.Where)
 	if err != nil {
@@ -2320,10 +2368,17 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(st.Returning) > 0 {
+		del := *st
+		if del.Returning, err = s.returningSubqueries(tx, st.Returning, params); err != nil {
+			return nil, err
+		}
+		st = &del
+	}
 	if st.Using != nil || hasSubquery(st.Where) {
 		return s.deleteGeneral(tx, t, st, params)
 	}
-	sc := &scope{t: t}
+	sc := &scope{t: t, alias: st.Alias}
 	ctx := &evalCtx{sc: sc, params: params, now: nowMicros(), sess: s}
 	rows, err := s.matching(tx, t, ctx, st.Where)
 	if err != nil {
@@ -2356,6 +2411,25 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 // table must exist (or IF EXISTS skips it) before any is changed; the
 // tables are then changed one at a time.
 func (s *Session) dropOrTruncate(st Stmt) (*Result, error) {
+	if d, ok := st.(*DropTable); ok && s.explicit && s.tmp != nil {
+		// a temporary table dropped in a transaction is hidden until COMMIT
+		var rest []string
+		for _, n := range d.Names {
+			if _, ok := s.tmp.rels[n]; ok {
+				s.tempDeferDrop(n)
+			} else {
+				rest = append(rest, n)
+			}
+		}
+		if len(rest) != len(d.Names) {
+			if len(rest) == 0 {
+				return &Result{Tag: "DROP TABLE"}, nil
+			}
+			d2 := *d
+			d2.Names = rest
+			st = &d2
+		}
+	}
 	var names []string
 	ifExists, tag, restart, cascade := false, "TRUNCATE TABLE", false, false
 	switch st := st.(type) {

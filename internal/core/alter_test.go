@@ -28,10 +28,14 @@ func TestAlterTable(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// encoded with the old schema: conflicts, and a row of the old width
-	// is refused the same way (an autocommit retry rebuilds it)
-	if _, err := tx.Commit(); !errors.Is(err, ErrConflict) {
+	// encoded with the old schema: the commit re-encodes it (alterwrites.go);
+	// a row of the old width written outside a transaction is refused (an
+	// autocommit retry rebuilds it)
+	if _, err := tx.Commit(); err != nil {
 		t.Fatalf("commit of a row encoded before the ALTER: %v", err)
+	}
+	if r, ok, err := e.Get("kv", "late"); err != nil || ok == nil || len(r) != 5 || r[3].I != 7 {
+		t.Fatalf("row re-encoded at commit: %v %v %v", r, ok, err)
 	}
 	if _, err := e.Write([]WriteOp{{Table: "kv", Row: row("old", 1)}}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("write of an old-width row: %v", err)
@@ -63,7 +67,7 @@ func TestAlterTable(t *testing.T) {
 			n++
 			return true
 		})
-		if n != 201 {
+		if n != 202 { // 200 + late (re-encoded at commit) + new
 			t.Fatalf("%s: %d rows", when, n)
 		}
 	}
@@ -120,8 +124,11 @@ func TestDropColumn(t *testing.T) {
 	if r, ok, err := tx.Get("kv", "late"); err != nil || !ok || len(r) != 3 || r[2].I != 5 || r[1].S == "" {
 		t.Fatalf("own write after the drop: %v %v %v", r, ok, err)
 	}
-	if _, err := tx.Commit(); !errors.Is(err, ErrConflict) {
+	if _, err := tx.Commit(); err != nil {
 		t.Fatalf("commit across the drop: %v", err)
+	}
+	if r, ok, err := e.Get("kv", "late"); err != nil || ok == nil || len(r) != 3 || r[2].I != 5 {
+		t.Fatalf("row re-encoded at commit across the drop: %v %v %v", r, ok, err)
 	}
 	// a row of the width before the drop, and one built for that schema
 	if _, err := e.Write([]WriteOp{{Table: "kv", Row: append(row("x", 1), schema.Value{I: 4})}}); !errors.Is(err, ErrConflict) {
@@ -155,7 +162,7 @@ func TestDropColumn(t *testing.T) {
 			n++
 			return true
 		})
-		if n != 103 {
+		if n != 104 { // 100 + mid + late (committed across the drop) + y + new
 			t.Fatalf("%s: %d rows", when, n)
 		}
 	}

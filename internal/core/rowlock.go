@@ -41,14 +41,12 @@ func (tx *Tx) ScanFrom(table, after string, fn func(key string, r schema.Row) bo
 	if err := tx.check(); err != nil {
 		return err
 	}
-	if tx.iso == Serializable {
-		return ErrScanSerializable
-	}
 	e := tx.e
 	t, err := e.Table(table)
 	if err != nil {
 		return err
 	}
+	tx.noteScan(t)
 	e.waitInstalled(tx.snap)
 	defer e.enterRead().Add(-1)
 	if err := e.checkSnapshotT(t, tx.snap); err != nil {

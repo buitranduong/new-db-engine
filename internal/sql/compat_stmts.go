@@ -108,6 +108,7 @@ type savepointState struct {
 	name string
 	sp   *core.Savepoint
 	dj   djMark // DDL journal position (ddltx.go)
+	tmp  int    // position in the temporary table log (temptable.go)
 }
 
 // execCompat runs the statements above.
@@ -117,7 +118,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 		if !s.explicit {
 			return nil, errf("25P01", "SAVEPOINT can only be used in transaction blocks")
 		}
-		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark()})
+		s.savepoints = append(s.savepoints, savepointState{st.Name, s.tx.Savepoint(), s.djMark(), s.tempMark()})
 		return &Result{Tag: "SAVEPOINT"}, nil
 	case *ReleaseStmt:
 		i, err := s.findSavepoint(st.Name)
@@ -132,6 +133,7 @@ func (s *Session) execCompat(st Stmt) (*Result, error) {
 			return nil, err
 		}
 		s.tx.RollbackTo(s.savepoints[i].sp)
+		s.tempRollbackTo(s.savepoints[i].tmp)
 		s.savepoints = s.savepoints[:i+1]
 		s.failed = false // the transaction is usable again
 		if err := s.djRollbackTo(s.savepoints[i].dj); err != nil {
@@ -186,7 +188,7 @@ func sessionDefaults() map[string]string {
 	return map[string]string{
 		"client_encoding": "UTF8", "datestyle": "ISO, MDY", "timezone": "UTC",
 		"standard_conforming_strings": "on", "server_version": "16.0",
-		"transaction_isolation": "repeatable read", "default_transaction_isolation": "repeatable read",
+		"transaction_isolation": "read committed", "default_transaction_isolation": "read committed",
 		"application_name": "", "search_path": defaultSearchPath, "integer_datetimes": "on", "server_encoding": "UTF8",
 		"sql_dialect": "postgres", "statement_timeout": "0", "idle_in_transaction_session_timeout": "0",
 		"idle_session_timeout": "0", MinLSNVar: "0", LastLSNVar: "0", "lock_timeout": "0",

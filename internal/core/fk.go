@@ -349,7 +349,7 @@ func (tx *Tx) findParent(parent *TableState, refCols []string, vals []schema.Val
 		}
 	}
 	if ixName == "" {
-		return "", false, fmt.Errorf("there is no unique constraint matching given keys for referenced table %q", psch.Name)
+		return "", false, coded("42830", "there is no unique constraint matching given keys for referenced table %q", psch.Name)
 	}
 	match := func(r schema.Row) bool {
 		for i, rc := range refCols {
@@ -491,7 +491,7 @@ const maxCascadeDepth = 32
 // reference the row `old` of psch, which this transaction deletes.
 func (tx *Tx) onParentDelete(psch *schema.Table, old schema.Row, refs []FKRef, depth int) error {
 	if depth > maxCascadeDepth {
-		return fmt.Errorf("foreign key cascade is nested too deeply")
+		return coded("54001", "foreign key cascade is nested too deeply")
 	}
 	for _, ref := range refs {
 		kids, err := tx.children(ref, psch, old)

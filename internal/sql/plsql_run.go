@@ -1,8 +1,11 @@
 package sql
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
+
+	"stask/internal/core"
 )
 
 // The PL/pgSQL subset: parser and interpreter (see plsql.go for what is supported).
@@ -41,6 +44,7 @@ type plRaise struct {
 	format  string
 	args    []string
 	errcode string
+	message string // USING MESSAGE = expr
 	rethrow bool
 }
 type plExecute struct {
@@ -49,6 +53,36 @@ type plExecute struct {
 	using []string
 }
 type plNested struct{ b *plBlock }
+
+// plLoop is LOOP, WHILE, FOR i IN a..b and FOR rec IN query.
+type plLoop struct {
+	label string
+	kind  string // loop, while, int, query
+	cond  string // while
+	v     string // int, query: the loop variable
+	lo    string
+	hi    string
+	by    string
+	rev   bool
+	query string
+	body  []plStmt
+}
+
+// plExit is EXIT / CONTINUE [label] [WHEN cond].
+type plExit struct {
+	cont  bool
+	label string
+	when  string
+}
+
+// plCase is the CASE statement: searched (subject == "") or simple.
+type plCase struct {
+	subject string
+	tests   [][]string // simple: the values of each WHEN; searched: one condition each
+	blocks  [][]plStmt
+	els     []plStmt
+	hasElse bool
+}
 
 type plp struct {
 	toks   []token
@@ -234,8 +268,7 @@ func (q *plp) decl() (plDecl, error) {
 }
 
 var plUnsupported = map[string]bool{
-	"for": true, "while": true, "loop": true, "case": true, "foreach": true, "exit": true, "continue": true,
-	"get": true, "open": true, "fetch": true, "close": true, "move": true,
+	"foreach": true, "get": true, "open": true, "fetch": true, "close": true, "move": true,
 }
 
 func (q *plp) stmts(stop ...string) ([]plStmt, error) {
@@ -276,11 +309,29 @@ func (q *plp) endStmt() error {
 
 func (q *plp) stmt() (plStmt, error) {
 	t := q.cur()
+	if q.opIs("<") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == "<" { // <<label>> before a loop or block
+		label := q.toks[q.i+2].s
+		q.i += 3
+		for q.cur().k != tEOF && !(q.opIs(">") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == ">") {
+			q.i++
+		}
+		q.i += 2
+		if q.kw("loop") || q.kw("while") || q.kw("for") {
+			return q.loopStmt(label)
+		}
+		return q.stmt()
+	}
 	if t.k == tIdent {
 		if plUnsupported[t.s] {
-			return nil, plErr("PL/pgSQL statement %s is not supported (no loops, CASE statements, cursors or GET DIAGNOSTICS)", strings.ToUpper(t.s))
+			return nil, plErr("PL/pgSQL statement %s is not supported (no FOREACH, cursors or GET DIAGNOSTICS)", strings.ToUpper(t.s))
 		}
 		switch t.s {
+		case "loop", "while", "for":
+			return q.loopStmt("")
+		case "case":
+			return q.caseStmt()
+		case "exit", "continue":
+			return q.exitStmt()
 		case "begin", "declare":
 			b, err := q.block()
 			if err != nil {
@@ -329,8 +380,23 @@ func (q *plp) stmt() (plStmt, error) {
 			}
 			return &plAssign{t.s, e}, q.endStmt()
 		}
-		if n.k == tOp && n.s == "." && (t.s == "new" || t.s == "old") {
-			return nil, plErr("NEW and OLD (trigger functions) are not supported")
+		// record field assignment: NEW.col := expr (also with =), rec.col := expr
+		if n.k == tOp && n.s == "." && q.i+4 < len(q.toks) && (q.toks[q.i+2].k == tIdent || q.toks[q.i+2].k == tQuoted) {
+			f := q.toks[q.i+2]
+			a := q.toks[q.i+3]
+			if a.k == tOp && a.s == ":" && q.toks[q.i+4].k == tOp && q.toks[q.i+4].s == "=" ||
+				a.k == tOp && a.s == "=" && (t.s == "new" || t.s == "old" || q.scope[t.s]) {
+				skip := 4
+				if a.s == ":" {
+					skip = 5
+				}
+				q.i += skip
+				e, err := q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" })
+				if err != nil {
+					return nil, err
+				}
+				return &plAssign{t.s + "." + f.s, e}, q.endStmt()
+			}
 		}
 	}
 	// SQL statement
@@ -432,11 +498,25 @@ func (q *plp) raiseStmt() (plStmt, error) {
 		}
 	}
 	t := q.cur()
-	if t.k != tString {
+	if t.k == tIdent && t.s != "using" { // RAISE unique_violation USING ...
+		if _, ok := plConditions[t.s]; ok {
+			r.errcode = t.s
+			q.i++
+			t = q.cur()
+		}
+	}
+	switch {
+	case t.k == tString:
+		r.format = t.s
+		q.i++
+	case t.k == tIdent && t.s == "using":
+	case t.k == tOp && t.s == ";":
+		if r.errcode == "" {
+			return nil, plErr("RAISE needs a message string")
+		}
+	default:
 		return nil, plErr("RAISE needs a message string")
 	}
-	r.format = t.s
-	q.i++
 	for q.opIs(",") {
 		q.i++
 		e, err := q.textUntil(func(t token) bool {
@@ -451,16 +531,22 @@ func (q *plp) raiseStmt() (plStmt, error) {
 		for {
 			opt := q.cur()
 			q.i++
-			if !q.opIs("=") {
+			if !q.opIs("=") && !(q.opIs(":") && q.toks[q.i+1].k == tOp && q.toks[q.i+1].s == "=") {
 				return nil, q.syntax()
+			}
+			if q.opIs(":") {
+				q.i++
 			}
 			q.i++
 			e, err := q.textUntil(func(t token) bool { return t.k == tOp && (t.s == "," || t.s == ";") })
 			if err != nil {
 				return nil, err
 			}
-			if opt.s == "errcode" {
+			switch opt.s {
+			case "errcode":
 				r.errcode = strings.Trim(e, "'")
+			case "message":
+				r.message = e
 			}
 			if !q.opIs(",") {
 				break
@@ -469,6 +555,143 @@ func (q *plp) raiseStmt() (plStmt, error) {
 		}
 	}
 	return r, q.endStmt()
+}
+
+// loopStmt parses LOOP, WHILE and FOR; the current token is the keyword.
+func (q *plp) loopStmt(label string) (plStmt, error) {
+	l := &plLoop{label: label}
+	switch {
+	case q.acceptKw("loop"):
+		l.kind = "loop"
+	case q.acceptKw("while"):
+		l.kind = "while"
+		c, err := q.textUntil(func(t token) bool { return t.k == tIdent && t.s == "loop" })
+		if err != nil {
+			return nil, err
+		}
+		l.cond = c
+		q.i++
+	default: // for
+		q.i++
+		v := q.cur()
+		if v.k != tIdent && v.k != tQuoted {
+			return nil, q.syntax()
+		}
+		q.i++
+		l.v = v.s
+		if !q.acceptKw("in") {
+			return nil, q.syntax()
+		}
+		l.rev = q.acceptKw("reverse")
+		txt, err := q.textUntil(func(t token) bool { return t.k == tIdent && t.s == "loop" })
+		if err != nil {
+			return nil, err
+		}
+		q.i++
+		if a, b, ok := splitRange(txt); ok {
+			l.kind, l.lo, l.hi = "int", a, b
+			if m := plByRe.FindStringSubmatch(b); m != nil {
+				l.hi, l.by = m[1], m[2]
+			}
+		} else {
+			l.kind, l.query = "query", txt
+			if strings.HasPrefix(strings.ToLower(txt), "execute") {
+				return nil, plErr("FOR .. IN EXECUTE is not supported")
+			}
+		}
+		q.scope[strings.ToLower(l.v)] = true
+		l.v = strings.ToLower(l.v)
+	}
+	var err error
+	if l.body, err = q.stmts("end"); err != nil {
+		return nil, err
+	}
+	if !q.acceptKw("end") || !q.acceptKw("loop") {
+		return nil, q.syntax()
+	}
+	if t := q.cur(); t.k == tIdent && !q.opIs(";") { // END LOOP label
+		q.i++
+	}
+	return l, q.endStmt()
+}
+
+var plByRe = regexp.MustCompile(`(?is)^(.*?)\s+by\s+(.*)$`)
+
+// splitRange splits "a .. b" at the first top-level "..".
+func splitRange(s string) (string, string, bool) {
+	depth := 0
+	var quote byte
+	for i := 0; i+1 < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == '.' && s[i+1] == '.' && depth == 0:
+			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+2:]), true
+		}
+	}
+	return "", "", false
+}
+
+func (q *plp) exitStmt() (plStmt, error) {
+	e := &plExit{cont: q.cur().s == "continue"}
+	q.i++
+	if t := q.cur(); t.k == tIdent && t.s != "when" {
+		e.label = t.s
+		q.i++
+	}
+	if q.acceptKw("when") {
+		c, err := q.textUntil(func(t token) bool { return t.k == tOp && t.s == ";" })
+		if err != nil {
+			return nil, err
+		}
+		e.when = c
+	}
+	return e, q.endStmt()
+}
+
+func (q *plp) caseStmt() (plStmt, error) {
+	q.i++ // case
+	c := &plCase{}
+	if !q.kw("when") {
+		s, err := q.textUntil(func(t token) bool { return t.k == tIdent && t.s == "when" })
+		if err != nil {
+			return nil, err
+		}
+		c.subject = s
+	}
+	for q.acceptKw("when") {
+		txt, err := q.textUntil(func(t token) bool { return t.k == tIdent && t.s == "then" })
+		if err != nil {
+			return nil, err
+		}
+		q.i++
+		c.tests = append(c.tests, []string{txt})
+		body, err := q.stmts("when", "else", "end")
+		if err != nil {
+			return nil, err
+		}
+		c.blocks = append(c.blocks, body)
+	}
+	if q.acceptKw("else") {
+		c.hasElse = true
+		var err error
+		if c.els, err = q.stmts("end"); err != nil {
+			return nil, err
+		}
+	}
+	if !q.acceptKw("end") || !q.acceptKw("case") {
+		return nil, q.syntax()
+	}
+	return c, q.endStmt()
 }
 
 func (q *plp) executeStmt() (plStmt, error) {
@@ -538,6 +761,8 @@ type plFlow int
 const (
 	flowNext plFlow = iota
 	flowReturn
+	flowExit
+	flowContinue
 )
 
 type plRun struct {
@@ -545,7 +770,19 @@ type plRun struct {
 	vars map[string]Datum
 	ret  Datum
 	spN  int
+
+	// trigger functions: the transaction the statement runs in (nested statements
+	// run in it and not in a transaction of their own), the NEW fields assigned,
+	// and what RETURN said.
+	tx        *core.Tx
+	dirty     map[string]bool
+	retMode   string // "new", "old", "null" or "" (a value)
+	returned  bool
+	flowLabel string // label of the EXIT / CONTINUE in flight
+	iters     int
 }
+
+const maxPLIterations = 20_000_000
 
 func (s *Session) plRunBlock(b *plBlock, vars map[string]Datum) (Datum, error) {
 	r := &plRun{s: s, vars: vars}
@@ -569,6 +806,19 @@ func (r *plRun) eval(text string) (Datum, error) {
 	return res.Rows[0][0], nil
 }
 
+// exec runs one statement: in the transaction of the trigger being run, if any.
+func (r *plRun) exec(st Stmt, params []Datum) (*Result, error) {
+	if r.tx != nil {
+		switch st.(type) {
+		case *Select, *SetOp:
+			return r.s.runQuery(r.tx, st, params)
+		case *Insert, *Update, *Delete:
+			return r.s.runHere(r.tx, st, params)
+		}
+	}
+	return r.s.exec(st, params)
+}
+
 func (r *plRun) sql(text string) (*Result, error) {
 	text, params, err := sqlWithVars(text, r.vars)
 	if err != nil {
@@ -580,7 +830,7 @@ func (r *plRun) sql(text string) (*Result, error) {
 	}
 	var last *Result
 	for _, st := range sts {
-		if last, err = r.s.exec(st, params); err != nil {
+		if last, err = r.exec(st, params); err != nil {
 			return nil, err
 		}
 	}
@@ -629,12 +879,20 @@ func (r *plRun) block(b *plBlock, outer *Error) (plFlow, error) {
 	// a savepoint makes the block's writes undoable when a handler takes over
 	r.spN++
 	sp := "__pl_sp" + strconv.Itoa(r.spN) + "_" + strconv.Itoa(r.s.plDepth)
-	if _, err := r.s.exec(&SavepointStmt{sp}, nil); err != nil {
+	var tsp *core.Savepoint // trigger mode: the savepoint is the transaction's own
+	if r.tx != nil {
+		tsp = r.tx.Savepoint()
+	} else if _, err := r.s.exec(&SavepointStmt{sp}, nil); err != nil {
 		return flowNext, err
+	}
+	release := func() {
+		if r.tx == nil {
+			r.s.exec(&ReleaseStmt{sp}, nil)
+		}
 	}
 	flow, err := r.list(b.stmts, outer)
 	if err == nil {
-		r.s.exec(&ReleaseStmt{sp}, nil)
+		release()
 		return flow, nil
 	}
 	pe := AsError(err)
@@ -643,10 +901,12 @@ func (r *plRun) block(b *plBlock, outer *Error) (plFlow, error) {
 			if !condMatches(c, pe) {
 				continue
 			}
-			if _, rerr := r.s.exec(&RollbackToStmt{sp}, nil); rerr != nil {
+			if r.tx != nil {
+				r.tx.RollbackTo(tsp)
+			} else if _, rerr := r.s.exec(&RollbackToStmt{sp}, nil); rerr != nil {
 				return flowNext, rerr
 			}
-			r.s.exec(&ReleaseStmt{sp}, nil)
+			release()
 			saveS, saveM := r.vars["sqlstate"], r.vars["sqlerrm"]
 			r.vars["sqlstate"], r.vars["sqlerrm"] = TextD(pe.Code), TextD(pe.Msg)
 			flow, herr := r.list(h.body, pe)
@@ -659,7 +919,7 @@ func (r *plRun) block(b *plBlock, outer *Error) (plFlow, error) {
 			return flow, herr
 		}
 	}
-	r.s.exec(&ReleaseStmt{sp}, nil)
+	release()
 	return flowNext, err
 }
 
@@ -679,7 +939,7 @@ func kindOfTypeText(t string) Kind {
 func (r *plRun) list(stmts []plStmt, cur *Error) (plFlow, error) {
 	for _, st := range stmts {
 		flow, err := r.one(st, cur)
-		if err != nil || flow == flowReturn {
+		if err != nil || flow != flowNext {
 			return flow, err
 		}
 	}
@@ -708,11 +968,63 @@ func (r *plRun) one(st plStmt, cur *Error) (plFlow, error) {
 				return flowNext, err
 			}
 		}
+		if strings.HasPrefix(st.name, "new.") {
+			if r.dirty == nil {
+				r.dirty = map[string]bool{}
+			}
+			r.dirty[st.name[4:]] = true
+		}
 		return flowNext, r.set(st.name, v)
 	case *plReturn:
+		r.returned = true
+		switch strings.ToLower(strings.TrimSpace(st.expr)) {
+		case "new", "old":
+			r.retMode = strings.ToLower(strings.TrimSpace(st.expr))
+			return flowReturn, nil
+		case "null", "":
+			r.retMode = "null"
+			return flowReturn, nil
+		}
 		v, err := r.eval(st.expr)
 		r.ret = v
 		return flowReturn, err
+	case *plLoop:
+		return r.loop(st, cur)
+	case *plExit:
+		if st.when != "" {
+			v, err := r.eval(st.when)
+			if err != nil {
+				return flowNext, err
+			}
+			if !v.Bool() {
+				return flowNext, nil
+			}
+		}
+		r.flowLabel = strings.ToLower(st.label)
+		if st.cont {
+			return flowContinue, nil
+		}
+		return flowExit, nil
+	case *plCase:
+		for i, tests := range st.tests {
+			var cond string
+			if st.subject == "" {
+				cond = tests[0]
+			} else {
+				cond = "(" + st.subject + ") IN (" + tests[0] + ")"
+			}
+			v, err := r.eval(cond)
+			if err != nil {
+				return flowNext, err
+			}
+			if v.Bool() {
+				return r.list(st.blocks[i], cur)
+			}
+		}
+		if !st.hasElse {
+			return flowNext, errf("20000", "case not found")
+		}
+		return r.list(st.els, cur)
 	case *plIf:
 		for i, c := range st.conds {
 			v, err := r.eval(c)
@@ -768,7 +1080,7 @@ func (r *plRun) one(st plStmt, cur *Error) (plFlow, error) {
 		}
 		var res *Result
 		for _, x := range sts {
-			if res, err = r.s.exec(x, params); err != nil {
+			if res, err = r.exec(x, params); err != nil {
 				return flowNext, err
 			}
 		}
@@ -798,6 +1110,13 @@ func (r *plRun) one(st plStmt, cur *Error) (plFlow, error) {
 			args = append(args, v.String())
 		}
 		msg := raiseFormat(st.format, args)
+		if st.message != "" {
+			v, err := r.eval(st.message)
+			if err != nil {
+				return flowNext, err
+			}
+			msg = v.String()
+		}
 		if st.level != "exception" {
 			r.s.plNotice = msg
 			return flowNext, nil
@@ -834,4 +1153,149 @@ func raiseFormat(f string, args []string) string {
 		}
 	}
 	return b.String()
+}
+
+// loop runs LOOP, WHILE and FOR; EXIT and CONTINUE end or restart the innermost loop (or
+// the one named by their label).
+func (r *plRun) loop(l *plLoop, cur *Error) (plFlow, error) {
+	// body runs once; done is true when the loop is over (and flow is what to return)
+	body := func() (done bool, flow plFlow, err error) {
+		if r.iters++; r.iters > maxPLIterations {
+			return true, flowNext, errf("54000", "PL/pgSQL loop exceeded %d iterations", maxPLIterations)
+		}
+		flow, err = r.list(l.body, cur)
+		if err != nil {
+			return true, flowNext, err
+		}
+		switch flow {
+		case flowReturn:
+			return true, flowReturn, nil
+		case flowExit, flowContinue:
+			if r.flowLabel != "" && r.flowLabel != strings.ToLower(l.label) {
+				return true, flow, nil // aimed at an outer loop
+			}
+			r.flowLabel = ""
+			return flow == flowExit, flowNext, nil
+		}
+		return false, flowNext, nil
+	}
+	switch l.kind {
+	case "loop":
+		for {
+			if done, flow, err := body(); done || err != nil {
+				return flow, err
+			}
+		}
+	case "while":
+		for {
+			v, err := r.eval(l.cond)
+			if err != nil {
+				return flowNext, err
+			}
+			if !v.Bool() {
+				return flowNext, nil
+			}
+			if done, flow, err := body(); done || err != nil {
+				return flow, err
+			}
+		}
+	case "int":
+		num := func(e string) (int64, error) {
+			v, err := r.eval(e)
+			if err != nil {
+				return 0, err
+			}
+			if v.K != KInt {
+				if v, err = coerce(v, KInt); err != nil {
+					return 0, err
+				}
+			}
+			return v.I, nil
+		}
+		lo, err := num(l.lo)
+		if err != nil {
+			return flowNext, err
+		}
+		hi, err := num(l.hi)
+		if err != nil {
+			return flowNext, err
+		}
+		by := int64(1)
+		if l.by != "" {
+			if by, err = num(l.by); err != nil {
+				return flowNext, err
+			}
+			if by <= 0 {
+				return flowNext, errf("22023", "BY value of FOR loop must be greater than zero")
+			}
+		}
+		saved, had := r.vars[l.v]
+		defer func() {
+			if had {
+				r.vars[l.v] = saved
+			} else {
+				delete(r.vars, l.v)
+			}
+		}()
+		if l.rev {
+			lo, hi = hi, lo
+		}
+		for i := lo; (!l.rev && i <= hi) || (l.rev && i >= hi); {
+			r.vars[l.v] = IntD(i)
+			if done, flow, err := body(); done || err != nil {
+				return flow, err
+			}
+			if l.rev {
+				i -= by
+			} else {
+				i += by
+			}
+		}
+		return flowNext, nil
+	case "query":
+		res, err := r.sql(l.query)
+		if err != nil {
+			return flowNext, err
+		}
+		var names []string
+		for _, c := range res.Cols {
+			names = append(names, strings.ToLower(c.Name))
+		}
+		saved := map[string]Datum{}
+		keys := []string{l.v}
+		for _, n := range names {
+			keys = append(keys, l.v+"."+n)
+		}
+		for _, k := range keys {
+			if v, ok := r.vars[k]; ok {
+				saved[k] = v
+			}
+		}
+		defer func() {
+			for _, k := range keys {
+				if v, ok := saved[k]; ok {
+					r.vars[k] = v
+				} else {
+					delete(r.vars, k)
+				}
+			}
+		}()
+		for _, row := range res.Rows {
+			for i, n := range names {
+				if i < len(row) {
+					r.vars[l.v+"."+n] = row[i]
+				}
+			}
+			if len(row) == 1 {
+				r.vars[l.v] = row[0]
+			}
+			r.vars["found"] = BoolD(true)
+			if done, flow, err := body(); done || err != nil {
+				return flow, err
+			}
+		}
+		r.vars["found"] = BoolD(len(res.Rows) > 0)
+		return flowNext, nil
+	}
+	return flowNext, errf(codeInternal, "unknown loop kind %q", l.kind)
 }

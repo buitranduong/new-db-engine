@@ -12,6 +12,13 @@ type Options struct {
 	CacheBytes int64
 	// File replaces the OS file (tests).
 	File File
+	// Optimistic turns on the lock-free read path (optimistic.go): Get,
+	// Snapshot and iterators read published immutable roots without the
+	// tree lock and without pinning pages. Default off. Costs: a write
+	// operation made while readers are active publishes its root (the next
+	// write then copies its path once more), and evicting a page or reusing
+	// a freed one waits for in-flight readers (a few microseconds).
+	Optimistic bool
 }
 
 const (
@@ -85,9 +92,17 @@ func Open(path string, o Options) (*Tree, error) {
 	}
 	t := &Tree{}
 	t.init(f, o.CacheBytes)
+	if o.Optimistic {
+		t.opt = true
+		t.pool.ep = &epoch{}
+	}
 	if err := t.load(); err != nil {
 		f.Close()
+		t.pool.free()
 		return nil, err
+	}
+	if t.opt {
+		t.pub.Store(&pubState{root: t.root, count: t.count, gen: t.durGen})
 	}
 	return t, nil
 }
@@ -277,5 +292,7 @@ func (t *Tree) Close() error {
 	defer t.mu.Unlock()
 	t.pool.free()
 	t.failed = ErrFailed
+	e := error(ErrFailed)
+	t.failedErr.Store(&e)
 	return t.f.Close()
 }

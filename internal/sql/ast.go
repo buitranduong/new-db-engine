@@ -44,6 +44,13 @@ type DropSequence struct {
 	IfExists bool
 }
 
+// AlterIndex is ALTER INDEX name SET (index_storage = 'disk'|'memory').
+type AlterIndex struct {
+	Name     string
+	IfExists bool
+	Opts     map[string]string
+}
+
 type AlterSequence struct {
 	Name     string
 	IfExists bool
@@ -231,6 +238,7 @@ func (*CreateSequence) stmt()       {}
 func (*AlterTable) stmt()           {}
 func (*DropSequence) stmt()         {}
 func (*AlterSequence) stmt()        {}
+func (*AlterIndex) stmt()           {}
 func (*DropPublication) stmt()      {}
 func (*AlterReplicaIdentity) stmt() {}
 

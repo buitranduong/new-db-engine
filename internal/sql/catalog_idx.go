@@ -109,11 +109,11 @@ func secIndexDef(t *schema.Table, ix schema.IndexDef) string {
 		u = "UNIQUE "
 	}
 	return "CREATE " + u + "INDEX " + quoteIdent(ix.Name) + " ON public." + quoteIdent(t.Name) +
-		" USING btree (" + strings.Join(elems, ", ") + ")" + wherePart(ix)
+		" USING btree (" + strings.Join(elems, ", ") + ")" + wherePart(t, ix)
 }
 
-func wherePart(ix schema.IndexDef) string {
-	if w := ix.PredText(); w != "" {
+func wherePart(t *schema.Table, ix schema.IndexDef) string {
+	if w := ix.PredTextT(t); w != "" {
 		return " WHERE " + w
 	}
 	return ""

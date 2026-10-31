@@ -819,6 +819,9 @@ func (e *Engine) releaseDropped(h uint64) {
 		if d := t.droppedLSN.Load(); d != 0 && d <= h && d <= installed && t.index().Len() > 0 {
 			t.idx.Store(newTree(&t.keys))
 			t.live.Store(0)
+			for _, si := range t.secList() {
+				si.retireDisk(true)
+			}
 			t.sec.Store(nil)
 		}
 	}

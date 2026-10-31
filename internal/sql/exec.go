@@ -57,6 +57,7 @@ type Session struct {
 	tx        *core.Tx
 	txid      pgTxid     // txid_current() of the current transaction (pgcmds.go)
 	plDepth   int        // nesting of user functions being run (plsql.go)
+	setCols   []string   // columns the running UPDATE assigns, for UPDATE OF triggers (trigfunc.go); nil: unknown
 	plNotice  string     // the last RAISE NOTICE message of the running DO / CALL
 	explicit  bool       // inside BEGIN ... COMMIT
 	inCascade bool       // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
@@ -356,6 +357,13 @@ func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
 		return res, err
 	case *RenameIndex:
 		return s.renameIndex(st)
+	case *AlterIndex:
+		// applied at once (the conversion is online, not transactional)
+		res, err := s.alterIndex(st)
+		if err != nil {
+			s.markFailed()
+		}
+		return res, err
 	case *AlterTable:
 		// applied at once, like CREATE TABLE
 		res, err := s.alterTable(st)
@@ -770,17 +778,17 @@ func (s *Session) runHere(tx *core.Tx, st Stmt, params []Datum) (*Result, error)
 		if err := s.rejectMatWrite(st.Table); err != nil {
 			return nil, err
 		}
-		return s.insert(tx, st, params)
+		return s.withStmtTriggers(tx, st.Table, "insert", func() (*Result, error) { return s.insert(tx, st, params) })
 	case *Update:
 		if err := s.rejectMatWrite(st.Table); err != nil {
 			return nil, err
 		}
-		return s.update(tx, st, params)
+		return s.withStmtTriggers(tx, st.Table, "update", func() (*Result, error) { return s.update(tx, st, params) })
 	case *Delete:
 		if err := s.rejectMatWrite(st.Table); err != nil {
 			return nil, err
 		}
-		return s.delete(tx, st, params)
+		return s.withStmtTriggers(tx, st.Table, "delete", func() (*Result, error) { return s.delete(tx, st, params) })
 	}
 	return s.runExt(tx, st, params)
 }
@@ -2087,7 +2095,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	// A plain INSERT that is its own transaction needs no lookup here: the
 	// commit rejects existing keys (as 23505) and nothing is visible before.
 	// In an explicit transaction the error must come from this statement.
-	commitChecks := st.OnConflict == nil && !s.explicit
+	commitChecks := st.OnConflict == nil && !s.explicit && tgs == nil && s.trigDepth == 0 // trigger writes cannot follow an InsertUnique batch
 	defaults := hasDefaults(t)
 	if commitChecks {
 		tx.Grow(len(st.Rows))
@@ -2128,8 +2136,11 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			return nil, err
 		}
 		if tgs != nil {
-			if row, err = s.fireTriggers(tx, t, tgs, "before", "insert", nil, row); err != nil {
+			var skip bool
+			if row, skip, err = s.fireTriggers(tx, t, tgs, "before", "insert", nil, row); err != nil {
 				return nil, err
+			} else if skip {
+				continue
 			}
 		}
 		key := t.KeyOf(row)
@@ -2144,7 +2155,7 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 				return nil, err
 			}
 			if tgs != nil {
-				if _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
+				if _, _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
 					return nil, err
 				}
 			}
@@ -2186,14 +2197,20 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 			if t.KeyOf(upd) != key {
 				return nil, errf(codeFeature, "ON CONFLICT DO UPDATE cannot change the primary key")
 			}
-			if upd, err = s.updateRow(tx, t, tgs, existing, upd); err != nil {
+			restore := s.pushSetCols(assignCols(st.OnConflict.Set))
+			upd, err = s.updateRow(tx, t, tgs, existing, upd)
+			restore()
+			if err != nil {
 				return nil, err
+			}
+			if upd == nil { // a BEFORE UPDATE trigger skipped the row
+				continue
 			}
 			row = upd
 		} else if err := tx.InsertAs(t, row); err != nil {
 			return nil, err
 		} else if tgs != nil {
-			if _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
+			if _, _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
 				return nil, err
 			}
 		}
@@ -2258,6 +2275,7 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 		}
 		st = &upd
 	}
+	defer s.pushSetCols(assignCols(st.Set))()
 	if st.From != nil || hasSubquery(st.Where) || setHasSubquery(st.Set) {
 		return s.updateGeneral(tx, t, st, params)
 	}
@@ -2272,6 +2290,7 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
+	skipped := 0
 	for _, old := range rows {
 		upd, err := s.applySet(t, ctx, old, st.Set)
 		if err != nil {
@@ -2280,11 +2299,15 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 		if upd, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
 			return nil, err
 		}
+		if upd == nil { // skipped by a BEFORE trigger
+			skipped++
+			continue
+		}
 		if err := s.returning(sc, ctx, st.Returning, upd, res); err != nil {
 			return nil, err
 		}
 	}
-	res.Tag = fmt.Sprintf("UPDATE %d", len(rows))
+	res.Tag = fmt.Sprintf("UPDATE %d", len(rows)-skipped)
 	return res, nil
 }
 
@@ -2314,15 +2337,21 @@ func (s *Session) delete(tx *core.Tx, st *Delete, params []Datum) (*Result, erro
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
+	skipped := 0
 	for _, r := range rows {
-		if err := s.deleteRow(tx, t, tgs, r); err != nil {
+		done, err := s.deleteRow(tx, t, tgs, r)
+		if err != nil {
 			return nil, err
+		}
+		if !done {
+			skipped++
+			continue
 		}
 		if err := s.returning(sc, ctx, st.Returning, r, res); err != nil {
 			return nil, err
 		}
 	}
-	res.Tag = fmt.Sprintf("DELETE %d", len(rows))
+	res.Tag = fmt.Sprintf("DELETE %d", len(rows)-skipped)
 	return res, nil
 }
 

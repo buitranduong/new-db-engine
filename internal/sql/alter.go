@@ -33,6 +33,9 @@ func (s *Session) alterTable(st *AlterTable) (*Result, error) {
 		cp := *st
 		cp.Name, st = r, &cp
 	}
+	if res, ok, err := s.alterTableIndexStorage(st); ok {
+		return res, err
+	}
 	if err := s.resolveActionTypes(st); err != nil {
 		return nil, err
 	}

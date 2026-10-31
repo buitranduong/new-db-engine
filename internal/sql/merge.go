@@ -163,10 +163,13 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 			}
 			touched[key] = true
 			if mc.w.Action == "delete" {
-				if err := s.deleteRow(tx, t, tgs, old); err != nil {
+				done, err := s.deleteRow(tx, t, tgs, old)
+				if err != nil {
 					return nil, err
 				}
-				n++
+				if done {
+					n++
+				}
 				continue
 			}
 			upd := append(schema.Row(nil), old...)
@@ -189,10 +192,11 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 			if t.KeyOf(upd) != key {
 				return nil, errf(codeFeature, "MERGE ... UPDATE cannot change the primary key")
 			}
-			if _, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
+			if done, err := s.updateRow(tx, t, tgs, old, upd); err != nil {
 				return nil, err
+			} else if done != nil {
+				n++
 			}
-			n++
 		case "insert":
 			exprs := make([]Expr, len(mc.vals))
 			for j, vi := range mc.vals {
@@ -211,8 +215,11 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 				return nil, err
 			}
 			if tgs != nil {
-				if row, err = s.fireTriggers(tx, t, tgs, "before", "insert", nil, row); err != nil {
+				var skip bool
+				if row, skip, err = s.fireTriggers(tx, t, tgs, "before", "insert", nil, row); err != nil {
 					return nil, err
+				} else if skip {
+					continue
 				}
 			}
 			key := t.KeyOf(row)
@@ -225,7 +232,7 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 				return nil, err
 			}
 			if tgs != nil {
-				if _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
+				if _, _, err := s.fireTriggers(tx, t, tgs, "after", "insert", nil, row); err != nil {
 					return nil, err
 				}
 			}

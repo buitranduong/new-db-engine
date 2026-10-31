@@ -183,6 +183,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
+	skipped := 0
 	for ri, old := range rows {
 		upd := append(schema.Row(nil), old...)
 		for i, ci := range cols {
@@ -196,6 +197,10 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 		if upd, err = s.updateRow(tx, t, tgs, old, upd); err != nil {
 			return nil, err
 		}
+		if upd == nil { // skipped by a BEFORE trigger
+			skipped++
+			continue
+		}
 		if rec != nil {
 			rec.keep(t.KeyOf(old), vals[ri][len(cols)+len(fx):])
 		}
@@ -203,7 +208,7 @@ func (s *Session) updateGeneral(tx *core.Tx, t *schema.Table, st *Update, params
 			return nil, err
 		}
 	}
-	res.Tag = fmt.Sprintf("UPDATE %d", len(rows))
+	res.Tag = fmt.Sprintf("UPDATE %d", len(rows)-skipped)
 	return res, nil
 }
 
@@ -235,9 +240,15 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 	if st.Returning != nil {
 		res.Cols = returningCols(sc, st.Returning, paramKinds(st, sc))
 	}
+	skipped := 0
 	for ri, r := range rows {
-		if err := s.deleteRow(tx, t, tgs, r); err != nil {
+		done, err := s.deleteRow(tx, t, tgs, r)
+		if err != nil {
 			return nil, err
+		}
+		if !done {
+			skipped++
+			continue
 		}
 		if rec != nil {
 			rec.keep(t.KeyOf(r), vals[ri][len(fx):])
@@ -246,6 +257,6 @@ func (s *Session) deleteGeneral(tx *core.Tx, t *schema.Table, st *Delete, params
 			return nil, err
 		}
 	}
-	res.Tag = fmt.Sprintf("DELETE %d", len(rows))
+	res.Tag = fmt.Sprintf("DELETE %d", len(rows)-skipped)
 	return res, nil
 }

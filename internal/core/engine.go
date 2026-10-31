@@ -43,6 +43,15 @@ var (
 
 type Options struct {
 	Dir string
+	// DiskIndexes allows secondary indexes to be kept in files instead of
+	// RAM (ALTER INDEX ... SET (index_storage = 'disk'), secdisk.go).
+	// Default off: nothing changes for existing tables. DiskIndexCacheMB is
+	// the buffer pool of each disk index (default 16).
+	DiskIndexes      bool
+	DiskIndexCacheMB int
+	// SidxHook is called at the steps of an index storage conversion (tests
+	// copy the data directory in it to capture a crash image).
+	SidxHook func(step string)
 	// ArchiveDir: copy each sealed log segment there (archive.go).
 	// RestoreArchive: before recovery, take the segments the log lacks
 	// from this archive, and stop replay at RecoveryTargetLSN or at the
@@ -367,6 +376,11 @@ func Open(opts Options) (*Engine, error) {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, err
 	}
+	// disk secondary indexes are rebuilt at every start; whatever a crash
+	// left here (a temp file, an orphan) is junk (secdisk.go)
+	if err := os.RemoveAll(filepath.Join(opts.Dir, "sidx")); err != nil {
+		return nil, err
+	}
 	if opts.RestoreArchive != "" {
 		if err := restoreFromArchive(filepath.Join(opts.Dir, "wal"), opts.RestoreArchive, opts.SegmentSize, opts.Logf); err != nil {
 			return nil, fmt.Errorf("restore from archive: %w", err)
@@ -447,6 +461,7 @@ func Open(opts Options) (*Engine, error) {
 func (e *Engine) Close() error {
 	close(e.stop)
 	e.wg.Wait()
+	e.closeDiskIndexes()
 	return e.log.Close()
 }
 

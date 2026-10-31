@@ -266,7 +266,7 @@ func writesStatement(st Stmt) (bool, string) {
 		return true, "DROP"
 	case *DropTable, *DropView, *DropSequence, *DropTrigger:
 		return true, "DROP"
-	case *AlterTable, *AlterSequence:
+	case *AlterTable, *AlterSequence, *AlterIndex:
 		return true, "ALTER"
 	case *Truncate:
 		return true, "TRUNCATE"

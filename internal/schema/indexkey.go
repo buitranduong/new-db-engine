@@ -36,6 +36,11 @@ type IndexDef struct {
 	// Constraint: the index backs a UNIQUE constraint of this name
 	// (usually the same as Name); empty for CREATE UNIQUE INDEX.
 	Constraint string `json:"constraint,omitempty"`
+	// Storage is where the index entries are kept: "" (RAM) or "disk"
+	// (a pindex file, core/secdisk.go). Additive: old checkpoints and logs
+	// lack it, and it is omitted for RAM indexes, so existing tables are
+	// byte-identical.
+	Storage string `json:"storage,omitempty"`
 	// Internal: created for a foreign key (the referencing columns), so
 	// that deleting a parent finds its children; it goes with the table.
 	Internal bool `json:"internal,omitempty"`

@@ -60,6 +60,11 @@ type pool struct {
 
 	free func() // releases the arena
 
+	// ep is set on an optimistic pool (Options.Optimistic): readers use
+	// view without pinning, and a frame is re-assigned only after a grace
+	// period (epoch.go).
+	ep *epoch
+
 	misses, evictions, writebacks, reads atomic.Int64
 }
 
@@ -122,6 +127,41 @@ func tryPin(f *frame) bool {
 }
 
 func (p *pool) unpin(f *frame) { f.pins.Add(-1) }
+
+// view runs fn on the content of page id. On an optimistic pool a cached
+// page is read in place without pinning it (no shared write), which is safe
+// only for pages that cannot change while read: those reachable from a
+// published root or a snapshot. fn must not retain pg and must not block.
+// A miss, and every page of a non-optimistic pool, goes through the pinned
+// path.
+func (p *pool) view(id uint64, fn func(pg []byte)) error {
+	if p.ep != nil {
+		tok := p.ep.enter()
+		if f := p.lookup(id); f != nil && f.id.Load() == id {
+			fn(f.data)
+			p.ep.exit(tok)
+			if f.ref.Load() == 0 {
+				f.ref.Store(1)
+			}
+			return nil
+		}
+		p.ep.exit(tok) // acquire may quiesce: never wait for ourselves
+		f, err := p.acquire(id, true)
+		if err != nil {
+			return err
+		}
+		fn(f.data)
+		p.unpin(f)
+		return nil
+	}
+	f, err := p.get(id)
+	if err != nil {
+		return err
+	}
+	fn(f.data)
+	p.unpin(f)
+	return nil
+}
 
 // get returns the frame holding page id, pinned.
 func (p *pool) get(id uint64) (*frame, error) {
@@ -251,6 +291,10 @@ func (p *pool) release(v *frame) error {
 	p.evictions.Add(1)
 	p.slot(old).Store(nil)
 	v.id.Store(noPage)
+	if p.ep != nil {
+		// optimistic readers may still be looking at the page content
+		p.ep.quiesce()
+	}
 	return nil
 }
 

@@ -2,6 +2,14 @@
 
 Mọi dòng có bằng chứng tái lập được. Chi tiết từng task: `14_plan_target_actual.md`. Các tỉ lệ phần trăm "hoàn thành" là **ước lượng của người điều phối**, không phải số đo; số đo thật là `claimcheck`, `pgdiff` và test.
 
+## 0. Cập nhật 2026-10-31
+
+**Giai đoạn mã đã đóng** ở `main` `52dc99d` (gate `RACE=1` xanh, claimcheck 603/604). Đã gộp thêm: txddl, exprindex, pgres, lanefix, pgparity, pgcmds, histmem, gatefix, crmcompat, collation, trigplsql, pindexpre, crmdata, histimport, opsha, aggfacet, enginegaps, plsqlfull, diskidx. CRM Jmix thật chạy được (473/473 changeset, 91 bảng, 768.241 dòng, 0 sai checksum). Các số ở §1-§7 bên dưới là bản cũ, chi tiết theo nhiệm vụ nằm trong `docs/14_plan_target_actual.md`.
+
+**Còn lại (mã):** thay đổi thành viên Raft, PITR trong cụm, pgjdbc thật (VM không có Java), COPY nhị phân cho `staskimport`, kiểu trả về composite, event trigger, hoàn tác DDL lồng nhau, `UPDATE SET (a,b)=(SELECT…)`, khoá dòng (hiện trả 40001 thay vì chờ), làm mới snapshot của cursor, nén arena của chỉ mục thứ cấp trên đĩa.
+
+**Bước kế tiếp:** một đợt đo hiệu năng duy nhất (D32) qua `scripts/perf-run.sh`, kích thước vừa với VM (khoảng 17 GB trống).
+
 ## 1. Tóm tắt
 
 STASK có lõi vững (log, MVCC, phục hồi, nhân bản, view cột/tìm kiếm/lịch sử) và lớp tương thích PostgreSQL đã tiến xa. Trên bộ so sánh trực tiếp với **PostgreSQL 16 (933 câu SQL)**: **750 giống hệt (80,4%)**, thêm 76 câu chỉ khác thông điệp lỗi, tức **826 (88,5%) cho cùng kết quả**; khi đo lần đầu (859 câu) chỉ 45,5% giống hệt. Với đúng kịch bản kho SIM (nhóm d): **138/140 giống hệt**; khởi động Liquibase giả lập (nhóm e): 59/74. `claimcheck`: **251/262 (95,8%)**.

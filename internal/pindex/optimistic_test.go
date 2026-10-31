@@ -160,6 +160,16 @@ func stress(t *testing.T, opt bool) {
 	var started, completed atomic.Uint64
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	var stopOnce sync.Once
+	// Every exit path, including a writer error, must stop and join the
+	// goroutines before the test function returns: a goroutine that calls
+	// t.Errorf after the test has completed panics ("Fail in goroutine after
+	// test has completed"), and one that is left running keeps the tree open.
+	shutdown := func() {
+		stopOnce.Do(func() { close(stop) })
+		wg.Wait()
+	}
+	defer shutdown()
 	var failures atomic.Int64
 	fail := func(format string, a ...any) {
 		if failures.Add(1) <= 5 {
@@ -302,7 +312,12 @@ func stress(t *testing.T, opt bool) {
 	}()
 
 	// the single writer
+	deadline := time.Now().Add(5 * time.Minute)
 	for n := 0; n < nOps && failures.Load() == 0; n++ {
+		if n%256 == 0 && time.Now().After(deadline) {
+			fail("writer did not finish %d operations in 5 minutes (did %d)", nOps, n)
+			break
+		}
 		idx := started.Add(1)
 		switch r := wrng.Intn(10); {
 		case r < 6:
@@ -310,13 +325,15 @@ func stress(t *testing.T, opt bool) {
 			v := stressValue(idx, wrng)
 			hist.add(k, ev{idx, v, false})
 			if err := tr.Put([]byte(k), []byte(v)); err != nil {
-				t.Fatal(err)
+				fail("put: %v", err)
+				break
 			}
 		case r < 8:
 			k := kk(wrng.Intn(nk))
 			hist.add(k, ev{idx: idx, del: true})
 			if _, err := tr.Delete([]byte(k)); err != nil {
-				t.Fatal(err)
+				fail("delete: %v", err)
+				break
 			}
 		default:
 			i := wrng.Intn(nPair)
@@ -338,13 +355,13 @@ func stress(t *testing.T, opt bool) {
 				return nil
 			})
 			if err != nil {
-				t.Fatal(err)
+				fail("batch: %v", err)
+				break
 			}
 		}
 		completed.Store(idx)
 	}
-	close(stop)
-	wg.Wait()
+	shutdown()
 	if failures.Load() > 0 {
 		t.FailNow()
 	}

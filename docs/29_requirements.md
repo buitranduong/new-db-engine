@@ -37,7 +37,7 @@ Mục đích: mọi agent đọc cùng một nguồn về điều người dùng
 | ID | Bài test hiện có | Còn thiếu |
 |---|---|---|
 | R1 | `scripts/suite` nhóm 06/07, `cmd/simbench`, `accept/clients/pgjdbc-real` | đo trang sâu |
-| R2a | `scripts/suite` nhóm 06, 11 (một phần) | nhóm kiểm ĐÚNG cho truy vấn nhiều điều kiện + `ORDER BY` + `LIMIT/OFFSET` + keyset + tổng số dòng, so với PostgreSQL 16 |
+| R2a | `scripts/r2-paginated-quota` (ví dụ của người dùng: 100 số/trang, loại, giá 1-3 triệu, nhà mạng 20/50/30, trọng số kho, trang 1-2-3; ClickHouse, PostgreSQL 16 và STASK đều đúng, STASK khớp PG16 từng dòng), `scripts/suite` nhóm 06, 11 (một phần) | nhóm kiểm ĐÚNG cho truy vấn nhiều điều kiện + `ORDER BY` + `LIMIT/OFFSET` + keyset + tổng số dòng, so với PostgreSQL 16 |
 | R2b | không có | nhóm kiểm đúng cho xếp hạng có trọng số (biểu thức điểm, `similarity()`, `ts_rank`); cần `tsvector` và hàm `pg_trgm` (đang làm ở `compat-types` và `compat-funcs`) |
 | R-prio | `internal/sql` test làn (`lanes`) | test: R2 rộng không bị hạ làn nặng; R giữ p99 khi đang nhập (đo ở G3, `docs/24`) |
 | A1 | `scripts/suite` nhóm 08, 09, 11 | so với ClickHouse nếu có |

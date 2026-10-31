@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 
 	"stask/internal/core"
 )
@@ -121,6 +122,10 @@ func TestSQLIndexStorage(t *testing.T) {
 	e = openDiskEngine(t, dir, true)
 	s = NewSession(e)
 	for _, ix := range []string{"t_a", "t_b", "t_ab"} {
+		// a storage change replayed from the log is made in the background
+		for i := 0; i < 400 && storage(ix) != "disk"; i++ {
+			time.Sleep(25 * time.Millisecond)
+		}
 		if storage(ix) != "disk" {
 			t.Fatalf("after restart %s is %s", ix, storage(ix))
 		}

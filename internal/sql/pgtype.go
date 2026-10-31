@@ -851,6 +851,9 @@ func castOperandName(x Expr) string {
 	if c, ok := x.(*Cast); ok {
 		return castOperandName(c.X)
 	}
+	if _, ok := x.(*RowExpr); ok {
+		return "row"
+	}
 	return itemName(SelItem{X: x})
 }
 

@@ -42,7 +42,13 @@ func (s *Session) objDDL(st Stmt) (*Result, error) {
 		var err error
 		switch st.Class + " " + st.Op {
 		case "type create":
-			res, err = s.createEnum(st)
+			if st.Action == "composite" {
+				res, err = s.createComposite(st)
+			} else {
+				res, err = s.createEnum(st)
+			}
+		case "event trigger create", "event trigger drop", "event trigger alter":
+			res, err = s.eventTriggerDDL(st)
 		case "type drop", "domain drop":
 			res, err = s.dropTypes(st)
 		case "type alter":
@@ -141,7 +147,7 @@ func (s *Session) dropTypes(st *ObjDDL) (*Result, error) {
 			res.Notice = fmt.Sprintf("type %q does not exist, skipping", n)
 			continue
 		}
-		if st.Class == "domain" && ut.Kind != "domain" {
+		if st.Class == "domain" && (ut.Kind != "domain" || ut.isComposite()) {
 			return nil, errf(codeWrongObjectType, "%q is not a domain", n)
 		}
 		todo = append(todo, ut)
@@ -332,6 +338,9 @@ func (s *Session) renameType(ut *userType, newBare string) error {
 				if d.Columns[i].PG == "enum:"+ut.Name {
 					d.Columns[i].PG = "enum:" + nn
 				}
+				if d.Columns[i].PG == "ut:"+ut.Name {
+					d.Columns[i].PG = "ut:" + nn
+				}
 			}
 			return nil
 		})
@@ -342,6 +351,9 @@ func (s *Session) renameType(ut *userType, newBare string) error {
 	old, _ := s.E.Obj(ut.Kind, ut.Name)
 	ops := []core.ObjOp{{O: core.Obj{Kind: ut.Kind, Name: nn, Data: old.Data}}, {O: core.Obj{Kind: ut.Kind, Name: ut.Name}, Delete: true}}
 	ops = append(ops, s.commentMoves("type:"+ut.Name, "type:"+nn)...)
+	if ut.isComposite() {
+		ops = append(ops, s.compositeRefOps(ut.Name, nn)...)
+	}
 	return s.E.WriteObjs(ops)
 }
 
@@ -399,7 +411,7 @@ func (s *Session) alterDomain(st *ObjDDL) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ut.Kind != "domain" {
+	if ut.Kind != "domain" || ut.isComposite() {
 		return nil, errf(codeWrongObjectType, "%q is not a domain", st.Names[0])
 	}
 	switch st.Action {

@@ -218,10 +218,11 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		}
 		return s.djCreated(st.Name, run)
 	case *CreateIndex:
-		if _, temp := s.tempReal(st.Table); temp {
-			return nil, false, nil
+		tbl := st.Table
+		if real, temp := s.tempReal(st.Table); temp { // a TEMP table is journaled under its engine name
+			tbl = real
 		}
-		ts, err := s.E.UserTable(st.Table)
+		ts, err := s.tableForDDL(tbl)
 		if err != nil {
 			return nil, false, nil
 		}
@@ -272,6 +273,14 @@ func (s *Session) txDDL(st Stmt, params []Datum) (*Result, bool, error) {
 		return s.djObjs(st, run)
 	case *CreateTrigger, *DropTrigger:
 		return s.djTriggers(st, run)
+	case *CreatePartition:
+		return s.djPartition(st, run)
+	case *CreateFunc:
+		return s.djFuncs(st.Def.Name, false, run)
+	case *DropFunc:
+		return s.djFuncs(st.Name, st.Cascade, run)
+	case *RenameIndex:
+		return s.djRenameIndex(st, run)
 	case *CreateRole, *AlterRole, *DropRole, *Grant:
 		return s.djRoles(run)
 	case *CreatePublication, *DropPublication, *AlterReplicaIdentity:
@@ -411,10 +420,19 @@ func (s *Session) djFail(err error) (*Result, bool, error) {
 // the transaction anyway, and the journal undoes the actions already done,
 // also after ROLLBACK TO SAVEPOINT).
 func (s *Session) djAlter(st *AlterTable) (*Result, bool, error) {
-	if _, temp := s.tempReal(st.Name); temp {
-		return nil, false, nil
+	if real, temp := s.tempReal(st.Name); temp {
+		// a TEMP table is journaled under its engine name; renames change the session's
+		// name map, which the journal does not hold
+		for _, a := range st.Actions {
+			if a.Kind == "rename_table" {
+				return nil, false, nil
+			}
+		}
+		cp := *st
+		cp.Name = real
+		st = &cp
 	}
-	if _, err := s.E.UserTable(st.Name); err != nil {
+	if _, err := s.tableForDDL(st.Name); err != nil {
 		return nil, false, nil
 	}
 	journaled := false
@@ -429,7 +447,7 @@ func (s *Session) djAlter(st *AlterTable) (*Result, bool, error) {
 		if a.Kind == "add_pk" {
 			// the table has no rows (ADD PRIMARY KEY refuses otherwise); the
 			// rows this transaction wrote were encoded with the old key
-			if ts, err := s.E.UserTable(st.Name); err == nil && s.tx != nil && s.tx.HasWrites(ts.Schema().Name) {
+			if ts, err := s.tableForDDL(st.Name); err == nil && s.tx != nil && s.tx.HasWrites(ts.Schema().Name) {
 				return s.djFail(errf(codeFeature, "ADD PRIMARY KEY on table %q after writing rows to it in the same transaction is not supported", st.Name))
 			}
 			journaled = true
@@ -456,7 +474,7 @@ func (s *Session) djAlter(st *AlterTable) (*Result, bool, error) {
 		return nil
 	}
 	for _, a := range st.Actions {
-		ts, err := s.E.UserTable(name)
+		ts, err := s.tableForDDL(name)
 		if err != nil {
 			return s.djFail(errf(codeUndefinedTable, "relation %q does not exist", name))
 		}
@@ -824,6 +842,14 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 		if len(names) == 0 {
 			return "", nil
 		}
+		if isTempName(st.Table) { // DROP INDEX does not reach a TEMP table (a system table)
+			for _, n := range names {
+				if err := s.E.DropIndex(st.Table, n); err != nil {
+					return "", err
+				}
+			}
+			return "", nil
+		}
 		stmt = &DropIndex{Names: names, IfExists: true}
 	case "drop_index":
 		stmt = &DropIndex{Names: st.Names, IfExists: true}
@@ -882,6 +908,12 @@ func (s *Session) ddlStepRun(st ddlStep) (notice string, err error) {
 		return "", s.restoreObjs(st.Objs)
 	case "restore_objs":
 		return "", s.restoreObjs(st.Objs)
+	case "rename_index", "rename_type", "rename_enum_value":
+		var done bool
+		var err error
+		if stmt, done, err = s.moreStepRun(st); done || err != nil {
+			return "", err
+		}
 	case "restore_trigs":
 		return "", s.restoreTrigs(st.Trigs)
 	case "restore_key":

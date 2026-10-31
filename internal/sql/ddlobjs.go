@@ -21,6 +21,9 @@ type ObjDDL struct {
 
 	// CREATE TYPE .. AS ENUM
 	Labels []string
+	Ev     *evtrigDef // CREATE EVENT TRIGGER (eventtrig.go)
+	// CREATE TYPE .. AS (attrs) (compositetypes.go)
+	Attrs []compAttr
 	// ALTER TYPE: add_value, rename_value, rename; ALTER DOMAIN: set_default,
 	// drop_default, set_not_null, drop_not_null, add_check, drop_constraint,
 	// rename; ALTER SCHEMA: rename
@@ -100,6 +103,9 @@ func (p *parser) strLit() (string, error) {
 // createObj parses what follows CREATE for the object classes of this file.
 func (p *parser) createObj() (Stmt, bool, error) {
 	switch {
+	case p.acceptKw("event", "trigger"):
+		st, err := p.createEventTrigger()
+		return st, true, err
 	case p.acceptKw("type"):
 		c := &ObjDDL{Op: "create", Class: "type"}
 		n, err := p.typeQName()
@@ -110,8 +116,12 @@ func (p *parser) createObj() (Stmt, bool, error) {
 		if err := p.expectKw("as"); err != nil {
 			return nil, true, err
 		}
+		if p.isOp("(") {
+			c.Action = "composite"
+			return c, true, p.compositeAttrs(c)
+		}
 		if !p.acceptKw("enum") {
-			return nil, true, errf(codeFeature, "only CREATE TYPE .. AS ENUM is supported")
+			return nil, true, errf(codeFeature, "only CREATE TYPE .. AS ENUM or (attributes) is supported")
 		}
 		if err := p.expectOp("("); err != nil {
 			return nil, true, err
@@ -244,6 +254,8 @@ func (p *parser) createObj() (Stmt, bool, error) {
 func (p *parser) dropObj() (Stmt, bool, error) {
 	var class string
 	switch {
+	case p.acceptKw("event", "trigger"):
+		class = "event trigger"
 	case p.acceptKw("type"):
 		class = "type"
 	case p.acceptKw("domain"):
@@ -284,6 +296,9 @@ func (p *parser) dropObj() (Stmt, bool, error) {
 func (p *parser) alterObj() (Stmt, bool, error) {
 	var class string
 	switch {
+	case p.acceptKw("event", "trigger"):
+		st, err := p.alterEventTrigger()
+		return st, true, err
 	case p.acceptKw("type"):
 		class = "type"
 	case p.acceptKw("domain"):

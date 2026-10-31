@@ -120,6 +120,9 @@ func recordText(vals []Datum) string {
 			continue
 		}
 		s := v.String()
+		if v.K == KBool {
+			s = map[bool]string{true: "t", false: "f"}[v.Bool()]
+		}
 		if s == "" || strings.ContainsAny(s, "(),\"\\ \t\n\r") {
 			s = `"` + strings.NewReplacer(`"`, `""`, `\`, `\\`).Replace(s) + `"`
 		}

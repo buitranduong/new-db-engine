@@ -19,6 +19,7 @@ type CreateAs struct {
 	Text        string // the SQL text of Query (a materialized view keeps it)
 	IfNotExists bool
 	Mat         bool
+	FromInto    bool // written as SELECT .. INTO (the event trigger tag is SELECT INTO)
 	NoData      bool
 	Temp        bool
 	Unlogged    bool
@@ -372,7 +373,7 @@ func intoWrap(st Stmt, err error) (Stmt, error) {
 	in := sel.Into
 	q := *sel
 	q.Into = nil
-	return &CreateAs{Name: in.Name, Query: &q, Temp: in.Temp, Unlogged: in.Unlogged}, nil
+	return &CreateAs{Name: in.Name, Query: &q, Temp: in.Temp, Unlogged: in.Unlogged, FromInto: true}, nil
 }
 
 // mergeStmt parses MERGE INTO t [AS a] USING src ON cond WHEN ... THEN ... .

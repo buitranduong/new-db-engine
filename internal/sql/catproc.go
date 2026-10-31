@@ -69,6 +69,8 @@ func funcTypeOID(typ, pg string) int64 {
 		return oidVoid
 	case "trigger":
 		return oidTrigger
+	case "event_trigger":
+		return 3838
 	}
 	return int64(PgTypeOID(funcCol(typ, pg)))
 }
@@ -80,7 +82,7 @@ func funcCol(typ, pg string) schema.Column {
 
 func funcTypeName(typ, pg string) string {
 	switch typ {
-	case "void", "trigger":
+	case "void", "trigger", "event_trigger":
 		return typ
 	}
 	return pgTypeName(funcCol(typ, pg))

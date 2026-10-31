@@ -1078,9 +1078,32 @@ func (p *parser) assignments() ([]Assign, error) {
 			if err := p.expectOp("="); err != nil {
 				return nil, err
 			}
-			p.acceptKw("row")
-			if !p.isOp("(") || p.peekN(1).s == "select" || p.peekN(1).s == "with" {
-				return nil, errf(codeFeature, "UPDATE SET (columns) = (subquery) is not supported")
+			hadRow := p.acceptKw("row")
+			if !hadRow && p.isOp("(") && (p.peekN(1).s == "select" || p.peekN(1).s == "with" || p.peekN(1).s == "values") {
+				// SET (a, b) = (SELECT ...): one scalar-subquery assignment per column (updatemulti.go)
+				p.next()
+				q, err := p.queryStmt()
+				if err != nil {
+					return nil, err
+				}
+				if err := p.expectOp(")"); err != nil {
+					return nil, err
+				}
+				as, err := multiSubAssigns(cols, q)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, as...)
+				if !p.acceptOp(",") {
+					return out, nil
+				}
+				continue
+			}
+			if !p.isOp("(") {
+				return nil, p.errHere("expected ( after =")
+			}
+			if len(cols) == 1 && !hadRow {
+				return nil, errf(codeFeature, "source for a multiple-column UPDATE item must be a sub-SELECT or ROW() expression")
 			}
 			p.next()
 			vals, err := p.exprList(")")
@@ -1088,7 +1111,7 @@ func (p *parser) assignments() ([]Assign, error) {
 				return nil, err
 			}
 			if len(vals) != len(cols) {
-				return nil, errf(codeSyntax, "number of columns (%d) does not match number of values (%d)", len(cols), len(vals))
+				return nil, errf(codeSyntax, "number of columns does not match number of values")
 			}
 			for i, c := range cols {
 				out = append(out, Assign{c, vals[i]})

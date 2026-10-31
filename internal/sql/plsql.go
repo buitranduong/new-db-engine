@@ -179,6 +179,8 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 				c.Def.Ret = "void"
 			case p.acceptKw("trigger"):
 				c.Def.Ret = "trigger"
+			case p.acceptKw("event_trigger"):
+				c.Def.Ret = "event_trigger"
 			default:
 				if c.Def.Ret, err = p.funcTypeName(); err != nil {
 					return nil, true, err
@@ -249,12 +251,19 @@ func (p *parser) createFunction() (Stmt, bool, error) {
 // funcTypeName is typeName that also accepts the name of a table (its row type) and "record".
 func (p *parser) funcTypeName() (string, error) {
 	save := p.i
+	t := p.peek()
+	if (t.k == tIdent || t.k == tQuoted) && p.sess != nil && t.s != "record" { // a composite type: the function returns a row
+		if ut, uerr := p.sess.findType(t.s); uerr == nil && ut.isComposite() {
+			p.next()
+			p.pgSpec = ""
+			return ut.Name, nil
+		}
+	}
 	ty, err := p.typeName()
 	if err == nil {
 		return ty, nil
 	}
 	p.i = save
-	t := p.peek()
 	if t.k == tIdent && t.s == "refcursor" {
 		p.next()
 		p.pgSpec = ""
@@ -306,7 +315,7 @@ func (p *parser) dropFunction() (Stmt, bool, error) {
 			if (t.k == tIdent || t.k == tQuoted) && (nt.k == tIdent || nt.k == tQuoted) && !(nt.k == tIdent && (nt.s == "precision" || nt.s == "varying")) {
 				p.next()
 			}
-			ty, err := p.typeName()
+			ty, err := p.funcTypeName()
 			if err != nil {
 				return nil, true, err
 			}

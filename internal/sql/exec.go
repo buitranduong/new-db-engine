@@ -67,6 +67,8 @@ type Session struct {
 	afterQ      *afterQueue          // AFTER ROW triggers of the running statement (trigstmt.go)
 	inTruncTrig bool                 // TRUNCATE is being run by truncateTriggered
 	explicit    bool                 // inside BEGIN ... COMMIT
+	evBusy      bool                 // an event trigger run is in progress: its DDL fires no event triggers (eventtrig.go)
+	ev          *evState             // the event trigger function being run
 	inCascade   bool                 // a cascading DROP of a type, domain or schema runs journaled sub-statements (ddltx_cat.go)
 	txLevel     string               // isolation level of the explicit transaction (readcommitted.go)
 	spilled     bool                 // the last query ran in spill mode (EXPLAIN ANALYZE)
@@ -159,6 +161,17 @@ const autocommitRetries = 1000
 // Exec runs one statement.
 // exec executes one statement (Exec in cancel.go wraps it).
 func (s *Session) exec(st Stmt, params []Datum) (*Result, error) {
+	if !s.evBusy && !s.djBypass {
+		if tag, ok := ddlEventTag(st); ok {
+			if trigs := s.eventTriggers(); len(trigs) > 0 {
+				return s.execWithEvents(st, params, tag, trigs)
+			}
+		}
+	}
+	return s.execInner(st, params)
+}
+
+func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 	if err := s.waitMinLSN(st); err != nil {
 		return nil, err
 	}
@@ -1880,6 +1893,9 @@ func itemName(it SelItem) string {
 		}
 		return e.Name
 	case *Cast:
+		if _, isRow := e.X.(*RowExpr); isRow {
+			return "row"
+		}
 		// the operand's name when it has one, else the type's
 		if n := castOperandName(e.X); n != "?column?" {
 			return n

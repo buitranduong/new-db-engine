@@ -61,3 +61,28 @@ func TestHeavyBoundedSelect(t *testing.T) {
 		t.Fatal("prefix and suffix patterns must be different shapes")
 	}
 }
+
+// R-prio (docs/29): the R2 quota query (window over a derived table) is classified as a normal-lane
+// read, however slow it runs; its subquery is not a bounded single-table SELECT, so noteSelectTime
+// never demotes it either.
+func TestR2QuotaQueryStaysOnNormalLane(t *testing.T) {
+	s := NewSession(newEngine(t))
+	mustq(t, s, `CREATE TABLE sims (number TEXT PRIMARY KEY, category TEXT, price INT, tel TEXT, store_rate INT)`)
+	st, err := ParseOne(`SELECT number, tel, price, store_rate FROM (
+	  SELECT number, tel, price, store_rate,
+	         row_number() OVER (PARTITION BY tel ORDER BY store_rate DESC, md5(number || '42'), number) AS rn
+	  FROM sims WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND tel IN ('A','B','C')) t
+	WHERE (tel='A' AND rn BETWEEN 1 AND 20) OR (tel='B' AND rn BETWEEN 1 AND 50) ORDER BY store_rate DESC, md5(number || '42'), number`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.heavy(st, nil) {
+		t.Fatal("the R2 quota query must not start on the heavy lane")
+	}
+	for i := 0; i < 6; i++ {
+		noteSelectTime(st, nil, 20*slowSelect)
+	}
+	if s.heavy(st, nil) {
+		t.Fatal("slow runs of the R2 quota query must not move it to the heavy lane")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,8 +34,24 @@ type Hybrid struct {
 
 // NewHybrid registers the segment consumer with the engine.
 func NewHybrid(e *core.Engine) *Hybrid {
-	return &Hybrid{E: e, Seg: proj.StartSeg(e), DimMaxRows: 4096, Wait: 2 * time.Second,
-		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }}
+	logf := func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) }
+	// test/oracle knob: merge the tail early, so that merges happen at small scale
+	if v, err := strconv.Atoi(os.Getenv("STASK_SEG_MERGE_MIN_TAIL")); err == nil && v > 0 {
+		proj.SegMergeMinTail = v
+	}
+	c := proj.NewSegColumnar()
+	c.Logf = logf
+	c.Start(e)
+	return &Hybrid{E: e, Seg: c, DimMaxRows: 4096, Wait: 2 * time.Second, Logf: logf}
+}
+
+// hySess is the session's hybrid state: the last decision, and the segment
+// state an explicit transaction pinned (its snapshot is older than the ring
+// of retained states after a few seconds).
+type hySess struct {
+	last     *hyReport
+	pinSnap  uint64
+	pinState *proj.SegState
 }
 
 // hyReport is what one decision learned; EXPLAIN prints it.
@@ -73,19 +90,19 @@ func (h *Hybrid) note(why string) {
 }
 
 // tryHybrid is the hook in runHere: handled=false sends the statement to the
-// existing executors; the reason is in s.hyLast either way.
+// existing executors; the reason is in s.hy.last either way.
 func (s *Session) tryHybrid(tx *core.Tx, st *Select, params []Datum) (*Result, bool, error) {
 	h := s.Hybrid
 	if h == nil {
 		return nil, false, nil
 	}
-	s.hyLast = nil
+	s.hy.last = nil
 	p, why, cand := s.hyRecognize(st, params)
 	if !cand {
 		return nil, false, nil
 	}
 	rep := &hyReport{plan: p}
-	s.hyLast = rep
+	s.hy.last = rep
 	if why == "" {
 		why = s.hyTxReason(tx)
 	}
@@ -174,6 +191,10 @@ func (s *Session) hyContract(tx *core.Tx, rep *hyReport) (*proj.SegState, string
 		if mode == "session" {
 			rep.contract = "strong (session)"
 		}
+		if s.explicit && s.hy.pinState != nil && s.hy.pinSnap == S {
+			rep.readSnap = S
+			return s.hy.pinState, ""
+		}
 		if !hyWaitApplied(f, S, h.Wait) {
 			return nil, fmt.Sprintf("the segment state did not reach snapshot lsn %d within %v (applied %d); the log-gap path is not part of step 1", S, h.Wait, f.Applied())
 		}
@@ -182,6 +203,9 @@ func (s *Session) hyContract(tx *core.Tx, rep *hyReport) (*proj.SegState, string
 			return nil, fmt.Sprintf("snapshot lsn %d is older than the retained segment states", S)
 		}
 		rep.readSnap = S
+		if s.explicit {
+			s.hy.pinSnap, s.hy.pinState = S, st
+		}
 		return st, ""
 	case "bounded", "eventual":
 		rep.contract = fmt.Sprintf("bounded (<= %v)", bound)

@@ -81,7 +81,7 @@ func (v *hyEnv) cmp(what string, q string) *hyReport {
 	if err != nil {
 		v.t.Fatalf("%s: hybrid session: %v", what, err)
 	}
-	rep := v.hy.hyLast
+	rep := v.hy.hy.last
 	want, err := tryRun(v.row, q)
 	if err != nil {
 		v.t.Fatalf("%s: row session: %v", what, err)
@@ -163,8 +163,8 @@ func TestHybridR2MatchesRowPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !v.hy.hyLast.used {
-			t.Fatalf("round %d: path not used: %s", i, v.hy.hyLast.why)
+		if !v.hy.hy.last.used {
+			t.Fatalf("round %d: path not used: %s", i, v.hy.hy.last.why)
 		}
 		if len(r.Rows) == 0 || r.Rows[0][3].I != 11 {
 			t.Fatalf("round %d: the row just committed (store_rate 11) is not first: %s", i, render(r))
@@ -185,41 +185,41 @@ func TestHybridFallbacksSayWhy(t *testing.T) {
 	if _, err := tryRun(v.hy, q); err != nil {
 		t.Fatal(err)
 	}
-	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "not columnar") {
+	if r := v.hy.hy.last; r == nil || r.used || !strings.Contains(r.why, "not columnar") {
 		t.Fatalf("a table without columnar must say so: %+v", r)
 	}
 	// not an R2 candidate: no report
 	mustq(t, v.hy, `SELECT count(*) FROM sims`)
-	if v.hy.hyLast != nil {
+	if v.hy.hy.last != nil {
 		t.Fatal("a plain statement left a hybrid report")
 	}
 	// inside an explicit transaction: allowed while it has written nothing
 	mustq(t, v.hy, `BEGIN`)
 	mustq(t, v.hy, hyQuery(1, false))
-	if r := v.hy.hyLast; r == nil || !r.used {
+	if r := v.hy.hy.last; r == nil || !r.used {
 		t.Fatalf("a read-only explicit transaction should use the path: %+v", r)
 	}
 	mustq(t, v.hy, `INSERT INTO sims VALUES ('07000000001','TAM_HOA',1500000,'A',10)`)
 	mustq(t, v.hy, hyQuery(1, false))
-	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "uncommitted writes") {
+	if r := v.hy.hy.last; r == nil || r.used || !strings.Contains(r.why, "uncommitted writes") {
 		t.Fatalf("explicit transaction with writes: %+v", r)
 	}
 	mustq(t, v.hy, `ROLLBACK`)
 	mustq(t, v.hy, `BEGIN ISOLATION LEVEL SERIALIZABLE`)
 	mustq(t, v.hy, hyQuery(1, false))
-	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "SERIALIZABLE") {
+	if r := v.hy.hy.last; r == nil || r.used || !strings.Contains(r.why, "SERIALIZABLE") {
 		t.Fatalf("serializable: %+v", r)
 	}
 	mustq(t, v.hy, `ROLLBACK`)
 	// an unsupported predicate
 	q = strings.Replace(hyQuery(1, false), "price BETWEEN 1000000 AND 3000000", "price % 7 = 0", 1)
 	mustq(t, v.hy, q)
-	if r := v.hy.hyLast; r == nil || r.used || r.why == "" {
+	if r := v.hy.hy.last; r == nil || r.used || r.why == "" {
 		t.Fatalf("unsupported predicate: %+v", r)
 	}
 	// with the path off nothing is recorded
 	mustq(t, v.row, hyQuery(1, false))
-	if v.row.hyLast != nil {
+	if v.row.hy.last != nil {
 		t.Fatal("a session without -hybrid has a report")
 	}
 	// bounded and eventual use the newest state
@@ -231,7 +231,7 @@ func TestHybridFallbacksSayWhy(t *testing.T) {
 	// a budget violated: rank range beyond the budget falls back with the reason
 	big := strings.ReplaceAll(hyQuery(1, false), "*20", "*20000000")
 	mustq(t, v.hy, big)
-	if r := v.hy.hyLast; r == nil || r.used || !strings.Contains(r.why, "budget") {
+	if r := v.hy.hy.last; r == nil || r.used || !strings.Contains(r.why, "budget") {
 		t.Fatalf("rank beyond the budget: %+v", r)
 	}
 }
@@ -361,7 +361,7 @@ func TestHybridConcurrentWriterFixedSnapshot(t *testing.T) {
 		got, ok, err := v.hy.tryHybrid(tx, sel, nil)
 		if err != nil || !ok {
 			tx.Abort()
-			t.Fatalf("read %d: hybrid not used: %v %+v", i, err, v.hy.hyLast)
+			t.Fatalf("read %d: hybrid not used: %v %+v", i, err, v.hy.hy.last)
 		}
 		time.Sleep(time.Duration(i%4) * time.Millisecond) // let the writer move on: the snapshot stays fixed
 		want, err := v.hy.runQuery(tx, sel, nil)
@@ -370,7 +370,7 @@ func TestHybridConcurrentWriterFixedSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 		if render(got) != render(want) {
-			t.Fatalf("read %d at snapshot %d: hybrid and row path differ:\n hybrid %s\n row    %s", i, v.hy.hyLast.snap, render(got), render(want))
+			t.Fatalf("read %d at snapshot %d: hybrid and row path differ:\n hybrid %s\n row    %s", i, v.hy.hy.last.snap, render(got), render(want))
 		}
 		reads++
 	}
@@ -422,10 +422,42 @@ func TestHybridRebuildFromCore(t *testing.T) {
 		t.Fatal("segment state not rebuilt")
 	}
 	got := render(mustq(t, hs, hyQuery(2, true)))
-	if hs.hyLast == nil || !hs.hyLast.used {
-		t.Fatalf("path not used after the restart: %+v", hs.hyLast)
+	if hs.hy.last == nil || !hs.hy.last.used {
+		t.Fatalf("path not used after the restart: %+v", hs.hy.last)
 	}
 	if got != want {
 		t.Fatalf("after restart the segment answer differs:\n got  %s\n want %s", got, want)
+	}
+}
+
+// A REPEATABLE READ transaction re-reads the same snapshot after the ring of
+// retained states has moved past it: the transaction pinned its state.
+func TestHybridExplicitTxPinsItsState(t *testing.T) {
+	oldAge := proj.SegRingAge
+	proj.SegRingAge = 50 * time.Millisecond
+	t.Cleanup(func() { proj.SegRingAge = oldAge })
+	v := newHyEnv(t, 5000)
+	mustq(t, v.hy, `BEGIN ISOLATION LEVEL REPEATABLE READ`)
+	first := render(mustq(t, v.hy, hyQuery(1, true)))
+	if !v.hy.hy.last.used {
+		t.Fatalf("first read: %s", v.hy.hy.last.why)
+	}
+	for i := 0; i < 80; i++ { // far more states than SegRingMin, and old enough
+		mustq(t, v.row, fmt.Sprintf(`INSERT INTO sims VALUES ('07%09d','TAM_HOA',1500000,'A',12)`, i))
+	}
+	time.Sleep(120 * time.Millisecond)
+	mustq(t, v.row, `INSERT INTO sims VALUES ('07999999999','TAM_HOA',1500000,'A',12)`)
+	v.sync()
+	again := render(mustq(t, v.hy, hyQuery(1, true)))
+	if !v.hy.hy.last.used {
+		t.Fatalf("second read in the transaction did not use the path: %s", v.hy.hy.last.why)
+	}
+	if first != again {
+		t.Fatalf("a REPEATABLE READ transaction saw a change:\n %s\n %s", first, again)
+	}
+	mustq(t, v.hy, `COMMIT`)
+	after := render(mustq(t, v.hy, hyQuery(1, true)))
+	if after == first {
+		t.Fatal("after COMMIT the new rows must be visible")
 	}
 }

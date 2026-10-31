@@ -78,9 +78,9 @@ type Session struct {
 	rep         *repairRec           // occ_repair.go: the autocommit statement being run
 	failed      bool                 // an error occurred inside the explicit transaction
 	vars        map[string]string
-	Views       Views     // nil: aggregates always scan rows
-	Hybrid      *Hybrid   // nil: the hybrid path is off (staskd -hybrid, hybrid_exec.go)
-	hyLast      *hyReport // decision of the last R2-shaped statement
+	Views       Views   // nil: aggregates always scan rows
+	Hybrid      *Hybrid // nil: the hybrid path is off (staskd -hybrid, hybrid_exec.go)
+	hy          hySess  // hybrid path state of the session (hybrid_exec.go)
 
 	// PID identifies the session to listeners (the wire protocol's
 	// backend process id).

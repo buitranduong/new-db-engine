@@ -199,7 +199,7 @@ func (s *Session) hyContractDry(tx *core.Tx, rep *hyReport) (*proj.SegState, str
 // EXPLAIN ANALYZE ran the statement.
 func (x *explainer) hybridAnalyzed(q Stmt) {
 	s := x.s
-	rep := s.hyLast
+	rep := s.hy.last
 	sel, ok := q.(*Select)
 	if s.Hybrid == nil || rep == nil || !ok {
 		return

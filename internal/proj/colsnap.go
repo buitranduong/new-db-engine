@@ -31,6 +31,9 @@ type SegColumnar struct {
 	mu     sync.Mutex
 	broken map[uint32]string // table id -> why it left the segment state
 
+	// Logf, when set, receives one line per finished merge
+	Logf func(string, ...any)
+
 	Publishes atomic.Int64
 	Merges    atomic.Int64 // base swaps finished
 }
@@ -50,9 +53,14 @@ func NewSegColumnar() *SegColumnar {
 // StartSeg registers the consumer with the engine.
 func StartSeg(e *core.Engine) *SegColumnar {
 	c := NewSegColumnar()
+	c.Start(e)
+	return c
+}
+
+// Start registers c with the engine (Logf, if wanted, is set before).
+func (c *SegColumnar) Start(e *core.Engine) {
 	c.e = e
 	c.f = e.Follow(c)
-	return c
 }
 
 func (c *SegColumnar) Name() string             { return "segcolumnar" }
@@ -245,6 +253,9 @@ func (c *SegColumnar) finishMerges() bool {
 		if w.mergeRes.Load() != nil && w.finishMerge() {
 			any = true
 			c.Merges.Add(1)
+			if c.Logf != nil {
+				c.Logf("segcolumnar: %s: tail merged into a new base of %d rows (built in %v, readers were not blocked)", w.sch.Name, w.base.n, time.Duration(w.LastMerge.Load()).Round(time.Millisecond))
+			}
 		}
 	}
 	return any

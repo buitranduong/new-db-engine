@@ -143,7 +143,8 @@ func main() {
 	flag.Var(pgTime{&idleTimeout}, "idle-session-timeout", "default idle_session_timeout: end sessions idle outside a transaction this long (SQLSTATE 57P05); 0 = off")
 	slowQuery := flag.Duration("slow-query", 0, "log SQL statements that take at least this long, with user, pid and text (PostgreSQL's log_min_duration_statement; 0 = off). Passwords of CREATE/ALTER ROLE are never logged")
 	pgRolesOnly := flag.Bool("pg-roles-only", false, "once a stored superuser role that can log in exists (CREATE ROLE ... SUPERUSER LOGIN PASSWORD), refuse the shared -pg-password login: only roles connect")
-	scrubEvery := flag.Duration("scrub-interval", 0, "run the CRC scrub of log segments and checkpoints this often (0 = only on POST /v1/admin/scrub); errors are logged and counted in /metrics")
+	scrubEvery := flag.Duration("scrub-interval", 6*time.Hour, "run the CRC scrub of log segments and checkpoints this often, the first one 30 s after start (0 = only on POST /v1/admin/scrub); errors are logged and counted in /metrics (stask_scrub_errors_total)")
+	noReadCRC := flag.Bool("no-read-crc", false, "turn off the CRC32C check of the log frame of every value read (finding F1); only for measuring its cost, never in production")
 	scrubRate := flag.Int64("scrub-rate-mb", 32, "read cap of the background scrub (MB/s; 0 = unthrottled)")
 	maxSnapAge := flag.Duration("max-snapshot-age", 24*time.Hour, "a stale transaction snapshot older than this stops holding back log reclamation; its transaction then fails with snapshot too old (0 = no cap)")
 	pgKeepIdle := flag.Duration("pg-tcp-keepalives-idle", time.Minute, "idle time before TCP keepalive probes on PostgreSQL connections (0 = system default)")
@@ -357,7 +358,7 @@ func main() {
 	t0 := time.Now()
 	var fault *server.Fault
 	opts := core.Options{DiskIndexes: *secDisk, IndexMemBudget: int64(*idxBudget) << 20, DiskIndexCacheMB: *secDiskCache, ViewSaveEvery: *viewEvery, NoViewFile: *noViewFile, Dir: *dir, SegmentSize: *seg << 20, MaxBatch: *batch,
-		CheckpointMinBytes: *ckptMin << 20, NoCheckpoint: *noCkpt, PreZero: *preZero, ZeroRate: *zeroRate << 20,
+		CheckpointMinBytes: *ckptMin << 20, NoCheckpoint: *noCkpt, NoReadVerify: *noReadCRC, PreZero: *preZero, ZeroRate: *zeroRate << 20,
 		GC: *gc, GCRetention: gcRetention, GCInterval: *gcInterval, GCRateBytes: *gcRate << 20, GCMaxLiveRatio: *gcLive, CommitWait: *commitWait,
 		Compression: codec, CompressKeepRaw: *compressKeep, SlotMaxLagBytes: *slotMaxLag << 20, MaxSnapshotAge: *maxSnapAge,
 		ArchiveDir: *archiveDir, RestoreArchive: *restoreArchive, RecoveryTargetLSN: *targetLSN,
@@ -567,10 +568,14 @@ func main() {
 	}
 	if *scrubEvery > 0 {
 		go func() {
-			for range time.Tick(*scrubEvery) {
+			// the first scrub soon after start: a checkpoint covers the
+			// sealed segments, so recovery does not read them (F1)
+			t := time.NewTimer(30 * time.Second)
+			for range t.C {
 				if e.StartScrub(*scrubRate << 20) {
 					log.Printf("scrub: started")
 				}
+				t.Reset(*scrubEvery)
 			}
 		}()
 	}

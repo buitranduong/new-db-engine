@@ -293,7 +293,9 @@ type Status struct {
 func (c *Cluster) Status() Status {
 	i := c.g.Info()
 	s := Status{ID: c.cfg.ID, Role: i.Role.String(), Term: i.Term, Leader: i.Leader,
-		Writable: c.writable.Load() && !c.e.ReadOnly(), Lease: i.Lease, Commit: i.Commit,
+		// a deposed leader (SIGCONT after a pause) is not writable the moment
+		// its role or term differs, not after the monitor tick that restarts it (F4)
+		Writable: c.writable.Load() && !c.e.ReadOnly() && i.Role == raft.Leader && i.Term == c.leaderTerm.Load(), Lease: i.Lease, Commit: i.Commit,
 		Applied: c.cur.Load().Index, First: i.First, Last: i.Last, Voters: i.Voters, Member: i.Member,
 		HTTP: c.members0(c.cfg.ID).HTTP}
 	if i.Leader != 0 {

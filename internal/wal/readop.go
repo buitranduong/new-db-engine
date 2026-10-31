@@ -106,9 +106,12 @@ func (r *metaReader) skip(n uint64) {
 // per version: ReadRecord there decoded, CRC-checked and allocated every
 // operation of every record on the way. This walks the operations before
 // idx without keeping them, reading windows of 8 KB up to idx and never the
-// bytes of keys and values it skips over. Like ReadHeader and the value
-// reads, it does not check the CRC.
+// bytes of keys and values it skips over. It verifies the frame CRC once
+// per frame (verify.go).
 func (l *Log) ReadOpMeta(seg uint32, off int64, idx int) (OpMeta, error) {
+	if err := l.VerifyFrame(seg, off); err != nil {
+		return OpMeta{}, err
+	}
 	var hdr [frameHdr]byte
 	if _, err := l.ReadAt(seg, off, hdr[:]); err != nil {
 		return OpMeta{}, err

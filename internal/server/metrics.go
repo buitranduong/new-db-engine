@@ -9,6 +9,7 @@ import (
 
 	"stask/internal/core"
 	"stask/internal/sql"
+	"stask/internal/wal"
 )
 
 // GET /metrics: the counters of /v1/status and of the SQL layer in the
@@ -78,6 +79,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	sc := e.ScrubStatus()
 	p("stask_scrub_running", "gauge", "1 while a CRC scrub runs.", b2f(sc.Running))
 	p("stask_scrub_errors_total", "counter", "Corruptions scrubs have found since start.", core.ScrubErrorsTotal())
+	p("stask_read_crc_errors_total", "counter", "Reads refused because the log frame holding the value failed its CRC32C (SQLSTATE XX001).", wal.ReadCRCErrors.Load())
 	if !sc.Started.IsZero() {
 		p("stask_scrub_last_start_timestamp_seconds", "gauge", "Start of the last scrub.", sc.Started.Unix())
 		p("stask_scrub_last_ok", "gauge", "1 if the last finished scrub found nothing wrong.", b2f(sc.OK()))

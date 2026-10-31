@@ -298,6 +298,11 @@ type Log struct {
 	spareOk   bool
 	spareDone chan struct{} // non-nil while a spare is being prepared
 	zeroBytes atomic.Int64
+
+	// Read-time CRC verification (verify.go).
+	verified sync.Map // seg -> *vbits
+	noVerify atomic.Bool
+	Logf     func(string, ...any)
 }
 
 func segName(dir string, seg uint32) string {
@@ -412,6 +417,9 @@ func (l *Log) ReadAt(seg uint32, off int64, p []byte) (int, error) {
 // header is not checked against the record's CRC.
 func (l *Log) ReadHeader(seg uint32, off int64) (kind uint8, lsn uint64, ts int64, err error) {
 	var b [frameHdr + 1 + 2*binary.MaxVarintLen64]byte
+	if err = l.VerifyFrame(seg, off); err != nil {
+		return
+	}
 	if _, err = l.ReadAt(seg, off, b[:frameHdr]); err != nil {
 		return
 	}
@@ -534,6 +542,12 @@ func (l *Log) Scan(seg uint32, off, limit int64, fn func(*Record) error) (int64,
 // unacknowledged, partially persisted write can never be read back later.
 // Later segments are removed.
 func (l *Log) PrepareAppend(seg uint32, off int64) error {
+	l.verified.Range(func(k, _ any) bool {
+		if k.(uint32) >= seg {
+			l.verified.Delete(k)
+		}
+		return true
+	})
 	for _, s := range l.Segments() {
 		if s > seg {
 			l.mu.Lock()
@@ -862,6 +876,7 @@ func (l *Log) Remove(seg uint32) error {
 		return fmt.Errorf("wal: refusing to remove active segment %d", seg)
 	}
 	l.dropLocked(seg)
+	l.verified.Delete(seg)
 	z := l.zsegs[seg]
 	delete(l.zsegs, seg)
 	i := sort.Search(len(l.segs), func(i int) bool { return l.segs[i] >= seg })
@@ -1050,6 +1065,9 @@ func (l *Log) Residency() (mapped, resident int64) {
 // record was when it was written or recovered); a malformed record gives
 // ErrTorn.
 func (l *Log) OpKindAt(seg uint32, off int64, idx uint16) (uint8, error) {
+	if err := l.VerifyFrame(seg, off); err != nil {
+		return 0, err
+	}
 	r := opReader{l: l, seg: seg, pos: off + frameHdr}
 	var hdr [frameHdr]byte
 	if _, err := l.ReadAt(seg, off, hdr[:]); err != nil {

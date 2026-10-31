@@ -52,8 +52,18 @@ func (s *Server) opsMetrics(w io.Writer) {
 	slots := e.Slots()
 	if len(slots) > 0 {
 		fmt.Fprint(w, "# HELP stask_cdc_slot_lag_bytes Log a CDC slot holds back.\n# TYPE stask_cdc_slot_lag_bytes gauge\n")
+		// F11: an invalidated slot no longer holds log back; its distance
+		// to the frozen position must not feed a lag alert for ever
 		for _, sl := range slots {
-			fmt.Fprintf(w, "stask_cdc_slot_lag_bytes{slot=%q} %d\n", sl.Name, e.SlotLag(sl))
+			lag := int64(0)
+			if sl.Invalid == "" {
+				lag = e.SlotLag(sl)
+			}
+			fmt.Fprintf(w, "stask_cdc_slot_lag_bytes{slot=%q} %d\n", sl.Name, lag)
+		}
+		fmt.Fprint(w, "# HELP stask_cdc_slot_invalid 1 if the slot fell too far behind and was invalidated (it holds no log back and must be recreated).\n# TYPE stask_cdc_slot_invalid gauge\n")
+		for _, sl := range slots {
+			fmt.Fprintf(w, "stask_cdc_slot_invalid{slot=%q} %d\n", sl.Name, b2f(sl.Invalid != ""))
 		}
 	}
 	if s.ClusterMetrics != nil {
@@ -158,8 +168,22 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 			why = append(why, "no leader known")
 		}
 	}
-	if r.URL.Query().Get("write") != "" && s.P.E.ReadOnly() {
-		why = append(why, "node is read-only (not the leader)")
+	if r.URL.Query().Get("write") != "" {
+		if s.P.E.ReadOnly() {
+			why = append(why, "node is read-only (not the leader)")
+		}
+		if b := s.P.E.WritesBlocked(); b != "" {
+			why = append(why, b)
+		}
+		// F4: the engine of a leader that was frozen (SIGSTOP, a long GC
+		// pause) stays writable until it handles a message of the new
+		// term. A node takes writes only while it is the leader of the
+		// current term with a valid lease.
+		if s.ClusterMetrics != nil {
+			if m := s.ClusterMetrics(); m["raft_writable"] == 0 || m["raft_lease"] == 0 {
+				why = append(why, "not the leader of the current term with a valid lease")
+			}
+		}
 	}
 	if len(why) > 0 {
 		reply(w, http.StatusServiceUnavailable, map[string]any{"ready": false, "reasons": why, "read_only": s.P.E.ReadOnly()})

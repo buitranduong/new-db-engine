@@ -90,6 +90,9 @@ type Options struct {
 	PreZero            bool
 	ZeroRate           int64
 	Logf               func(string, ...any)
+	// NoReadVerify turns off the CRC check of the frame of every value read
+	// from the log (wal/verify.go). Only for measuring its cost.
+	NoReadVerify bool
 
 	// Saved views (follow.go): a view that implements Persister is written
 	// next to the log every ViewSaveEvery (0 = 10 min, <0 = only at Close)
@@ -257,6 +260,7 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
+	allocFail atomic.Pointer[string] // writes refused: no room for a log segment (diskfull.go)
 	// disk secondary index persistence counters (secpersist.go)
 	SidxCkpts, SidxAdopted, SidxRebuilt, SidxAsync, SidxDeadScans atomic.Int64
 	SecArenaCompactions, SecArenaReclaimed                        atomic.Int64
@@ -431,6 +435,8 @@ func Open(opts Options) (*Engine, error) {
 	}
 	l.Fault = opts.Fault
 	l.PreZero, l.ZeroRate = opts.PreZero, opts.ZeroRate
+	l.Logf = opts.Logf
+	l.SetReadVerify(!opts.NoReadVerify)
 	e := &Engine{
 		opts:          opts,
 		log:           l,
@@ -881,7 +887,7 @@ func (e *Engine) visible(v *Version, snap uint64) (*Version, error) {
 
 func (e *Engine) readValue(v *Version) ([]byte, error) {
 	b := make([]byte, v.ValLen)
-	if _, err := e.log.ReadAt(v.Loc.Seg, v.ValOff, b); err != nil {
+	if err := e.log.ReadValue(v.Loc, v.ValOff, b); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -1238,7 +1244,7 @@ func (e *Engine) scanParallel(table string, snap uint64, need []bool, helpers in
 					buf = make([]byte, v.ValLen)
 				}
 				buf = buf[:v.ValLen]
-				if _, err = rd.ReadAt(v.Loc.Seg, v.ValOff, buf); err == nil {
+				if err = rd.ReadValue(v.Loc, v.ValOff, buf); err == nil {
 					r, err = sch.DecodeInto(buf, v.LSN, r, need)
 				}
 				if err != nil {
@@ -2064,13 +2070,16 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 			}
 			// Roll syncs the segment being left, which holds the start of
 			// this batch; the syncer syncs the segment current at handoff.
-			if err := e.log.Roll(); err != nil {
+			if err := e.log.Roll(); err == nil {
+				e.allocFail.Store(nil)
+			} else {
 				var se *wal.SyncError
 				if errors.As(err, &se) {
 					failAll(err, r)
 					return
 				}
 				rollErr = fmt.Errorf("cannot allocate log segment (disk full?): %w", err)
+				e.NoteSegmentAllocFailure(rollErr)
 				e.logf("commit: %v", rollErr)
 				finishReq(r, rollErr)
 				continue

@@ -225,13 +225,15 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim) {
 		p := &Payload{Kind: "probe", TS: fmtTS(time.Now()), Nums: []string{sim.Number}, Val: val}
 		r.gate.RLock()
 		t0 := time.Now()
-		res := w.RunTx(ctx, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txc, txcancel := txContext(ctx)
+		res := w.RunTx(txc, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txcancel()
 		r.gate.RUnlock()
 		if res.Err != nil || res.Noop {
+			if res.Unknown {
+				r.unknown.Store(txid, "probe")
+			}
 			if ctx.Err() == nil {
-				if res.Unknown {
-					r.unknown.Store(txid, "probe")
-				}
 				rc.Add("probe_write", r.Phase(), time.Since(t0), ErrCode(res.Err))
 			}
 			continue
@@ -358,7 +360,8 @@ func (r *Run) JournalChecks(ctx context.Context, jr []JRow, tag string, ackedBef
 		e, ok := exp[id]
 		if !ok {
 			extra++
-			exs = fmt.Sprintf("order %d has no journal row", id)
+			sp, _ := r.suspect.Load(id)
+			exs = fmt.Sprintf("order %d has no journal row; attempts on it: %v", id, sp)
 		} else if e != x[1] {
 			bad++
 			sp, _ := r.suspect.Load(id)

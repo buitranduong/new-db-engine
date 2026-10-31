@@ -226,17 +226,19 @@ func (r *Run) workerT(ctx context.Context, id int) {
 		}
 		r.gate.RLock()
 		t0 := time.Now()
-		res := s.RunTx(ctx, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txc, txcancel := txContext(ctx)
+		res := s.RunTx(txc, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txcancel()
 		d := time.Since(t0)
 		r.gate.RUnlock()
 		cls := "t_" + p.Kind
 		switch {
-		case ctx.Err() != nil && res.Err != nil:
-			// run over: not an error of the SUT
 		case res.Unknown:
 			r.unknown.Store(txid, p.Kind)
 			r.Count("t_unknown_commit", 1)
 			rc.Add(cls, r.Phase(), d, "unknown_commit")
+		case ctx.Err() != nil && res.Err != nil:
+			// run over: not an error of the SUT
 		case res.Err != nil:
 			if strings.Contains(res.Err.Error(), "anomaly") {
 				r.Check("txn_anomaly", false, "%v", res.Err)
@@ -259,8 +261,8 @@ func (r *Run) workerT(ctx context.Context, id int) {
 				r.removeOrder(oid)
 			}
 		}
-		if len(res.Codes) > 0 && p.OrderID != 0 {
-			r.suspect.Store(p.OrderID, fmt.Sprintf("%s txid=%d attempts=%d codes=%v unknown=%v noop=%v err=%v", p.Kind, txid, res.Attempts, res.Codes, res.Unknown, res.Noop, res.Err))
+		if (len(res.Codes) > 0 || res.Err != nil || ctx.Err() != nil) && p.OrderID != 0 {
+			r.suspect.Store(p.OrderID, fmt.Sprintf("%s txid=%d attempts=%d codes=%v unknown=%v noop=%v ctxdone=%v err=%v", p.Kind, txid, res.Attempts, res.Codes, res.Unknown, res.Noop, ctx.Err() != nil, res.Err))
 		}
 		r.Count("t_retries", int64(res.Retries))
 		for c, n := range res.Codes {
@@ -378,14 +380,16 @@ func (r *Run) workerImport(ctx context.Context) {
 		txid := r.txid.Add(1)
 		r.gate.RLock()
 		t0 := time.Now()
-		res := s.RunTx(ctx, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txc, txcancel := txContext(ctx)
+		res := s.RunTx(txc, 30, func(ctx context.Context, tx pgxTx) (bool, error) { return Apply(ctx, tx, p, true, txid) })
+		txcancel()
 		d := time.Since(t0)
 		r.gate.RUnlock()
 		switch {
-		case ctx.Err() != nil && res.Err != nil:
 		case res.Unknown:
 			r.unknown.Store(txid, "import")
 			rc.Add("import", r.Phase(), d, "unknown_commit")
+		case ctx.Err() != nil && res.Err != nil:
 		case res.Err != nil:
 			rc.Add("import", r.Phase(), d, ErrCode(res.Err))
 		default:

@@ -1222,3 +1222,4 @@ Chi tiết thiết kế và tiền lệ PostgreSQL ở `docs/14` Phụ lục T; 
 - Range: `int4range int8range numrange daterange tsrange tstzrange`: chuỗi nhập `[1,5)`, `empty`, `(,)`, constructor `int4range(1,5,'[]')`, `@> <@ && << >> &< &> -|- + * -`, `lower upper isempty lower_inc upper_inc lower_inf upper_inf range_merge`, so sánh/ORDER BY/GROUP BY/chỉ mục/khoá chính, nhị phân của PostgreSQL. Chưa có multirange.
 - `macaddr8` (và `& | ~ trunc` cho `macaddr`), `bit(n)`/`bit varying(n)` (`B'101'`, `X'1F'`, `& | # ~ << >> ||`, `get_bit set_bit bit_count length substring overlay position`, ép sang/từ số nguyên).
 - Tham số Bind của các kiểu này được báo đúng OID (`Description.ParamOID`) để pgx dùng mã hoá nhị phân.
+- `tsvector`/`tsquery`: nhập/xuất chuẩn, nhị phân, `@@ || && !! <-> @> <@`, khớp có trọng số/tiền tố/cụm, so sánh; hàm tạo từ tài liệu (`to_tsvector`...) và cấu hình `english` thuộc phần hàm (xem `docs/14` Phụ lục T).

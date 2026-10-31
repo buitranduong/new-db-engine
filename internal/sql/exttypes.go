@@ -516,3 +516,30 @@ func extIndexLookup(pg string) bool {
 	}
 	return true
 }
+
+// extInfoSchema refines the information_schema.columns values of a column of the added types: datetime_precision and
+// interval_type of an interval, character_maximum_length of a bit string.
+func extInfoSchema(ct pgTy, dt, charLen Datum) (Datum, Datum, Datum) {
+	ivType := Null
+	switch ct.oid {
+	case tyInterval:
+		tm := ivTypmodFromAtt(ct.mod)
+		dt = IntD(6)
+		if tm.prec >= 0 {
+			dt = IntD(int64(tm.prec))
+		}
+		if tm.mask != ivFAll {
+			f := strings.ToUpper(tm.text())
+			f = strings.TrimPrefix(f, "INTERVAL ")
+			if i := strings.IndexByte(f, '('); i >= 0 {
+				f = f[:i]
+			}
+			ivType = TextD(f)
+		}
+	case 1560, 1562:
+		if ct.mod >= 0 {
+			charLen = IntD(int64(ct.mod))
+		}
+	}
+	return dt, ivType, charLen
+}

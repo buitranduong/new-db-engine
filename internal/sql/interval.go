@@ -847,9 +847,26 @@ func formatIntervalStyle(d Datum, st ivStyle) string {
 
 // ---- comparison ----
 
+// ivTotal64 is the comparison value in microseconds when it fits an int64 (almost always).
+func ivTotal64(d Datum) (int64, bool) {
+	m, dy := int64(d.F), int64(d.D)
+	if m > 1_500_000 || m < -1_500_000 || dy > 40_000_000 || dy < -40_000_000 {
+		return 0, false
+	}
+	t, o := addOv(m*30*usPerDay, dy*usPerDay)
+	if o {
+		return 0, false
+	}
+	t, o = addOv(t, d.I)
+	return t, !o
+}
+
 // intervalMs orders intervals as PostgreSQL does: a month counts 30 days and a day 24 hours (microseconds;
 // saturates instead of wrapping for the extreme values).
 func intervalMs(d Datum) int64 {
+	if t, ok := ivTotal64(d); ok {
+		return t
+	}
 	t := new(big.Int).Mul(big.NewInt(int64(d.F)), big.NewInt(30*usPerDay))
 	t.Add(t, new(big.Int).Mul(big.NewInt(int64(d.D)), big.NewInt(usPerDay)))
 	t.Add(t, big.NewInt(d.I))
@@ -864,6 +881,17 @@ func intervalMs(d Datum) int64 {
 
 // ivCmp compares two intervals exactly (no saturation).
 func ivCmp(a, b Datum) int {
+	if x, ok := ivTotal64(a); ok {
+		if y, ok := ivTotal64(b); ok {
+			switch {
+			case x < y:
+				return -1
+			case x > y:
+				return 1
+			}
+			return 0
+		}
+	}
 	return ivTotal(a).Cmp(ivTotal(b))
 }
 

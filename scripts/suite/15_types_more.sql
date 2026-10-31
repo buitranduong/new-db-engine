@@ -546,5 +546,26 @@ SELECT $1::tsquery;
 -- args: a & b
 SELECT 'a:1 b:2'::tsvector @@ $1::tsquery;
 
+-- ### 15_types_more/interval-aggregates
+SET search_path = s15;
+CREATE TABLE ivbig AS SELECT n, ((n % 97) || ' hours')::interval + ((n % 5) || ' days')::interval AS d FROM generate_series(1, 20000) n;
+SELECT sum(d), avg(d), min(d), max(d), count(DISTINCT d) FROM ivbig;
+SELECT n % 3 AS g, sum(d), max(d) FROM ivbig GROUP BY n % 3 ORDER BY 1;
+SELECT d, count(*) FROM ivbig GROUP BY d ORDER BY d LIMIT 5;
+SELECT n FROM ivbig ORDER BY d DESC, n LIMIT 5;
+SELECT a.n, b.n FROM ivbig a JOIN ivbig b ON a.d = b.d AND a.n < b.n WHERE a.n < 4 ORDER BY 1, 2 LIMIT 5;
+SELECT n, d - lag(d) OVER (ORDER BY n) FROM ivbig WHERE n <= 4 ORDER BY n;
+SELECT n, sum(d) OVER (ORDER BY n ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM ivbig WHERE n <= 4 ORDER BY n;
+SELECT extract(epoch FROM sum(d)) FROM ivbig;
+SELECT n FROM ivbig WHERE d = interval '1 day 1 hour' AND n < 400 ORDER BY n;
+
+-- ### 15_types_more/types-catalog
+SET search_path = s15;
+CREATE TABLE allx (a interval, b interval(3), c interval year to month, d int4range, e daterange, f macaddr, g macaddr8, h bit(5), i varbit(7), j varbit, k tsvector, l tsquery);
+SELECT column_name, data_type, udt_name, character_maximum_length, interval_type, interval_precision, datetime_precision FROM information_schema.columns WHERE table_schema = 's15' AND table_name = 'allx' ORDER BY ordinal_position;
+SELECT attname, atttypid::regtype::text, atttypmod FROM pg_attribute WHERE attrelid = 'allx'::regclass AND attnum > 0 ORDER BY attnum;
+SELECT 'int4range'::regtype::text, 'tsvector'::regtype::text, 'macaddr8'::regtype::text, 'bit'::regtype::text, 'varbit'::regtype::text, 'interval'::regtype::text, 'bit varying'::regtype::text;
+SELECT typname, typlen, typtype::text, typcategory::text, typelem, typarray FROM pg_type WHERE typname IN ('interval', 'int4range', 'int8range', 'numrange', 'tsrange', 'tstzrange', 'daterange', 'macaddr', 'macaddr8', 'bit', 'varbit', 'tsvector', 'tsquery') ORDER BY typname;
+
 -- ### 15_types_more/teardown
 DROP SCHEMA s15 CASCADE;

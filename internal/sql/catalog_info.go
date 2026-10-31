@@ -104,8 +104,12 @@ func init() {
 					prec, radix, scale = IntD(int64(p)), IntD(10), IntD(int64(sc))
 				}
 				def := Null
-				if hasDef(col) {
+				if hasDef(col) && col.Generated == "" {
 					def = TextD(defaultText(c.s, col))
+				}
+				isGen, genExpr := "NEVER", Null
+				if col.Generated != "" {
+					isGen, genExpr = "ALWAYS", TextD(defaultText(c.s, col))
 				}
 				isID, gen := "NO", Null
 				idStart, idInc, idMax, idMin, idCycle := Null, Null, Null, Null, Null
@@ -125,7 +129,7 @@ func init() {
 					TextD(boolStr(!(col.NotNull || col.Name == t.Key))), TextD(dataType), charLen, octet, prec, radix, scale, dt,
 					Null, Null, Null, Null, Null, collCat, collSch, collName, Null, Null, Null, cat, TextD("pg_catalog"), TextD(udt),
 					Null, Null, Null, Null, TextD(itoa(int64(col.Num))), TextD("NO"), TextD(isID), gen, idStart, idInc,
-					idMax, idMin, idCycle, TextD("NEVER"), Null, TextD("YES")})
+					idMax, idMin, idCycle, TextD(isGen), genExpr, TextD("YES")})
 			}
 		}
 		for _, v := range c.views { // the output types are not recorded: text

@@ -219,6 +219,9 @@ func pkNums(t *schema.Table) []int { return attnums(t, t.PKCols()) }
 // defaultText is a column default as pg_get_expr shows it: PostgreSQL
 // shows the sequence argument of nextval as a regclass.
 func defaultText(s *Session, c schema.Column) string {
+	if c.Generated != "" { // the generation expression is stored as the column's pg_attrdef row
+		return castDefault(c.Generated, c)
+	}
 	d := c.Default
 	if strings.HasPrefix(d, "nextval('") && strings.HasSuffix(d, "')") {
 		if seq := d[len("nextval('") : len(d)-2]; seq != "" && !strings.Contains(seq, "'") {
@@ -233,7 +236,9 @@ func defaultText(s *Session, c schema.Column) string {
 }
 
 // hasDef: identity columns have no pg_attrdef row in PostgreSQL.
-func hasDef(c schema.Column) bool { return c.Default != "" && c.Identity == "" }
+func hasDef(c schema.Column) bool {
+	return (c.Default != "" && c.Identity == "") || c.Generated != ""
+}
 
 func identityChar(c schema.Column) string {
 	switch c.Identity {

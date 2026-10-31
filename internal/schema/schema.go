@@ -161,6 +161,9 @@ type Column struct {
 	// Identity is "always" or "by default" for an IDENTITY column.
 	Default  string `json:"default,omitempty"`
 	Identity string `json:"identity,omitempty"`
+	// Generated is the expression of a GENERATED ALWAYS AS (expr) STORED column
+	// (additive: older schemas have none).
+	Generated string `json:"generated,omitempty"`
 	// AddedLSN is the LSN of the ALTER TABLE ADD COLUMN that added the
 	// column (0: created with the table). Rows stored before it are
 	// encoded without the column and read it as Missing, or NULL.

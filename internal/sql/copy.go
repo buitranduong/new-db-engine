@@ -516,6 +516,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 	given := make([]bool, len(t.Columns))
 	if cs.Cols == nil {
 		for _, i := range t.VisibleCols() {
+			if t.Columns[i].Generated != "" { // computed, not copied
+				continue
+			}
 			ci.cols = append(ci.cols, i)
 			given[i] = true
 		}
@@ -524,6 +527,9 @@ func (s *Session) CopyFrom(cs *CopyStmt) (*CopyIn, error) {
 			i, ok := t.Col(c)
 			if !ok {
 				return nil, s.copyFail(errf(codeUndefinedColumn, "column %q of relation %q does not exist", c, t.Name))
+			}
+			if t.Columns[i].Generated != "" {
+				return nil, s.copyFail(errf("42P10", "column %q is a generated column", c))
 			}
 			if given[i] {
 				return nil, s.copyFail(errf("42701", "column %q specified more than once", c))

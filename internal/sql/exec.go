@@ -679,9 +679,19 @@ func (s *Session) createTable(c *CreateTable) (*Result, error) {
 		if cd.Name == c.Key && ty == "text" {
 			ty = "string" // keys are exact-match strings
 		}
-		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, Domain: cd.Domain, Collation: cd.Collation, NotNull: cd.NotNull || cd.Primary})
+		t.Columns = append(t.Columns, schema.Column{Name: cd.Name, Type: ty, PG: cd.PG, Domain: cd.Domain, Collation: cd.Collation, NotNull: cd.NotNull || cd.Primary, Generated: cd.Generated})
+		if cd.Generated != "" && (cd.Default != "" || cd.Serial) {
+			return nil, errf(codeSyntax, "both default and generation expression specified for column %q of table %q", cd.Name, c.Name)
+		}
 		if cd.Collation != "" {
 			noteCollatedColumns(s.E)
+		}
+	}
+	for _, cd := range c.Cols {
+		if cd.Generated != "" {
+			if err := validateGenerated(&t, cd.Name, cd.Generated); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for k, v := range c.Options {
@@ -2080,6 +2090,9 @@ func (s *Session) buildRow(t *schema.Table, cols []int, vals []Datum) (schema.Ro
 }
 
 func checkRow(t *schema.Table, r schema.Row) error {
+	if err := computeGenerated(t, r); err != nil {
+		return err
+	}
 	if err := checkUserCols(t, r); err != nil {
 		return err
 	}
@@ -2179,6 +2192,9 @@ func (s *Session) insert(tx *core.Tx, st *Insert, params []Datum) (*Result, erro
 	}
 	if st.OnConflict != nil {
 		if err := checkConflictTarget(t, st.OnConflict.Target); err != nil {
+			return nil, err
+		}
+		if err := checkSetGenerated(t, st.OnConflict.Set); err != nil {
 			return nil, err
 		}
 	}
@@ -2403,6 +2419,9 @@ func (s *Session) update(tx *core.Tx, st *Update, params []Datum) (*Result, erro
 			return nil, err
 		}
 		st = &upd
+	}
+	if err := checkSetGenerated(t, st.Set); err != nil {
+		return nil, err
 	}
 	defer s.pushSetCols(assignCols(st.Set))()
 	if st.From != nil || hasSubquery(st.Where) || setHasSubquery(st.Set) {

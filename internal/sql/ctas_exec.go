@@ -388,6 +388,8 @@ func (s *Session) expandLikes(c *CreateTable, likes []likeDef) error {
 					}
 					cd.NotNull = true
 				}
+			} else if l.Gen && sc.Generated != "" {
+				cd.Generated = sc.Generated
 			} else if l.Defaults && sc.Default != "" {
 				cd.Default = sc.Default
 			}

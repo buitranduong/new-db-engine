@@ -22,6 +22,13 @@ import (
 // rewritten; key, search, time-series and columnar tables are refused.
 func (s *Session) alterColumnType(table string, d *schema.Table, i int, a AlterAction) error {
 	c := &d.Columns[i]
+	for _, g := range d.Columns {
+		if g.Generated != "" {
+			if x, err := parseCheck(g.Generated); err == nil && refersToCol(x, c.Name) {
+				return errf(codeFeature, "cannot alter type of a column used by a generated column")
+			}
+		}
+	}
 	to, err := schema.ParseType(a.Type)
 	if err != nil {
 		return errf(codeFeature, "type %q is not supported", a.Type)

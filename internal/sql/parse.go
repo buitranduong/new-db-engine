@@ -714,8 +714,16 @@ func (p *parser) colDef() (ColDef, error) {
 			default:
 				return cd, p.errHere("syntax error at or near %q", p.peek().s)
 			}
+			if cd.Identity == "always" && p.isKw("as") && p.peekN(1).s == "(" {
+				// GENERATED ALWAYS AS (expr) STORED (PostgreSQL 16 has no VIRTUAL; genstored.go)
+				cd.Identity = ""
+				if err := p.generatedExpr(&cd); err != nil {
+					return cd, err
+				}
+				continue
+			}
 			if !p.acceptKw("as", "identity") {
-				return cd, errf(codeFeature, "generated columns are not supported")
+				return cd, p.errHere("syntax error at or near %q", p.peek().s)
 			}
 			if cd.IntType == "" {
 				return cd, errf("22023", "identity column type must be smallint, integer, or bigint")
@@ -2397,7 +2405,7 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 					return nil, err
 				}
 			}
-			if !p.acceptKw("cascade") {
+			if act.Cascade = p.acceptKw("cascade"); !act.Cascade {
 				p.acceptKw("restrict")
 			}
 		case p.acceptKw("rename"):
@@ -2456,6 +2464,8 @@ func (p *parser) alterTable(name string, ifExists bool) (Stmt, error) {
 				return &AlterColRestart{Table: name, Col: act.Column, Opts: o}, nil
 			case p.acceptKw("drop", "default"):
 				act.Kind = "drop_default"
+			case p.acceptKw("drop", "expression"): // generated columns (genstored.go)
+				act.Kind, act.IfExists = "drop_expression", p.acceptKw("if", "exists")
 			case p.acceptKw("set", "not", "null"):
 				act.Kind = "set_not_null"
 			case p.acceptKw("drop", "not", "null"):

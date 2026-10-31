@@ -18,10 +18,11 @@ type ColDef struct {
 	Default   string // SQL text of DEFAULT
 	Checks    []CheckDef
 	// a SERIAL type or an IDENTITY column owns a sequence of IntType
-	Serial   bool
-	Identity string   // "always" or "by default"
-	IntType  string   // smallint, integer or bigint
-	SeqOpts  *SeqOpts // IDENTITY (sequence options)
+	Serial    bool
+	Identity  string   // "always" or "by default"
+	Generated string   // GENERATED ALWAYS AS (expr) STORED: the expression text (genstored.go)
+	IntType   string   // smallint, integer or bigint
+	SeqOpts   *SeqOpts // IDENTITY (sequence options)
 	// column constraints UNIQUE and REFERENCES (parse_index.go)
 	Constraints []*ConstraintDef
 }
@@ -84,6 +85,7 @@ type AlterAction struct {
 	Check      CheckDef
 	Constraint *ConstraintDef    // add_constraint (UNIQUE, FOREIGN KEY)
 	IfExists   bool              // ADD COLUMN IF NOT EXISTS, DROP ... IF EXISTS
+	Cascade    bool              // DROP COLUMN ... CASCADE
 	Opts       map[string]string // set_options: SET (name = value, ...)
 }
 

@@ -52,9 +52,9 @@ type tableExt struct {
 
 // likeDef is one (LIKE source ...) element, spliced in at column At.
 type likeDef struct {
-	Table                                string
-	At                                   int
-	Defaults, Constraints, Indexes, Iden bool
+	Table                                     string
+	At                                        int
+	Defaults, Constraints, Indexes, Iden, Gen bool
 }
 
 // IntoClause is SELECT ... INTO [TEMP|UNLOGGED] [TABLE] name.
@@ -279,7 +279,7 @@ func (p *parser) likeElem(c *CreateTable) (ok bool, err error) {
 		}
 		switch t.s {
 		case "all":
-			l.Defaults, l.Constraints, l.Indexes, l.Iden = inc, inc, inc, inc
+			l.Defaults, l.Constraints, l.Indexes, l.Iden, l.Gen = inc, inc, inc, inc, inc
 		case "defaults":
 			l.Defaults = inc
 		case "constraints":
@@ -288,7 +288,9 @@ func (p *parser) likeElem(c *CreateTable) (ok bool, err error) {
 			l.Indexes = inc
 		case "identity":
 			l.Iden = inc
-		case "comments", "compression", "generated", "statistics", "storage":
+		case "generated":
+			l.Gen = inc
+		case "comments", "compression", "statistics", "storage":
 		default:
 			return true, p.errHere("syntax error at or near %q", t.s)
 		}

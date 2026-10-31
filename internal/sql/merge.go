@@ -85,6 +85,9 @@ func (s *Session) merge(tx *core.Tx, st *Merge, params []Datum) (*Result, error)
 					return nil, errf(codeUndefinedColumn, "column %q of relation %q does not exist", a.Col, st.Table)
 				}
 				mc.setCols = append(mc.setCols, ci)
+				if _, def := a.X.(*DefaultExpr); !def && t.Columns[ci].Generated != "" {
+					return nil, errGeneratedValue(&t.Columns[ci], true)
+				}
 				if _, def := a.X.(*DefaultExpr); def {
 					mc.set = append(mc.set, -1)
 				} else {

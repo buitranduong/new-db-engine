@@ -166,3 +166,14 @@ func (t *Topo) CheckViews(r *Result, extra ...string) {
 		}
 	}
 }
+
+// Workload makes a bank workload for the topology (in a cluster the writers
+// find the leader themselves).
+func (t *Topo) Workload(l *Ledger, writers int) *Workload {
+	wl := NewWorkload(t.DSN(), l, writers)
+	if t.Cluster {
+		wl.Dial = LeaderDial(t.Nodes)
+		wl.Timeout = 3 * time.Second // a client of a frozen server must give up (socket timeout)
+	}
+	return wl
+}

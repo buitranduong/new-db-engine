@@ -110,6 +110,10 @@ type Workload struct {
 	URL     string
 	L       *Ledger
 	Writers int
+	// Dial, if set, opens a connection to the node that takes writes (a
+	// multi-host DSN gives up on the whole list when its first host hangs).
+	Dial    func() (*pgx.Conn, error)
+	Timeout time.Duration // per transaction attempt (default 20 s)
 	stop    atomic.Bool
 	wg      sync.WaitGroup
 	Errs    atomic.Int64
@@ -147,9 +151,15 @@ func (wl *Workload) writer(w int, rng *rand.Rand) {
 	}()
 	for !wl.stop.Load() {
 		if conn == nil || conn.IsClosed() {
-			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-			c, err := pgx.Connect(ctx, wl.URL)
-			cancel()
+			var c *pgx.Conn
+			var err error
+			if wl.Dial != nil {
+				c, err = wl.Dial()
+			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				c, err = pgx.Connect(ctx, wl.URL)
+				cancel()
+			}
 			if err != nil {
 				wl.noteErr(err)
 				time.Sleep(100 * time.Millisecond)
@@ -197,7 +207,11 @@ func (wl *Workload) writer(w int, rng *rand.Rand) {
 }
 
 func (wl *Workload) attempt(conn *pgx.Conn, w, seq int, leg Leg, rolled bool) (outcome, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	to := wl.Timeout
+	if to == 0 {
+		to = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), to)
 	defer cancel()
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -426,4 +440,33 @@ func joinBad(bad []string) string {
 		s = s[:700] + fmt.Sprintf("... (%d violations in all)", len(bad))
 	}
 	return s
+}
+
+// LeaderDial returns a dial function that tries every running node with a
+// short timeout and keeps the first connection that takes writes.
+func LeaderDial(nodes []*Node) func() (*pgx.Conn, error) {
+	var rot atomic.Int64
+	return func() (*pgx.Conn, error) {
+		start := int(rot.Add(1))
+		for i := range nodes {
+			n := nodes[(start+i)%len(nodes)]
+			if !n.Running() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+			c, err := pgx.Connect(ctx, n.URL())
+			if err != nil {
+				cancel()
+				continue
+			}
+			var ro string
+			err = c.QueryRow(ctx, "SHOW transaction_read_only").Scan(&ro)
+			cancel()
+			if err == nil && ro == "off" {
+				return c, nil
+			}
+			c.Close(context.Background())
+		}
+		return nil, errors.New("no node that takes writes is reachable")
+	}
 }

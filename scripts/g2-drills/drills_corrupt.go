@@ -188,7 +188,7 @@ func drillD4(e *Env, o *Opts, r *Result, mode string) {
 	if err := exec1(t.DSN(), fillDDL); !r.Check(err == nil, "fill: %v", err) {
 		return
 	}
-	wl := NewWorkload(t.DSN(), l, 3)
+	wl := t.Workload(l, 3)
 	wl.Start(o.Seed)
 	fl := NewFiller(t.DSN(), 2000, 2)
 	fl.Start()
@@ -235,6 +235,13 @@ func drillD4(e *Env, o *Opts, r *Result, mode string) {
 		}
 		class, detail := d4judge(r, n, l, fl, ref, tables)
 		rel, _ := filepath.Rel(n.Dir, path)
+		if strings.HasPrefix(c.name, "checkpoint") && class == "REFUSED" {
+			// the operator's repair (docs/33): put the damaged checkpoint aside; the log is replayed from its start
+			os.Rename(path, path+".bad")
+			class2, detail2 := d4judge(r, n, l, fl, ref, tables)
+			r.Check(class2 == "REPAIRED", "checkpoint moved aside: got %s: %s", class2, detail2)
+			detail += fmt.Sprintf(" ; after moving the damaged checkpoint aside: %s (%s)", class2, trunc(detail2, 160))
+		}
 		line := fmt.Sprintf("%s [%s offset %d of %d]: %s", c.name, rel, off, before, class)
 		pass := false
 		switch class {
@@ -339,7 +346,7 @@ func drillD4Cluster(e *Env, o *Opts, r *Result) {
 	if err := exec1(t.DSN(), fillDDL); !r.Check(err == nil, "fill: %v", err) {
 		return
 	}
-	wl := NewWorkload(t.DSN(), l, 3)
+	wl := t.Workload(l, 3)
 	wl.Start(o.Seed)
 	fl := NewFiller(t.DSN(), 2000, 2)
 	fl.Start()

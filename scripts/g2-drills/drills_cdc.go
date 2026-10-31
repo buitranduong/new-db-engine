@@ -63,6 +63,9 @@ func (c *cdcConsumer) start() {
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 1<<20), 16<<20)
 		hc := &http.Client{Timeout: 10 * time.Second}
+		var lsn string
+		var n int
+		lastAck := time.Now()
 		for sc.Scan() && !c.stop.Load() {
 			var m map[string]any
 			if json.Unmarshal(sc.Bytes(), &m) != nil {
@@ -71,12 +74,14 @@ func (c *cdcConsumer) start() {
 			if cm, _ := m["commit"].(bool); !cm {
 				continue
 			}
-			lsn := fmt.Sprint(m["lsn"])
+			lsn = fmt.Sprint(m["lsn"])
 			if f, ok := m["lsn"].(float64); ok {
 				lsn = fmt.Sprintf("%.0f", f)
 			}
 			if c.delay > 0 {
 				time.Sleep(c.delay)
+			} else if n++; n%200 != 0 && time.Since(lastAck) < 30*time.Millisecond {
+				continue // confirm in batches: a confirmation covers everything before it
 			}
 			r, err := hc.Post("http://"+c.n.HTTP+"/v1/cdc/"+c.slot+"/ack?lsn="+lsn, "application/json", nil)
 			if err != nil {
@@ -84,6 +89,7 @@ func (c *cdcConsumer) start() {
 				return
 			}
 			r.Body.Close()
+			lastAck = time.Now()
 			c.acked.Add(1)
 		}
 	}()
@@ -254,5 +260,5 @@ func drillD7(e *Env, o *Opts, r *Result, mode string) {
 	rep, err := n.WaitInSync(60 * time.Second)
 	r.Check(err == nil && rep.Verdict == "IN_SYNC", "views after the drill: %v", err)
 	scrubCheck(r, n)
-	r.OracleOK("stalled slot: lag grew to %.1f MB (limit %d MB) and the engine invalidated it after %v, the log shrank to %.1f MB; the slow slot was %s; the healthy slot was never touched (lag %.2f MB at the end); %d writes ok, 0 failed; the invalidated slot answers 410 and reconcile -cdc-slot reports INVALID", peak["stalled"]/1048576, limitMB, inv.Round(time.Second), last.walDisk/1048576, map[bool]string{true: "invalidated too", false: "kept"}[slowInvalid], last.lag["healthy"]/1048576, wok.Load())
+	r.OracleOK("stalled slot: lag grew to %.1f MB (limit %d MB) and the engine invalidated it after %v, the log stayed at %.1f MB; the slow slot was %s; the healthy slot was never touched (lag %.2f MB at the end); %d writes ok, 0 failed; the invalidated slot answers 410 and reconcile -cdc-slot reports INVALID", peak["stalled"]/1048576, limitMB, inv.Round(time.Second), last.walDisk/1048576, map[bool]string{true: "invalidated too", false: "kept"}[slowInvalid], last.lag["healthy"]/1048576, wok.Load())
 }

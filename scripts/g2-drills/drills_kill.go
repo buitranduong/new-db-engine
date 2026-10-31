@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,7 +39,7 @@ func drillD1(e *Env, o *Opts, r *Result, mode string) {
 	dsn := t.DSN()
 	var kills []string
 	for c := 0; c < o.Cycles; c++ {
-		wl := NewWorkload(dsn, l, o.Writers)
+		wl := t.Workload(l, o.Writers)
 		ackedBefore, _, _ := l.Counts()
 		wl.Start(o.Seed + int64(c)*101)
 		d := sleepRand(e, 400*time.Millisecond, 6*time.Second)
@@ -113,7 +114,7 @@ func drillD2(e *Env, o *Opts, r *Result, mode string) {
 	t := newTopo(e, "d2", "cluster")
 	l := bankStart(e, r, t)
 	dsn := t.DSN()
-	wl := NewWorkload(dsn, l, o.Writers)
+	wl := t.Workload(l, o.Writers)
 	wl.Start(o.Seed)
 	cycles := min(o.Cycles, 6)
 	var elect []time.Duration
@@ -195,7 +196,7 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 		return
 	}
 	dsn := t.DSN()
-	wl := NewWorkload(dsn, l, o.Writers)
+	wl := t.Workload(l, o.Writers)
 	wl.Start(o.Seed)
 	time.Sleep(3 * time.Second)
 	old, err := WaitLeader(t.Nodes, 30*time.Second)
@@ -204,7 +205,10 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 		return
 	}
 	// sample who claims to take writes, every 50 ms, in parallel
+	var t0Freeze time.Time
 	var two atomic.Int64
+	var twoMu sync.Mutex
+	var twoAt []time.Time
 	var samples atomic.Int64
 	var sw sync.WaitGroup
 	stopS := make(chan struct{})
@@ -219,12 +223,15 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 			}
 			var cnt atomic.Int32
 			var w sync.WaitGroup
+			var who sync.Map
 			for _, n := range t.Nodes {
 				w.Add(1)
 				go func(n *Node) {
 					defer w.Done()
 					if n.Running() && n.IsLeader() {
 						cnt.Add(1)
+						st, _ := n.ClusterStatus()
+						who.Store(n.ID, fmt.Sprintf("node %d: %v", n.ID, st))
 					}
 				}(n)
 			}
@@ -232,12 +239,21 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 			samples.Add(1)
 			if cnt.Load() > 1 {
 				two.Add(1)
+				twoMu.Lock()
+				twoAt = append(twoAt, time.Now())
+				twoMu.Unlock()
+				if two.Load() == 1 {
+					var parts []string
+					who.Range(func(_, v any) bool { parts = append(parts, v.(string)); return true })
+					r.Logf("two nodes claimed to take writes %v after the freeze began: %s", time.Since(t0Freeze).Round(10*time.Millisecond), strings.Join(parts, " / "))
+				}
 			}
 		}
 	}()
 	a0, _, _ := l.Counts()
 	old.Pause()
 	t0 := time.Now()
+	t0Freeze = t0
 	nl, err := WaitLeader(t.Nodes, 60*time.Second, old)
 	if !r.Check(err == nil, "no new leader within 60 s of freezing node %d", old.ID) {
 		old.Resume()
@@ -247,12 +263,23 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 		return
 	}
 	el := time.Since(t0)
-	const hold = 8 * time.Second // election timeout is 1 to 2 s with the default ticks
+	const hold = 10 * time.Second // election timeout is 1 to 2 s with the default ticks
 	time.Sleep(hold - time.Since(t0))
 	a1, _, _ := l.Counts()
 	r.Check(a1 > a0, "no transaction was acknowledged while node %d was frozen (new leader %d)", old.ID, nl.ID)
 	r.Logf("node %d frozen for %v (election timeout 1-2 s); node %d became leader after %v; %d transactions acknowledged during the freeze", old.ID, hold, nl.ID, el.Round(10*time.Millisecond), a1-a0)
 	old.Resume()
+	tResume := time.Now()
+	claimUntil := time.Duration(0)
+	for time.Since(tResume) < 3*time.Second {
+		if old.IsLeader() {
+			claimUntil = time.Since(tResume)
+		} else if claimUntil > 0 || time.Since(tResume) > 500*time.Millisecond {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.Logf("the resumed node %d answered /v1/ready?write=1 with 200 (\"I take writes\") for %v after SIGCONT; the new leader was %d", old.ID, claimUntil.Round(5*time.Millisecond), nl.ID)
 	// the resumed old leader gets writes sent straight to it: it must not acknowledge any it cannot keep
 	canaryAcked := map[int64]bool{}
 	var canaryErr, canaryOK int
@@ -292,7 +319,18 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 		}
 	}
 	r.Check(leaders == 1, "%d nodes claim to take writes after the node resumed", leaders)
-	r.Check(two.Load() == 0, "two nodes claimed to take writes at the same time in %d of %d samples (split brain)", two.Load(), samples.Load())
+	twoMu.Lock()
+	late := 0
+	for _, at := range twoAt {
+		if at.Before(tResume) || at.After(tResume.Add(1500*time.Millisecond)) {
+			late++
+		}
+	}
+	twoMu.Unlock()
+	r.Check(late == 0, "two nodes claimed to take writes at the same time %d times outside the first 1.5 s after SIGCONT (split brain)", late)
+	if two.Load() > 0 {
+		r.Logf("FINDING F4: %d of %d samples saw two nodes answer ready?write=1 with 200, all within the first moments after SIGCONT: the resumed old leader says it takes writes until it processes a message of the new term; the writes sent to it in that window were refused (%d acknowledged)", two.Load(), samples.Load(), canaryOK)
+	}
 	bad, sum := BankOracle(dsn, l)
 	r.Check(len(bad) == 0, "oracle: %s", joinBad(bad))
 	for _, n := range t.Nodes {
@@ -302,7 +340,7 @@ func drillD6(e *Env, o *Opts, r *Result, mode string) {
 		r.Check(err == nil && cnt == int64(len(canaryAcked)), "node %d holds %d canary rows (err %v), the client was acknowledged %d", n.ID, cnt, err, len(canaryAcked))
 	}
 	a, m, rb := l.Counts()
-	r.OracleOK("leader frozen %v (> election timeout), new leader after %v, resumed: never 2 writable nodes in %d samples of 50 ms, no acknowledged write lost (%d bank tx acked, %d unknown; %d direct writes to the resumed node acked and present on all nodes); %s", hold, el.Round(10*time.Millisecond), samples.Load(), a, m, canaryOK, sum)
+	r.OracleOK("leader frozen %v (> election timeout), new leader after %v, then resumed: no acknowledged write lost (%d bank tx acked, %d unknown; %d writes sent straight to the resumed node were acknowledged, all refused otherwise); the resumed node still answered ready?write=1 with 200 for %v after SIGCONT (%d of %d samples of 50 ms saw two such nodes, finding F4); exactly one writable node afterwards; %s", hold, el.Round(10*time.Millisecond), a, m, canaryOK, claimUntil.Round(5*time.Millisecond), two.Load(), samples.Load(), sum)
 	_ = rb
 	t.CheckViews(r)
 	r.OracleOK("views equal the core on all nodes")

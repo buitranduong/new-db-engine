@@ -334,7 +334,7 @@ func (d *d3env) makeBallast() bool {
 // the victim is the leader (or the only node).
 func (d *d3env) fillOnce(label string, leaderCase bool) (first, last string, refused bool) {
 	r := d.r
-	wl := NewWorkload(d.dsn, d.l, 3)
+	wl := d.t.Workload(d.l, 3)
 	wl.Start(d.o.Seed)
 	fl := d.newFiller(3000, 3)
 	fl.Start()
@@ -549,7 +549,11 @@ func drillD3(e *Env, o *Opts, r *Result, mode string) {
 	}
 	d.t.CheckViews(r)
 	a, m, _ := d.l.Counts()
-	r.OracleOK("disk full (%s): the write was refused with a message that says why (%q), reads served, restart on the full disk handled, writes accepted again once space was freed; every acknowledged write present (%d bank tx, %d unknown, %d fill rows), no phantom, scrub clean, views equal the core", mode, trunc(lastMsg, 90), a, m, nfill)
+	if mode == "single" {
+		r.OracleOK("disk full: writes refused with %q, reads served, restart on the full disk handled, writes accepted again once space was freed; every acknowledged write present (%d bank tx, %d unknown, %d fill rows), no phantom, scrub clean, views equal the core", trunc(lastMsg, 90), a, m, nfill)
+	} else {
+		r.OracleOK("disk full (3 nodes, one on a 96 MB disk): a follower and a leader with a full disk both fail-stop with 'storage failure, the node cannot continue ... no space left on device' and the majority goes on (a leader that stays alive blocks writes until stopped: finding F5); restart on the full disk handled, node rejoins after space is freed; every acknowledged write present on all nodes (%d bank tx, %d unknown, %d fill rows), no phantom, scrub clean, views equal the core", a, m, nfill)
+	}
 }
 
 func trunc(s string, n int) string {

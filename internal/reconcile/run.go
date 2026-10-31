@@ -376,6 +376,9 @@ func (r *runner) finishLag(t *target) {
 			rep.BehindRecords, rep.BehindMs = d-a, t.fol.Lag().Milliseconds()
 		}
 	}
+	if rep.Status == StDiverged { // the count check found a difference at a quiet point: a sample that happens to be equal does not clear it
+		return
+	}
 	if rep.BehindRecords > 0 {
 		rep.Status = StBehind
 	} else {

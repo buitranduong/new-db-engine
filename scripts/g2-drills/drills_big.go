@@ -132,6 +132,11 @@ func drillD5(e *Env, o *Opts, r *Result, mode string) {
 	}
 	defer unlock()
 	rows := o.Rows
+	// source + archive + base backup + one restored copy, about 500 bytes per row in all, and 3 GB must stay free
+	if need, free := int64(rows)*500>>20+3072, freeMB(e.Work); free < need {
+		r.Skipped = fmt.Sprintf("only %d MB free in %s; %d rows need about %d MB (including the 3 GB that must stay free): not started", free, e.Work, rows, need)
+		return
+	}
 	r.Logf("rows=%d; load average at the start of the drill: %s", rows, loadAvg())
 	const segMB = 32
 	arch := filepath.Join(e.Work, "d5-archive")
@@ -216,31 +221,46 @@ func drillD5(e *Env, o *Opts, r *Result, mode string) {
 	}
 	r.Logf("PITR target recorded after %d transactions: time %s, lsn %d, %d rows, digest %x", ntx, tTarget.Format(time.RFC3339Nano), lsnTarget, cnt1, d1["big"].sum)
 	time.Sleep(1500 * time.Millisecond)
-	// more changes until the archive holds well beyond the target
+	// more changes until the archive holds well beyond the target; after each step the LSN and
+	// an aggregate of the table are recorded: more points a recovery must reproduce
+	type point struct {
+		lsn uint64
+		agg [5]int64
+	}
+	var points []point
 	segBefore := archiveCount(arch)
 	for i := 0; i < 40 && archiveCount(arch) < segBefore+3; i++ {
 		if _, err := mutate(n.URL(), rows+200_000+i*100_000, 60_000, 50_000, 0, int64(2+i)); err != nil {
 			r.Check(false, "mutation 2: %v", err)
 			return
 		}
+		a, err := bigAgg(n.URL())
+		if !r.Check(err == nil, "aggregate: %v", err) {
+			return
+		}
+		points = append(points, point{n.DurableLSN(), a})
 	}
 	d2, err := digests(n.URL(), "big")
 	if !r.Check(err == nil, "final digest: %v", err) {
 		return
 	}
 	r.Check(d2["big"] != d1["big"], "the source did not change after the target")
-	r.Logf("source went on: archive holds %d segments (%d MB), final digest %d rows %x", archiveCount(arch), dirBytes(arch)>>20, d2["big"].n, d2["big"].sum)
+	finalLSN := n.DurableLSN()
+	r.Logf("source went on to lsn %d in %d steps: archive holds %d segments (%d MB), final digest %d rows %x", finalLSN, len(points), archiveCount(arch), dirBytes(arch)>>20, d2["big"].n, d2["big"].sum)
 	n.Term()
 	os.RemoveAll(n.Dir) // the base backup + the archive are all that is left
 	type target struct {
 		name string
 		args []string
 		want map[string]digest
+		agg  *point
 	}
+	mid := points[len(points)/2]
 	for _, tg := range []target{
-		{"by time " + tTarget.Format(time.RFC3339Nano), []string{"-recovery-target-time", tTarget.Format(time.RFC3339Nano)}, d1},
-		{fmt.Sprintf("by LSN %d", lsnTarget), []string{"-recovery-target-lsn", fmt.Sprint(lsnTarget)}, d1},
-		{"to the end of the archive", nil, d2},
+		{"by time " + tTarget.Format(time.RFC3339Nano), []string{"-recovery-target-time", tTarget.Format(time.RFC3339Nano)}, d1, nil},
+		{fmt.Sprintf("by LSN %d", lsnTarget), []string{"-recovery-target-lsn", fmt.Sprint(lsnTarget)}, d1, nil},
+		{fmt.Sprintf("by LSN %d (in the middle of the later load)", mid.lsn), []string{"-recovery-target-lsn", fmt.Sprint(mid.lsn)}, nil, &mid},
+		{"to the end of the archive (no target)", nil, nil, nil},
 	} {
 		if freeMB(e.Work) < 3072 {
 			r.Check(false, "only %d MB free: stopping before %s", freeMB(e.Work), tg.name)
@@ -263,27 +283,41 @@ func drillD5(e *Env, o *Opts, r *Result, mode string) {
 		if !r.Check(upErr == nil, "PITR %s: start: %v: %s", tg.name, upErr, lastLines(pn.logSince(), 4)) {
 			return
 		}
-		got, err := digests(pn.URL(), "big")
-		eq := err == nil && sameDigests(tg.want, got) == ""
-		r.Check(eq, "PITR %s: the restored table differs from the recorded state: %v %s", tg.name, err, sameDigests(tg.want, got))
 		lsnGot := pn.DurableLSN()
-		if tg.args != nil {
-			r.Check(lsnGot <= lsnTarget+1 && lsnGot+1 >= lsnTarget, "PITR %s: recovered to lsn %d, target %d", tg.name, lsnGot, lsnTarget)
+		eq := true
+		var what string
+		switch {
+		case tg.want != nil:
+			got, err := digests(pn.URL(), "big")
+			eq = err == nil && sameDigests(tg.want, got) == ""
+			r.Check(eq, "PITR %s: the restored table differs from the recorded state: %v %s", tg.name, err, sameDigests(tg.want, got))
+			what = fmt.Sprintf("%d rows, row count and checksum of every row equal to the source at the target: %v", got["big"].n, eq)
+		case tg.agg != nil:
+			a, err := bigAgg(pn.URL())
+			eq = err == nil && a == tg.agg.agg
+			r.Check(eq, "PITR %s: aggregate %v differs from the recorded %v (%v)", tg.name, a, tg.agg.agg, err)
+			what = fmt.Sprintf("count/sum aggregate equal to the source at that point: %v", eq)
+		default:
+			a, err := bigAgg(pn.URL())
+			r.Check(err == nil && lsnGot >= lsnTarget && lsnGot <= finalLSN, "PITR %s: recovered to lsn %d (target %d, final %d): %v", tg.name, lsnGot, lsnTarget, finalLSN, err)
+			what = fmt.Sprintf("replayed the sealed segments of the archive up to lsn %d of the source's %d (the last, unsealed segment is not archived); %d rows", lsnGot, finalLSN, a[0])
 		}
-		_, werr := scalarInt(pn.URL(), "SELECT count(*) FROM big")
-		r.Logf("PITR %s: restore copy %v, then staskd with -restore-archive was serving after %v (indicative; load average %s); recovered to lsn %d; %d rows, digest equal=%v; reads: %v", tg.name, rdur.Round(time.Second), tready.Round(time.Second), loadAvg(), lsnGot, got["big"].n, eq, werr)
 		if tg.args != nil {
-			cnt, _ := scalarInt(pn.URL(), "SELECT count(*) FROM big")
-			rep, rerr := pn.WaitInSync(10 * time.Minute)
-			r.Check(rerr == nil && rep.Verdict == "IN_SYNC", "PITR %s: views: %v", tg.name, rerr)
-			r.Logf("PITR %s: %d rows at the target (source had %d); views in sync", tg.name, cnt, cnt1)
-			wres := tryWriteBig(pn)
-			r.Check(wres == "accepted", "PITR %s: the restored node does not accept writes: %s", tg.name, wres)
+			want := lsnTarget
+			if tg.agg != nil {
+				want = tg.agg.lsn
+			}
+			r.Check(lsnGot+1 >= want && lsnGot <= want+1, "PITR %s: recovered to lsn %d, target %d", tg.name, lsnGot, want)
 		}
+		r.Logf("PITR %s: restore copy %v, then staskd with -restore-archive was serving after %v (indicative; load average %s); recovered to lsn %d; %s", tg.name, rdur.Round(time.Second), tready.Round(time.Second), loadAvg(), lsnGot, what)
+		rep, rerr := pn.WaitInSync(10 * time.Minute)
+		r.Check(rerr == nil && rep.Verdict == "IN_SYNC", "PITR %s: views: %v", tg.name, rerr)
+		wres := tryWriteBig(pn)
+		r.Check(wres == "accepted", "PITR %s: the restored node does not accept writes: %s", tg.name, wres)
 		pn.Term()
 		os.RemoveAll(dir)
 	}
-	r.OracleOK("%d-row table: plain and AES-256-GCM encrypted backups verified, restored into new directories and equal to the source (row count and checksum of every row); encrypted backup holds no plaintext and is refused without/with a wrong key; PITR by time and by LSN of base backup + archive equals the source state recorded at that point (%d rows, same checksum), the restored node takes writes; full-archive replay equals the final source", rows, cnt1)
+	r.OracleOK("%d-row table: plain and AES-256-GCM encrypted backups verified, restored into new directories and equal to the source (row count and checksum of every row); encrypted backup holds no plaintext and is refused without/with a wrong key; PITR by time and by LSN of base backup + archive equals the source state recorded at that point (%d rows, same checksum of every row), a third LSN in the middle of the later load reproduces its recorded aggregate, a replay with no target stops at the end of the sealed archive; every restored node is in sync (reconcile -full) and takes writes", rows, cnt1)
 	os.RemoveAll(backupRoot)
 	os.RemoveAll(arch)
 }
@@ -363,4 +397,16 @@ func restoreAndCompare(e *Env, r *Result, src *Node, label, backup string, keyAr
 	r.Logf("%s: restore into a new directory %v, staskd serving after %v (indicative; load average %s); %d rows, row count and checksum equal to the source: %v; views in sync", label, rdur.Round(time.Second), tup.Round(time.Millisecond), loadAvg(), got["big"].n, eq)
 	pn.Term()
 	os.RemoveAll(dir)
+}
+
+// bigAgg is a cheap aggregate of the whole table.
+func bigAgg(url string) ([5]int64, error) {
+	c, err := connect(url)
+	if err != nil {
+		return [5]int64{}, err
+	}
+	defer c.Close(context.Background())
+	var a [5]int64
+	err = c.QueryRow(context.Background(), "SELECT count(*), sum(id), sum(grp), sum(amount), sum(upd) FROM big").Scan(&a[0], &a[1], &a[2], &a[3], &a[4])
+	return a, err
 }

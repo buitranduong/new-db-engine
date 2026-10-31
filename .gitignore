@@ -2,3 +2,5 @@ bin*/
 results*/
 *.log
 bin-main/
+/staskd
+/claimcheck

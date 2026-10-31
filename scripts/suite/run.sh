@@ -56,7 +56,7 @@ rc=$?
     END { printf "%-20s %6d %6d %6d %6d\n", "TOTAL", T, P, D, E }' "$OUT/report.md"
   echo
   echo "Failing statements (DIFF = different result; ERR = one side errors, the other does not):"
-  grep -E '^### (DIFF|ERR-ONLY-ONE-SIDE) ' "$OUT/report.md" | sed -E 's/^### //' | sort | uniq -c | awk '{$1=""; print}' | head -400
+  grep -E '^### (DIFF|ERR-ONLY-ONE-SIDE) ' "$OUT/report.md" | sed -E 's/^### //' | sort | uniq -c | awk '{$1=""; print}'
 } | tee "$OUT/summary.txt"
 echo "report: $OUT/report.md   summary: $OUT/summary.txt"
 grep -qE '\| (DIFF|ERR-ONLY-ONE-SIDE)' /dev/null

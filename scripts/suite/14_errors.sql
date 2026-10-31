@@ -64,13 +64,17 @@ CREATE TABLE p (a int);
 CREATE TABLE t3 (a int, a int);
 CREATE TABLE t4 (a int PRIMARY KEY, b int PRIMARY KEY);
 DROP TABLE nosuch;
-DROP TABLE p, nosuch;
+CREATE TABLE dd1 (id int PRIMARY KEY);
+CREATE TABLE dd2 (id int REFERENCES dd1(id));
+DROP TABLE dd1, nosuch;
+SELECT count(*) FROM dd1;
 DROP INDEX nosuch;
 DROP SCHEMA nosuch;
 DROP TYPE nosuch;
 DROP VIEW nosuch;
 DROP SEQUENCE nosuch;
-DROP TABLE p;
+DROP TABLE dd1;
+SELECT count(*) FROM dd1;
 SELECT * FROM nosuch;
 SELECT * FROM nosuch.p;
 SELECT * FROM p, nosuch;
@@ -283,7 +287,6 @@ SELECT make_time(25, 0, 0);
 SELECT make_interval(1, 2, 3, 4, 5, 6, 'x');
 SELECT generate_series(1, 10, 0);
 SELECT generate_series('2024-01-01'::date, '2024-01-10'::date, '0 days');
-SELECT * FROM generate_series(1, 1000000000000) LIMIT 0;
 SELECT width_bucket(1, 0, 10, 0);
 SELECT width_bucket(1, 0, 0, 10);
 SELECT nth_value(1, 0) OVER ();
@@ -396,6 +399,12 @@ SELECT 1/0;
 CREATE TABLE tt2 (a int);
 ROLLBACK;
 SELECT to_regclass('s14.tt') IS NULL;
+SELECT 1;
+
+-- ### 14_errors/limit-pushdown
+SET search_path = s14;
+-- LIMIT 0 must not materialise the source (a timeout here drops the connection)
+SELECT * FROM generate_series(1, 1000000000000) LIMIT 0;
 SELECT 1;
 
 -- ### 14_errors/teardown

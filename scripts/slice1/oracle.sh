@@ -117,6 +117,14 @@ compare() { # tag
   if [ $ok = 1 ]; then echo "  OK   $tag: pages 1-3, plain and with JOIN, equal PostgreSQL 16 row for row ($(cat "$W"/st.$tag.*.tsv | wc -l) rows compared), hybrid path used"; else FAIL=1; fi
 }
 
+timing() { # tag: server-side time of page 1 (join variant), median of 7 hot runs; INDICATIVE only
+  local a b
+  med() { grep -o 'Time: [0-9.]*' | awk '{print $2}' | sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}'; }
+  a=$( (echo '\timing on'; for i in 1 2 3 4 5 6 7; do q 1 join; done) | ST -At 2>&1 | med )
+  b=$( (echo '\timing on'; for i in 1 2 3 4 5 6 7; do q 1 join; done) | PG -At 2>&1 | med )
+  echo "  timing[$1] N=$N load1=$(cut -d' ' -f1 /proc/loadavg) shared VM, NOT clean, NOT a performance claim: page 1 + JOIN median of 7 hot: STASK hybrid ${a} ms, PostgreSQL 16 ${b} ms"
+}
+
 both() { # SQL on both engines
   echo "$1" | PG; echo "$1" | ST
 }
@@ -161,7 +169,7 @@ CREATE TABLE IF NOT EXISTS carriers(tel text PRIMARY KEY, name text, active bool
   sleep 2
   log "loaded and started; staskd log tail:"; grep -E "segcolumnar|bootstrapped" "$W/staskd.log" | tail -2
 
-  step base
+  step base; timing base
   # tail: keys updated twice, deleted keys, inserts, a group change
   both "UPDATE sims SET store_rate = 10 WHERE (substr(number,3)::bigint % 97) = 0;
 UPDATE sims SET price = 1000000 + (substr(number,3)::bigint % 2000000)::int, store_rate = 5 + (substr(number,3)::bigint % 6)::int WHERE (substr(number,3)::bigint % 97) = 0;
@@ -171,7 +179,7 @@ UPDATE sims SET tel = 'C' WHERE (substr(number,3)::bigint % 211) = 5;"
   gen $N $((N + N/20)) | PG; gen $N $((N + N/20)) | ST
   sleep 1; step tail
   both "UPDATE sims SET store_rate = 9 WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 1400000;"
-  sleep 2; step merge
+  sleep 2; step merge; timing merge
   grep -c "tail merged into a new base" "$W/staskd.log" | sed 's/^/  merges done so far: /'
   both "UPDATE carriers SET name = 'C2' WHERE tel = 'C'"; step dim-rename
   both "UPDATE carriers SET active = false WHERE tel = 'B'"; step dim-off

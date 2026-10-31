@@ -46,6 +46,8 @@ type Server struct {
 	ExtraMetrics []func(io.Writer)
 	// ReplicaInfo, if set (a replication leader), lists its replicas.
 	ReplicaInfo func() []repl.ReplicaInfo
+	// HybridStatus, if set (staskd -hybrid), adds the hybrid path counters to GET /v1/status.
+	HybridStatus func() any
 
 	txMu  sync.Mutex
 	txs   map[uint64]*txEntry
@@ -622,7 +624,12 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if err := e.Failed(); err != nil {
 		failed = err.Error()
 	}
+	var hyst any
+	if s.HybridStatus != nil {
+		hyst = s.HybridStatus()
+	}
 	reply(w, 200, map[string]any{
+		"hybrid":             hyst,
 		"durable_lsn":        e.DurableLSN(),
 		"uptime_s":           time.Since(s.start).Seconds(),
 		"write_failed":       failed,

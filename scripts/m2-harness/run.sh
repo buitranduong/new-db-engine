@@ -28,10 +28,19 @@ fi
 EXTRA=(-ref-name "${REF_NAME:-m2h-ref}" -ref "postgres://postgres:wm@127.0.0.1:${REF_PORT:-28791}/postgres?sslmode=disable")
 # STASK_FLAGS=-hybrid needs sims WITH (columnar = on); COLUMNAR=1 forces it (default: on when STASK_FLAGS mentions -hybrid)
 case "${COLUMNAR:-}${STASK_FLAGS:-}" in 1*|*-hybrid*) [ "$KIND" = stask ] && EXTRA+=(-columnar);; esac
+LOGOFF=$(wc -c <"$M2_DIR/staskd.log" 2>/dev/null || echo 0)
 "$HERE/sut.sh" "$KIND" start || exit 2
 [ -z "${KEEP:-}" ] && trap '"$HERE/sut.sh" "$KIND" stop' EXIT
 "$M2_DIR/stask-m2" -sut "postgres://postgres:wm@127.0.0.1:$PORT/postgres?sslmode=disable" -ref-docker -label "$KIND" \
   "${EXTRA[@]}" -n "$N" -duration "$DURATION" -out "$OUT" "${CR[@]}" "$@"
 rc=$?
+if [ "$KIND" = stask ]; then
+  # hybrid path counters (only present with staskd -hybrid) and the reasons the path was not used (logged once per reason)
+  mkdir -p "$OUT"; curl -s "http://127.0.0.1:$((PORT+1))/v1/status" 2>/dev/null | python3 -c 'import sys,json
+try: print(json.dumps(json.load(sys.stdin).get("hybrid")))
+except Exception as e: print("null")' >"$OUT/hybrid_status.json" 2>/dev/null
+  tail -c +$((LOGOFF+1)) "$M2_DIR/staskd.log" | grep -E "hybrid: path not used|segcolumnar" >"$OUT/hybrid_log.txt" 2>/dev/null
+  echo "hybrid status: $(cat "$OUT/hybrid_status.json")"; cat "$OUT/hybrid_log.txt"
+fi
 echo "report: $OUT/report.md"
 exit $rc

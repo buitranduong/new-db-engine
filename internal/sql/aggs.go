@@ -41,6 +41,12 @@ func newAgg(a *aggCall) (aggImpl, error) {
 	if impl, ok, err := supfixNewAgg(a); ok {
 		return impl, err
 	}
+	if impl, ok, err := fnNewAgg(a); ok {
+		if err == nil && a.f.Distinct {
+			impl = &distinctAgg{inner: impl, seen: map[string]bool{}}
+		}
+		return impl, err
+	}
 	want := func(lo, hi int) error {
 		if nargs < lo || nargs > hi {
 			return errf(codeUndefinedFunction, "function %s with %d arguments does not exist", f.Name, nargs)

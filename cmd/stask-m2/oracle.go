@@ -61,6 +61,8 @@ type Config struct {
 	HotFrac                                         float64
 	Hot                                             int
 	RefDocker, KeepRef, SkipLoad, LoadOnly, NoRef   bool
+	RefSkipLoad                                     bool
+	RefVolume                                       string
 	CrashAt                                         time.Duration
 	KillCmd, RestartCmd                             string
 	RestartWait                                     time.Duration

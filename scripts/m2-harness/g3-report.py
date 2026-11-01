@@ -33,6 +33,11 @@ for name in ORDER:
         continue
     r = {"name": name, "dir": d, "rc": rd(d + "/rc", "?"), "import": rd(d + "/import"), "wall": rd(d + "/wall_s")}
     pl = rd(d + "/perf-run.log")
+    r["start"] = rd(d + "/start_sum", "?")  # identical | DIFFERENT | no start checksum (docs/32 section 6b)
+    m = re.search(r"sut: restored snapshot \S+ in (\d+) s", pl)
+    r["restore_s"] = m.group(1) if m else "-"
+    m = re.search(r"sut: staskd ready (\d+) s after start", pl)
+    r["ready_s"] = m.group(1) if m else "-"
     r["perf_invalid"] = "RESULT INVALID" in pl or "INVALID, machine not quiet" in pl
     m = re.search(r"perf-run: start load=(\S+)", pl)
     r["pr_start"] = m.group(1) if m else "?"
@@ -56,6 +61,8 @@ for name in ORDER:
 def label(r):
     if r["rep"] and r["rep"].get("valid") is False:
         return "INVALID"  # load guard: the configured load did not happen (docs/32)
+    if r.get("start") == "DIFFERENT":
+        return "INVALID"  # the run did not start from the pristine data
     if r["perf_invalid"] or r["rc"] in ("4", "5", "3", "stopped: disk"):
         return "INVALID"
     rep = r["rep"]
@@ -87,8 +94,8 @@ p("- configuration: measured window %s s after a %s s warm-up (not recorded, no 
 p("- configs asked for: %s\n" % pre.get("CONFIGS"))
 
 p("## 1. Runs, machine state, oracles\n")
-p("| run | label | rc | oracles | import shape | load1 start / max / end (harness) | perf-run start / peak | wall s | data dir MB | SUT RSS |")
-p("|---|---|---|---|---|---|---|---|---|---|")
+p("| run | label | rc | oracles | import shape | load1 start / max / end (harness) | perf-run start / peak | wall s (restore s, ready s) | pristine start | data dir MB | SUT RSS |")
+p("|---|---|---|---|---|---|---|---|---|---|---|")
 for n, r in runs.items():
     rep = r["rep"]
     orc = "-"
@@ -102,8 +109,9 @@ for n, r in runs.items():
         l = "%.2f / %.2f / %.2f" % (mm["load1_at_start"], mm["load1_max"], mm["load1_end"])
         if mm.get("dirty_reasons"):
             l += " (" + "; ".join(mm["dirty_reasons"])[:100] + ")"
-    p("| %s | **%s** | %s | %s | %s | %s | %s / %s | %s | %s | %s |" % (n, label(r), r["rc"], orc, shape, l,
-                                                                   r["pr_start"], r["pr_peak"], r["wall"], r["datamb"] or "-",
+    p("| %s | **%s** | %s | %s | %s | %s | %s / %s | %s (%s, %s) | %s | %s | %s |" % (n, label(r), r["rc"], orc, shape, l,
+                                                                   r["pr_start"], r["pr_peak"], r["wall"], r["restore_s"], r["ready_s"],
+                                                                   r["start"], r["datamb"] or "-",
                                                                    r["rss"] or "-"))
 p("\nrc: 0 oracles held, 1 an oracle was violated, 2 setup error, 3-5 perf-run.sh (not quiet / INVALID). The equality run is not a performance run (shorter, reference container present).\n")
 
@@ -185,6 +193,13 @@ if st:
         except (TypeError, ValueError):
             return "-"
     p("- load of N=%s sims: %s s (rc %s), data directory %s MB after the load" % (pre.get("N"), st.get("load_s"), st.get("load_rc"), st.get("datadir_mb")))
+    if st.get("snapshot_mb"):
+        p("- pristine STASK snapshot (reused by every STASK configuration instead of a reload): checkpoint %s s (rc %s), clean stop rc %s, copy %s s, %s MB on disk"
+          % (st.get("checkpoint_s"), st.get("checkpoint_rc"), st.get("clean_stop_rc"), st.get("snapshot_s"), st.get("snapshot_mb")))
+    pg = env(os.path.join(out, "pgprep", "pgprep.env"))
+    if pg:
+        p("- pristine PostgreSQL 16 snapshot (docker volume, reused by pg-* and the equality reference): load %s s (rc %s), clean stop rc %s, %s MB%s"
+          % (pg.get("load_s", "-"), pg.get("load_rc", "-"), pg.get("clean_stop_rc", "-"), pg.get("snapshot_mb", "-"), " (reused)" if pg.get("snapshot") == "reused" else ""))
     p("- restart without -hybrid: ready after %s s, RSS %s, peak RSS %s" % (st.get("off_ready_s"), kb(st.get("off_rss_kb")), kb(st.get("off_hwm_kb"))))
     p("- restart with -hybrid: ready after %s s, RSS %s, peak RSS %s" % (st.get("hyb_ready_s"), kb(st.get("hyb_rss_kb")), kb(st.get("hyb_hwm_kb"))))
     if st.get("off_rss_kb") and st.get("hyb_rss_kb"):

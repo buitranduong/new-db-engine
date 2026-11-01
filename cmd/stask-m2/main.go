@@ -54,6 +54,8 @@ func parseFlags() *Config {
 	flag.Float64Var(&c.HotFrac, "hot-frac", 0.3, "fraction of T sim picks taken from the hot set (deliberate conflicts)")
 	flag.IntVar(&c.Hot, "hot", 200, "size of the hot set")
 	flag.BoolVar(&c.SkipLoad, "skip-load", false, "reuse the data already loaded in the SUT (the SUT journal must be empty)")
+	flag.BoolVar(&c.RefSkipLoad, "ref-skip-load", false, "the reference already holds the pristine generated data (restored from a snapshot): do not load it")
+	flag.StringVar(&c.RefVolume, "ref-volume", "", "docker volume mounted as PGDATA of the -ref-docker container (an existing pristine PG snapshot copy; empty = a fresh anonymous one)")
 	flag.BoolVar(&c.LoadOnly, "load-only", false, "load and exit")
 	flag.DurationVar(&c.CrashAt, "crash-at", 0, "crash drill: run -kill-cmd this long after the start (0 = off)")
 	flag.StringVar(&c.KillCmd, "kill-cmd", "", "shell command that kills -9 the server under test")
@@ -193,7 +195,11 @@ func main() {
 			port = strings.SplitN(cfg.RefDSN, "/", 4)[2][i+1:]
 		}
 		exec.Command("docker", "rm", "-f", cfg.RefName).Run()
-		if out, err := exec.Command("docker", "run", "-d", "--name", cfg.RefName, "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:"+port+":5432", "postgres:16").CombinedOutput(); err != nil {
+		dargs := []string{"run", "-d", "--name", cfg.RefName, "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:" + port + ":5432"}
+		if cfg.RefVolume != "" {
+			dargs = append(dargs, "-v", cfg.RefVolume+":/var/lib/postgresql/data")
+		}
+		if out, err := exec.Command("docker", append(dargs, "postgres:16")...).CombinedOutput(); err != nil {
 			logf("cannot start reference: %v %s", err, out)
 			cleanup()
 			os.Exit(2)
@@ -221,7 +227,20 @@ func main() {
 		}
 		logf("SUT loaded in %.1fs", time.Since(t0).Seconds())
 	}
-	if !cfg.NoRef {
+	sutSum, sutPristine, serr := startSum(ctx, cfg.SUT)
+	if serr != nil {
+		logf("start checksum of the SUT failed: %v", serr)
+		cleanup()
+		os.Exit(2)
+	}
+	logf("START_SUM sut: %s", sutSum)
+	writeStartSum(cfg.Out, "start_sum_sut.txt", sutSum)
+	if cfg.SkipLoad && !sutPristine {
+		logf("refuse: -skip-load but the SUT is not pristine (m2_seq > 0 or a non-empty m2_journal): restore the snapshot")
+		cleanup()
+		os.Exit(2)
+	}
+	if !cfg.NoRef && !cfg.RefSkipLoad {
 		t0 := time.Now()
 		ColumnarSims = false
 		if err := Load(ctx, cfg.RefDSN, g, cfg.SchemaFile, "copy", logf); err != nil {
@@ -230,6 +249,21 @@ func main() {
 			os.Exit(2)
 		}
 		logf("reference loaded in %.1fs", time.Since(t0).Seconds())
+	}
+	if !cfg.NoRef {
+		refSum, refPristine, rerr := startSum(ctx, cfg.RefDSN)
+		if rerr != nil {
+			logf("start checksum of the reference failed: %v", rerr)
+			cleanup()
+			os.Exit(2)
+		}
+		logf("START_SUM ref: %s", refSum)
+		writeStartSum(cfg.Out, "start_sum_ref.txt", refSum)
+		if !refPristine || refSum != sutSum {
+			logf("refuse: the reference does not start from the same pristine data as the SUT")
+			cleanup()
+			os.Exit(2)
+		}
 	}
 	if cfg.LoadOnly {
 		return

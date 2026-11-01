@@ -74,6 +74,9 @@ func parseFlags() *Config {
 	flag.DurationVar(&c.ProbeGap, "probe-gap", -1, "pause between probes (-1: spread over 90% of the duration; 0: back to back)")
 	flag.StringVar(&c.RefName, "ref-name", "m2h-ref", "name of the reference container (use a unique one when several harnesses run)")
 	flag.StringVar(&c.Iso, "iso", "", "transaction isolation level of T workers (default: server default)")
+	flag.StringVar(&c.Ablate, "ablate", "", "comma list of ablations for diagnosis, NOT acceptance runs: nohist (import without the history INSERT..SELECT), noseq (no m2_seq hot row in any transaction), othertable (import updates customers instead of sims)")
+	flag.StringVar(&c.SlowLog, "slow-log", "", "file for the slow-transaction / import-batch log (correlation with staskd STASK_SPANS)")
+	flag.DurationVar(&c.SlowMin, "slow-min", 100*time.Millisecond, "T transactions at least this slow go to -slow-log")
 	flag.IntVar(&c.MinT, "min-t", 100, "load guard: minimum successful T transactions (orders+pays+cancels) when -t > 0 (0 = do not check)")
 	flag.IntVar(&c.MinP, "min-p", 100, "load guard: minimum successful P reads (r1_point + r1_keyset) when -p > 0 (0 = do not check)")
 	flag.IntVar(&c.MinR2, "min-r2", 30, "load guard: minimum successful r2_page queries when -r > 0 (0 = do not check)")
@@ -297,6 +300,14 @@ func main() {
 	defer stop()
 	run.start = time.Now()
 	runStart, warmupDur = run.start, cfg.Warmup
+	for _, a := range strings.Split(cfg.Ablate, ",") {
+		if a != "" {
+			ablate[a] = true
+		}
+	}
+	if err := openSlowLog(cfg.SlowLog, cfg.SlowMin); err != nil {
+		logf("slow-log: %v", err)
+	}
 	var wg sync.WaitGroup
 	spawn := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
 	for i := 0; i < cfg.T; i++ {

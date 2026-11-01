@@ -27,7 +27,10 @@ pg16:start)
     docker volume rm -f "$PG_WORK_VOL" >/dev/null 2>&1; docker volume create "$PG_WORK_VOL" >/dev/null || exit 2
     VOLARG=(-v "$PG_WORK_VOL":/var/lib/postgresql/data)
   fi
-  docker run -d --name "$NAME" -e POSTGRES_PASSWORD=wm -p 127.0.0.1:$PGPORT:5432 "${VOLARG[@]}" postgres:16 >/dev/null
+  # PG_TUNED=1: the fair reference of docs/14 row OLTP1 (shared memory for parallel workers, 2 GB shared_buffers)
+  PGX=(); PGC=()
+  if [ -n "${PG_TUNED:-}" ]; then PGX=(--shm-size=1g); PGC=(-c shared_buffers=2GB); fi
+  docker run -d --name "$NAME" -e POSTGRES_PASSWORD=wm "${PGX[@]}" -p 127.0.0.1:$PGPORT:5432 "${VOLARG[@]}" postgres:16 "${PGC[@]}" >/dev/null
   until docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done; sleep 2 ;;
 pg16:kill9)  docker kill -s KILL "$NAME" >/dev/null ;;
 pg16:restart) docker start "$NAME" >/dev/null ;;

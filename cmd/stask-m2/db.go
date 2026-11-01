@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -198,6 +199,9 @@ func addGrp(gs []grp, store int, cat string) []grp {
 
 var seqNo atomic.Int64
 
+// ablate holds the ablations of -ablate (docs/34 H6): nohist, noseq, othertable. Runs with an ablation are not acceptance runs.
+var ablate = map[string]bool{}
+
 func parseTS(s string) time.Time { t, _ := time.Parse(time.RFC3339Nano, s); return t }
 func fmtTS(t time.Time) string   { return t.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano) }
 
@@ -296,12 +300,26 @@ func Apply(ctx context.Context, tx pgx.Tx, p *Payload, live bool, txid int64) (b
 		}
 		p.Rows = ct.RowsAffected()
 	case "import":
+		if ablate["othertable"] {
+			// ABLATION (docs/34 H6): the import statement touches a table T does not use (customers), same rows per batch
+			lo, _ := strconv.ParseInt(p.Nums[0][2:], 10, 64)
+			hi, _ := strconv.ParseInt(p.Nums[1][2:], 10, 64)
+			ct, err := tx.Exec(ctx, "UPDATE customers SET segment = segment WHERE id >= $1 AND id < $2", 1+lo%45000, 1+lo%45000+(hi-lo))
+			if err != nil {
+				return false, err
+			}
+			p.Rows = ct.RowsAffected()
+			break
+		}
 		// re-price a 1% slice of the sims in ONE transaction and write history for it (docs/30 §7)
 		ct, err := tx.Exec(ctx, "UPDATE sims SET price = 500000 + ((price * 7 + $1) % 4000000), updated_at = $2 WHERE number >= $3 AND number < $4", p.Slice, t, p.Nums[0], p.Nums[1])
 		if err != nil {
 			return false, err
 		}
 		p.Rows = ct.RowsAffected()
+		if ablate["nohist"] {
+			break // ABLATION: no INSERT .. SELECT into history
+		}
 		if _, err := tx.Exec(ctx, "INSERT INTO history (id, sim_number, changed_at, field, old_value, new_value) SELECT $1 + CAST(substr(number, 3) AS bigint), number, $2, 'price', NULL, CAST(price AS text) FROM sims WHERE number >= $3 AND number < $4", p.OrderID, t, p.Nums[0], p.Nums[1]); err != nil {
 			return false, err
 		}
@@ -310,7 +328,9 @@ func Apply(ctx context.Context, tx pgx.Tx, p *Payload, live bool, txid int64) (b
 	}
 	if live {
 		var seq int64
-		if err := tx.QueryRow(ctx, "UPDATE m2_seq SET v = v + 1 WHERE id = 1 RETURNING v").Scan(&seq); err != nil {
+		if ablate["noseq"] {
+			seq = txid // ABLATION: no hot row; the journal is keyed by txid (journal_seq_gapless then reports gaps: meaningless)
+		} else if err := tx.QueryRow(ctx, "UPDATE m2_seq SET v = v + 1 WHERE id = 1 RETURNING v").Scan(&seq); err != nil {
 			return false, err
 		}
 		js := mustJSON(p)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -280,6 +281,9 @@ func (r *Run) workerT(ctx context.Context, id int) {
 		d := time.Since(t0)
 		r.gate.RUnlock()
 		cls := "t_" + p.Kind
+		if r.Phase() != "warmup" {
+			slowEvent(cls, t0, d, res.Err == nil, fmt.Sprintf("txid=%d retries=%d", txid, res.Retries))
+		}
 		switch {
 		case res.Unknown:
 			r.unknown.Store(txid, p.Kind)
@@ -442,6 +446,9 @@ func (r *Run) workerImport(ctx context.Context) {
 			txcancel()
 			d := time.Since(t0)
 			r.gate.RUnlock()
+			if r.Phase() != "warmup" {
+				importEvent(txid, t0, d, p.Slice, lo, hi, res.Err == nil)
+			}
 			switch {
 			case res.Unknown:
 				r.unknown.Store(txid, "import")
@@ -463,4 +470,44 @@ func (r *Run) workerImport(ctx context.Context) {
 		}
 		sleepCtx(ctx, time.Duration(r.cfg.ImportEvery)*time.Second)
 	}
+}
+
+// ---------------------------------------------------------------- slow-transaction log (-slow-log)
+
+// The slow-log file correlates the client view with the server span log (staskd STASK_SPANS): one line per import batch
+// ("I <txid> <start unix ms> <dur ms> slice range ok") and one per T transaction slower than -slow-min ("T <class> <start> <dur> ok info").
+var (
+	slowMu   sync.Mutex
+	slowFile *os.File
+	slowMin  time.Duration
+)
+
+func openSlowLog(path string, min time.Duration) error {
+	if path == "" {
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	slowFile, slowMin = f, min
+	return nil
+}
+
+func slowEvent(class string, t0 time.Time, d time.Duration, ok bool, info string) {
+	if slowFile == nil || d < slowMin {
+		return
+	}
+	slowMu.Lock()
+	fmt.Fprintf(slowFile, "T %s %d %.1f %v %s\n", class, t0.UnixMilli(), float64(d.Microseconds())/1000, ok, info)
+	slowMu.Unlock()
+}
+
+func importEvent(txid int64, t0 time.Time, d time.Duration, slice int, a, b int64, ok bool) {
+	if slowFile == nil {
+		return
+	}
+	slowMu.Lock()
+	fmt.Fprintf(slowFile, "I %d %d %.1f slice=%d range=%d-%d ok=%v\n", txid, t0.UnixMilli(), float64(d.Microseconds())/1000, slice, a, b, ok)
+	slowMu.Unlock()
 }

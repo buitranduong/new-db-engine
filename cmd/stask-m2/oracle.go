@@ -47,6 +47,9 @@ func QueryText(ctx context.Context, c *pgx.Conn, sql string) ([][]string, error)
 
 type Config struct {
 	SUT, RefDSN, Label, Out, QueriesDir, SchemaFile string
+	SlowLog                                         string
+	Ablate                                          string
+	SlowMin                                         time.Duration
 	N                                               int
 	Seed                                            string
 	HistPerSim                                      int

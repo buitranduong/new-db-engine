@@ -1310,9 +1310,10 @@ type pk struct {
 }
 
 type commitReq struct {
-	enq         time.Time // LatDebug only
-	prepared    time.Time // LatDebug only
-	acked       time.Time // LatDebug only
+	enq         time.Time     // LatDebug only
+	prepared    time.Time     // LatDebug only
+	acked       time.Time     // LatDebug only
+	qwait       time.Duration // LatDebug only: time in the request queue
 	ops         []pendingOp
 	reads       []readKey
 	scans       []*TableState // tables a serializable transaction scanned (serscan.go)
@@ -1399,6 +1400,11 @@ func (e *Engine) submit(r *commitReq) error {
 		return err
 	}
 	subT0 := time.Now()
+	if SpanOn() {
+		defer func() {
+			SpanLog("submit", subT0, time.Since(subT0), "ops=%d reads=%d qwait=%.1f prepared_to_ack=%.1f", len(r.ops), len(r.reads), float64(r.qwait.Microseconds())/1000, float64(time.Since(r.prepared).Microseconds())/1000)
+		}()
+	}
 	r.done = make(chan struct{})
 	if g := e.gate.Load(); g != nil && r.gate != g {
 		g.wait(e, r) // occ_repair.go: a starved statement is finishing on these tables
@@ -1774,7 +1780,15 @@ func (e *Engine) committer() {
 			}
 			e.prepare(open, inflight, recent, batch, &ddlNext)
 			if LatDebug {
-				LatPrepare.Add(time.Since(tp))
+				pd := time.Since(tp)
+				LatPrepare.Add(pd)
+				if SpanOn() && pd >= SpanMin {
+					nops := 0
+					for _, q := range batch {
+						nops += len(q.ops) + len(q.moves)
+					}
+					SpanLog("prep", tp, pd, "reqs=%d ops=%d open=%d", len(batch), nops, len(open.placed))
+				}
 			}
 		case <-workC:
 			var tp time.Time
@@ -1782,6 +1796,7 @@ func (e *Engine) committer() {
 				tp = time.Now()
 			}
 			if r := staging[0]; e.stageStep(r) {
+				SpanLog("stagedone", tp, time.Since(tp), "ops=%d", len(r.ops))
 				staging[0], staging = nil, staging[1:]
 				e.tmu.RLock()
 				ddlNext = max(ddlNext, e.nextTableID)
@@ -1936,7 +1951,8 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 	for _, req := range batch {
 		r = req
 		if LatDebug && r.stage == nil {
-			LatQueue.Add(time.Since(r.enq))
+			r.qwait = time.Since(r.enq)
+			LatQueue.Add(r.qwait)
 		}
 		if rollErr != nil {
 			finishReq(r, rollErr)
@@ -2277,6 +2293,7 @@ func (e *Engine) syncBatch(b *commitBatch) {
 	sd := time.Since(t0)
 	if LatDebug {
 		LatSync.Add(sd)
+		SpanLog("sync", t0, sd, "reqs=%d bytes=%d", len(b.placed), b.bytes)
 	}
 	if err := e.Failed(); err != nil {
 		// A sync failed elsewhere (e.g. while rolling a segment) after this
@@ -2345,6 +2362,11 @@ func (e *Engine) syncBatch(b *commitBatch) {
 // order) and then drops it from the read overlay.
 func (e *Engine) installBatch(b *commitBatch) {
 	t0 := time.Now()
+	if SpanOn() {
+		defer func() {
+			SpanLog("install", t0, time.Since(t0), "reqs=%d installs=%d bytes=%d", len(b.placed), len(b.installs), b.bytes)
+		}()
+	}
 	e.gc.mu.Lock()
 	// a dropped table's versions are superseded by the drop: reclaimable
 	// once the horizon passes it (earlier batches are all installed)
@@ -2448,6 +2470,10 @@ func (e *Engine) installBatch(b *commitBatch) {
 
 // waitInstalled returns once every commit up to lsn is in the index.
 func (e *Engine) waitInstalled(lsn uint64) {
+	if SpanOn() && e.installed.Load() < lsn {
+		t0 := time.Now()
+		defer func() { SpanLog("waitinst", t0, time.Since(t0), "lsn=%d", lsn) }()
+	}
 	for e.installed.Load() < lsn {
 		e.posMu.Lock()
 		ch := e.installNotify

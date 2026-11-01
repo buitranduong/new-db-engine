@@ -123,6 +123,9 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 	fmt.Fprintf(&m, "- run: %s, harness commit %s, **%s**\n", rep["date"], commit, tag)
 	fmt.Fprintf(&m, "- scale: %d sims (%d rows), seed %s; load: T=%d P=%d R=%d, import %s every %ds, hot set %d at %.0f%%; %.0f s elapsed\n",
 		cfg.N, NewGen(cfg.N, cfg.Seed, cfg.HistPerSim).TotalRows(), cfg.Seed, cfg.T, cfg.P, cfg.R, cfg.ImportMode, cfg.ImportEvery, cfg.Hot, cfg.HotFrac*100, elapsed.Seconds())
+	if cfg.Ablate != "" {
+		fmt.Fprintf(&m, "- **ABLATION (diagnosis only, not an acceptance run): %s**; import batch %d rows\n", cfg.Ablate, cfg.ImportBatch)
+	}
 	fmt.Fprintf(&m, "- machine: %d CPUs, load1 start %.2f / max %.2f / end %.2f, disk free %.1f GB\n\n", mach.CPUs, mach.Load1At0, mach.Load1Max, mach.Load1End, mach.FreeGBEnd)
 	if len(lg) > 0 {
 		m.WriteString("## LOAD NOT APPLIED\n\n**This run is INVALID.** The load it was configured to apply did not happen, so \"all oracles held\" below compares empty sets and proves nothing, and no number of this report may be quoted.\n\n")

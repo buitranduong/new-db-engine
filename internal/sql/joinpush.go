@@ -37,7 +37,7 @@ func init() {
 }
 
 // joinStats counts, for the tests, how often each path ran.
-var joinStats struct{ nl, buildLeft, pk, pkprefix, index, scanFilter atomic.Int64 }
+var joinStats struct{ nl, buildLeft, pk, pkprefix, pkrange, index, scanFilter atomic.Int64 }
 
 const (
 	nlMaxOuter  = 4096 // an index nested loop is considered for at most this many outer rows
@@ -179,8 +179,9 @@ func (p *tablePlan) unbound() Expr {
 
 // tableAccess is how a table with a pushed filter is read.
 type tableAccess struct {
-	kind       string // scan, pk, pkprefix, index
+	kind       string // scan, pk, pkprefix, pkrange, index
 	keys       []string
+	pkr        pkRange
 	rng        [][2]string
 	choice     *indexChoice
 	impossible bool
@@ -290,11 +291,22 @@ func (p *tablePlan) access(tx *core.Tx, ctx *evalCtx) tableAccess {
 			}
 		}
 	}
+	var ic *indexChoice
 	if len(t.Indexes) > 0 && canUseIndex(tx, t) {
 		if c := chooseIndex(nonPartial(t), alias, ub, ctx, nil); c != nil &&
 			(c.nothing || len(c.eq) > 0 || c.in != nil && len(c.in) <= maxPushIn) {
-			return tableAccess{kind: "index", choice: c, cond: indexCond(c)}
+			ic = c
 		}
+	}
+	// a bounded range of the primary key (rangepath.go) beats an index unless the index has an
+	// equality prefix and the range is only a half line
+	if canRange(tx) && (ic == nil || !ic.nothing) {
+		if rg, ok := pkRangeOf(t, alias, ub, ctx); ok && (rg.twoSided || ic == nil || len(ic.eq) == 0 && ic.in == nil) {
+			return tableAccess{kind: "pkrange", pkr: rg, cond: rg.cond}
+		}
+	}
+	if ic != nil {
+		return tableAccess{kind: "index", choice: ic, cond: indexCond(ic)}
 	}
 	return scan
 }
@@ -373,6 +385,19 @@ func (p *tablePlan) runFilter(qx *qexec, outer *evalCtx) ([][]Datum, error) {
 			}
 		}
 		return rows, nil
+	case ap.kind == "pkrange" && qx.s != nil:
+		joinStats.pkrange.Add(1)
+		err := qx.s.scanKeyRange(qx.tx, t, ap.pkr, func(schema.Row) (bool, error) { return true, nil },
+			func(r schema.Row) (bool, error) {
+				if err := poll(); err != nil {
+					return false, err
+				}
+				return true, emit(r)
+			})
+		if err != nil {
+			return nil, err
+		}
+		return rows, nil
 	case ap.kind == "index" && qx.s != nil:
 		ok, err := qx.s.scanIndex(qx.tx, t, ap.choice, false, func(schema.Row) (bool, error) { return true, nil },
 			func(r schema.Row) (bool, error) {
@@ -421,6 +446,9 @@ func (x *explainer) explainTable(depth int, f *tablePlan) {
 		ap = f.access(x.tx, qx.ctx(nil))
 	}
 	switch ap.kind {
+	case "pkrange":
+		x.node(depth, "Index Scan using %s on %s", pkeyName(f.t), label)
+		x.detail(depth, "Index Cond: primary key range %s", ap.cond)
 	case "pk", "pkprefix":
 		x.node(depth, "Index Scan using %s on %s", pkeyName(f.t), label)
 		x.detail(depth, "Index Cond: primary key %s", ap.cond)

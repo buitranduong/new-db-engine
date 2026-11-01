@@ -20,6 +20,7 @@ Người dùng chưa trả lời các câu hỏi chỉ tiêu tuyệt đối củ
 - `-hybrid` bật khi đo đường lai; đo cả hai (có và không) cho cùng truy vấn.
 - Đĩa trống >= 5 GB, tải 1 phút < 1,0, qua `scripts/perf-run.sh`; không có gate hay agent nào chạy.
 - **Chạy G3 của lát dọc bằng `scripts/m2-harness/g3.sh`** (docs/32 §6): một lệnh cho ma trận {hybrid bật/tắt} x {không nhập, nhập theo lô (mặc định), nhập một giao dịch}, PostgreSQL 16 làm chuẩn khi N <= 10M, các cờ ở trên (`-scrub-interval 0`, perf-run, khoá `/tmp/stask-bigdata.lock`, đĩa >= 3 GB dừng) đã nằm trong script; `N=10000000 scripts/m2-harness/g3.sh` rồi `N=30000000`.
+- **Nạp một lần mỗi engine** (docs/32 §9): `g3.sh` nạp N một lần cho STASK (checkpoint + dừng êm + ảnh chụp thư mục dữ liệu) và một lần cho PostgreSQL 16 (volume docker), rồi khôi phục ảnh chụp nguyên vẹn cho từng cấu hình và chạy harness `-skip-load`; lần chạy chỉ hợp lệ nếu `START_SUM` khớp lần nạp (cột "pristine start"). Đĩa cần thêm cho ảnh chụp ở 10M: ~3 GB STASK + ~2 GB PostgreSQL (và ~2 GB volume tham chiếu khi chạy `equality`), vẫn dừng khi trống < 3 GB. Báo cáo có thêm bảng nghiệm thu (PASS/FAIL, mục 7c), mẫu lỗi nguyên văn (7b) và p99 trong/ngoài merge (7d).
 
 ## 2. Kích thước (vừa VM: 8 vCPU, 31 GB RAM; đĩa trống ~12 GB, ~23 GB sau khi xoá cache Go)
 

@@ -6,7 +6,7 @@
 # Pristine snapshots (docs/32 section 6b), used by g3.sh to load once and restore per configuration:
 #   STASK_SNAP=<dir>      stask start: the data dir is replaced by a copy of the snapshot (rsync -a --delete, then sync), then
 #                         the script waits for /v1/status (and for state_ready when STASK_FLAGS has -hybrid) before it returns.
-#   PG_SNAP_VOL=<volume>  pg16 start: a fresh work volume <name>-data is filled from this docker volume (cp -a); stop removes it.
+#   PG_RESTORE_FROM=<volume>  pg16 start: a fresh work volume <name>-data is filled from this docker volume (cp -a); stop removes it.
 #   PG_WORK_VOL=<volume>  pg16 start without a snapshot: use this (new, empty) volume as PGDATA and keep it after stop
 #                         (this is how g3.sh builds the PostgreSQL snapshot).
 set -u
@@ -19,9 +19,9 @@ case "$KIND:$ACT" in
 pg16:start)
   docker rm -f "$NAME" >/dev/null 2>&1
   VOLARG=()
-  if [ -n "${PG_SNAP_VOL:-}" ]; then
+  if [ -n "${PG_RESTORE_FROM:-}" ]; then
     docker volume rm -f "$NAME-data" >/dev/null 2>&1; docker volume create "$NAME-data" >/dev/null || exit 2
-    docker run --rm --entrypoint sh -v "$PG_SNAP_VOL":/s:ro -v "$NAME-data":/d postgres:16 -c 'cp -a /s/. /d/ && sync' || exit 2
+    docker run --rm --entrypoint sh -v "$PG_RESTORE_FROM":/s:ro -v "$NAME-data":/d postgres:16 -c 'cp -a /s/. /d/ && sync' || exit 2
     VOLARG=(-v "$NAME-data":/var/lib/postgresql/data)
   elif [ -n "${PG_WORK_VOL:-}" ]; then
     docker volume rm -f "$PG_WORK_VOL" >/dev/null 2>&1; docker volume create "$PG_WORK_VOL" >/dev/null || exit 2
@@ -34,7 +34,7 @@ pg16:restart) docker start "$NAME" >/dev/null ;;
 pg16:graceful) docker stop -t 600 "$NAME" >/dev/null ;;
 pg16:stop)
   docker rm -f -v "$NAME" >/dev/null 2>&1
-  [ -n "${PG_SNAP_VOL:-}" ] && docker volume rm -f "$NAME-data" >/dev/null 2>&1
+  [ -n "${PG_RESTORE_FROM:-}" ] && docker volume rm -f "$NAME-data" >/dev/null 2>&1
   exit 0 ;;
 stask:start|stask:restart)
   if [ "$ACT" = start ] && [ -n "${STASK_SNAP:-}" ]; then

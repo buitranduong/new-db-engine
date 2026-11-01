@@ -131,7 +131,7 @@ run_one() {
     skip="-skip-load"
     local need_mb
     if [ "$kind" = stask ]; then snapenv=(STASK_SNAP="$SNAP_STASK"); need_mb=$(snap_val "$SNAP_STASK.env" MB)
-    else snapenv=(PG_SNAP_VOL="$PG_SNAP_VOL"); need_mb=$(snap_val "$M2_DIR/$PG_SNAP_VOL.env" MB); fi
+    else snapenv=(PG_RESTORE_FROM="$PG_SNAP_VOL"); need_mb=$(snap_val "$M2_DIR/$PG_SNAP_VOL.env" MB); fi
     if awk -v f="$f" -v m="${need_mb:-0}" -v k="$MIN_FREE_GB" 'BEGIN{exit !(f*1024 < m + k*1024)}'; then
       log "STOP before $name: free ${f} GB < restore copy ${need_mb:-0} MB + ${MIN_FREE_GB} GB"; echo "stopped: disk" >"$dir/rc"; return 2
     fi

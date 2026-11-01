@@ -1,0 +1,29 @@
+perf-run: start load=0.92 2026-11-01T11:02:49Z
+ready 12
+page 1 rows=100 md5=ae25947861ead31fafabf211e246d596
+page 2 rows=100 md5=e5ebcbb4758534be3e31f1146daf3c8e
+page 3 rows=100 md5=a47c929154fd2abb23cd3b1ed155cb9a
+client page 1  n=1500 p50=6.93 ms p99=9.28 ms mean=7.03 ms
+client page 2  n=1500 p50=7.69 ms p99=10.64 ms mean=7.77 ms
+client page 3  n=1500 p50=8.52 ms p99=11.51 ms mean=8.58 ms
+client all     n=4500 p50=7.76 ms p99=10.51 ms mean=7.79 ms
+mallocs 60206500
+total_alloc 15558761792
+num_gc 10
+pause_total_ns 3841968
+heap_alloc 1880518344
+span wire_parse           n=4500 p50_us=112.6 p99_us=176.2 mean_us=116.7
+span exec                 n=4500 p50_us=7217.7 p99_us=9785.8 mean_us=7241.7
+span hy_total             n=4500 p50_us=7156.2 p99_us=9729.3 mean_us=7176.7
+span hy_plan              n=4500 p50_us=48.2 p99_us=97.9 mean_us=51.1
+span hy_contract          n=4500 p50_us=2.3 p99_us=3.8 mean_us=2.5
+span hy_dim               n=4500 p50_us=0.7 p99_us=2.4 mean_us=0.8
+span hy_kernel            n=4500 p50_us=6613.1 p99_us=9092.2 mean_us=6631.8
+span hy_getat_sum         n=4500 p50_us=290.8 p99_us=382.9 mean_us=293.2
+span hy_check_sum         n=4500 p50_us=24.8 p99_us=42.7 mean_us=25.6
+span hy_mat_sum           n=4500 p50_us=175.0 p99_us=262.9 mean_us=181.8
+span wire_encode          n=4500 p50_us=56.7 p99_us=92.9 mean_us=60.7
+span wire_flush           n=4500 p50_us=40.6 p99_us=69.0 mean_us=43.1
+span wire_total           n=4500 p50_us=7437.9 p99_us=10035.2 mean_us=7467.8
+span getat_calls(count)   n=4500 p50=100 p99=100 mean=100.0
+perf-run: end rc=0 peak_load1=2.63

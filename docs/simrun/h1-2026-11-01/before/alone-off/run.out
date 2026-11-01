@@ -1,0 +1,23 @@
+perf-run: start load=0.94 2026-11-01T10:33:25Z
+ready 11
+page 1 rows=100 md5=ae25947861ead31fafabf211e246d596
+page 2 rows=100 md5=e5ebcbb4758534be3e31f1146daf3c8e
+page 3 rows=100 md5=a47c929154fd2abb23cd3b1ed155cb9a
+client page 1  n=80 p50=641.59 ms p99=916.90 ms mean=643.30 ms
+client page 2  n=80 p50=644.36 ms p99=924.69 ms mean=655.76 ms
+client page 3  n=80 p50=637.45 ms p99=951.98 ms mean=657.61 ms
+client all     n=240 p50=641.40 ms p99=923.98 ms mean=652.22 ms
+mallocs 1093125488
+total_alloc 69295569640
+num_gc 36
+pause_total_ns 11001616
+heap_alloc 1375856448
+span wire_parse           n=240 p50_us=136.4 p99_us=194.6 mean_us=139.6
+span exec                 n=240 p50_us=640640.6 p99_us=923268.0 mean_us=651478.9
+span wire_encode          n=240 p50_us=59.5 p99_us=94.8 mean_us=62.0
+span wire_flush           n=240 p50_us=79.0 p99_us=106.5 mean_us=78.9
+span wire_total           n=240 p50_us=640944.4 p99_us=923542.6 mean_us=651769.7
+perf-run: end rc=0 peak_load1=3.83
+DONE
+perf-run: start load=0.86 2026-11-01T10:37:46Z
+ready 11

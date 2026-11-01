@@ -1,0 +1,24 @@
+File: staskd
+Build ID: 7d361bf16b2f3b1717ddc52b3618b1bd237cd437
+Type: cpu
+Time: 2026-11-01 11:05:17 UTC
+Duration: 25.16s, Total samples = 161.38s (641.53%)
+Showing nodes accounting for 64.46s, 39.94% of 161.38s total
+Dropped 1003 nodes (cum <= 0.81s)
+Showing top 15 nodes out of 219
+      flat  flat%   sum%        cum   cum%
+     7.30s  4.52%  4.52%     34.21s 21.20%  stask/internal/sql.(*evalCtx).eval
+     5.72s  3.54%  8.07%      5.72s  3.54%  encoding/binary.Uvarint (inline)
+     5.47s  3.39% 11.46%      5.47s  3.39%  runtime.memmove
+     5.31s  3.29% 14.75%     37.82s 23.44%  stask/internal/sql.(*tablePlan).runParallelWhere.func2
+     4.88s  3.02% 17.77%     11.78s  7.30%  stask/internal/wal.(*Log).ReadOpMeta
+     4.58s  2.84% 20.61%     14.14s  8.76%  stask/internal/schema.(*Table).DecodeInto
+     4.36s  2.70% 23.31%     11.28s  6.99%  time.parse
+     3.90s  2.42% 25.73%     29.36s 18.19%  stask/internal/sql.(*evalCtx).binary
+     3.77s  2.34% 28.06%      3.77s  2.34%  runtime.memclrNoHeapPointers
+     3.65s  2.26% 30.33%      5.60s  3.47%  stask/internal/sql.fromCol
+     3.53s  2.19% 32.51%      3.53s  2.19%  runtime.duffcopy
+     3.33s  2.06% 34.58%      3.33s  2.06%  sync/atomic.(*Int32).Add (inline)
+     2.95s  1.83% 36.40%      2.95s  1.83%  internal/runtime/syscall.Syscall6
+     2.87s  1.78% 38.18%      4.70s  2.91%  stask/internal/wal.(*Log).vbitsOf
+     2.84s  1.76% 39.94%      3.24s  2.01%  stask/internal/proj.filterRange

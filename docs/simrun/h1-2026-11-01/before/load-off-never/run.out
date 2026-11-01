@@ -1,0 +1,21 @@
+perf-run: start load=0.87 2026-11-01T10:53:20Z
+ready 11
+harness rc=0
+10:53:34 4300200 rows > 2M: taking flock /tmp/stask-bigdata.lock (released at exit)
+10:53:35 START_SUM sut: sims=1000000,2499634534607,7500605,1899552,20515732;sims_reserved=100031;sims_sold=200005;stock=200,1000000,100031;orders=100000,375258925595,2495716966;order_items=150000,375258925595,6250075000;history=3000000;customers=50000;m2_seq=0;m2_journal=0
+10:53:35 starting: T=4 P=4 R=2 import=never duration=40s probes=0 (probe sims 2000)
+10:53:35 warm-up 10s (not recorded, no import), then 40s measured
+10:54:25 run finished after 40.0s; final checks
+10:54:29 all oracles held
+mallocs 741287933
+total_alloc 49148645528
+num_gc 26
+pause_total_ns 24664830
+heap_alloc 2295370288
+span wire_parse           n=87 p50_us=105.9 p99_us=1704.6 mean_us=131.4
+span exec                 n=90 p50_us=1125503.4 p99_us=1319561.5 mean_us=1023275.5
+span wire_encode          n=87 p50_us=59.3 p99_us=268.3 mean_us=74.0
+span wire_flush           n=87 p50_us=38.3 p99_us=420.7 mean_us=80.5
+span wire_total           n=87 p50_us=1126318.5 p99_us=1319786.2 mean_us=1036184.3
+/dev/mapper/ubuntu--vg-ubuntu--lv   57G   52G  2.5G  96% /
+perf-run: end rc=0 peak_load1=5.90

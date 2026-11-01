@@ -1,0 +1,34 @@
+File: staskd
+Build ID: 7d361bf16b2f3b1717ddc52b3618b1bd237cd437
+Type: cpu
+Time: 2026-11-01 11:03:11 UTC
+Duration: 25.11s, Total samples = 106.50s (424.11%)
+Showing nodes accounting for 101.08s, 94.91% of 106.50s total
+Dropped 399 nodes (cum <= 0.53s)
+Showing top 25 nodes out of 54
+      flat  flat%   sum%        cum   cum%
+    32.45s 30.47% 30.47%     39.10s 36.71%  stask/internal/proj.filterRange
+    14.22s 13.35% 43.82%     99.63s 93.55%  stask/internal/proj.(*SegTbl).TopNPerGroup.func2
+    12.85s 12.07% 55.89%     25.94s 24.36%  stask/internal/proj.(*r2ctx).hashOf
+    10.48s  9.84% 65.73%     10.48s  9.84%  stask/internal/proj.gIntIdx (inline)
+     6.22s  5.84% 71.57%      6.22s  5.84%  crypto/md5.block
+     3.50s  3.29% 74.85%      3.50s  3.29%  slices.Index[go.shape.[]int32,go.shape.int32] (inline)
+     2.97s  2.79% 77.64%      2.97s  2.79%  runtime.memmove
+     2.85s  2.68% 80.32%      6.65s  6.24%  stask/internal/proj.intPass
+     2.07s  1.94% 82.26%      9.11s  8.55%  stask/internal/proj.(*r2heap).down
+     1.78s  1.67% 83.93%      1.78s  1.67%  stask/internal/proj.(*SegBase).key (inline)
+     1.70s  1.60% 85.53%      1.70s  1.60%  runtime.memclrNoHeapPointers
+     1.59s  1.49% 87.02%     29.45s 27.65%  stask/internal/proj.(*r2ctx).worse
+     1.48s  1.39% 88.41%      1.48s  1.39%  stask/internal/proj.(*SegTbl).TopNPerGroup.func1
+     1.35s  1.27% 89.68%     32.34s 30.37%  stask/internal/proj.(*r2heap).offer
+     1.24s  1.16% 90.85%      1.24s  1.16%  cmpbody
+     0.74s  0.69% 91.54%      7.21s  6.77%  crypto/md5.(*digest).Write
+     0.72s  0.68% 92.22%      7.60s  7.14%  crypto/md5.(*digest).checkSum
+     0.64s   0.6% 92.82%      1.92s  1.80%  bytes.Compare (inline)
+     0.42s  0.39% 93.21%      8.62s  8.09%  crypto/md5.Sum
+     0.40s  0.38% 93.59%      1.55s  1.46%  stask/internal/proj.cmpEntries
+     0.37s  0.35% 93.93%      1.82s  1.71%  stask/internal/proj.sortEntries.func1
+     0.36s  0.34% 94.27%      1.60s  1.50%  slices.partitionCmpFunc[go.shape.struct { stask/internal/proj.sk int64; stask/internal/proj.id uint32; stask/internal/proj.g uint8; stask/internal/proj.hh bool; stask/internal/proj.hash [16]uint8 }]
+     0.30s  0.28% 94.55%      3.80s  3.57%  slices.Contains[go.shape.[]int32,go.shape.int32] (inline)
+     0.19s  0.18% 94.73%      1.95s  1.83%  stask/internal/proj.(*r2heap).up
+     0.19s  0.18% 94.91%      4.48s  4.21%  stask/internal/sql.(*Session).hyRun

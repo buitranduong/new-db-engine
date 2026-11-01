@@ -1,0 +1,10 @@
+mallocs 744819981
+total_alloc 52965910984
+num_gc 28
+pause_total_ns 14629111
+heap_alloc 2028380400
+span wire_parse           n=86 p50_us=105.9 p99_us=164.3 mean_us=110.0
+span exec                 n=89 p50_us=1132061.6 p99_us=1344000.7 mean_us=1053737.6
+span wire_encode          n=86 p50_us=58.9 p99_us=295.4 mean_us=71.8
+span wire_flush           n=86 p50_us=38.6 p99_us=698.4 mean_us=73.5
+span wire_total           n=86 p50_us=1133302.3 p99_us=1344212.9 mean_us=1062014.1

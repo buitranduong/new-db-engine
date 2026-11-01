@@ -1,0 +1,20 @@
+File: staskd
+Build ID: 7d361bf16b2f3b1717ddc52b3618b1bd237cd437
+Type: alloc_space
+Time: 2026-11-01 11:03:11 UTC
+Showing nodes accounting for 8.75GB, 93.05% of 9.41GB total
+Dropped 128 nodes (cum <= 0.05GB)
+Showing top 12 nodes out of 45
+      flat  flat%   sum%        cum   cum%
+    5.28GB 56.13% 56.13%     5.65GB 60.01%  stask/internal/proj.(*SegTbl).TopNPerGroup.func2
+       1GB 10.60% 66.73%     1.12GB 11.94%  stask/internal/schema.(*Table).DecodeWidth
+    0.57GB  6.05% 72.78%     1.36GB 14.45%  stask/internal/core.(*Engine).buildSec.func1
+    0.43GB  4.60% 77.38%     0.44GB  4.64%  stask/internal/proj.(*SegTbl).TopNPerGroup
+    0.36GB  3.88% 81.26%     0.36GB  3.88%  stask/internal/proj.(*r2heap).offer
+    0.26GB  2.81% 84.07%     0.26GB  2.81%  stask/internal/core.(*keyArena).add
+    0.19GB  1.97% 86.05%     0.19GB  1.97%  stask/internal/core.(*treeBuilder).add
+    0.17GB  1.85% 87.90%     0.78GB  8.30%  stask/internal/sql.(*Session).hyRun
+    0.17GB  1.83% 89.73%     0.17GB  1.83%  stask/internal/core.(*Engine).readValue
+    0.13GB  1.34% 91.07%     0.13GB  1.34%  stask/internal/schema.(*Table).decodeN
+    0.10GB  1.11% 92.18%     0.19GB  1.98%  stask/internal/proj.(*SegColumnar).addTable.func1
+    0.08GB  0.86% 93.05%     0.08GB  0.86%  stask/internal/proj.(*segBuilder).addKey (inline)

@@ -60,6 +60,7 @@ type hySess struct {
 	last     *hyReport
 	pinSnap  uint64
 	pinState *proj.SegState
+	hit      bool // the last statement was an R2 candidate (boundary spans, hyspan.go)
 }
 
 // hyReport is what one decision learned; EXPLAIN prints it.
@@ -109,11 +110,21 @@ func (h *Hybrid) note(why string) {
 // existing executors; the reason is in s.hy.last either way.
 func (s *Session) tryHybrid(tx *core.Tx, st *Select, params []Datum) (*Result, bool, error) {
 	h := s.Hybrid
+	if HySpanOn {
+		s.hy.hit = hySpanShape(st.Rel)
+	}
 	if h == nil {
 		return nil, false, nil
 	}
 	s.hy.last = nil
+	var tp time.Time
+	if HySpanOn {
+		tp = time.Now()
+	}
 	p, why, cand := s.hyRecognize(st, params)
+	if HySpanOn && cand {
+		HyRec(HyPlan, time.Since(tp))
+	}
 	if !cand {
 		return nil, false, nil
 	}
@@ -130,6 +141,9 @@ func (s *Session) tryHybrid(tx *core.Tx, st *Select, params []Datum) (*Result, b
 	t0 := time.Now()
 	res, why, err := s.hyRun(tx, p, params, rep)
 	rep.elapsed = time.Since(t0)
+	if HySpanOn {
+		HyRec(HyTotal, rep.elapsed)
+	}
 	if err != nil {
 		return nil, true, err
 	}
@@ -300,7 +314,14 @@ func hyColsOf(p *hyPlan, outs []hyOut) []Column {
 func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (*Result, string, error) {
 	h := s.Hybrid
 	e := h.E
+	var tc time.Time
+	if HySpanOn {
+		tc = time.Now()
+	}
 	state, why := s.hyContract(tx, rep)
+	if HySpanOn {
+		HyRec(HyContract, time.Since(tc))
+	}
 	if why != "" {
 		return nil, why, nil
 	}
@@ -327,6 +348,10 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	// the dimension, read from the core at the same snapshot
 	groups := p.groups
 	var dimRows map[string]schema.Row
+	var td time.Time
+	if HySpanOn {
+		td = time.Now()
+	}
 	if p.dim != nil {
 		dimRows = map[string]schema.Row{}
 		ctx := &evalCtx{sc: &scope{t: p.dim.t, alias: p.dim.alias}, params: params, now: nowMicros(), sess: s}
@@ -377,12 +402,32 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 		}
 	}
 	rep.groupsN = len(groups)
+	if HySpanOn && p.dim != nil {
+		HyRec(HyDim, time.Since(td))
+	}
 
 	// dimensions joined outside the derived table (same snapshot)
+	// By default each page row looks its dimension row up by key with GetAt, which reads the commit overlay and does not wait
+	// for the install of unrelated batches. The scan below waits until the index holds every commit up to the snapshot, so under
+	// an import it stalled for the install window of a batch of ANOTHER table (docs/34 H1). It remains for composite keys.
 	var postDims []map[string]schema.Row
+	var postKeyed []bool
+	if HySpanOn {
+		td = time.Now()
+	}
 	if p.post != nil {
-		for _, j := range p.post.joins {
+		postKeyed = make([]bool, len(p.post.joins))
+		for ji, j := range p.post.joins {
 			m := map[string]schema.Row{}
+			postDims = append(postDims, m)
+			if !j.rel.t.Composite() {
+				// same budget as the scan: a dimension with more rows than the broadcast limit is not used
+				if ts, err := e.Table(j.rel.t.Name); err == nil && ts.LiveRows() > int64(h.DimMaxRows) {
+					return nil, fmt.Sprintf("dimension %s has more than %d rows (broadcast join budget)", j.name, h.DimMaxRows), nil
+				}
+				postKeyed[ji] = true
+				continue
+			}
 			n := 0
 			over := false
 			err := e.ScanSnapshot(j.rel.t.Name, R, func(key string, r schema.Row, _ *core.Version) bool {
@@ -407,8 +452,10 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 			case over:
 				return nil, fmt.Sprintf("dimension %s has more than %d rows (broadcast join budget)", j.name, h.DimMaxRows), nil
 			}
-			postDims = append(postDims, m)
 		}
+	}
+	if HySpanOn {
+		HyRec(HyDim, time.Since(td))
 	}
 
 	workers := 1 + max(0, min(ScanWorkers-1, int(scanHelpers.Load())))
@@ -420,7 +467,14 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	if p.keyHi != nil {
 		q.HasHi, q.KeyHi, q.HiEx = true, *p.keyHi, p.keyHiEx
 	}
+	var tk time.Time
+	if HySpanOn {
+		tk = time.Now()
+	}
 	hits, stats, err := tb.TopNPerGroup(q)
+	if HySpanOn {
+		HyRec(HyKernel, time.Since(tk))
+	}
 	rep.stats = stats
 	maxCap := 0
 	for _, g := range groups {
@@ -445,8 +499,26 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	full := hyColsOf(p, p.outs)
 	res := &Result{HasRows: true, Cols: cols, Rows: make([][]Datum, 0, len(hits))}
 	ft := p.fact.t
+	var dGet, dChk, dMat time.Duration
+	var tl time.Time
+	if HySpanOn {
+		defer func() {
+			HyRec(HyGetAt, dGet)
+			HyRec(HyCheck, dChk)
+			HyRec(HyMat, dMat)
+			hyRecN(HyGetAtCount, int64(rep.coreRows))
+		}()
+	}
 	for _, hit := range hits {
+		if HySpanOn {
+			tl = time.Now()
+		}
 		row, _, err := e.GetAt(ft.Name, hit.Key, R)
+		if HySpanOn {
+			t2 := time.Now()
+			dGet += t2.Sub(tl)
+			tl = t2
+		}
 		if err != nil {
 			if errors.Is(err, core.ErrSnapshotTooOld) {
 				return nil, fmt.Sprintf("snapshot %d can no longer be read from the core", R), nil
@@ -469,6 +541,11 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 				return nil, "", errf("XX000", "hybrid invariant violated: key %q of segment state lsn %d does not satisfy %s in the core at snapshot %d", hit.Key, state.LSN, p.filterText[i], R)
 			}
 		}
+		if HySpanOn {
+			t2 := time.Now()
+			dChk += t2.Sub(tl)
+			tl = t2
+		}
 		var drow schema.Row
 		if p.dim != nil {
 			drow = dimRows[hit.Group]
@@ -489,6 +566,9 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 		}
 		if p.post == nil {
 			res.Rows = append(res.Rows, conform(out, cols))
+			if HySpanOn {
+				dMat += time.Since(tl)
+			}
 			continue
 		}
 		out = conform(out, full)
@@ -506,12 +586,27 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 			} else {
 				k = d.S
 			}
-			if drows[ji] = postDims[ji][k]; drows[ji] == nil {
+			dr, seen := postDims[ji][k]
+			if !seen && postKeyed[ji] {
+				var err error
+				if dr, _, err = e.GetAt(j.rel.t.Name, k, R); err != nil {
+					if errors.Is(err, core.ErrSnapshotTooOld) {
+						return nil, fmt.Sprintf("dimension %s cannot be read at snapshot %d (too old)", j.name, R), nil
+					}
+					return nil, "", err
+				}
+				rep.dimRows++
+				postDims[ji][k] = dr
+			}
+			if drows[ji] = dr; dr == nil {
 				miss = true // INNER JOIN: no dimension row, no output row
 				break
 			}
 		}
 		if miss {
+			if HySpanOn {
+				dMat += time.Since(tl)
+			}
 			continue
 		}
 		pr := make([]Datum, len(p.post.items))
@@ -524,6 +619,9 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 			}
 		}
 		res.Rows = append(res.Rows, conform(pr, cols))
+		if HySpanOn {
+			dMat += time.Since(tl)
+		}
 	}
 	res.Tag = fmt.Sprintf("SELECT %d", len(res.Rows))
 	if err := s.checkInterrupt(); err != nil {

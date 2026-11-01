@@ -1,0 +1,19 @@
+mallocs 73091390
+total_alloc 16398211376
+num_gc 12
+pause_total_ns 4650811
+heap_alloc 1402700872
+span wire_parse           n=4500 p50_us=114.4 p99_us=186.8 mean_us=119.8
+span exec                 n=4500 p50_us=7196.2 p99_us=10432.3 mean_us=7221.9
+span hy_total             n=4500 p50_us=7127.3 p99_us=10348.8 mean_us=7152.4
+span hy_plan              n=4500 p50_us=50.2 p99_us=92.4 mean_us=54.0
+span hy_contract          n=4500 p50_us=2.4 p99_us=4.1 mean_us=2.6
+span hy_dim               n=4500 p50_us=0.6 p99_us=1.9 mean_us=0.7
+span hy_kernel            n=4500 p50_us=6574.9 p99_us=9653.5 mean_us=6595.1
+span hy_getat_sum         n=4500 p50_us=296.7 p99_us=394.7 mean_us=301.3
+span hy_check_sum         n=4500 p50_us=24.0 p99_us=40.8 mean_us=24.7
+span hy_mat_sum           n=4500 p50_us=177.8 p99_us=275.4 mean_us=186.4
+span wire_encode          n=4500 p50_us=57.8 p99_us=91.6 mean_us=62.0
+span wire_flush           n=4500 p50_us=41.1 p99_us=68.8 mean_us=44.3
+span wire_total           n=4500 p50_us=7428.0 p99_us=10726.9 mean_us=7453.8
+span getat_calls(count)   n=4500 p50=100 p99=100 mean=100.0

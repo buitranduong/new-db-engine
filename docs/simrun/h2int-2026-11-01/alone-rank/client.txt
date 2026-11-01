@@ -1,0 +1,7 @@
+page 1 rows=100 md5=ae25947861ead31fafabf211e246d596
+page 2 rows=100 md5=e5ebcbb4758534be3e31f1146daf3c8e
+page 3 rows=100 md5=a47c929154fd2abb23cd3b1ed155cb9a
+client page 1  n=1500 p50=1.09 ms p99=1.52 ms mean=1.10 ms
+client page 2  n=1500 p50=1.10 ms p99=1.65 ms mean=1.12 ms
+client page 3  n=1500 p50=1.13 ms p99=1.61 ms mean=1.15 ms
+client all     n=4500 p50=1.11 ms p99=1.58 ms mean=1.13 ms

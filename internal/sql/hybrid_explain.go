@@ -66,8 +66,13 @@ func (s *Session) hyLines(rep *hyReport, q *Select, analyze bool) []string {
 	y.detail(1, "Rejected: ROW-EXECUTOR: materialises every row that passes the filter into Datums and sorts them (no top-N operator); COLUMNAR VIEW (old): answers GROUP BY aggregates only, returns no rows; LOG-GAP (lemma A): not part of step 1 (the read waits for the state instead, up to %v)", s.Hybrid.Wait)
 	st := rep.stats
 	if analyze && rep.used {
-		y.detail(1, "Read base:  %d rows scanned in %d chunks (%d chunks pruned by zone maps), %d passed the filter, %d of those hidden by the changed-rows bitmap; %s of columns touched; %d workers",
-			st.BaseRows, st.ChunksRead, st.ChunksPruned, st.BasePassed, st.BaseHidden, hyBytes(st.ColBytes), st.Workers)
+		if st.RankUsed {
+			y.detail(1, "Read base:  rank walk over a base of %d rows (not scanned): %d rows read from the columns, %d passed the filter, %d of those hidden by the changed-rows bitmap; %s of columns touched; %d workers",
+				st.BaseRows, st.RankVerified, st.BasePassed, st.BaseHidden, hyBytes(st.ColBytes), st.Workers)
+		} else {
+			y.detail(1, "Read base:  %d rows scanned in %d chunks (%d chunks pruned by zone maps), %d passed the filter, %d of those hidden by the changed-rows bitmap; %s of columns touched; %d workers",
+				st.BaseRows, st.ChunksRead, st.ChunksPruned, st.BasePassed, st.BaseHidden, hyBytes(st.ColBytes), st.Workers)
+		}
 		y.detail(1, "Read tail:  %d rows scanned, %d passed the filter, %d superseded or deleted rows skipped", st.TailRows, st.TailPassed, st.TailDead)
 		y.detail(1, "Read gap:   0 keys from the log (state lsn=%d covers the snapshot)", rep.state)
 		y.detail(1, "Order keys: %d candidates ranked, %d md5 evaluated", st.Candidates, st.Md5Evals)

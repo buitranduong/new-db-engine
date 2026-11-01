@@ -1,0 +1,6 @@
+11:57:14 4300200 rows > 2M: taking flock /tmp/stask-bigdata.lock (released at exit)
+11:57:14 START_SUM sut: sims=1000000,2499634534607,7500605,1899552,20515732;sims_reserved=100031;sims_sold=200005;stock=200,1000000,100031;orders=100000,375258925595,2495716966;order_items=150000,375258925595,6250075000;history=3000000;customers=50000;m2_seq=0;m2_journal=0
+11:57:14 starting: T=4 P=4 R=2 import=always duration=40s probes=0 (probe sims 2000)
+11:57:14 warm-up 10s (not recorded, no import), then 40s measured
+11:58:04 run finished after 40.0s; final checks
+11:58:07 all oracles held

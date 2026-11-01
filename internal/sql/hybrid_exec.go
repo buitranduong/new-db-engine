@@ -114,6 +114,19 @@ func (h *Hybrid) note(why string) {
 	}
 }
 
+// noteRank logs a reason the scan operator answered although -hybrid-rank is on, once per reason (numbers ignored).
+func (h *Hybrid) noteRank(why string) {
+	key := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return -1
+		}
+		return r
+	}, why)
+	if _, seen := h.seen.LoadOrStore("rank:"+key, true); !seen && h.Logf != nil {
+		h.Logf("hybrid: rank order not used (logged once per reason): %s", why)
+	}
+}
+
 // tryHybrid is the hook in runHere: handled=false sends the statement to the
 // existing executors; the reason is in s.hy.last either way.
 func (s *Session) tryHybrid(tx *core.Tx, st *Select, params []Datum) (*Result, bool, error) {
@@ -496,6 +509,7 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 		} else {
 			h.RankScan.Add(1)
 			rep.rankWhy = stats.RankWhy
+			h.noteRank(stats.RankWhy)
 		}
 	}
 	if HySpanOn {

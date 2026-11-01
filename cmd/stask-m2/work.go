@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -13,11 +14,18 @@ import (
 
 // ---------------------------------------------------------------- latency recording
 
+var warmupDur time.Duration // the measured window starts this long after runStart
+
 type Rec struct {
 	class, phase string
 	d            time.Duration
-	err          string // "" = ok
+	err          string        // "" = ok
+	at           time.Duration // end of the operation, since runStart (series, merge overlap)
+	msg          string        // full text of the error (up to 3 distinct per class are kept in the report)
 }
+
+// runStart is the start of the run (set by main before the workers start; warm-up included).
+var runStart time.Time
 
 type Recorder struct{ recs []Rec }
 
@@ -25,7 +33,19 @@ func (r *Recorder) Add(class, phase string, d time.Duration, err string) {
 	if phase == "warmup" {
 		return
 	}
-	r.recs = append(r.recs, Rec{class, phase, d, err})
+	r.recs = append(r.recs, Rec{class: class, phase: phase, d: d, err: err, at: time.Since(runStart)})
+}
+
+// AddE records a failed operation with the full error text.
+func (r *Recorder) AddE(class, phase string, d time.Duration, code string, e error) {
+	if phase == "warmup" {
+		return
+	}
+	m := ""
+	if e != nil {
+		m = e.Error()
+	}
+	r.recs = append(r.recs, Rec{class: class, phase: phase, d: d, err: code, at: time.Since(runStart), msg: m})
 }
 
 type Stat struct {
@@ -41,6 +61,15 @@ type Stat struct {
 	Noop       int            `json:"noop,omitempty"`
 	Unknown    int            `json:"unknown_commit,omitempty"`
 	WindowSecs float64        `json:"window_s"`
+	// up to 3 distinct error messages (full text, SQLSTATE or class, first time seen in the measured window)
+	ErrorSamples []ErrSample `json:"error_samples,omitempty"`
+}
+
+type ErrSample struct {
+	Code   string  `json:"code"`
+	Msg    string  `json:"msg"`
+	FirstS float64 `json:"first_s"`
+	Count  int     `json:"count"`
 }
 
 func pct(s []float64, p float64) float64 {
@@ -67,6 +96,23 @@ func statOf(recs []Rec, window float64) Stat {
 			ms = append(ms, float64(r.d.Microseconds())/1000)
 		} else {
 			st.Errors[r.err]++
+			m := r.msg
+			if m == "" {
+				m = "(no text: " + r.err + ")"
+			}
+			if len(m) > 600 {
+				m = m[:600] + "..."
+			}
+			found := false
+			for i := range st.ErrorSamples {
+				if st.ErrorSamples[i].Code == r.err && st.ErrorSamples[i].Msg == m {
+					st.ErrorSamples[i].Count++
+					found = true
+				}
+			}
+			if !found && len(st.ErrorSamples) < 3 {
+				st.ErrorSamples = append(st.ErrorSamples, ErrSample{r.err, m, (r.at - warmupDur).Seconds(), 1})
+			}
 		}
 	}
 	sort.Float64s(ms)
@@ -235,18 +281,21 @@ func (r *Run) workerT(ctx context.Context, id int) {
 		d := time.Since(t0)
 		r.gate.RUnlock()
 		cls := "t_" + p.Kind
+		if r.Phase() != "warmup" {
+			slowEvent(cls, t0, d, res.Err == nil, fmt.Sprintf("txid=%d retries=%d", txid, res.Retries))
+		}
 		switch {
 		case res.Unknown:
 			r.unknown.Store(txid, p.Kind)
 			r.Count("t_unknown_commit", 1)
-			rc.Add(cls, r.Phase(), d, "unknown_commit")
+			rc.AddE(cls, r.Phase(), d, "unknown_commit", res.Err)
 		case ctx.Err() != nil && res.Err != nil:
 			// run over: not an error of the SUT
 		case res.Err != nil:
 			if strings.Contains(res.Err.Error(), "anomaly") {
 				r.Check("txn_anomaly", false, "%v", res.Err)
 			}
-			rc.Add(cls, r.Phase(), d, ErrCode(res.Err))
+			rc.AddE(cls, r.Phase(), d, ErrCode(res.Err), res.Err)
 		case res.Noop:
 			r.Count("t_noop_"+p.Kind, 1)
 			if p.Kind != "order" {
@@ -291,7 +340,7 @@ func (r *Run) timedQuery(ctx context.Context, s *Sess, rc *Recorder, class, sql 
 		if ErrCode(err) == "conn" {
 			s.Drop()
 		}
-		rc.Add(class, r.Phase(), d, ErrCode(err))
+		rc.AddE(class, r.Phase(), d, ErrCode(err), err)
 		if ErrCode(err) == "other" || ErrCode(err) == "42601" {
 			r.Count("query_err_"+class+": "+trunc(err.Error(), 90), 1)
 		}
@@ -397,13 +446,16 @@ func (r *Run) workerImport(ctx context.Context) {
 			txcancel()
 			d := time.Since(t0)
 			r.gate.RUnlock()
+			if r.Phase() != "warmup" {
+				importEvent(txid, t0, d, p.Slice, lo, hi, res.Err == nil)
+			}
 			switch {
 			case res.Unknown:
 				r.unknown.Store(txid, "import")
-				rc.Add("import", r.Phase(), d, "unknown_commit")
+				rc.AddE("import", r.Phase(), d, "unknown_commit", res.Err)
 			case ctx.Err() != nil && res.Err != nil:
 			case res.Err != nil:
-				rc.Add("import", r.Phase(), d, ErrCode(res.Err))
+				rc.AddE("import", r.Phase(), d, ErrCode(res.Err), res.Err)
 			default:
 				r.acked.Store(txid, time.Now())
 				r.ackedKind.Store(txid, "import")
@@ -418,4 +470,44 @@ func (r *Run) workerImport(ctx context.Context) {
 		}
 		sleepCtx(ctx, time.Duration(r.cfg.ImportEvery)*time.Second)
 	}
+}
+
+// ---------------------------------------------------------------- slow-transaction log (-slow-log)
+
+// The slow-log file correlates the client view with the server span log (staskd STASK_SPANS): one line per import batch
+// ("I <txid> <start unix ms> <dur ms> slice range ok") and one per T transaction slower than -slow-min ("T <class> <start> <dur> ok info").
+var (
+	slowMu   sync.Mutex
+	slowFile *os.File
+	slowMin  time.Duration
+)
+
+func openSlowLog(path string, min time.Duration) error {
+	if path == "" {
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	slowFile, slowMin = f, min
+	return nil
+}
+
+func slowEvent(class string, t0 time.Time, d time.Duration, ok bool, info string) {
+	if slowFile == nil || d < slowMin {
+		return
+	}
+	slowMu.Lock()
+	fmt.Fprintf(slowFile, "T %s %d %.1f %v %s\n", class, t0.UnixMilli(), float64(d.Microseconds())/1000, ok, info)
+	slowMu.Unlock()
+}
+
+func importEvent(txid int64, t0 time.Time, d time.Duration, slice int, a, b int64, ok bool) {
+	if slowFile == nil {
+		return
+	}
+	slowMu.Lock()
+	fmt.Fprintf(slowFile, "I %d %d %.1f slice=%d range=%d-%d ok=%v\n", txid, t0.UnixMilli(), float64(d.Microseconds())/1000, slice, a, b, ok)
+	slowMu.Unlock()
 }

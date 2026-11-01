@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestGenDeterministic(t *testing.T) {
 	a, b := NewGen(10000, "s", 3), NewGen(10000, "s", 3)
@@ -29,5 +32,20 @@ func TestNorm(t *testing.T) {
 		if g := Norm(c[0]); g != c[1] {
 			t.Errorf("Norm(%q)=%q want %q", c[0], g, c[1])
 		}
+	}
+}
+
+func TestErrorSamples(t *testing.T) {
+	recs := []Rec{
+		{class: "x", d: time.Millisecond, err: "53200", msg: "out of memory A", at: 2 * time.Second},
+		{class: "x", d: time.Millisecond, err: "53200", msg: "out of memory A", at: 3 * time.Second},
+		{class: "x", d: time.Millisecond, err: "conn", msg: "EOF", at: 4 * time.Second},
+		{class: "x", d: time.Millisecond, err: "conn", msg: "reset", at: 5 * time.Second},
+		{class: "x", d: time.Millisecond, err: "conn", msg: "fourth distinct", at: 6 * time.Second},
+		{class: "x", d: time.Millisecond, at: 7 * time.Second},
+	}
+	st := statOf(recs, 10)
+	if len(st.ErrorSamples) != 3 || st.ErrorSamples[0].Count != 2 || st.ErrorSamples[0].Msg != "out of memory A" || st.ErrorSamples[1].Msg != "EOF" || st.OK != 1 {
+		t.Fatalf("%+v", st)
 	}
 }

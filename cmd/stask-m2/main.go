@@ -54,6 +54,8 @@ func parseFlags() *Config {
 	flag.Float64Var(&c.HotFrac, "hot-frac", 0.3, "fraction of T sim picks taken from the hot set (deliberate conflicts)")
 	flag.IntVar(&c.Hot, "hot", 200, "size of the hot set")
 	flag.BoolVar(&c.SkipLoad, "skip-load", false, "reuse the data already loaded in the SUT (the SUT journal must be empty)")
+	flag.BoolVar(&c.RefSkipLoad, "ref-skip-load", false, "the reference already holds the pristine generated data (restored from a snapshot): do not load it")
+	flag.StringVar(&c.RefVolume, "ref-volume", "", "docker volume mounted as PGDATA of the -ref-docker container (an existing pristine PG snapshot copy; empty = a fresh anonymous one)")
 	flag.BoolVar(&c.LoadOnly, "load-only", false, "load and exit")
 	flag.DurationVar(&c.CrashAt, "crash-at", 0, "crash drill: run -kill-cmd this long after the start (0 = off)")
 	flag.StringVar(&c.KillCmd, "kill-cmd", "", "shell command that kills -9 the server under test")
@@ -72,6 +74,9 @@ func parseFlags() *Config {
 	flag.DurationVar(&c.ProbeGap, "probe-gap", -1, "pause between probes (-1: spread over 90% of the duration; 0: back to back)")
 	flag.StringVar(&c.RefName, "ref-name", "m2h-ref", "name of the reference container (use a unique one when several harnesses run)")
 	flag.StringVar(&c.Iso, "iso", "", "transaction isolation level of T workers (default: server default)")
+	flag.StringVar(&c.Ablate, "ablate", "", "comma list of ablations for diagnosis, NOT acceptance runs: nohist (import without the history INSERT..SELECT), noseq (no m2_seq hot row in any transaction), othertable (import updates customers instead of sims)")
+	flag.StringVar(&c.SlowLog, "slow-log", "", "file for the slow-transaction / import-batch log (correlation with staskd STASK_SPANS)")
+	flag.DurationVar(&c.SlowMin, "slow-min", 100*time.Millisecond, "T transactions at least this slow go to -slow-log")
 	flag.IntVar(&c.MinT, "min-t", 100, "load guard: minimum successful T transactions (orders+pays+cancels) when -t > 0 (0 = do not check)")
 	flag.IntVar(&c.MinP, "min-p", 100, "load guard: minimum successful P reads (r1_point + r1_keyset) when -p > 0 (0 = do not check)")
 	flag.IntVar(&c.MinR2, "min-r2", 30, "load guard: minimum successful r2_page queries when -r > 0 (0 = do not check)")
@@ -193,7 +198,11 @@ func main() {
 			port = strings.SplitN(cfg.RefDSN, "/", 4)[2][i+1:]
 		}
 		exec.Command("docker", "rm", "-f", cfg.RefName).Run()
-		if out, err := exec.Command("docker", "run", "-d", "--name", cfg.RefName, "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:"+port+":5432", "postgres:16").CombinedOutput(); err != nil {
+		dargs := []string{"run", "-d", "--name", cfg.RefName, "-e", "POSTGRES_PASSWORD=wm", "-p", "127.0.0.1:" + port + ":5432"}
+		if cfg.RefVolume != "" {
+			dargs = append(dargs, "-v", cfg.RefVolume+":/var/lib/postgresql/data")
+		}
+		if out, err := exec.Command("docker", append(dargs, "postgres:16")...).CombinedOutput(); err != nil {
 			logf("cannot start reference: %v %s", err, out)
 			cleanup()
 			os.Exit(2)
@@ -221,7 +230,20 @@ func main() {
 		}
 		logf("SUT loaded in %.1fs", time.Since(t0).Seconds())
 	}
-	if !cfg.NoRef {
+	sutSum, sutPristine, serr := startSum(ctx, cfg.SUT)
+	if serr != nil {
+		logf("start checksum of the SUT failed: %v", serr)
+		cleanup()
+		os.Exit(2)
+	}
+	logf("START_SUM sut: %s", sutSum)
+	writeStartSum(cfg.Out, "start_sum_sut.txt", sutSum)
+	if cfg.SkipLoad && !sutPristine {
+		logf("refuse: -skip-load but the SUT is not pristine (m2_seq > 0 or a non-empty m2_journal): restore the snapshot")
+		cleanup()
+		os.Exit(2)
+	}
+	if !cfg.NoRef && !cfg.RefSkipLoad {
 		t0 := time.Now()
 		ColumnarSims = false
 		if err := Load(ctx, cfg.RefDSN, g, cfg.SchemaFile, "copy", logf); err != nil {
@@ -230,6 +252,21 @@ func main() {
 			os.Exit(2)
 		}
 		logf("reference loaded in %.1fs", time.Since(t0).Seconds())
+	}
+	if !cfg.NoRef {
+		refSum, refPristine, rerr := startSum(ctx, cfg.RefDSN)
+		if rerr != nil {
+			logf("start checksum of the reference failed: %v", rerr)
+			cleanup()
+			os.Exit(2)
+		}
+		logf("START_SUM ref: %s", refSum)
+		writeStartSum(cfg.Out, "start_sum_ref.txt", refSum)
+		if !refPristine || refSum != sutSum {
+			logf("refuse: the reference does not start from the same pristine data as the SUT")
+			cleanup()
+			os.Exit(2)
+		}
 	}
 	if cfg.LoadOnly {
 		return
@@ -262,6 +299,15 @@ func main() {
 	wctx, stop := context.WithTimeout(ctx, cfg.Warmup+cfg.Duration)
 	defer stop()
 	run.start = time.Now()
+	runStart, warmupDur = run.start, cfg.Warmup
+	for _, a := range strings.Split(cfg.Ablate, ",") {
+		if a != "" {
+			ablate[a] = true
+		}
+	}
+	if err := openSlowLog(cfg.SlowLog, cfg.SlowMin); err != nil {
+		logf("slow-log: %v", err)
+	}
 	var wg sync.WaitGroup
 	spawn := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
 	for i := 0; i < cfg.T; i++ {

@@ -1310,9 +1310,11 @@ type pk struct {
 }
 
 type commitReq struct {
-	enq         time.Time // LatDebug only
-	prepared    time.Time // LatDebug only
-	acked       time.Time // LatDebug only
+	enq         time.Time     // LatDebug only
+	prepared    time.Time     // LatDebug only
+	acked       time.Time     // LatDebug only
+	qwait       time.Duration // LatDebug only: time in the request queue
+	prepStart   time.Time     // LatDebug only: when the committer began to place this request
 	ops         []pendingOp
 	reads       []readKey
 	scans       []*TableState // tables a serializable transaction scanned (serscan.go)
@@ -1399,6 +1401,15 @@ func (e *Engine) submit(r *commitReq) error {
 		return err
 	}
 	subT0 := time.Now()
+	if SpanOn() {
+		defer func() {
+			ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+			// pre = lookups before queueing, queue_stage = enqueue until the committer begins placing (queue wait; for a
+			// staged request also the index staging), place = validate + encode, ack = placed until durable
+			SpanLog("submit", subT0, time.Since(subT0), "ops=%d reads=%d pre=%.1f queue_stage=%.1f place=%.1f ack=%.1f staged=%v", len(r.ops), len(r.reads),
+				ms(r.enq.Sub(subT0)), ms(r.prepStart.Sub(r.enq)), ms(r.prepared.Sub(r.prepStart)), ms(time.Since(r.prepared)), r.stage != nil)
+		}()
+	}
 	r.done = make(chan struct{})
 	if g := e.gate.Load(); g != nil && r.gate != g {
 		g.wait(e, r) // occ_repair.go: a starved statement is finishing on these tables
@@ -1774,7 +1785,15 @@ func (e *Engine) committer() {
 			}
 			e.prepare(open, inflight, recent, batch, &ddlNext)
 			if LatDebug {
-				LatPrepare.Add(time.Since(tp))
+				pd := time.Since(tp)
+				LatPrepare.Add(pd)
+				if SpanOn() && pd >= SpanMin {
+					nops := 0
+					for _, q := range batch {
+						nops += len(q.ops) + len(q.moves)
+					}
+					SpanLog("prep", tp, pd, "reqs=%d ops=%d open=%d", len(batch), nops, len(open.placed))
+				}
 			}
 		case <-workC:
 			var tp time.Time
@@ -1782,6 +1801,7 @@ func (e *Engine) committer() {
 				tp = time.Now()
 			}
 			if r := staging[0]; e.stageStep(r) {
+				SpanLog("stagedone", tp, time.Since(tp), "ops=%d", len(r.ops))
 				staging[0], staging = nil, staging[1:]
 				e.tmu.RLock()
 				ddlNext = max(ddlNext, e.nextTableID)
@@ -1935,8 +1955,12 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 
 	for _, req := range batch {
 		r = req
+		if LatDebug {
+			r.prepStart = time.Now()
+		}
 		if LatDebug && r.stage == nil {
-			LatQueue.Add(time.Since(r.enq))
+			r.qwait = time.Since(r.enq)
+			LatQueue.Add(r.qwait)
 		}
 		if rollErr != nil {
 			finishReq(r, rollErr)
@@ -2277,6 +2301,7 @@ func (e *Engine) syncBatch(b *commitBatch) {
 	sd := time.Since(t0)
 	if LatDebug {
 		LatSync.Add(sd)
+		SpanLog("sync", t0, sd, "reqs=%d bytes=%d", len(b.placed), b.bytes)
 	}
 	if err := e.Failed(); err != nil {
 		// A sync failed elsewhere (e.g. while rolling a segment) after this
@@ -2341,10 +2366,37 @@ func (e *Engine) syncBatch(b *commitBatch) {
 	}
 }
 
+// supTask is a version superseded by an installed commit: its secondary-index entries are marked dead.
+type supTask struct {
+	pv  placedVersion
+	old Version
+}
+
+// markSuperseded marks dead the index entries of the old versions in sups.
+func (e *Engine) markSuperseded(sups []supTask) {
+	marks := map[*secIndex][]deadRec{}
+	for i := range sups {
+		s := &sups[i]
+		for si, ks := range e.supersede(s.pv.t, s.pv.key, &s.old, s.pv.v.LSN, s.pv.sch, s.pv.sk) {
+			marks[si] = append(marks[si], ks...)
+		}
+	}
+	for si, ks := range marks {
+		si.markDead(ks)
+	}
+}
+
 // installBatch installs a durable batch (batches are installed in LSN
 // order) and then drops it from the read overlay.
 func (e *Engine) installBatch(b *commitBatch) {
 	t0 := time.Now()
+	var tPrimary, tSecondary time.Duration
+	if SpanOn() {
+		defer func() {
+			SpanLog("install", t0, time.Since(t0), "reqs=%d installs=%d bytes=%d primary=%.1f superseded_and_marks=%.1f", len(b.placed), len(b.installs), b.bytes,
+				float64(tPrimary.Microseconds())/1000, float64(tSecondary.Microseconds())/1000)
+		}()
+	}
 	e.gc.mu.Lock()
 	// a dropped table's versions are superseded by the drop: reclaimable
 	// once the horizon passes it (earlier batches are all installed)
@@ -2361,10 +2413,6 @@ func (e *Engine) installBatch(b *commitBatch) {
 	}
 	var ws []work
 	var cur work
-	type supTask struct {
-		pv  placedVersion
-		old Version
-	}
 	var sups []supTask
 	for _, pv := range b.installs {
 		if cur.t != pv.t {
@@ -2412,19 +2460,14 @@ func (e *Engine) installBatch(b *commitBatch) {
 		w.t.idx.Store(w.tree)
 	}
 	e.gc.mu.Unlock()
+	tPrimary = time.Since(t0)
 	if len(sups) > 0 {
 		// mark the entries of the versions just superseded dead
-		marks := map[*secIndex][]deadRec{}
-		for i := range sups {
-			s := &sups[i]
-			for si, ks := range e.supersede(s.pv.t, s.pv.key, &s.old, s.pv.v.LSN, s.pv.sch, s.pv.sk) {
-				marks[si] = append(marks[si], ks...)
-			}
-		}
-		for si, ks := range marks {
-			si.markDead(ks)
-		}
+		// (OLTP1 round 2, docs/14: handing this to a goroutine for big batches shortened the install from 42-58 ms to
+		// 7-10 ms but did not change t_order p99 or throughput (A/B, same binary), so it was reverted, D35)
+		e.markSuperseded(sups)
 	}
+	tSecondary = time.Since(t0) - tPrimary
 	if len(b.remaps) > 0 {
 		e.gc.remapMu.Lock()
 		for _, r := range b.remaps {
@@ -2448,6 +2491,10 @@ func (e *Engine) installBatch(b *commitBatch) {
 
 // waitInstalled returns once every commit up to lsn is in the index.
 func (e *Engine) waitInstalled(lsn uint64) {
+	if SpanOn() && e.installed.Load() < lsn {
+		t0 := time.Now()
+		defer func() { LatWaitInst.Add(time.Since(t0)); SpanLog("waitinst", t0, time.Since(t0), "lsn=%d", lsn) }()
+	}
 	for e.installed.Load() < lsn {
 		e.posMu.Lock()
 		ch := e.installNotify

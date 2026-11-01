@@ -1,0 +1,14 @@
+windows with load from #4; using 12 windows after 3 warm-up windows
+phase     p50 mean  p99 mean   p99 max  p999 max   (ms; mean/max over windows of the per-window percentile)
+submit       1.079     6.577     9.410    26.616   n_win=12
+queue        0.007     0.061     0.091    18.820   n_win=12
+prepare      0.092     0.344     0.416     6.427   n_win=12
+hold         0.067     0.281     0.375     6.427   n_win=12
+sync         0.803     3.530     4.096     8.481   n_win=12
+batch        0.820     3.542     4.240     8.481   n_win=12
+instal       0.082     3.501     7.643    36.358   n_win=12
+waitin       0.501    14.653    22.381    46.341   n_win=12
+lockwt       1.899    25.629    35.120    89.525   n_win=12
+lockrl       0.005     0.021     0.027     0.265   n_win=12
+wake         0.080     5.108     7.913    19.484   n_win=12
+server   (no samples)

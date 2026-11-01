@@ -1,6 +1,7 @@
 package sql
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,12 +125,14 @@ type lockOwner struct {
 	node *lockNode
 	held map[lockKey]*heldLock
 	// order of acquisition, for a stable release
-	keys []lockKey
+	keys  []lockKey
+	since time.Time // first grant (only with core.SpanMin: span log of lock holds)
 }
 
 type heldLock struct {
-	mode uint8 // strongest mode held
-	n    int   // times taken (session-level advisory locks stack)
+	at   time.Time // first grant (only with core.SpanMin)
+	mode uint8     // strongest mode held
+	n    int       // times taken (session-level advisory locks stack)
 	cnt  [9]int
 }
 
@@ -185,6 +188,9 @@ func (lt *lockTable) grant(o *lockOwner, k lockKey, mode uint8) {
 	hl := e.holders[o]
 	if hl == nil {
 		hl = &heldLock{}
+		if core.SpanOn() {
+			hl.at = time.Now()
+		}
 		e.holders[o] = hl
 		o.held[k] = hl
 		o.keys = append(o.keys, k)
@@ -240,14 +246,33 @@ type waitLimit struct {
 // acquire takes (k, mode) for o. ok=false only for waitSkip when a
 // conflicting owner holds the lock.
 func (lt *lockTable) acquire(o *lockOwner, k lockKey, mode uint8, pol waitPolicy, lim waitLimit, intr func() bool) (bool, error) {
+	var w0 time.Time
+	var who []*lockOwner
 	for {
 		lt.mu.Lock()
 		bl := lt.blockers(o, k, mode)
 		if len(bl) == 0 {
 			lt.grant(o, k, mode)
+			if core.SpanOn() && o.since.IsZero() {
+				o.since = time.Now()
+			}
 			o.node.waiting = nil
 			lt.mu.Unlock()
+			if !w0.IsZero() {
+				core.LatLockWait.Add(time.Since(w0))
+				h := ""
+				for _, b := range who {
+					h += fmt.Sprintf(" %p", b)
+				}
+				core.SpanLog("lockwait", w0, time.Since(w0), "key=%s mode=%d waiter=%p holders=%s", k.describe(), mode, o, h)
+			}
 			return true, nil
+		}
+		if core.SpanOn() {
+			if w0.IsZero() {
+				w0 = time.Now()
+			}
+			who = append(who[:0], bl...)
 		}
 		switch pol {
 		case waitSkip:
@@ -338,6 +363,22 @@ func (lt *lockTable) unlockOne(o *lockOwner, k lockKey, mode uint8) bool {
 }
 
 func (lt *lockTable) dropLocked(o *lockOwner, k lockKey) {
+	if core.SpanOn() {
+		if hl := o.held[k]; hl != nil && !hl.at.IsZero() && time.Since(hl.at) >= core.SpanMin && (len(o.keys) < 50 || k.b != "sims") {
+			core.SpanLog("keyhold", hl.at, time.Since(hl.at), "key=%s owner=%p", k.describe(), o)
+		}
+	}
+	lt.dropEntry(o, k)
+	for i := len(o.keys) - 1; i >= 0; i-- {
+		if kk := o.keys[i]; kk == k {
+			o.keys = append(o.keys[:i], o.keys[i+1:]...)
+			break
+		}
+	}
+}
+
+// dropEntry removes o's hold on k from the table (not from o.keys). Called with lt.mu held.
+func (lt *lockTable) dropEntry(o *lockOwner, k lockKey) {
 	if e := lt.entries[k]; e != nil {
 		delete(e.holders, o)
 		if len(e.holders) == 0 {
@@ -346,12 +387,6 @@ func (lt *lockTable) dropLocked(o *lockOwner, k lockKey) {
 	}
 	delete(o.held, k)
 	lt.held--
-	for i, kk := range o.keys {
-		if kk == k {
-			o.keys = append(o.keys[:i], o.keys[i+1:]...)
-			break
-		}
-	}
 }
 
 func (lt *lockTable) wakeLocked() {
@@ -371,12 +406,36 @@ func (lt *lockTable) releaseAll(o *lockOwner) {
 		lt.mu.Unlock()
 		return
 	}
-	for len(o.keys) > 0 {
-		lt.dropLocked(o, o.keys[len(o.keys)-1])
+	if core.SpanOn() && !o.since.IsZero() {
+		d := time.Since(o.since)
+		if d >= core.SpanMin {
+			ks := ""
+			for i, k := range o.keys {
+				if i == 3 {
+					ks += fmt.Sprintf(" ...(%d locks)", len(o.keys))
+					break
+				}
+				ks += " " + k.describe()
+			}
+			core.SpanLog("lockhold", o.since, d, "owner=%p keys=%s", o, ks)
+		}
+		o.since = time.Time{}
 	}
+	r0, nk := time.Now(), len(o.keys)
+	// One pass over the keys. dropLocked removes its key from o.keys with a linear search, so dropping the 5000 row
+	// locks of a batch one by one from the back was quadratic and held the global lock-table mutex for 200-360 ms
+	// (docs/14 row OLTP1): every other transaction's lock request waited behind it.
+	for _, k := range o.keys {
+		lt.dropEntry(o, k)
+	}
+	o.keys = o.keys[:0]
 	o.node.waiting = nil
 	lt.wakeLocked()
 	lt.mu.Unlock()
+	if core.SpanOn() {
+		core.LatLockRelease.Add(time.Since(r0))
+		core.SpanLog("relall", r0, time.Since(r0), "owner=%p locks=%d (global lock table mutex held throughout)", o, nk)
+	}
 }
 
 // holdsOther reports whether some owner other than o's session holds k

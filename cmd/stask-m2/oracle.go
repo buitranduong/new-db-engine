@@ -47,6 +47,9 @@ func QueryText(ctx context.Context, c *pgx.Conn, sql string) ([][]string, error)
 
 type Config struct {
 	SUT, RefDSN, Label, Out, QueriesDir, SchemaFile string
+	SlowLog                                         string
+	Ablate                                          string
+	SlowMin                                         time.Duration
 	N                                               int
 	Seed                                            string
 	HistPerSim                                      int
@@ -61,6 +64,8 @@ type Config struct {
 	HotFrac                                         float64
 	Hot                                             int
 	RefDocker, KeepRef, SkipLoad, LoadOnly, NoRef   bool
+	RefSkipLoad                                     bool
+	RefVolume                                       string
 	CrashAt                                         time.Duration
 	KillCmd, RestartCmd                             string
 	RestartWait                                     time.Duration
@@ -254,7 +259,7 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim, wid, nw int) {
 				r.unknown.Store(txid, "probe")
 			}
 			if ctx.Err() == nil {
-				rc.Add("probe_write", r.Phase(), time.Since(t0), ErrCode(res.Err))
+				rc.AddE("probe_write", r.Phase(), time.Since(t0), ErrCode(res.Err), res.Err)
 			}
 			continue
 		}

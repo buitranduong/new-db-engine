@@ -50,6 +50,9 @@ var GatherStarted, GatherFull, GatherTimeout, GatherAdapt, GatherExpect, GatherH
 var (
 	LatDebug                                                                                                       = os.Getenv("STASK_LATDEBUG") != ""
 	LatPrepare, LatFlush, LatHold, LatWake, LatQueue, LatBatch, LatSubmit, LatServer, LatSync, LatInstall, LatRead LatHist
+	// OLTP1 (docs/14): every row-lock acquisition that had to wait, every wait for the index to catch up with the snapshot,
+	// and the release of a transaction's locks (per transaction that held any)
+	LatLockWait, LatWaitInst, LatLockRelease LatHist
 )
 
 func init() {
@@ -61,7 +64,7 @@ func init() {
 			for _, x := range []struct {
 				n string
 				h *LatHist
-			}{{"hold", &LatHold}, {"wake", &LatWake}, {"prepare", &LatPrepare}, {"flush", &LatFlush}, {"queue", &LatQueue}, {"batch", &LatBatch}, {"submit", &LatSubmit}, {"server", &LatServer}, {"sync", &LatSync}, {"instal", &LatInstall}, {"read", &LatRead}} {
+			}{{"hold", &LatHold}, {"wake", &LatWake}, {"prepare", &LatPrepare}, {"flush", &LatFlush}, {"queue", &LatQueue}, {"batch", &LatBatch}, {"submit", &LatSubmit}, {"server", &LatServer}, {"sync", &LatSync}, {"instal", &LatInstall}, {"read", &LatRead}, {"lockwt", &LatLockWait}, {"waitin", &LatWaitInst}, {"lockrl", &LatLockRelease}} {
 				log.Printf("latdebug %-6s p50=%.3f p90=%.3f p99=%.3f p999=%.3f ms", x.n, x.h.q(.5), x.h.q(.9), x.h.q(.99), x.h.q(.999))
 				x.h.reset()
 			}

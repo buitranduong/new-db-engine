@@ -230,3 +230,14 @@ R có CHỜ nhập không? Không thấy: `Hybrid.Fallbacks` = 0 trong cả hai 
 - Quyết định về vòng đệm: giải phóng nền cũ khi rảnh (hiện giữ 32 trạng thái), vì RAM ở 10M-30M tính theo nền x 2 sau mỗi lần gộp.
 - Nhập 1% ở 10M = 100 000 dòng/giao dịch: ở 1M đã tốn 13-42 s và chặn T ~16 s; cần quyết định chia nhỏ giao dịch nhập (đổi workload) hay chấp nhận.
 - Thăm dò 10 000 ở quy mô lớn cần đường R1/dạng R2-một-SIM nhanh hơn hoặc nhiều thời gian (khoảng 0,25 s/probe ở 1M).
+
+## 15. Quy tắc quyết định cho đường log-gap (lemma A), chốt 2026-11-01
+
+Đường "khoảng hở log" (áp các khoá đổi trong `(state lsn, snapshot S]` từ lõi) KHÔNG phải món nợ bắt buộc; nó là phương án sẵn có để phản ứng với số đo. Hiện đọc `strong` chờ follower tối đa 2 giây rồi rơi về đường cũ kèm lý do: đúng về nhất quán, không bao giờ trả snapshot sai. Chỉ mở đường log-gap khi lượt G3 10M HỢP LỆ (nhập thật sự chạy, bộ canh tải đạt) cho bằng chứng:
+
+- Nếu 10M có nhập hợp lệ mà `fallbacks = 0`, độ trễ follower không đáng kể và thời gian chờ không ảnh hưởng p99 R2: KHÔNG làm log-gap; chuyển nguồn lực sang join, cắt tỉa đoạn, bộ nhớ.
+- Nếu có rơi về do follower chậm, hoặc p99 thời gian chờ chiếm phần đáng kể của SLO-R2: làm lớp phủ giới hạn "ghi cuối cùng theo khoá" từ state LSN đến S (loại khoá cũ khỏi nền và đuôi, quét phần delta), có ngân sách số khoá phân biệt và thời gian; vượt ngân sách thì rơi về đường cũ.
+- Nếu độ trễ follower thấp mà R2 vẫn chậm: log-gap không giải quyết gì; tập trung vector hoá, sắp xếp/bản đồ vùng, lọc sớm và chiến lược join.
+
+Dữ liệu cần ghi để quyết định dứt khoát (phần chưa có trong engine, thêm khi cần, không trước số đo): tổng câu ứng viên, `used`, `fallbacks` đếm THEO TỪNG LÝ DO; phân bố thời gian chờ `waited` của đọc strong (p50/p95/p99/max); phân bố độ trễ follower suốt cả lượt (không chỉ cuối lượt); số lô và số dòng nhập thành công (điều kiện hợp lệ bắt buộc, đã có bộ canh); `state_lsn`, `snapshot_lsn`, và số lần trạng thái không còn trong vòng đệm. Đã có từ harness: used, fallbacks, lý do (mỗi loại một dòng), applied_lsn và lag_ms cuối lượt, số lần gộp nền, kích thước vòng đệm, p99 theo giây.
+

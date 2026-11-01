@@ -31,6 +31,16 @@ var (
 	binErr  error
 )
 
+// TestMain removes the staskd binary the process tests built: it used to be
+// left in the temp directory (20 MB per `go test` run; 3.5 GB had piled up).
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if binPath != "" {
+		os.RemoveAll(filepath.Dir(binPath))
+	}
+	os.Exit(code)
+}
+
 func staskdBin(t *testing.T) string {
 	if testing.Short() || os.Getenv("STASK_NO_PROC") != "" {
 		t.Skip("process tests skipped")

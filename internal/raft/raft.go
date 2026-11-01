@@ -930,6 +930,18 @@ func (n *Node) handleAppResp(m Msg) {
 	n.ack[p] = max(n.ack[p], m.Seq)
 	n.inflight[p] = false
 	if m.Reject {
+		if m.Hint < n.match[p] {
+			// The follower's log is shorter than what it acknowledged: it
+			// lost its state (data directory deleted, new disk; F10). Raft
+			// proves match[p] only for a follower that keeps its log, so
+			// forget it and replay from the follower's last index, or from
+			// a snapshot when that part is compacted (hashicorp/raft
+			// resets nextIndex the same way). Commit never moves back.
+			// What this cannot repair is a vote the node forgot: that
+			// window is stated in docs/33 section 6.
+			n.match[p] = m.Hint
+			n.next[p] = m.Hint + 1
+		}
 		nx := m.Hint + 1
 		if nx >= n.next[p] {
 			nx = n.next[p] - 1

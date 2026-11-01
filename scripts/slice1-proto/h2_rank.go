@@ -165,6 +165,7 @@ type tailT struct {
 	cat, tel, rate []uint8
 	price          []int32
 	h32            []uint32
+	seg            [4]int // the tail is kept in rank order too: carrier t covers [seg[t], seg[t+1])
 }
 type deltaState struct {
 	dead []uint64
@@ -197,6 +198,7 @@ func applyDelta(b *rmBase, ops []dop, pos []uint32) *deltaState {
 		t.price = append(t.price, o.price)
 		t.h32 = append(t.h32, h32of(g, "42"))
 	}
+	ds.tail.sortRank()
 	return ds
 }
 
@@ -208,34 +210,51 @@ func buildPos(b *rmBase) []uint32 {
 	return pos
 }
 
-// tailTop returns the top `need` matching tail rows of carrier t in (rate DESC, md5, number) order.
-func (ds *deltaState) tailTop(t uint8, q *q2, need int) []ent {
+// sortRank orders the tail like the base: (tel, rate DESC, h32, full md5, number).
+func (t *tailT) sortRank() {
+	n := len(t.g)
+	idx := make([]int32, n)
+	for i := range idx {
+		idx[i] = int32(i)
+	}
+	e := func(i int32) ent { return ent{g: t.g[i], rate: t.rate[i], h32: t.h32[i]} }
+	slices.SortFunc(idx, func(a, b int32) int {
+		if t.tel[a] != t.tel[b] {
+			return int(t.tel[a]) - int(t.tel[b])
+		}
+		x, y := e(a), e(b)
+		return cmpEnt(&x, &y, "42")
+	})
+	o := tailT{g: make([]uint32, n), cat: make([]uint8, n), tel: make([]uint8, n), rate: make([]uint8, n), price: make([]int32, n), h32: make([]uint32, n)}
+	for k, i := range idx {
+		o.g[k], o.cat[k], o.tel[k], o.rate[k], o.price[k], o.h32[k] = t.g[i], t.cat[i], t.tel[i], t.rate[i], t.price[i], t.h32[i]
+	}
+	*t = o
+	p := 0
+	for c := 0; c < 3; c++ {
+		t.seg[c] = p
+		for p < n && int(t.tel[p]) == c {
+			p++
+		}
+	}
+	t.seg[3] = n
+}
+
+// tailTop returns the top `need` matching tail rows of carrier t in rank order: lazy walk with early stop, like the base.
+func (ds *deltaState) tailTop(t uint8, q *q2, need int) ([]ent, int) {
 	tl := &ds.tail
-	var cnt [256]int
-	for i := range tl.g {
-		if tl.tel[i] == t && tl.cat[i] == q.cat && tl.price[i] >= q.lo && tl.price[i] <= q.hi {
-			cnt[tl.rate[i]]++
-		}
-	}
-	thr, acc := 0, 0
-	for r := 255; r >= 0; r-- {
-		acc += cnt[r]
-		thr = r
-		if acc >= need {
-			break
-		}
-	}
 	var out []ent
-	for i := range tl.g {
-		if tl.tel[i] == t && int(tl.rate[i]) >= thr && tl.cat[i] == q.cat && tl.price[i] >= q.lo && tl.price[i] <= q.hi {
+	i := tl.seg[t]
+	for ; i < tl.seg[t+1]; i++ {
+		if tl.cat[i] == q.cat && tl.price[i] >= q.lo && tl.price[i] <= q.hi {
 			out = append(out, ent{g: tl.g[i], tel: t, rate: tl.rate[i], price: tl.price[i], h32: tl.h32[i]})
+			if len(out) == need {
+				i++
+				break
+			}
 		}
 	}
-	slices.SortFunc(out, func(a, b ent) int { return cmpEnt(&a, &b, q.seed) })
-	if len(out) > need {
-		out = out[:need]
-	}
-	return out
+	return out, i - tl.seg[t]
 }
 
 // ---- cfg2 / cfg3 query (seed '42') ---------------------------------------------------------------------
@@ -382,7 +401,8 @@ func (b *rmBase) R2rank(q *q2, ds *deltaState, bm bool) ([]Out, qstat) {
 			cands[t] = base
 			return
 		}
-		tl := ds.tailTop(uint8(t), q, need)
+		tl, tw := ds.tailTop(uint8(t), q, need)
+		st[t].tailN = int64(tw)
 		m := make([]ent, 0, need)
 		i, j := 0, 0
 		for len(m) < need && (i < len(base) || j < len(tl)) {
@@ -413,8 +433,8 @@ func (b *rmBase) R2rank(q *q2, ds *deltaState, bm bool) ([]Out, qstat) {
 		tot.covered[t] = st[t].covered[t]
 		tot.tested += st[t].tested
 	}
-	if hasTail {
-		tot.tailN = int64(len(ds.tail.g))
+	for t := 0; t < 3; t++ {
+		tot.tailN += st[t].tailN
 	}
 	// cands hold ranks skip..need-1 of each carrier unless a tail was merged (then ranks 0..need-1)
 	for t := 0; t < 3; t++ {

@@ -318,7 +318,7 @@ func allocMB() float64 {
 
 // mergeRank folds the tail into a new rank-major base: only the tail is sorted; the base order is kept (one linear pass).
 func mergeRank(b *rmBase, touched []uint64, ds *deltaState) *rmBase {
-	tl := &ds.tail
+	tl := &ds.tail // already in rank order (applyDelta sorted it)
 	idx := make([]int32, len(tl.g))
 	for i := range idx {
 		idx[i] = int32(i)
@@ -326,13 +326,6 @@ func mergeRank(b *rmBase, touched []uint64, ds *deltaState) *rmBase {
 	te := func(i int32) ent {
 		return ent{g: tl.g[i], tel: tl.tel[i], rate: tl.rate[i], price: tl.price[i], h32: tl.h32[i]}
 	}
-	slices.SortFunc(idx, func(a, c int32) int {
-		if tl.tel[a] != tl.tel[c] {
-			return int(tl.tel[a]) - int(tl.tel[c])
-		}
-		x, y := te(a), te(c)
-		return cmpEnt(&x, &y, "42")
-	})
 	live := b.n
 	for i := 0; i < b.n; i++ {
 		if touched[b.g[i]>>6]&(1<<(b.g[i]&63)) != 0 {
@@ -443,7 +436,7 @@ func h2merge(n int) {
 		t = time.Now()
 		ds := applyDelta(b, ops, pos)
 		ta := time.Since(t)
-		line("merge", "cfg2/3 apply: dead bitmap + tail (%d live tail rows) %s, heap +%.1f MB", len(ds.tail.g), ms(ta), heapMB()-mb)
+		line("merge", "cfg2/3 apply: dead bitmap + tail rank-sorted (%d live tail rows) %s, heap +%.1f MB", len(ds.tail.g), ms(ta), heapMB()-mb)
 		x := &cfgs{c, b, nil}
 		_ = x
 		// correctness with the unmerged tail
@@ -482,7 +475,7 @@ func h2merge(n int) {
 		tm := time.Since(t)
 		a1 := allocMB()
 		bt := nb.buildBitmaps(8)
-		line("merge", "cfg2 merge K=%d: sort tail + linear merge of %d rows %s, allocated %.0f MB; cfg3 bitmaps rebuild %s", K, nb.n, ms(tm), a1-a0, ms(bt))
+		line("merge", "cfg2 merge K=%d: linear merge (tail already rank-sorted by apply) of %d rows %s, allocated %.0f MB; cfg3 bitmaps rebuild %s", K, nb.n, ms(tm), a1-a0, ms(bt))
 		for _, p := range pagesChk {
 			q := canon(p, 1)
 			want := refR2(n, 0, last, &q)

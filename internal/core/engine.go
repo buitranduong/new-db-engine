@@ -320,7 +320,6 @@ type Engine struct {
 	reqCh        chan *commitReq
 	tabLast      map[*TableState]uint64 // committer only: LSN of the last commit that wrote each table (serializable scans, serscan.go)
 	commitExited chan struct{}          // closed when the committer stops taking requests
-	markCh       chan []supTask         // superseded versions of big batches whose index entries the marker goroutine marks dead (OLTP1)
 	syncEWMA     atomic.Int64           // smoothed fdatasync duration (ns)
 	installSeq   atomic.Uint64          // number of commit batches installed in the index
 	gate         atomic.Pointer[WriteGate]
@@ -475,9 +474,7 @@ func Open(opts Options) (*Engine, error) {
 		return nil, err
 	}
 	if !opts.Replica {
-		e.markCh = make(chan []supTask, markQueue)
-		e.wg.Add(2)
-		go e.supMarker()
+		e.wg.Add(1)
 		go e.committer()
 		if opts.IndexMemBudget > 0 {
 			e.wg.Add(1)
@@ -1735,9 +1732,6 @@ func (e *Engine) committer() {
 			close(toSync)
 			<-syncerDone
 			<-installerDone
-			if e.markCh != nil {
-				close(e.markCh)
-			}
 			return
 		}
 		reqCh := e.reqCh
@@ -2378,14 +2372,6 @@ type supTask struct {
 	old Version
 }
 
-// asyncMarkMin is the number of superseded versions from which a batch hands its dead-marking to the marker goroutine.
-// STASK_MARKINLINE=1 switches that off (A/B runs).
-const asyncMarkMin = 256
-
-const markQueue = 64
-
-var markInline = os.Getenv("STASK_MARKINLINE") != ""
-
 // markSuperseded marks dead the index entries of the old versions in sups.
 func (e *Engine) markSuperseded(sups []supTask) {
 	marks := map[*secIndex][]deadRec{}
@@ -2397,17 +2383,6 @@ func (e *Engine) markSuperseded(sups []supTask) {
 	}
 	for si, ks := range marks {
 		si.markDead(ks)
-	}
-}
-
-// supMarker marks the entries of big batches in LSN order. It ends when the committer has closed markCh after its last
-// install, having marked everything that was queued.
-func (e *Engine) supMarker() {
-	defer e.wg.Done()
-	for sups := range e.markCh {
-		t0 := time.Now()
-		e.markSuperseded(sups)
-		SpanLog("mark", t0, time.Since(t0), "superseded=%d", len(sups))
 	}
 }
 
@@ -2487,22 +2462,10 @@ func (e *Engine) installBatch(b *commitBatch) {
 	e.gc.mu.Unlock()
 	tPrimary = time.Since(t0)
 	if len(sups) > 0 {
-		// A big batch hands the marking to the marker goroutine: reading the old version of every superseded row costs
-		// 35-50 ms for 5000 rows, and until the installer is done no snapshot at or after this batch can be read
-		// (waitInstalled), so every transaction that started meanwhile stalled. Marking only prepares the cleanup of
-		// stale entries (secindex.go: a scan rechecks the row, so an unmarked stale entry is never wrong); small batches
-		// keep marking inline.
-		queued := false
-		if len(sups) >= asyncMarkMin && e.markCh != nil && !markInline {
-			select {
-			case e.markCh <- sups:
-				queued = true
-			default: // queue full: mark here (back-pressure)
-			}
-		}
-		if !queued {
-			e.markSuperseded(sups)
-		}
+		// mark the entries of the versions just superseded dead
+		// (OLTP1 round 2, docs/14: handing this to a goroutine for big batches shortened the install from 42-58 ms to
+		// 7-10 ms but did not change t_order p99 or throughput (A/B, same binary), so it was reverted, D35)
+		e.markSuperseded(sups)
 	}
 	tSecondary = time.Since(t0) - tPrimary
 	if len(b.remaps) > 0 {

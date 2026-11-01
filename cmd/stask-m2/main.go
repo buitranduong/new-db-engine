@@ -296,6 +296,7 @@ func main() {
 	wctx, stop := context.WithTimeout(ctx, cfg.Warmup+cfg.Duration)
 	defer stop()
 	run.start = time.Now()
+	runStart, warmupDur = run.start, cfg.Warmup
 	var wg sync.WaitGroup
 	spawn := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
 	for i := 0; i < cfg.T; i++ {

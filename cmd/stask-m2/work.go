@@ -13,11 +13,18 @@ import (
 
 // ---------------------------------------------------------------- latency recording
 
+var warmupDur time.Duration // the measured window starts this long after runStart
+
 type Rec struct {
 	class, phase string
 	d            time.Duration
-	err          string // "" = ok
+	err          string        // "" = ok
+	at           time.Duration // end of the operation, since runStart (series, merge overlap)
+	msg          string        // full text of the error (up to 3 distinct per class are kept in the report)
 }
+
+// runStart is the start of the run (set by main before the workers start; warm-up included).
+var runStart time.Time
 
 type Recorder struct{ recs []Rec }
 
@@ -25,7 +32,19 @@ func (r *Recorder) Add(class, phase string, d time.Duration, err string) {
 	if phase == "warmup" {
 		return
 	}
-	r.recs = append(r.recs, Rec{class, phase, d, err})
+	r.recs = append(r.recs, Rec{class: class, phase: phase, d: d, err: err, at: time.Since(runStart)})
+}
+
+// AddE records a failed operation with the full error text.
+func (r *Recorder) AddE(class, phase string, d time.Duration, code string, e error) {
+	if phase == "warmup" {
+		return
+	}
+	m := ""
+	if e != nil {
+		m = e.Error()
+	}
+	r.recs = append(r.recs, Rec{class: class, phase: phase, d: d, err: code, at: time.Since(runStart), msg: m})
 }
 
 type Stat struct {
@@ -41,6 +60,15 @@ type Stat struct {
 	Noop       int            `json:"noop,omitempty"`
 	Unknown    int            `json:"unknown_commit,omitempty"`
 	WindowSecs float64        `json:"window_s"`
+	// up to 3 distinct error messages (full text, SQLSTATE or class, first time seen in the measured window)
+	ErrorSamples []ErrSample `json:"error_samples,omitempty"`
+}
+
+type ErrSample struct {
+	Code   string  `json:"code"`
+	Msg    string  `json:"msg"`
+	FirstS float64 `json:"first_s"`
+	Count  int     `json:"count"`
 }
 
 func pct(s []float64, p float64) float64 {
@@ -67,6 +95,23 @@ func statOf(recs []Rec, window float64) Stat {
 			ms = append(ms, float64(r.d.Microseconds())/1000)
 		} else {
 			st.Errors[r.err]++
+			m := r.msg
+			if m == "" {
+				m = "(no text: " + r.err + ")"
+			}
+			if len(m) > 600 {
+				m = m[:600] + "..."
+			}
+			found := false
+			for i := range st.ErrorSamples {
+				if st.ErrorSamples[i].Code == r.err && st.ErrorSamples[i].Msg == m {
+					st.ErrorSamples[i].Count++
+					found = true
+				}
+			}
+			if !found && len(st.ErrorSamples) < 3 {
+				st.ErrorSamples = append(st.ErrorSamples, ErrSample{r.err, m, (r.at - warmupDur).Seconds(), 1})
+			}
 		}
 	}
 	sort.Float64s(ms)
@@ -239,14 +284,14 @@ func (r *Run) workerT(ctx context.Context, id int) {
 		case res.Unknown:
 			r.unknown.Store(txid, p.Kind)
 			r.Count("t_unknown_commit", 1)
-			rc.Add(cls, r.Phase(), d, "unknown_commit")
+			rc.AddE(cls, r.Phase(), d, "unknown_commit", res.Err)
 		case ctx.Err() != nil && res.Err != nil:
 			// run over: not an error of the SUT
 		case res.Err != nil:
 			if strings.Contains(res.Err.Error(), "anomaly") {
 				r.Check("txn_anomaly", false, "%v", res.Err)
 			}
-			rc.Add(cls, r.Phase(), d, ErrCode(res.Err))
+			rc.AddE(cls, r.Phase(), d, ErrCode(res.Err), res.Err)
 		case res.Noop:
 			r.Count("t_noop_"+p.Kind, 1)
 			if p.Kind != "order" {
@@ -291,7 +336,7 @@ func (r *Run) timedQuery(ctx context.Context, s *Sess, rc *Recorder, class, sql 
 		if ErrCode(err) == "conn" {
 			s.Drop()
 		}
-		rc.Add(class, r.Phase(), d, ErrCode(err))
+		rc.AddE(class, r.Phase(), d, ErrCode(err), err)
 		if ErrCode(err) == "other" || ErrCode(err) == "42601" {
 			r.Count("query_err_"+class+": "+trunc(err.Error(), 90), 1)
 		}
@@ -400,10 +445,10 @@ func (r *Run) workerImport(ctx context.Context) {
 			switch {
 			case res.Unknown:
 				r.unknown.Store(txid, "import")
-				rc.Add("import", r.Phase(), d, "unknown_commit")
+				rc.AddE("import", r.Phase(), d, "unknown_commit", res.Err)
 			case ctx.Err() != nil && res.Err != nil:
 			case res.Err != nil:
-				rc.Add("import", r.Phase(), d, ErrCode(res.Err))
+				rc.AddE("import", r.Phase(), d, ErrCode(res.Err), res.Err)
 			default:
 				r.acked.Store(txid, time.Now())
 				r.ackedKind.Store(txid, "import")

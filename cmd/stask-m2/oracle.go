@@ -256,7 +256,7 @@ func (r *Run) workerProbe(ctx context.Context, probes []Sim, wid, nw int) {
 				r.unknown.Store(txid, "probe")
 			}
 			if ctx.Err() == nil {
-				rc.Add("probe_write", r.Phase(), time.Since(t0), ErrCode(res.Err))
+				rc.AddE("probe_write", r.Phase(), time.Since(t0), ErrCode(res.Err), res.Err)
 			}
 			continue
 		}

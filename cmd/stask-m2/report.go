@@ -1,8 +1,10 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +46,40 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 		}
 		phases[p[0]][p[1]] = statOf(v, w)
 	}
+	// per-second series (measured window): [second, n ok, p50 ms, p99 ms] per class; the raw latencies of every second go to
+	// series_raw.json.gz so that g3-report.py can pool the seconds that overlap a merge (docs/32 section 9)
+	series := map[string][][4]float64{}
+	raw := map[string]map[int][]float64{}
+	for c, v := range byClass {
+		b := map[int][]float64{}
+		for _, x := range v {
+			if x.err != "" {
+				continue
+			}
+			sec := int((x.at - cfg.Warmup).Seconds())
+			if sec < 0 {
+				sec = 0
+			}
+			b[sec] = append(b[sec], math.Round(float64(x.d.Microseconds())/10)/100)
+		}
+		raw[c] = b
+		var secs []int
+		for k := range b {
+			secs = append(secs, k)
+		}
+		sort.Ints(secs)
+		for _, k := range secs {
+			l := append([]float64(nil), b[k]...)
+			sort.Float64s(l)
+			series[c] = append(series[c], [4]float64{float64(k), float64(len(l)), pct(l, .5), pct(l, .99)})
+		}
+	}
+	if f, err := os.Create(filepath.Join(cfg.Out, "series_raw.json.gz")); err == nil {
+		zw := gzip.NewWriter(f)
+		json.NewEncoder(zw).Encode(raw)
+		zw.Close()
+		f.Close()
+	}
 	prio := map[string]any{}
 	for _, c := range []string{"r1_point", "r1_keyset", "r2_page"} {
 		a, b := phases[c]["noimport"], phases[c]["import"]
@@ -70,7 +106,7 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 		"load": map[string]any{"T": cfg.T, "P": cfg.P, "R": cfg.R, "import_every_s": cfg.ImportEvery, "import_batch": cfg.ImportBatch, "import_batch_pause_ms": cfg.ImportPause.Milliseconds(), "import_shape": importShape(cfg), "import_mode": cfg.ImportMode,
 			"duration_s": cfg.Duration.Seconds(), "warmup_s": cfg.Warmup.Seconds(), "elapsed_s": elapsed.Seconds(), "hot_frac": cfg.HotFrac, "hot": cfg.Hot, "exec_mode": cfg.Exec, "isolation": cfg.Iso},
 		"machine": mach, "phases": spans, "classes": classes, "classes_by_phase": phases, "priority_probe": prio,
-		"counters": counters, "oracles": oracles, "journal_txns": journalN, "replay": replay, "barrier": barrier, "crash": crash,
+		"series_per_s": series, "window_start_utc": run.start.Add(cfg.Warmup).UTC().Format(time.RFC3339Nano), "counters": counters, "oracles": oracles, "journal_txns": journalN, "replay": replay, "barrier": barrier, "crash": crash,
 		"valid": len(lg) == 0, "load_not_applied": lg, "note": "all numbers are measurements of this run at the stated scale and load; no performance claim",
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
@@ -120,6 +156,18 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 	for _, n := range names {
 		s := classes[n]
 		fmt.Fprintf(&m, "| %s | %d | %v | %.1f | %.2f | %.2f | %.2f | %.2f |\n", n, s.OK, s.Errors, s.PerSec, s.P50, s.P95, s.P99, s.Max)
+	}
+	nerr := 0
+	for _, n := range names {
+		nerr += len(classes[n].ErrorSamples)
+	}
+	if nerr > 0 {
+		m.WriteString("\n## Error samples (up to 3 distinct messages per class, full text; first_s = seconds into the measured window)\n\n| class | code | count | first_s | message |\n|---|---|---|---|---|\n")
+		for _, n := range names {
+			for _, e := range classes[n].ErrorSamples {
+				fmt.Fprintf(&m, "| %s | %s | %d | %.1f | %s |\n", n, e.Code, e.Count, e.FirstS, strings.ReplaceAll(strings.ReplaceAll(e.Msg, "|", "/"), "\n", " "))
+			}
+		}
 	}
 	if cfg.ImportMode == "alternate" {
 		fmt.Fprintf(&m, "\n## Priority probe (record only, no threshold)\n\nphase order: %s first. p99 while the import worker runs vs not (same run, same load of T/P/R):\n\n| class | p99 no import ms | p99 import ms | ratio | n no import | n import |\n|---|---|---|---|---|---|\n", cfg.PhaseFirst)

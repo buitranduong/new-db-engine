@@ -16,6 +16,8 @@ func main() {
 	switch *mode {
 	case "proto":
 		runProto(*n, *out)
+	case "h2":
+		runH2(*n)
 	case "core":
 		runCore(*n, *dir, *out)
 	default:

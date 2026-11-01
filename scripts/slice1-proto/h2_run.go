@@ -5,7 +5,6 @@ import (
 	"os"
 	"runtime"
 	"slices"
-	"sort"
 	"time"
 )
 
@@ -391,7 +390,16 @@ func mergeFM(f *fmBase, touched []uint64, tl *tailT) *fmBase {
 		idx[i] = int32(i)
 	}
 	key := func(i int32) uint64 { return uint64(tl.cat[i])<<56 | uint64(tl.price[i])<<32 | uint64(tl.g[i]) }
-	sort.Slice(idx, func(a, b int) bool { return key(idx[a]) < key(idx[b]) })
+	slices.SortFunc(idx, func(a, b int32) int {
+		ka, kb := key(a), key(b)
+		if ka < kb {
+			return -1
+		}
+		if ka > kb {
+			return 1
+		}
+		return 0
+	})
 	nf := &fmBase{g: make([]uint32, 0, f.n+len(idx)), cat: make([]uint8, 0, f.n+len(idx)), tel: make([]uint8, 0, f.n+len(idx)), rate: make([]uint8, 0, f.n+len(idx)), price: make([]int32, 0, f.n+len(idx))}
 	putT := func(i int32) {
 		nf.g, nf.cat, nf.tel, nf.rate, nf.price = append(nf.g, tl.g[i]), append(nf.cat, tl.cat[i]), append(nf.tel, tl.tel[i]), append(nf.rate, tl.rate[i]), append(nf.price, tl.price[i])

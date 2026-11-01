@@ -616,9 +616,10 @@ func main() {
 // only reached with -hist-store; any error is fatal (a silently missing
 // history would be worse than not starting).
 func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.Duration, minFreeMB int64, stall time.Duration, backfillDir string, hsrv *server.Server, clusterNode bool) *histstore.Store {
-	if clusterNode {
-		log.Fatal("-hist-store: not supported on a Raft cluster node (a follower's log can be truncated by a new leader, and the store would keep versions that never committed); use a primary or a replica of it (docs/19)")
-	}
+	// On a Raft node the store follows the engine's durable point, which
+	// advances only after a majority has the batch (leader) or for committed
+	// entries only (follower, as on a replica), so it never sees a version
+	// that a new leader could discard (F9, docs/33 section 6).
 	var names []string
 	for _, t := range strings.Split(tables, ",") {
 		if t = strings.TrimSpace(t); t != "" {
@@ -654,7 +655,9 @@ func startHistStore(e *core.Engine, dir, tables, retention string, bucket time.D
 	hsrv.ReconcileHistory = func() *reconcile.HistoryView { return histReconcileView(names, hf, hs) }
 	hsrv.HistMetrics = c.Metrics
 	role := "primary"
-	if e.IsReplica() {
+	if clusterNode {
+		role = "Raft node (follows the committed log of the cluster)"
+	} else if e.IsReplica() {
 		role = "replica (follows its own copy of the leader log)"
 	}
 	log.Printf("history store on for %v, retention %v, dir %s, %s", names, ret, filepath.Join(dir, "histstore"), role)

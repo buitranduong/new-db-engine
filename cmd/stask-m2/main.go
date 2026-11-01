@@ -159,7 +159,9 @@ func main() {
 		cleanup()
 		os.Exit(2)
 	}
-	if g.TotalRows() > 2_000_000 {
+	// g3.sh runs the whole matrix under this lock and exports G3_LOCKED=1: taking it again here
+	// (a new open file description) would wait for ourselves forever.
+	if g.TotalRows() > 2_000_000 && os.Getenv("G3_LOCKED") == "" {
 		f, err := os.OpenFile("/tmp/stask-bigdata.lock", os.O_CREATE|os.O_RDWR, 0o644)
 		if err == nil {
 			logf("%d rows > 2M: taking flock /tmp/stask-bigdata.lock (released at exit)", g.TotalRows())

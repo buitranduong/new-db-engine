@@ -146,7 +146,7 @@ Nguồn tham khảo thiết kế (không chép mã): phân vùng theo thời gia
 
 1. **Không có phép đo nào ở quy mô lớn.** Mọi con số ở §3.4 cột "40M × 200" là công thức [tính]. Dữ liệu thử là tổng hợp (hai cận: đều và nhiễu). `TestHistStoreScale` (`STASK_HSBENCH=1`, qua `perf-run.sh`) là bộ đo cho phép đo cuối.
 2. **[đã xử lý ở §9.1]** **`AS OF`/`GetAtTime`/`ScanSnapshotTime` chưa dùng kho**: đọc theo thời điểm xa hơn horizon của log vẫn trả `72000`. Chỉ `History`/`stask_history`/`/v1/history` và API của gói (`Versions`, `AsOf`, `ScanTime`) dùng kho.
-3. **[replica đã xử lý ở §9.3; nút Raft chưa]** **Không hỗ trợ replica/cluster** (vị trí lưu là vị trí log của leader; `staskd` từ chối kết hợp). Sau chuyển leader, phải dựng lại kho.
+3. **[replica ở §9.3 và nút Raft (F9) đã xử lý]** ~~Không hỗ trợ replica/cluster~~ (vị trí lưu là vị trí log của leader; `staskd` từ chối kết hợp). Sau chuyển leader, phải dựng lại kho.
 4. **[đã xử lý ở §9.2]** **Không backfill** khi bật (§4).
 5. **Giữ lâu hơn 60 ngày tới 1 ngày** (segment ngày). Nếu cần chính xác hơn: bucket nhỏ hơn và `MergeFactor` nhỏ hơn (chưa có cờ cho `MergeFactor`).
 6. **Quét tệp mở** khi H nhỏ (§4); không có bloom filter; mỗi tra cứu giải nén cả khối 32 KB (≈ 1.000 mục, ~50 µs CPU): đổi `BlockBytes` đổi CPU lấy RAM chỉ mục.
@@ -208,7 +208,7 @@ Test: `TestAsOfBeyondTheLog` (SQL điểm + quét, `AsOfTime`, trước phiên b
 ### 9.3 Replica (xử lý §6.3)
 
 `staskd -replica-of ... -hist-store` được phép: follower của kho đọc log **cục bộ của replica**, mang LSN và giờ commit của leader. Kho của replica độc lập với kho của leader (mỗi nơi lưu riêng). Test `TestReplicaHistoryStore` (leader giữ 6 ngày, 30 ngày × 500 khoá; replica có đủ 30 ngày mỗi khoá, AS OF xa hơn log của leader, khởi động lại cả replica và kho không trùng). Khi replica nạp lại base backup (vị trí log đổi), `tryRestore` phát hiện, chạy lại `Bootstrap` và backfill từ log cục bộ.
-**Chưa hỗ trợ: nút Raft** (`-cluster`). `staskd` vẫn từ chối kèm lý do: log của follower Raft có thể bị leader mới cắt, kho sẽ giữ phiên bản chưa từng commit. Cần cách lấy "đã commit" từ `internal/cluster`; chưa làm. Sau chuyển leader trong cặp leader/replica thủ công (promote): kho của replica được promote tiếp tục theo log của chính nó; phiên bản chỉ có trên leader cũ (chưa kịp tới replica) không có trong kho này (và cũng không có trong dữ liệu).
+**Nút Raft (F9, `docs/33` §6.1): hỗ trợ.** Kho theo `durable` của engine, chỉ tiến sau khi đa số có batch (leader) hoặc theo entry đã commit (follower), nên không giữ phiên bản chưa từng commit; mỗi nút giữ kho riêng. Một test ba tiến trình, chưa đo tải. Sau chuyển leader trong cặp leader/replica thủ công (promote): kho của replica được promote tiếp tục theo log của chính nó; phiên bản chỉ có trên leader cũ (chưa kịp tới replica) không có trong kho này (và cũng không có trong dữ liệu).
 
 ### 9.4 Đĩa đầy (xử lý §6.8): an toàn, báo động, không hỏng
 

@@ -45,14 +45,15 @@ An toàn:
 5. Sau khi gộp: gỡ worktree/nhánh, chạy `scripts/reap.sh` (`AGENT_PROTOCOL §9`). Agent đã báo cáo thì đóng; việc mới = agent mới với mô tả đầy đủ.
 6. Khi người dùng hỏi tiến độ: bảng % theo hạng mục (nói rõ đó là ước lượng), việc đang chạy, việc cần họ.
 
-## 4. Trạng thái sống (cập nhật 2026-10-31, sau integ19)
+## 4. Trạng thái sống (cập nhật 2026-11-01, sau G3 10M)
 
-- `main` = `3971e83` (gate `RACE=1` xanh: 603/604 claimcheck, 1909 s; CI GitHub xanh). Không còn nhánh chờ gộp.
-- Phần mã coi như đóng theo D35, trừ các khoảng trống ở §5. Chưa đo hiệu năng.
-- Bộ nghiệm thu đã có: `scripts/pgdiff` (đối chiếu postgres:16), `scripts/suite` (2196 câu, 1698 giống PG16 sau `suitefix`; backlog ở `docs/25`), `scripts/suite-cdc` (11/11 đạt; `docs/26`), bộ pgjdbc/Hibernate/Liquibase thật (`accept/clients/pgjdbc-real`, `scripts/crmdocker`), `accept/security.sh`.
-- Đang chạy: agent `g1` (worktree `~/wt/g1`) chạy lại mọi bộ nghiệm thu trên `main` và viết `docs/28_g1_status.md`, phân loại khác biệt còn lại thành A (kết quả sai, phải sửa), B (chưa hỗ trợ, người dùng chọn ưu tiên), C (chỉ khác thông điệp).
-- Hàng việc tiếp: (1) nhận báo cáo `g1`; sửa nhóm A; đưa nhóm B cho người dùng chọn; (2) đóng G1 khi nhóm A rỗng và B/C đã giải thích; (3) G2 (diễn tập restore/PITR, `kill -9` lặp, mất nút Raft, bảo mật); (4) G3 theo `docs/24` (cấp thêm ~50 GB đĩa trước bậc 50M).
-- Bài học quy trình: đẩy dồn dập huỷ lần chạy CI trước; mỗi tích hợp đẩy MỘT lần rồi chờ CI. Ghi dòng phụ lục `docs/14` TRƯỚC `git add` khi gộp.
+- `main` = `4beeba0` (đã đẩy). Kết quả G3 10M đóng băng ở `docs/simrun/g3-10M-2026-11-01/` (README có bậc được/không được khẳng định). Hybrid R2 ở 10M: p50 112-134 ms, 0 rơi về, lag 0, có và không nhập; đĩa 3.092 MB (STASK) so với 7.089 MB (PostgreSQL). So sánh PostgreSQL chỉ là chỉ báo (chưa chỉnh `shared_buffers`, `--shm-size`).
+- Phát hiện trung tâm còn mở: T (đơn hàng) mất ~55% thông lượng và p99 tăng ~7 lần dưới nhập theo lô (kể cả không hybrid) trong khi PostgreSQL không đổi; T/R1 chậm hơn PostgreSQL 2-5 lần kể cả không nhập; `r_join` 8,2-8,7 s và lỗi 53200 ở 10M; COPY và q05 vượt trần 2 GB; khởi động lại ~2 phút ở 10M. Xem `docs/34` (H1-H7).
+- Đang chạy (worktree `~/wt/<tên>`): `oltp` (H6/H7, từ `g3reuse`), `h2kernel` (H2, thí nghiệm kernel độc lập), `joindesign` (H5, chỉ thiết kế, `docs/35`). Nhánh `g3reuse` (harness + snapshot reuse, engine = main) chờ gate rồi gộp cùng `oltp`.
+- Bị chặn đĩa (người dùng chưa cấp được, 2026-11-01): `equality` 10M so với postgres:16 (cần ~7,4 GB), bậc 30M (cần ~60 GB trống thật). Đĩa trống hiện ~4 GB; giữ snapshot `/tmp/m2-g3/snap-stask-10000000`, volume docker `g3-pg-snap-10000000`, bản sao `~/g3-results/`; KHÔNG `docker volume prune`.
+- Quy tắc đo: mọi phép đo thời gian qua `scripts/perf-run.sh` (khoá độc quyền); tải thật phải chạy mới coi là hợp lệ; không ngoại suy.
+- Hàng việc tiếp: nhận `oltp`/`h2kernel`/`joindesign`; gate một lần cho `g3reuse`+`oltp`, đẩy, xem CI một lần; H1 (profile ranh giới hybrid R2); chạy lại tham chiếu PostgreSQL cho công bằng; backlog G2/tương thích nhỏ (F5, F2b, F6, F9, F10), driver Node/.NET, Debezium thật.
+- Bài học quy trình: đẩy dồn dập huỷ lần chạy CI trước; mỗi tích hợp đẩy MỘT lần rồi chờ CI. Ghi dòng phụ lục `docs/14` TRƯỚC `git add` khi gộp. Luôn đọc thư mục kết quả MỚI NHẤT (`ls -dt`).
 
 ## 5. Khoảng trống mã đã biết (cố ý chưa làm trước khi có số đo)
 

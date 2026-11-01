@@ -99,7 +99,13 @@ func TestClusterHistoryStore(t *testing.T) {
 	li, _ := c.leader()
 	c.kill(c.nodes[li])
 	for i := 51; i <= 70; i++ {
-		if o := c.write("a", i, 30*time.Second); o != acked {
+		// the first writes after the kill may end unknown (connection to the
+		// dead leader); the put is idempotent, so retry until acknowledged
+		o := c.write("a", i, 30*time.Second)
+		for end := time.Now().Add(30 * time.Second); o != acked && o != rejected && time.Now().Before(end); {
+			o = c.write("a", i, 30*time.Second)
+		}
+		if o != acked {
 			t.Fatalf("write %d after the leader was killed: %v", i, o)
 		}
 	}

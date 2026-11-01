@@ -1,0 +1,5 @@
+# OLTP1 (docs/14 Appendix OLTP1), 2026-11-01
+
+N = 1,000,000 sims, T=4 P=4 R=2 unless the run name says otherwise (`h7-*`, `pg-h7`: R=0, no tear), 15 s warm-up + 60 s measured, STASK `-scrub-interval 0`, PostgreSQL 16 in Docker (`--shm-size=1g`, `shared_buffers=2GB`). Import runs: `-import-mode always -import-every 1`, batches of 5000 rows unless named. Every cell is ONE run and DIRTY (another agent ran /tmp/h2proto on the VM throughout). `old-*` = staskd of harness commit 6afb539, `new-*` / `n3-*` = with the O(n) lock release (`n3-*` also carry the reverted round-2 code; `n3-inline` is its A/B switch STASK_MARKINLINE=1). `nohist`, `noseq`, `othertable` are ablations (their journal/history oracles are violated by design). `summary.md` is the table; `lat-*.txt` the LatDebug histograms (5 s windows, warm-up skipped) of the span runs. The span log of the first reproduction (imp1: 256 of 271 slow T overlap an import batch; `relall` 200-360 ms for 5001 locks) was not kept.
+
+Scripts used: r.sh (one run from the 1M snapshot), matrix.sh, phase3.sh, prof.sh, corr.py (slow-log x span-log), lat.py, sumr.py.

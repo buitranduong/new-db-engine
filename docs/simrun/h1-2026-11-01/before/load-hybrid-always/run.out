@@ -1,0 +1,30 @@
+perf-run: start load=1.00 2026-11-01T10:50:24Z
+ready 12
+harness rc=0
+10:50:39 4300200 rows > 2M: taking flock /tmp/stask-bigdata.lock (released at exit)
+10:50:40 START_SUM sut: sims=1000000,2499634534607,7500605,1899552,20515732;sims_reserved=100031;sims_sold=200005;stock=200,1000000,100031;orders=100000,375258925595,2495716966;order_items=150000,375258925595,6250075000;history=3000000;customers=50000;m2_seq=0;m2_journal=0
+10:50:40 starting: T=4 P=4 R=2 import=always duration=40s probes=0 (probe sims 2000)
+10:50:40 warm-up 10s (not recorded, no import), then 40s measured
+10:51:30 run finished after 40.1s; final checks
+10:51:33 all oracles held
+mallocs 750998585
+total_alloc 61287886736
+num_gc 33
+pause_total_ns 17488653
+heap_alloc 2057709368
+span wire_parse           n=332 p50_us=109.8 p99_us=254.5 mean_us=120.7
+span exec                 n=332 p50_us=11790.9 p99_us=55705.4 mean_us=13603.9
+span hy_total             n=332 p50_us=11721.7 p99_us=55636.7 mean_us=13523.7
+span hy_plan              n=332 p50_us=57.0 p99_us=111.0 mean_us=67.1
+span hy_contract          n=332 p50_us=3.2 p99_us=1386.2 mean_us=90.2
+span hy_dim               n=332 p50_us=69.8 p99_us=40819.3 mean_us=1594.6
+span hy_kernel            n=332 p50_us=10932.1 p99_us=16894.9 mean_us=11100.7
+span hy_getat_sum         n=332 p50_us=407.8 p99_us=2743.1 mean_us=514.2
+span hy_check_sum         n=332 p50_us=26.0 p99_us=85.0 mean_us=29.9
+span hy_mat_sum           n=332 p50_us=131.6 p99_us=378.9 mean_us=150.3
+span wire_encode          n=332 p50_us=61.4 p99_us=287.2 mean_us=75.8
+span wire_flush           n=332 p50_us=36.7 p99_us=812.3 mean_us=84.4
+span wire_total           n=332 p50_us=12068.9 p99_us=55904.2 mean_us=13890.1
+span getat_calls(count)   n=332 p50=100 p99=300 mean=106.6
+/dev/mapper/ubuntu--vg-ubuntu--lv   57G   52G  2.4G  96% /
+perf-run: end rc=0 peak_load1=5.43

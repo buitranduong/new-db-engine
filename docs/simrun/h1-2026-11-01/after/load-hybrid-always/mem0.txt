@@ -1,0 +1,5 @@
+mallocs 198180633
+total_alloc 16227236128
+num_gc 11
+pause_total_ns 24772219
+heap_alloc 2781908688

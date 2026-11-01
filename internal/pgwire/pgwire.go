@@ -234,6 +234,7 @@ type portal struct {
 }
 
 type conn struct {
+	hyHit       bool   // the last simple Query was an R2 candidate (boundary spans)
 	reportedTZ  string // TimeZone last announced to the client (ParameterStatus)
 	s           *Server
 	lastFatal   string // text of the last FATAL sent (the audit trail gives it as the reason)
@@ -784,12 +785,25 @@ func (c *conn) handleMsg(t byte, body []byte) (stop bool, err error) {
 	switch t {
 	case 'Q':
 		r := &reader{b: body}
+		var tq time.Time
+		if sql.HySpanOn {
+			tq = time.Now()
+			c.hyHit = false
+		}
 		if c.simpleQuery(r.str()) {
 			return true, nil
 		}
 		c.ready()
+		var tf time.Time
+		if c.hyHit {
+			tf = time.Now()
+		}
 		if err := c.w.Flush(); err != nil {
 			return false, err
+		}
+		if c.hyHit {
+			sql.HyRec(sql.HyWireFlush, time.Since(tf))
+			sql.HyRec(sql.HyWireTotal, time.Since(tq))
 		}
 	case 'P':
 		c.parse(body)
@@ -905,7 +919,15 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 	if cs, ok, err := sql.ParseCopy(q); ok {
 		return c.copyCommand(cs, err)
 	}
+	var tp time.Time
+	if sql.HySpanOn {
+		tp = time.Now()
+	}
 	stmts, err := c.sess.Parse(q)
+	var dParse time.Duration
+	if sql.HySpanOn {
+		dParse = time.Since(tp)
+	}
 	if err != nil {
 		c.sendError(sql.AsError(err))
 		return false
@@ -925,6 +947,12 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 		if res.Notice != "" {
 			c.notice(res.Notice)
 		}
+		var te time.Time
+		hit := sql.HySpanOn && c.sess.HyHit()
+		if hit {
+			te = time.Now()
+			sql.HyRec(sql.HyWireParse, dParse)
+		}
 		if res.HasRows {
 			c.rowDescription(res.Cols, nil)
 		}
@@ -935,6 +963,10 @@ func (c *conn) simpleQuery(q string) (stop bool) {
 			}
 		}
 		c.send(newMsg('C').str(res.Tag))
+		if hit {
+			sql.HyRec(sql.HyWireEncode, time.Since(te))
+			c.hyHit = true
+		}
 	}
 	return false
 }

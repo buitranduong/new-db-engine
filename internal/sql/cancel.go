@@ -100,11 +100,21 @@ func (s *Session) Exec(st Stmt, params []Datum) (*Result, error) {
 	if d := s.ctl.timeouts[0]; d > 0 {
 		timer = time.AfterFunc(d, func() { s.ctl.interrupt(seq, InterruptTimeout) })
 	}
+	s.hy.hit = false
+	var tx0 time.Time
+	if HySpanOn {
+		tx0 = time.Now()
+	}
 	s.refreshSnapshot(st)
 	st = s.rewriteAnyParams(st, params)
 	t0 := s.beginStmt(st)
 	s.notices = s.notices[:0]
 	res, err := s.exec(st, params)
+	defer func() {
+		if HySpanOn && s.hy.hit {
+			HyRec(HyExec, time.Since(tx0))
+		}
+	}()
 	if err != nil && s.explicit && !s.failed {
 		// PostgreSQL: any ERROR inside a transaction block aborts it (only ROLLBACK, ROLLBACK TO
 		// and COMMIT, which then reports ROLLBACK, are accepted afterwards). The statement paths

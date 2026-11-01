@@ -43,9 +43,13 @@ func parseFlags() *Config {
 	flag.IntVar(&c.R, "r", 2, "R workers: R2 quota pages 1-3 and join queries")
 	flag.IntVar(&c.ThinkT, "think-t", 2, "ms think time of T workers")
 	flag.IntVar(&c.ThinkR, "think-r", 2, "ms think time of R/P workers")
-	flag.IntVar(&c.ImportEvery, "import-every", 5, "seconds between imports (1% of the sims in one transaction)")
+	flag.IntVar(&c.ImportEvery, "import-every", 5, "seconds between imports (1% of the sims)")
+	flag.IntVar(&c.ImportBatch, "import-batch", 5000, "rows per import transaction, committed one after another (default shape, like staskimport); 0 = the whole 1% in ONE transaction (worst case, measure separately)")
+	flag.DurationVar(&c.ImportPause, "import-batch-pause", 20*time.Millisecond, "pause between the batches of one import")
 	flag.StringVar(&c.ImportMode, "import-mode", "alternate", "alternate (second half of the run, priority probe) | always | never")
 	flag.StringVar(&c.PhaseFirst, "phase-first", "noimport", "alternate: which phase comes first (noimport|import)")
+	flag.DurationVar(&c.Warmup, "warmup", 0, "warm-up before -duration: the workers run (no import) and nothing is recorded; the measured window is -duration after it")
+	flag.StringVar(&c.BarrierQueries, "barrier-queries", "", "comma list of barrier queries to compare (default all 15), e.g. q03_r2_quota for pages 1-3 only")
 	flag.IntVar(&c.Probes, "probes", 10000, "read-your-writes probes")
 	flag.Float64Var(&c.HotFrac, "hot-frac", 0.3, "fraction of T sim picks taken from the hot set (deliberate conflicts)")
 	flag.IntVar(&c.Hot, "hot", 200, "size of the hot set")
@@ -247,7 +251,7 @@ func main() {
 	probes := g.ProbeSims(2000)
 	logf("starting: T=%d P=%d R=%d import=%s duration=%s probes=%d (probe sims %d)", cfg.T, cfg.P, cfg.R, cfg.ImportMode, cfg.Duration, cfg.Probes, len(probes))
 
-	wctx, stop := context.WithTimeout(ctx, cfg.Duration)
+	wctx, stop := context.WithTimeout(ctx, cfg.Warmup+cfg.Duration)
 	defer stop()
 	run.start = time.Now()
 	var wg sync.WaitGroup
@@ -282,6 +286,21 @@ func main() {
 		EndS   float64 `json:"end_s"`
 	}
 	var spans []PhaseSpan
+	setPhases := func() {
+		switch cfg.ImportMode {
+		case "alternate":
+			a, b := "noimport", "import"
+			if cfg.PhaseFirst == "import" {
+				a, b = b, a
+			}
+			run.phase.Store(a)
+			time.AfterFunc(cfg.Duration/2, func() { run.phase.Store(b) })
+		case "always":
+			run.phase.Store("import")
+		default:
+			run.phase.Store("noimport")
+		}
+	}
 	switch cfg.ImportMode {
 	case "alternate":
 		a, b := "noimport", "import"
@@ -289,15 +308,18 @@ func main() {
 			a, b = b, a
 		}
 		h := cfg.Duration.Seconds() / 2
-		run.phase.Store(a)
 		spans = []PhaseSpan{{a, 0, h}, {b, h, cfg.Duration.Seconds()}}
-		time.AfterFunc(cfg.Duration/2, func() { run.phase.Store(b) })
 	case "always":
-		run.phase.Store("import")
 		spans = []PhaseSpan{{"import", 0, cfg.Duration.Seconds()}}
 	default:
-		run.phase.Store("noimport")
 		spans = []PhaseSpan{{"noimport", 0, cfg.Duration.Seconds()}}
+	}
+	if cfg.Warmup > 0 {
+		run.phase.Store("warmup")
+		logf("warm-up %s (not recorded, no import), then %s measured", cfg.Warmup, cfg.Duration)
+		time.AfterFunc(cfg.Warmup, setPhases)
+	} else {
+		setPhases()
 	}
 
 	// machine sampler
@@ -331,7 +353,7 @@ func main() {
 		})
 	}
 	wg.Wait()
-	elapsed := time.Since(run.start)
+	elapsed := max(time.Since(run.start)-cfg.Warmup, time.Second)
 	mach.Load1End = load1()
 	mach.FreeGBEnd = freeGB(cfg.DiskPath)
 	logf("run finished after %.1fs; final checks", elapsed.Seconds())

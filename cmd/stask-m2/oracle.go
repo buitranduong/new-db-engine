@@ -53,7 +53,9 @@ type Config struct {
 	Duration                                        time.Duration
 	T, P, R                                         int
 	ThinkT, ThinkR                                  int
-	ImportEvery                                     int
+	ImportEvery, ImportBatch                        int
+	ImportPause, Warmup                             time.Duration
+	BarrierQueries                                  string
 	ImportMode, PhaseFirst                          string
 	Probes                                          int
 	HotFrac                                         float64
@@ -514,6 +516,9 @@ func Barrier(ctx context.Context, cfg *Config, sutDSN, refDSN string) []QCompare
 	b, errB := Connect(ctx, refDSN)
 	var out []QCompare
 	for _, q := range allQueries {
+		if cfg.BarrierQueries != "" && !strings.Contains(","+cfg.BarrierQueries+",", ","+q+",") {
+			continue
+		}
 		pages := []int{0}
 		if q == "q03_r2_quota" {
 			pages = []int{1, 2, 3}

@@ -34,6 +34,14 @@ LOGOFF=$(wc -c <"$M2_DIR/staskd.log" 2>/dev/null || echo 0)
 "$M2_DIR/stask-m2" -sut "postgres://postgres:wm@127.0.0.1:$PORT/postgres?sslmode=disable" -ref-docker -label "$KIND" \
   "${EXTRA[@]}" -n "$N" -duration "$DURATION" -out "$OUT" "${CR[@]}" "$@"
 rc=$?
+mkdir -p "$OUT"
+# resident size and data directory size before the SUT is stopped (docs/32 section 6)
+if [ "$KIND" = stask ]; then
+  [ -f "$M2_DIR/staskd.pid" ] && grep -E "VmRSS|VmHWM" "/proc/$(cat "$M2_DIR/staskd.pid")/status" >"$OUT/sut_rss.txt" 2>/dev/null
+  du -sm "${STASK_DATA:-$M2_DIR/stask-data}" 2>/dev/null | cut -f1 >"$OUT/sut_datadir_mb.txt"
+else
+  docker exec "${SUT_NAME:-m2h-sut}" du -sm /var/lib/postgresql/data 2>/dev/null | cut -f1 >"$OUT/sut_datadir_mb.txt"
+fi
 if [ "$KIND" = stask ]; then
   # hybrid path counters (only present with staskd -hybrid) and the reasons the path was not used (logged once per reason)
   mkdir -p "$OUT"; curl -s "http://127.0.0.1:$((PORT+1))/v1/status" 2>/dev/null | python3 -c 'import sys,json

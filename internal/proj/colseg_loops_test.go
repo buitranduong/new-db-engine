@@ -59,8 +59,8 @@ func TestSegMergeAndRingTerminate(t *testing.T) {
 	if prev > 6 {
 		t.Fatalf("%d merges for 6 commits: the trigger chases itself", prev)
 	}
-	if len(c.chain) > SegRingMax {
-		t.Fatalf("ring %d exceeds the maximum %d", len(c.chain), SegRingMax)
+	if n, _ := c.RingStats(); n > SegRingMax {
+		t.Fatalf("ring %d exceeds the maximum %d", n, SegRingMax)
 	}
 }
 

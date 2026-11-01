@@ -67,8 +67,8 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 	rep := map[string]any{
 		"label": cfg.Label, "harness_commit": commit, "date": time.Now().UTC().Format(time.RFC3339),
 		"scale": map[string]any{"sims": cfg.N, "rows_total": NewGen(cfg.N, cfg.Seed, cfg.HistPerSim).TotalRows(), "seed": cfg.Seed},
-		"load": map[string]any{"T": cfg.T, "P": cfg.P, "R": cfg.R, "import_every_s": cfg.ImportEvery, "import_mode": cfg.ImportMode,
-			"duration_s": cfg.Duration.Seconds(), "elapsed_s": elapsed.Seconds(), "hot_frac": cfg.HotFrac, "hot": cfg.Hot, "exec_mode": cfg.Exec, "isolation": cfg.Iso},
+		"load": map[string]any{"T": cfg.T, "P": cfg.P, "R": cfg.R, "import_every_s": cfg.ImportEvery, "import_batch": cfg.ImportBatch, "import_batch_pause_ms": cfg.ImportPause.Milliseconds(), "import_shape": importShape(cfg), "import_mode": cfg.ImportMode,
+			"duration_s": cfg.Duration.Seconds(), "warmup_s": cfg.Warmup.Seconds(), "elapsed_s": elapsed.Seconds(), "hot_frac": cfg.HotFrac, "hot": cfg.Hot, "exec_mode": cfg.Exec, "isolation": cfg.Iso},
 		"machine": mach, "phases": spans, "classes": classes, "classes_by_phase": phases, "priority_probe": prio,
 		"counters": counters, "oracles": oracles, "journal_txns": journalN, "replay": replay, "barrier": barrier, "crash": crash,
 		"note": "all numbers are measurements of this run at the stated scale and load; no performance claim",
@@ -120,9 +120,11 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 			}
 			fmt.Fprintf(&m, "| %s | %.2f | %.2f | %s | %v | %v |\n", c, e["p99_noimport_ms"], e["p99_import_ms"], ratio, e["n_noimport"], e["n_import"])
 		}
-		if s, ok := phases["import"]["import"]; ok {
-			fmt.Fprintf(&m, "\nimport transactions: %d ok, p50 %.0f ms, max %.0f ms, errors %v\n", s.OK, s.P50, s.Max, s.Errors)
-		}
+	}
+	if cfg.ImportMode != "never" {
+		s := classes["import"]
+		fmt.Fprintf(&m, "\n## Import shape\n\nshape that ran: **%s**; every import re-prices 1%% of the sims (%d rows) and writes history; each transaction is its own journal row.\n\nimport transactions (latency of ONE transaction): %d ok, errors %v, p50 %.0f ms, p95 %.0f ms, p99 %.0f ms, max %.0f ms; batches %d, rows %d\n",
+			importShape(cfg), cfg.N/100, s.OK, s.Errors, s.P50, s.P95, s.P99, s.Max, counters["import_batches"], counters["import_rows"])
 	}
 	if len(barrier) > 0 {
 		fmt.Fprintf(&m, "\n## Barrier comparison with postgres:16 (journal of %d committed transactions replayed in commit order)\n\n", journalN)
@@ -151,4 +153,14 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 		fmt.Fprintf(&m, "- %s = %d\n", k, counters[k])
 	}
 	os.WriteFile(filepath.Join(cfg.Out, "report.md"), []byte(m.String()), 0o644)
+}
+
+func importShape(cfg *Config) string {
+	switch {
+	case cfg.ImportMode == "never":
+		return "none"
+	case cfg.ImportBatch <= 0:
+		return "single (1% in ONE transaction, worst case)"
+	}
+	return fmt.Sprintf("batched (%d rows per transaction, %d ms pause)", cfg.ImportBatch, cfg.ImportPause.Milliseconds())
 }

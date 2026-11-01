@@ -8,7 +8,8 @@
 # Any other argument is passed to stask-m2 (e.g. -t 8 -r 4 -probes 10000 -import-every 5).
 # The reference postgres:16 (journal replay, barrier comparison) is a throw-away container on port 28791.
 # To test an already running server instead: stask-m2 -sut <dsn> -ref-docker ... (see -h).
-# Exit code: 0 all oracles held, 1 an oracle was violated, 2 harness/setup error.
+# Exit code: 0 all oracles held, 1 an oracle was violated, 2 harness/setup error, 3 INVALID: the configured load did not happen
+# (load guard, docs/32: -min-t -min-p -min-r2 -min-import -min-probes-pct, 0 disables one).
 set -u
 KIND=${1:?usage: run.sh pg16|stask [flags]}; shift
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"
@@ -23,7 +24,8 @@ if [ -z "${SKIP_BUILD:-}" ]; then
 fi
 CR=()
 if [ -n "${CRASH:-}" ]; then
-  CR=(-crash-at "$CRASH" -kill-cmd "M2_DIR=$M2_DIR $HERE/sut.sh $KIND kill9" -restart-cmd "M2_DIR=$M2_DIR $HERE/sut.sh $KIND restart")
+  if [ "$KIND" = stask ]; then PIDC="cat $M2_DIR/staskd.pid"; else PIDC="docker inspect -f {{.State.Pid}} ${SUT_NAME:-m2h-sut}"; fi
+  CR=(-pid-cmd "$PIDC" -crash-at "$CRASH" -kill-cmd "M2_DIR=$M2_DIR $HERE/sut.sh $KIND kill9" -restart-cmd "M2_DIR=$M2_DIR $HERE/sut.sh $KIND restart")
 fi
 EXTRA=(-ref-name "${REF_NAME:-m2h-ref}" -ref "postgres://postgres:wm@127.0.0.1:${REF_PORT:-28791}/postgres?sslmode=disable")
 # STASK_FLAGS=-hybrid needs sims WITH (columnar = on); COLUMNAR=1 forces it (default: on when STASK_FLAGS mentions -hybrid)

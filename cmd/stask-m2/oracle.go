@@ -73,6 +73,8 @@ type Config struct {
 	Tear                                            int
 	ProbeWorkers                                    int
 	ProbeGap                                        time.Duration
+	MinT, MinP, MinR2, MinImport, MinProbesPct      int    // load-happened guard (guard.go); 0 disables a minimum
+	PidCmd                                          string // prints the server pid; the crash drill compares it before and after
 }
 
 func (c *Config) Query(name string, page int) string {

@@ -72,6 +72,12 @@ func parseFlags() *Config {
 	flag.DurationVar(&c.ProbeGap, "probe-gap", -1, "pause between probes (-1: spread over 90% of the duration; 0: back to back)")
 	flag.StringVar(&c.RefName, "ref-name", "m2h-ref", "name of the reference container (use a unique one when several harnesses run)")
 	flag.StringVar(&c.Iso, "iso", "", "transaction isolation level of T workers (default: server default)")
+	flag.IntVar(&c.MinT, "min-t", 100, "load guard: minimum successful T transactions (orders+pays+cancels) when -t > 0 (0 = do not check)")
+	flag.IntVar(&c.MinP, "min-p", 100, "load guard: minimum successful P reads (r1_point + r1_keyset) when -p > 0 (0 = do not check)")
+	flag.IntVar(&c.MinR2, "min-r2", 30, "load guard: minimum successful r2_page queries when -r > 0 (0 = do not check)")
+	flag.IntVar(&c.MinImport, "min-import", 1, "load guard: minimum completed import batches when the import runs; also at least one full slice (0 = do not check)")
+	flag.IntVar(&c.MinProbesPct, "min-probes-pct", 90, "load guard: percent of -probes that must have run (0 = do not check)")
+	flag.StringVar(&c.PidCmd, "pid-cmd", "", "shell command that prints the pid of the server under test; with -crash-at the pid must change across the kill")
 	flag.Parse()
 	return c
 }
@@ -399,7 +405,8 @@ func main() {
 			run.Check("barrier_"+q.Query, q.Equal, "%s %s%s", q.Diff, q.ErrSUT, q.ErrRef)
 		}
 	}
-	writeReport(cfg, run, mach, spans, elapsed, crash, barrier, replayInfo, len(jr))
+	lg := loadGuard(cfg, run.counters, classCounts(run), crash)
+	writeReport(cfg, run, mach, spans, elapsed, crash, barrier, replayInfo, len(jr), lg)
 	fails := 0
 	for _, o := range run.oracle {
 		fails += o.Fails
@@ -408,6 +415,14 @@ func main() {
 		logf("ORACLE VIOLATIONS: %d (see %s/report.md)", fails, cfg.Out)
 		cleanup()
 		os.Exit(1)
+	}
+	if len(lg) > 0 {
+		logf("LOAD NOT APPLIED: the report is INVALID (see %s/report.md)", cfg.Out)
+		for _, l := range lg {
+			logf("  %s", l)
+		}
+		cleanup()
+		os.Exit(3)
 	}
 	logf("all oracles held")
 }
@@ -443,6 +458,10 @@ type CrashInfo struct {
 	Unknown     int              `json:"unknown_outcome_in_flight"`
 	Present     int              `json:"unknown_that_are_present"`
 	Acked       map[int64]string `json:"-"`
+	KillOK      bool             `json:"kill_command_ok"`
+	Restarts    int              `json:"restart_count"`
+	PidBefore   string           `json:"server_pid_before"`
+	PidAfter    string           `json:"server_pid_after"`
 }
 
 func (r *Run) crashDrill(ctx, wctx context.Context) *CrashInfo {
@@ -462,13 +481,25 @@ func (r *Run) crashDrill(ctx, wctx context.Context) *CrashInfo {
 	})
 	ci.AckedBefore = len(ci.Acked)
 	logf("CRASH: kill -9 after %.1fs with %d acknowledged transactions", ci.AtS, ci.AckedBefore)
-	out, _ := exec.Command("sh", "-c", r.cfg.KillCmd).CombinedOutput()
+	pidOf := func() string {
+		if r.cfg.PidCmd == "" {
+			return ""
+		}
+		b, _ := exec.Command("sh", "-c", r.cfg.PidCmd).Output()
+		return strings.TrimSpace(string(b))
+	}
+	ci.PidBefore = pidOf()
+	out, kerr := exec.Command("sh", "-c", r.cfg.KillCmd).CombinedOutput()
 	ci.KillOut = strings.TrimSpace(string(out))
+	ci.KillOK = kerr == nil
 	t0 := time.Now()
 	out, err := exec.Command("sh", "-c", r.cfg.RestartCmd).CombinedOutput()
 	if err != nil {
 		logf("restart command failed: %v %s", err, out)
+	} else {
+		ci.Restarts = 1
 	}
+	ci.PidAfter = pidOf()
 	ci.Recovered = waitUp(ctx, r.sut, r.cfg.RestartWait)
 	ci.RestartMs = time.Since(t0).Milliseconds()
 	logf("recovered=%v after %d ms", ci.Recovered, ci.RestartMs)

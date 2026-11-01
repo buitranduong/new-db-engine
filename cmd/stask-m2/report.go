@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Duration, crash *CrashInfo, barrier []QCompare, replay map[string]any, journalN int) {
+func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Duration, crash *CrashInfo, barrier []QCompare, replay map[string]any, journalN int, lg []string) {
 	if len(mach.DirtyWhy) > 0 {
 		mach.Dirty = true
 	}
@@ -71,14 +71,16 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 			"duration_s": cfg.Duration.Seconds(), "warmup_s": cfg.Warmup.Seconds(), "elapsed_s": elapsed.Seconds(), "hot_frac": cfg.HotFrac, "hot": cfg.Hot, "exec_mode": cfg.Exec, "isolation": cfg.Iso},
 		"machine": mach, "phases": spans, "classes": classes, "classes_by_phase": phases, "priority_probe": prio,
 		"counters": counters, "oracles": oracles, "journal_txns": journalN, "replay": replay, "barrier": barrier, "crash": crash,
-		"note": "all numbers are measurements of this run at the stated scale and load; no performance claim",
+		"valid": len(lg) == 0, "load_not_applied": lg, "note": "all numbers are measurements of this run at the stated scale and load; no performance claim",
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
 	os.WriteFile(filepath.Join(cfg.Out, "report.json"), b, 0o644)
 
 	var m strings.Builder
 	tag := "clean"
-	if mach.Dirty {
+	if len(lg) > 0 {
+		tag = "INVALID: LOAD NOT APPLIED"
+	} else if mach.Dirty {
 		tag = "DIRTY (" + strings.Join(mach.DirtyWhy, "; ") + ")"
 	}
 	fmt.Fprintf(&m, "# stask-m2 report: %s\n\n", cfg.Label)
@@ -86,6 +88,13 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 	fmt.Fprintf(&m, "- scale: %d sims (%d rows), seed %s; load: T=%d P=%d R=%d, import %s every %ds, hot set %d at %.0f%%; %.0f s elapsed\n",
 		cfg.N, NewGen(cfg.N, cfg.Seed, cfg.HistPerSim).TotalRows(), cfg.Seed, cfg.T, cfg.P, cfg.R, cfg.ImportMode, cfg.ImportEvery, cfg.Hot, cfg.HotFrac*100, elapsed.Seconds())
 	fmt.Fprintf(&m, "- machine: %d CPUs, load1 start %.2f / max %.2f / end %.2f, disk free %.1f GB\n\n", mach.CPUs, mach.Load1At0, mach.Load1Max, mach.Load1End, mach.FreeGBEnd)
+	if len(lg) > 0 {
+		m.WriteString("## LOAD NOT APPLIED\n\n**This run is INVALID.** The load it was configured to apply did not happen, so \"all oracles held\" below compares empty sets and proves nothing, and no number of this report may be quoted.\n\n")
+		for _, l := range lg {
+			fmt.Fprintf(&m, "- %s\n", l)
+		}
+		m.WriteString("\n")
+	}
 	fmt.Fprintf(&m, "## Oracles\n\n| oracle | checks | violations | example |\n|---|---|---|---|\n")
 	totalFail := 0
 	for _, o := range oracles {
@@ -100,7 +109,9 @@ func writeReport(cfg *Config, run *Run, mach Machine, spans any, elapsed time.Du
 		}
 		fmt.Fprintf(&m, "| %s | %d | %s | %s |\n", o.Name, o.Checks, st, ex)
 	}
-	if totalFail == 0 {
+	if totalFail == 0 && len(lg) > 0 {
+		m.WriteString("\nNo oracle was violated, but the run is INVALID (load not applied).\n")
+	} else if totalFail == 0 {
 		m.WriteString("\nAll oracles held.\n")
 	} else {
 		fmt.Fprintf(&m, "\n**%d oracle violations.**\n", totalFail)

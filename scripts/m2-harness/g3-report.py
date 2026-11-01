@@ -54,6 +54,8 @@ for name in ORDER:
 
 
 def label(r):
+    if r["rep"] and r["rep"].get("valid") is False:
+        return "INVALID"  # load guard: the configured load did not happen (docs/32)
     if r["perf_invalid"] or r["rc"] in ("4", "5", "3", "stopped: disk"):
         return "INVALID"
     rep = r["rep"]
@@ -144,6 +146,9 @@ for eng in ("hyb", "off", "pg"):
     for imp in ("batched", "single"):
         r = runs.get("%s-%s" % (eng, imp))
         if not (base and r and base["rep"] and r["rep"]):
+            continue
+        if label(base) == "INVALID" or label(r) == "INVALID":
+            p("| %s | %s | INVALID (%s) | - | - | - | - |" % (eng, imp, ", ".join(n for n, x in (("none", base), (imp, r)) if label(x) == "INVALID")))
             continue
         cells = []
         for c in CLASSES[:3]:

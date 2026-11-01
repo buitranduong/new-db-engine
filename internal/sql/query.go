@@ -103,8 +103,14 @@ func (qx *qexec) ctx(outer *evalCtx) *evalCtx {
 
 // runQuery executes a query statement on the general executor.
 func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error) {
+	return s.runQueryPush(tx, st, params, false)
+}
+
+// runQueryPush is runQuery; pushSingle lets the WHERE of a one-table query reach its scan, so that
+// the rows an INSERT .. SELECT, UPDATE or DELETE reads come from a key range, not the whole table.
+func (s *Session) runQueryPush(tx *core.Tx, st Stmt, params []Datum, pushSingle bool) (*Result, error) {
 	st = s.applyColumnCollations(st)
-	c := &compiler{s: s, tx: tx}
+	c := &compiler{s: s, tx: tx, pushSingle: pushSingle}
 	p, err := c.compile(st, &qscope{lvl: &qlevel{}})
 	if err != nil {
 		return nil, err
@@ -127,9 +133,10 @@ func (s *Session) runQuery(tx *core.Tx, st Stmt, params []Datum) (*Result, error
 }
 
 type compiler struct {
-	s  *Session
-	tx *core.Tx // snapshot the views are read at; nil: the newest
-	vs *viewScope
+	pushSingle bool // the next compileSelect may push WHERE conjuncts into a one-table scan (rangepath.go)
+	s          *Session
+	tx         *core.Tx // snapshot the views are read at; nil: the newest
+	vs         *viewScope
 }
 
 func (c *compiler) compile(st Stmt, sc *qscope) (qplan, error) {
@@ -624,6 +631,8 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 	if x, ok := c.s.applyColumnCollations(st).(*Select); ok { // columns declared COLLATE (collddl.go)
 		st = x
 	}
+	pushSingle := c.pushSingle // only the top query of an INSERT .. SELECT / UPDATE / DELETE reading its rows
+	c.pushSingle = false
 	lvl := &qlevel{}
 	sc, err := c.withScope(st.With, outer, lvl)
 	if err != nil {
@@ -773,6 +782,21 @@ func (c *compiler) compileSelect(st *Select, outer *qscope) (qplan, error) {
 					} else {
 						keep = &Binary{Op: "and", L: keep, R: cnd}
 					}
+				}
+			}
+			p.where = keep
+		} else if tp, ok := p.from.(*tablePlan); ok && pushSingle && len(st.Lock) == 0 && !rangeScanOff.Load() {
+			// one base table: the conjuncts that are safe to evaluate while reading go to its scan,
+			// where the primary-key range / key lookups / index paths of tablePlan.access apply
+			var keep Expr
+			for _, cnd := range splitAnd(p.where) {
+				if pushWhere(tp, cnd) {
+					continue
+				}
+				if keep == nil {
+					keep = cnd
+				} else {
+					keep = &Binary{Op: "and", L: keep, R: cnd}
 				}
 			}
 			p.where = keep

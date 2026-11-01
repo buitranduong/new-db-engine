@@ -33,7 +33,7 @@ func setHasSubquery(set []Assign) bool {
 }
 
 func (s *Session) insertQuery(tx *core.Tx, st *Insert, params []Datum) (*Result, error) {
-	res, err := s.runQuery(tx, st.Query, params)
+	res, err := s.runQueryPush(tx, st.Query, params, true)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (s *Session) targetRows(tx *core.Tx, t *schema.Table, table, alias string, 
 	for _, x := range extra {
 		q.Items = append(q.Items, SelItem{X: x})
 	}
-	res, err := s.runQuery(tx, q, params)
+	res, err := s.runQueryPush(tx, q, params, true)
 	if err != nil {
 		return nil, nil, err
 	}

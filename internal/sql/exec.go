@@ -1135,15 +1135,24 @@ func (s *Session) scanRows(tx *core.Tx, t *schema.Table, ctx *evalCtx, where Exp
 		}
 		return nil
 	}
+	alias := ""
+	if ctx.sc != nil {
+		alias = ctx.sc.alias
+	}
+	var ic *indexChoice
 	if canUseIndex(tx, t) {
-		alias := ""
-		if ctx.sc != nil {
-			alias = ctx.sc.alias
+		ic = chooseIndex(t, alias, where, ctx, nil)
+	}
+	// a bounded range of the primary key beats an index unless the index has an equality
+	// prefix and the range is only a half line (no statistics to tell which is narrower)
+	if canRange(tx) {
+		if rg, ok := pkRangeOf(t, alias, where, ctx); ok && (rg.twoSided || ic == nil || len(ic.eq) == 0 && ic.in == nil) {
+			return s.scanKeyRange(tx, t, rg, match, fn)
 		}
-		if c := chooseIndex(t, alias, where, ctx, nil); c != nil {
-			if ok, err := s.scanIndex(tx, t, c, false, match, fn); err != nil || ok {
-				return err
-			}
+	}
+	if ic != nil {
+		if ok, err := s.scanIndex(tx, t, ic, false, match, fn); err != nil || ok {
+			return err
 		}
 	}
 	var ierr error

@@ -24,6 +24,11 @@ var (
 
 const memStep = 1 << 20
 
+// memFloor is the memory every query may hold whatever the other queries hold (CockroachDB's SQL memory
+// monitors likewise reserve a minimum per connection from the root pool, so that the pool being used up
+// by large statements does not fail the small ones). A query that needs more asks the shared budget.
+const memFloor = 8 << 20
+
 var datumSize = int64(unsafe.Sizeof(Datum{}))
 
 func rowBytes(r []Datum) int64 {
@@ -45,6 +50,13 @@ func (qx *qexec) charge(r []Datum) error {
 	}
 	step := max(int64(memStep), qx.memUsed-qx.memReserved)
 	if SQLMemLimit > 0 && sqlMemUsed.Add(step) > SQLMemLimit {
+		if qx.memUsed <= memFloor {
+			// a small query always gets its floor, even when the big ones hold the whole node budget: a
+			// point read must not fail because other queries use memory. The floor is booked (the shared
+			// counter is truthful) but not refused; the overdraft is at most memFloor per query in progress.
+			qx.memReserved += step
+			return nil
+		}
 		sqlMemUsed.Add(-step)
 		return errf("53200", "out of memory: queries in progress hold the node's budget of %d MB (-sql-mem-mb)", SQLMemLimit>>20)
 	}

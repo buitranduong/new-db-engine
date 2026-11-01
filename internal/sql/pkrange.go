@@ -118,20 +118,6 @@ func orBounds(t *schema.Table, alias string, e *Binary, ctx *evalCtx, out map[st
 	}
 }
 
-// pkRangeBounds returns the range WHERE puts on the primary key when the
-// table has a one-column string key that the primary tree orders as SQL
-// does, or ok=false. It does not cover equality (keyLookups does).
-func pkRangeBounds(t *schema.Table, alias string, where Expr, ctx *evalCtx) (b *colBounds, ok bool) {
-	if where == nil || t.Composite() || !t.HasPK() || t.Columns[t.KeyIndex()].T != schema.TString {
-		return nil, false
-	}
-	b = boundsOf(t, alias, where, ctx)[t.Key]
-	if b == nil || b.nothing || b.eq != nil || b.hasIn || b.lo == nil && b.hi == nil {
-		return nil, false
-	}
-	return b, true
-}
-
 // pkOrdered reports whether ORDER BY is the primary key ascending, so that
 // a key-ordered scan can stop at OFFSET+LIMIT rows.
 func pkOrdered(t *schema.Table, alias string, st *Select, items []SelItem, orderOut []int) bool {
@@ -146,56 +132,18 @@ func pkOrdered(t *schema.Table, alias string, st *Select, items []SelItem, order
 	return ok && c.Name == t.Key && (c.Table == "" || c.Table == t.Name || c.Table == alias)
 }
 
-// scanPKRange visits, in key order, the rows whose key lies in the range
-// WHERE puts on it (WHERE is rechecked by match). ok=false: no range, the
-// caller scans the table.
+// scanPKRange visits, in key (= SQL) order, the rows whose key lies in the range WHERE puts on a
+// one-column text key (WHERE is rechecked by match). ok=false: no such range, the caller scans on.
 func (s *Session) scanPKRange(tx *core.Tx, t *schema.Table, alias string, ctx *evalCtx, where Expr,
 	fn func(schema.Row) (bool, error)) (ok bool, err error) {
-	if !canUseIndex(tx, t) {
+	if !canRange(tx) {
 		return false, nil
 	}
-	b, ok := pkRangeBounds(t, alias, where, ctx)
-	if !ok {
+	r, ok := pkRangeOf(t, alias, where, ctx)
+	if !ok || !r.ordered {
 		return false, nil
 	}
-	lo, hi := "", ""
-	loIncl, hiIncl := true, false
-	if b.lo != nil {
-		lo, loIncl = b.lo.S, b.loIncl
-	}
-	if b.hi != nil {
-		hi, hiIncl = b.hi.S, b.hiIncl
-		if hi == "" && !hiIncl {
-			return true, nil // key < '' matches nothing
-		}
-		if hi == "" {
-			// key <= '': only the empty key
-			hi = "\x00"
-			hiIncl = false
-		}
-	}
-	match := matcher(ctx, where)
-	var ferr error
-	serr := tx.ScanKeys(t.Name, lo, loIncl, hi, hiIncl, func(_ string, row schema.Row) bool {
-		m, err := match(row)
-		if err != nil {
-			ferr = err
-			return false
-		}
-		if !m {
-			return true
-		}
-		cont, err := fn(row)
-		if err != nil {
-			ferr = err
-			return false
-		}
-		return cont
-	})
-	if serr != nil {
-		return true, serr
-	}
-	return true, ferr
+	return true, s.scanKeyRange(tx, t, r, matcher(ctx, where), fn)
 }
 
 // prefixRangeServed reports whether a prefix LIKE of where is answered by a

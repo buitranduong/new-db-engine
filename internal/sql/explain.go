@@ -175,6 +175,30 @@ func (x *explainer) leaf(depth int, t *schema.Table, alias string, where Expr, s
 		return
 	}
 	usable := x.tx != nil && canUseIndex(x.tx, t)
+	rg, rgOK := pkRangeOf(t, alias, where, ctx)
+	rgOK = rgOK && canRange(x.tx)
+	pkRangeNode := func() {
+		x.node(depth, "Index Scan using %s_pkey on %s", t.Name, label)
+		x.detail(depth, "Index Cond: primary key (%s) %s", pk, rg.cond)
+		if rg.ordered && sel != nil && sel.Limit != nil && !sel.Distinct && len(sel.GroupBy) == 0 && len(sel.OrderBy) > 0 {
+			orderOut := make([]int, len(sel.OrderBy))
+			for i, o := range sel.OrderBy {
+				orderOut[i] = -1
+				for j, it := range items {
+					if !it.Star && exprKey2(it.X) == exprKey2(o.X) {
+						orderOut[i] = j
+					}
+				}
+			}
+			if pkOrdered(t, alias, sel, items, orderOut) {
+				x.detail(depth, "Order: rows come out in index order (no sort), stops at LIMIT")
+			}
+		}
+		if rg.empty {
+			x.detail(depth, "Note: the range is empty, no row is read")
+		}
+		x.detail(depth, "Filter (rechecked): %s", deparse(where, nil))
+	}
 	if len(t.Indexes) > 0 && !usable {
 		note = note + " [secondary indexes not usable: serializable transaction or own writes to the table]"
 	}
@@ -206,6 +230,10 @@ func (x *explainer) leaf(depth int, t *schema.Table, alias string, where Expr, s
 		if ord != nil {
 			c, ordered = ord, true
 		}
+		if c != nil && rgOK && !ordered && (rg.twoSided || len(c.eq) == 0 && c.in == nil) {
+			pkRangeNode()
+			return
+		}
 		if c != nil {
 			dir := ""
 			if ordered && desc {
@@ -222,27 +250,9 @@ func (x *explainer) leaf(depth int, t *schema.Table, alias string, where Expr, s
 			return
 		}
 	}
-	if usable {
-		if b, ok := pkRangeBounds(t, alias, where, ctx); ok {
-			x.node(depth, "Index Scan using %s_pkey on %s", t.Name, label)
-			x.detail(depth, "Index Cond: primary key (%s) %s", pk, pkRangeText(t.Key, b))
-			if sel != nil && sel.Limit != nil && !sel.Distinct && len(sel.GroupBy) == 0 && len(sel.OrderBy) > 0 {
-				orderOut := make([]int, len(sel.OrderBy))
-				for i, o := range sel.OrderBy {
-					orderOut[i] = -1
-					for j, it := range items {
-						if !it.Star && exprKey2(it.X) == exprKey2(o.X) {
-							orderOut[i] = j
-						}
-					}
-				}
-				if pkOrdered(t, alias, sel, items, orderOut) {
-					x.detail(depth, "Order: rows come out in index order (no sort), stops at LIMIT")
-				}
-			}
-			x.detail(depth, "Filter (rechecked): %s", deparse(where, nil))
-			return
-		}
+	if rgOK {
+		pkRangeNode()
+		return
 	}
 	x.node(depth, "Seq Scan on %s", label)
 	if where != nil {

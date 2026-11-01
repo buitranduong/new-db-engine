@@ -320,6 +320,7 @@ type Engine struct {
 	reqCh        chan *commitReq
 	tabLast      map[*TableState]uint64 // committer only: LSN of the last commit that wrote each table (serializable scans, serscan.go)
 	commitExited chan struct{}          // closed when the committer stops taking requests
+	markCh       chan []supTask         // superseded versions of big batches whose index entries the marker goroutine marks dead (OLTP1)
 	syncEWMA     atomic.Int64           // smoothed fdatasync duration (ns)
 	installSeq   atomic.Uint64          // number of commit batches installed in the index
 	gate         atomic.Pointer[WriteGate]
@@ -474,7 +475,9 @@ func Open(opts Options) (*Engine, error) {
 		return nil, err
 	}
 	if !opts.Replica {
-		e.wg.Add(1)
+		e.markCh = make(chan []supTask, markQueue)
+		e.wg.Add(2)
+		go e.supMarker()
 		go e.committer()
 		if opts.IndexMemBudget > 0 {
 			e.wg.Add(1)
@@ -1314,6 +1317,7 @@ type commitReq struct {
 	prepared    time.Time     // LatDebug only
 	acked       time.Time     // LatDebug only
 	qwait       time.Duration // LatDebug only: time in the request queue
+	prepStart   time.Time     // LatDebug only: when the committer began to place this request
 	ops         []pendingOp
 	reads       []readKey
 	scans       []*TableState // tables a serializable transaction scanned (serscan.go)
@@ -1402,7 +1406,11 @@ func (e *Engine) submit(r *commitReq) error {
 	subT0 := time.Now()
 	if SpanOn() {
 		defer func() {
-			SpanLog("submit", subT0, time.Since(subT0), "ops=%d reads=%d qwait=%.1f prepared_to_ack=%.1f", len(r.ops), len(r.reads), float64(r.qwait.Microseconds())/1000, float64(time.Since(r.prepared).Microseconds())/1000)
+			ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+			// pre = lookups before queueing, queue_stage = enqueue until the committer begins placing (queue wait; for a
+			// staged request also the index staging), place = validate + encode, ack = placed until durable
+			SpanLog("submit", subT0, time.Since(subT0), "ops=%d reads=%d pre=%.1f queue_stage=%.1f place=%.1f ack=%.1f staged=%v", len(r.ops), len(r.reads),
+				ms(r.enq.Sub(subT0)), ms(r.prepStart.Sub(r.enq)), ms(r.prepared.Sub(r.prepStart)), ms(time.Since(r.prepared)), r.stage != nil)
 		}()
 	}
 	r.done = make(chan struct{})
@@ -1727,6 +1735,9 @@ func (e *Engine) committer() {
 			close(toSync)
 			<-syncerDone
 			<-installerDone
+			if e.markCh != nil {
+				close(e.markCh)
+			}
 			return
 		}
 		reqCh := e.reqCh
@@ -1950,6 +1961,9 @@ func (e *Engine) prepare(b *commitBatch, inflight, recent []*commitBatch, batch 
 
 	for _, req := range batch {
 		r = req
+		if LatDebug {
+			r.prepStart = time.Now()
+		}
 		if LatDebug && r.stage == nil {
 			r.qwait = time.Since(r.enq)
 			LatQueue.Add(r.qwait)
@@ -2358,13 +2372,54 @@ func (e *Engine) syncBatch(b *commitBatch) {
 	}
 }
 
+// supTask is a version superseded by an installed commit: its secondary-index entries are marked dead.
+type supTask struct {
+	pv  placedVersion
+	old Version
+}
+
+// asyncMarkMin is the number of superseded versions from which a batch hands its dead-marking to the marker goroutine.
+// STASK_MARKINLINE=1 switches that off (A/B runs).
+const asyncMarkMin = 256
+
+const markQueue = 64
+
+var markInline = os.Getenv("STASK_MARKINLINE") != ""
+
+// markSuperseded marks dead the index entries of the old versions in sups.
+func (e *Engine) markSuperseded(sups []supTask) {
+	marks := map[*secIndex][]deadRec{}
+	for i := range sups {
+		s := &sups[i]
+		for si, ks := range e.supersede(s.pv.t, s.pv.key, &s.old, s.pv.v.LSN, s.pv.sch, s.pv.sk) {
+			marks[si] = append(marks[si], ks...)
+		}
+	}
+	for si, ks := range marks {
+		si.markDead(ks)
+	}
+}
+
+// supMarker marks the entries of big batches in LSN order. It ends when the committer has closed markCh after its last
+// install, having marked everything that was queued.
+func (e *Engine) supMarker() {
+	defer e.wg.Done()
+	for sups := range e.markCh {
+		t0 := time.Now()
+		e.markSuperseded(sups)
+		SpanLog("mark", t0, time.Since(t0), "superseded=%d", len(sups))
+	}
+}
+
 // installBatch installs a durable batch (batches are installed in LSN
 // order) and then drops it from the read overlay.
 func (e *Engine) installBatch(b *commitBatch) {
 	t0 := time.Now()
+	var tPrimary, tSecondary time.Duration
 	if SpanOn() {
 		defer func() {
-			SpanLog("install", t0, time.Since(t0), "reqs=%d installs=%d bytes=%d", len(b.placed), len(b.installs), b.bytes)
+			SpanLog("install", t0, time.Since(t0), "reqs=%d installs=%d bytes=%d primary=%.1f superseded_and_marks=%.1f", len(b.placed), len(b.installs), b.bytes,
+				float64(tPrimary.Microseconds())/1000, float64(tSecondary.Microseconds())/1000)
 		}()
 	}
 	e.gc.mu.Lock()
@@ -2383,10 +2438,6 @@ func (e *Engine) installBatch(b *commitBatch) {
 	}
 	var ws []work
 	var cur work
-	type supTask struct {
-		pv  placedVersion
-		old Version
-	}
 	var sups []supTask
 	for _, pv := range b.installs {
 		if cur.t != pv.t {
@@ -2434,19 +2485,26 @@ func (e *Engine) installBatch(b *commitBatch) {
 		w.t.idx.Store(w.tree)
 	}
 	e.gc.mu.Unlock()
+	tPrimary = time.Since(t0)
 	if len(sups) > 0 {
-		// mark the entries of the versions just superseded dead
-		marks := map[*secIndex][]deadRec{}
-		for i := range sups {
-			s := &sups[i]
-			for si, ks := range e.supersede(s.pv.t, s.pv.key, &s.old, s.pv.v.LSN, s.pv.sch, s.pv.sk) {
-				marks[si] = append(marks[si], ks...)
+		// A big batch hands the marking to the marker goroutine: reading the old version of every superseded row costs
+		// 35-50 ms for 5000 rows, and until the installer is done no snapshot at or after this batch can be read
+		// (waitInstalled), so every transaction that started meanwhile stalled. Marking only prepares the cleanup of
+		// stale entries (secindex.go: a scan rechecks the row, so an unmarked stale entry is never wrong); small batches
+		// keep marking inline.
+		queued := false
+		if len(sups) >= asyncMarkMin && e.markCh != nil && !markInline {
+			select {
+			case e.markCh <- sups:
+				queued = true
+			default: // queue full: mark here (back-pressure)
 			}
 		}
-		for si, ks := range marks {
-			si.markDead(ks)
+		if !queued {
+			e.markSuperseded(sups)
 		}
 	}
+	tSecondary = time.Since(t0) - tPrimary
 	if len(b.remaps) > 0 {
 		e.gc.remapMu.Lock()
 		for _, r := range b.remaps {
@@ -2472,7 +2530,7 @@ func (e *Engine) installBatch(b *commitBatch) {
 func (e *Engine) waitInstalled(lsn uint64) {
 	if SpanOn() && e.installed.Load() < lsn {
 		t0 := time.Now()
-		defer func() { SpanLog("waitinst", t0, time.Since(t0), "lsn=%d", lsn) }()
+		defer func() { LatWaitInst.Add(time.Since(t0)); SpanLog("waitinst", t0, time.Since(t0), "lsn=%d", lsn) }()
 	}
 	for e.installed.Load() < lsn {
 		e.posMu.Lock()

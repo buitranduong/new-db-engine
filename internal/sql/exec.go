@@ -262,7 +262,11 @@ func (s *Session) execInner(st Stmt, params []Datum) (*Result, error) {
 		defer s.releaseTxLocks()
 		if core.SpanOn() {
 			c0 := time.Now()
-			defer func() { core.SpanLog("txend", c0, time.Since(c0), "owner=%p", s.lk.tx) }()
+			var ow *lockOwner
+			if s.lk != nil {
+				ow = s.lk.tx
+			}
+			defer func() { core.SpanLog("txend", c0, time.Since(c0), "owner=%p", ow) }()
 		}
 		tx, failed := s.tx, s.failed
 		s.tx, s.explicit, s.failed = nil, false, false

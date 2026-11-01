@@ -259,6 +259,7 @@ func (lt *lockTable) acquire(o *lockOwner, k lockKey, mode uint8, pol waitPolicy
 			o.node.waiting = nil
 			lt.mu.Unlock()
 			if !w0.IsZero() {
+				core.LatLockWait.Add(time.Since(w0))
 				h := ""
 				for _, b := range who {
 					h += fmt.Sprintf(" %p", b)
@@ -432,6 +433,7 @@ func (lt *lockTable) releaseAll(o *lockOwner) {
 	lt.wakeLocked()
 	lt.mu.Unlock()
 	if core.SpanOn() {
+		core.LatLockRelease.Add(time.Since(r0))
 		core.SpanLog("relall", r0, time.Since(r0), "owner=%p locks=%d (global lock table mutex held throughout)", o, nk)
 	}
 }

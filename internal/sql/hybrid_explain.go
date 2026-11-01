@@ -66,16 +66,34 @@ func (s *Session) hyLines(rep *hyReport, q *Select, analyze bool) []string {
 	y.detail(1, "Rejected: ROW-EXECUTOR: materialises every row that passes the filter into Datums and sorts them (no top-N operator); COLUMNAR VIEW (old): answers GROUP BY aggregates only, returns no rows; LOG-GAP (lemma A): not part of step 1 (the read waits for the state instead, up to %v)", s.Hybrid.Wait)
 	st := rep.stats
 	if analyze && rep.used {
-		y.detail(1, "Read base:  %d rows scanned in %d chunks (%d chunks pruned by zone maps), %d passed the filter, %d of those hidden by the changed-rows bitmap; %s of columns touched; %d workers",
-			st.BaseRows, st.ChunksRead, st.ChunksPruned, st.BasePassed, st.BaseHidden, hyBytes(st.ColBytes), st.Workers)
+		if st.RankUsed {
+			y.detail(1, "Read base:  rank walk over a base of %d rows (not scanned): %d rows read from the columns, %d passed the filter, %d of those hidden by the changed-rows bitmap; %s of columns touched; %d workers",
+				st.BaseRows, st.RankVerified, st.BasePassed, st.BaseHidden, hyBytes(st.ColBytes), st.Workers)
+		} else {
+			y.detail(1, "Read base:  %d rows scanned in %d chunks (%d chunks pruned by zone maps), %d passed the filter, %d of those hidden by the changed-rows bitmap; %s of columns touched; %d workers",
+				st.BaseRows, st.ChunksRead, st.ChunksPruned, st.BasePassed, st.BaseHidden, hyBytes(st.ColBytes), st.Workers)
+		}
 		y.detail(1, "Read tail:  %d rows scanned, %d passed the filter, %d superseded or deleted rows skipped", st.TailRows, st.TailPassed, st.TailDead)
 		y.detail(1, "Read gap:   0 keys from the log (state lsn=%d covers the snapshot)", rep.state)
 		y.detail(1, "Order keys: %d candidates ranked, %d md5 evaluated", st.Candidates, st.Md5Evals)
+		if st.RankUsed {
+			y.detail(1, "Rank order: USED. The base is read in rank order (partition, score, md5(key || '%s'), key) through filter bitmaps and the walk of each partition stops after its largest asked rank: %d bitmap words read, %d rows verified on the columns, %d passed, %d hidden by the changed-rows bitmap; the tail (%d rows, %d passed) is merged linearly; index %s", proj.RankSeedCanonical, st.RankWords, st.RankVerified, st.BasePassed, st.BaseHidden, st.TailRows, st.TailPassed, hyBytes(st.RankBytes))
+		} else {
+			y.detail(1, "Rank order: not used: %s", rep.rankWhy)
+		}
 	} else {
 		chunks := (rep.baseRows + 65535) / 65536
 		y.detail(1, "Read base:  up to %d rows in %d chunks (zone maps prune at run time), %d dictionary/int columns; estimate", rep.baseRows, chunks, len(p.filters)+2)
 		y.detail(1, "Read tail:  %d rows (estimate: whole tail)", rep.tailRows)
 		y.detail(1, "Read gap:   %d lsn behind the snapshot (a read waits up to %v for the state; step 1 has no log-gap path)", gaps, s.Hybrid.Wait)
+		switch {
+		case !s.Hybrid.Rank:
+			y.detail(1, "Rank order: off (staskd -hybrid-rank not set)")
+		case p.md5 && p.suffix == proj.RankSeedCanonical:
+			y.detail(1, "Rank order: eligible (canonical tie-break md5(key || '%s')); the run decides whether the index is ready and the tail small enough, and says why if not", proj.RankSeedCanonical)
+		default:
+			y.detail(1, "Rank order: not used: tie-break is not the canonical md5(key || '%s') (seed %q, md5=%v)", proj.RankSeedCanonical, p.suffix, p.md5)
+		}
 	}
 	if p.dim != nil {
 		if analyze && rep.used {

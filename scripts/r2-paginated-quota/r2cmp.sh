@@ -46,7 +46,16 @@ cmp pg_chk.txt st_chk.txt && echo "N=$N CHECKSUMS EQUAL" || { echo "N=$N CHECKSU
 for p in 1 2 3; do
   sed "s/(1-1)/($p-1)/g; s/BETWEEN (\([0-9]*\)-1)\*\([0-9]*\)+1 AND [0-9]*\*\([0-9]*\)/&/" $Q/pgq1.sql > /dev/null
 done
+# -hybrid-rank builds its index in the background: warm up until the rank path has answered, then the pages below are the compared ones
+case "$SFLAGS" in *-hybrid-rank*)
+  for i in $(seq 60); do cat $Q/pgq1.sql | $PS -At > /dev/null; curl -s 127.0.0.1:$SP_PORT/v1/status | python3 -c 'import sys,json;sys.exit(0 if (json.load(sys.stdin).get("hybrid") or {}).get("rank_used",0)>0 else 1)' && break; sleep 1; done ;; esac
 for p in 1 2 3; do cat $Q/pgq$p.sql | $PGP -At -F$'\t' > pg_$p.tsv; cat $Q/pgq$p.sql | $PS -At -F$'\t' > st_$p.tsv
   cmp -s pg_$p.tsv st_$p.tsv && echo "N=$N page $p EQUAL ($(wc -l < st_$p.tsv) rows)" || echo "N=$N page $p DIFFER pg=$(wc -l < pg_$p.tsv) st=$(wc -l < st_$p.tsv) diffrows=$(diff pg_$p.tsv st_$p.tsv | grep -c '^[<>]')"; done
-[ -n "$SFLAGS" ] && echo "hybrid status: $(curl -s 127.0.0.1:$SP_PORT/v1/status | python3 -c 'import sys,json;h=json.load(sys.stdin).get("hybrid") or {};print({k:h.get(k) for k in ("used","fallbacks","state_ready")})')"
+[ -n "$SFLAGS" ] && echo "hybrid status: $(curl -s 127.0.0.1:$SP_PORT/v1/status | python3 -c 'import sys,json;h=json.load(sys.stdin).get("hybrid") or {};print({k:h.get(k) for k in ("used","fallbacks","state_ready","rank","rank_used","rank_scan")})')"
+case "$SFLAGS" in *-hybrid-rank*) python3 - <<EOP || echo "RANK PATH NOT EXERCISED (rank_used < 3): this run proves nothing about it"
+import json,urllib.request,sys
+h=json.load(urllib.request.urlopen("http://127.0.0.1:$SP_PORT/v1/status")).get("hybrid") or {}
+sys.exit(0 if h.get("rank_used",0)>=3 else 1)
+EOP
+;; esac
 if [ "$KEEP" != keep ]; then kill $SP; wait $SP 2>/dev/null; docker rm -f -v r2perf-pg >/dev/null; rm -rf sdata; fi

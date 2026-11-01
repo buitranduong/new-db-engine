@@ -158,9 +158,16 @@ func waitSeg(t *testing.T, c *SegColumnar, lsn uint64) {
 }
 
 func TestSegmentStateMatchesCore(t *testing.T) {
-	oldMin, oldFrac := SegMergeMinTail, SegMergeFrac
-	SegMergeMinTail, SegMergeFrac = 150, 4 // force merges between the rounds
-	defer func() { SegMergeMinTail, SegMergeFrac = oldMin, oldFrac }()
+	for _, rank := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rank=%v", rank), func(t *testing.T) { testSegmentStateMatchesCore(t, rank) })
+	}
+}
+
+func testSegmentStateMatchesCore(t *testing.T, rank bool) {
+	oldMin, oldFrac, oldSync := SegMergeMinTail, SegMergeFrac, SegRankSync
+	SegMergeMinTail, SegMergeFrac, SegRankSync = 150, 4, true // force merges between the rounds; build the index inline
+	defer func() { SegMergeMinTail, SegMergeFrac, SegRankSync = oldMin, oldFrac, oldSync }()
+	rankUsed, rankTried := 0, 0
 	for _, seed := range []int64{1, 2, 3} {
 		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
@@ -229,9 +236,18 @@ func TestSegmentStateMatchesCore(t *testing.T) {
 						t.Fatalf("no table in state at %d", st.LSN)
 					}
 					q, cat, lo, hi, tels := segQuery(tb, rng, workers)
-					got, _, err := tb.TopNPerGroup(q)
+					q.Rank = rank
+					got, gst, err := tb.TopNPerGroup(q)
 					if err != nil {
 						t.Fatalf("round %d S=%d: %v", round, S, err)
+					}
+					if rank && q.Md5 {
+						rankTried++
+						if gst.RankUsed {
+							rankUsed++
+						} else if gst.RankWhy == "" {
+							t.Fatalf("rank asked, not used, no reason")
+						}
 					}
 					want, err := bruteTop(e, st.LSN, q, cat, lo, hi, tels)
 					if err != nil {
@@ -251,5 +267,8 @@ func TestSegmentStateMatchesCore(t *testing.T) {
 				t.Fatal("no merge happened: the test did not exercise the swap")
 			}
 		})
+	}
+	if rank && (rankTried == 0 || rankUsed*2 < rankTried) {
+		t.Fatalf("rank path used in %d of %d md5 queries: the test did not exercise it", rankUsed, rankTried)
 	}
 }

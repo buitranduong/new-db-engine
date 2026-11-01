@@ -139,6 +139,7 @@ type SegBase struct {
 	zmin      [][]int32  // per int column, per chunk
 	zmax      [][]int32
 	mergedLSN uint64
+	rank      rankSet // optional rank-order sidecars (colrank.go): derived, in memory
 }
 
 func (b *SegBase) N() int { return b.n }

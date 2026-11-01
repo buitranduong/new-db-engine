@@ -27,8 +27,14 @@ type Hybrid struct {
 	DimMaxRows int           // most rows a joined dimension may have
 	Wait       time.Duration // longest wait for the state to reach a snapshot
 
+	// Rank: answer the canonical R2 (tie-break md5(key || RankSeedCanonical)) from the rank-ordered access path of the base
+	// segment (staskd -hybrid-rank, docs/34 H2). Any other seed or ORDER BY shape keeps the scan operator; EXPLAIN says why.
+	Rank bool
+
 	Used, Fallbacks atomic.Int64
-	seen            sync.Map // fallback reason -> logged once
+	RankUsed        atomic.Int64 // statements answered by the rank path
+	RankScan        atomic.Int64 // rank was on and the scan operator answered (index not ready, tail too large, ...)
+	seen            sync.Map     // fallback reason -> logged once
 	stall           atomic.Pointer[hyStall]
 	Logf            func(string, ...any)
 }
@@ -89,6 +95,8 @@ type hyReport struct {
 	tailRows int
 	rejected []string
 	groupsN  int
+	rankOn   bool   // the rank path was asked for
+	rankWhy  string // why the scan operator answered (empty: the rank path did)
 }
 
 // Status is what GET /v1/status reports under "hybrid": how many R2 statements took the path and how many fell back.
@@ -96,13 +104,26 @@ func (h *Hybrid) Status() any {
 	ringStates, ringBases := h.Seg.RingStats()
 	return map[string]any{"ring_states": ringStates, "ring_bases": ringBases, "ring_idle_trims": h.Seg.IdleTrims.Load(), "used": h.Used.Load(), "fallbacks": h.Fallbacks.Load(), "state_ready": h.Seg.Ready(),
 		"applied_lsn": h.Seg.Follower().Applied(), "durable_lsn": h.E.DurableLSN(), "lag_ms": h.Seg.Follower().Lag().Milliseconds(),
-		"merges": h.Seg.Merges.Load()}
+		"merges": h.Seg.Merges.Load(), "rank": h.Rank, "rank_used": h.RankUsed.Load(), "rank_scan": h.RankScan.Load()}
 }
 
 func (h *Hybrid) note(why string) {
 	h.Fallbacks.Add(1)
 	if _, seen := h.seen.LoadOrStore(why, true); !seen && h.Logf != nil {
 		h.Logf("hybrid: path not used (logged once per reason): %s", why)
+	}
+}
+
+// noteRank logs a reason the scan operator answered although -hybrid-rank is on, once per reason (numbers ignored).
+func (h *Hybrid) noteRank(why string) {
+	key := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return -1
+		}
+		return r
+	}, why)
+	if _, seen := h.seen.LoadOrStore("rank:"+key, true); !seen && h.Logf != nil {
+		h.Logf("hybrid: rank order not used (logged once per reason): %s", why)
 	}
 }
 
@@ -467,11 +488,30 @@ func (s *Session) hyRun(tx *core.Tx, p *hyPlan, params []Datum, rep *hyReport) (
 	if p.keyHi != nil {
 		q.HasHi, q.KeyHi, q.HiEx = true, *p.keyHi, p.keyHiEx
 	}
+	switch {
+	case !h.Rank:
+		rep.rankWhy = "rank order is off (staskd -hybrid-rank not set)"
+	case !p.md5:
+		rep.rankWhy = "the ORDER BY has no md5(key || seed) tie-break: the rank order does not apply"
+	case p.suffix != proj.RankSeedCanonical:
+		rep.rankWhy = fmt.Sprintf("tie-break seed %q is not the canonical seed %q: the rank order is valid only for the canonical seed", p.suffix, proj.RankSeedCanonical)
+	default:
+		q.Rank, rep.rankOn = true, true
+	}
 	var tk time.Time
 	if HySpanOn {
 		tk = time.Now()
 	}
 	hits, stats, err := tb.TopNPerGroup(q)
+	if q.Rank && err == nil {
+		if stats.RankUsed {
+			h.RankUsed.Add(1)
+		} else {
+			h.RankScan.Add(1)
+			rep.rankWhy = stats.RankWhy
+			h.noteRank(stats.RankWhy)
+		}
+	}
 	if HySpanOn {
 		HyRec(HyKernel, time.Since(tk))
 	}

@@ -346,6 +346,7 @@ func (w *segW) startMerge(pub *SegTbl) bool {
 			}
 		}
 		nb := bld.finish(0)
+		rankCarry(b, nb)
 		nd := newSegDir(nb.n+1024, func(id uint32) []byte { return nb.key(int(id)) })
 		for i := 0; i < nb.n; i++ {
 			nd.Put(nb.key(i), uint32(i))

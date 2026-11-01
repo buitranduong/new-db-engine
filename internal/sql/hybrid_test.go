@@ -112,22 +112,35 @@ func (v *hyEnv) cmp(what string, q string) *hyReport {
 	return rep
 }
 
-func TestHybridR2MatchesRowPath(t *testing.T) {
-	oldMin, oldFrac := proj.SegMergeMinTail, proj.SegMergeFrac
-	proj.SegMergeMinTail, proj.SegMergeFrac = 300, 1000
-	t.Cleanup(func() { proj.SegMergeMinTail, proj.SegMergeFrac = oldMin, oldFrac }) // runs after the engine is closed
+func TestHybridR2MatchesRowPath(t *testing.T) { testHybridR2MatchesRowPath(t, false) }
+
+// The same oracle with the rank-ordered access path on (staskd -hybrid-rank): pages 1-3 and a deep page equal the row
+// executor, with the index built inline, after updates, deletes and inserts that touch the filtered rows, across a merge.
+func TestHybridRankR2MatchesRowPath(t *testing.T) { testHybridR2MatchesRowPath(t, true) }
+
+func testHybridR2MatchesRowPath(t *testing.T, rank bool) {
+	oldMin, oldFrac, oldSync := proj.SegMergeMinTail, proj.SegMergeFrac, proj.SegRankSync
+	proj.SegMergeMinTail, proj.SegMergeFrac, proj.SegRankSync = 300, 1000, true
+	t.Cleanup(func() { proj.SegMergeMinTail, proj.SegMergeFrac, proj.SegRankSync = oldMin, oldFrac, oldSync }) // runs after the engine is closed
 	v := newHyEnv(t, 30000)
+	v.h.Rank = rank
 	steps := func(label string) {
 		for _, join := range []bool{false, true} {
-			for page := 1; page <= 3; page++ {
-				v.cmp(fmt.Sprintf("%s page %d join=%v", label, page, join), hyQuery(page, join))
+			for _, page := range []int{1, 2, 3, 12} {
+				rep := v.cmp(fmt.Sprintf("%s page %d join=%v", label, page, join), hyQuery(page, join))
+				if rank && !rep.stats.RankUsed {
+					t.Fatalf("%s page %d join=%v: the rank path was not used: %s", label, page, join, rep.rankWhy)
+				}
+				if !rank && rep.stats.RankUsed {
+					t.Fatalf("%s: the rank path ran with the switch off", label)
+				}
 			}
 		}
 	}
 	steps("base")
 	// changes land in the tail: updates (one key twice), deletes, inserts
-	mustq(t, v.row, `UPDATE sims SET store_rate = 10 WHERE number IN ('090000000000','090000000005','090000000010','090000000015','090000000020')`)
-	mustq(t, v.row, `UPDATE sims SET store_rate = 5, price = 1500000 WHERE number = '090000000005'`)
+	mustq(t, v.row, `UPDATE sims SET store_rate = 10 WHERE number IN ('09000000000','09000000005','09000000010','09000000015','09000000020')`)
+	mustq(t, v.row, `UPDATE sims SET store_rate = 5, price = 1500000 WHERE number = '09000000005'`)
 	mustq(t, v.row, `UPDATE sims SET price = 2000000 WHERE number IN (SELECT number FROM sims WHERE category = 'TAM_HOA' AND price > 3000000 LIMIT 40)`)
 	mustq(t, v.row, `DELETE FROM sims WHERE number IN (SELECT number FROM sims WHERE category = 'TAM_HOA' AND tel = 'B' LIMIT 25)`)
 	mustq(t, v.row, fmt.Sprintf(hyGen, 30000, 30500))
@@ -138,6 +151,14 @@ func TestHybridR2MatchesRowPath(t *testing.T) {
 	if v.h.Seg.Merges.Load() == 0 {
 		t.Fatal("no merge ran")
 	}
+	// a carrier with fewer qualifying rows than its quota, and ties on store_rate inside it
+	mustq(t, v.row, `UPDATE sims SET category = 'THUONG' WHERE tel = 'C' AND category = 'TAM_HOA' AND number NOT IN (SELECT number FROM sims WHERE tel = 'C' AND category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 ORDER BY number LIMIT 7)`)
+	mustq(t, v.row, `UPDATE sims SET store_rate = 8 WHERE tel = 'C' AND category = 'TAM_HOA'`)
+	steps("carrier C short")
+	// the last qualifying rows of a carrier change after the base: hidden base rows and a tail row that now outranks them
+	mustq(t, v.row, `UPDATE sims SET price = 3500000 WHERE tel = 'C' AND category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND number IN (SELECT number FROM sims WHERE tel = 'C' AND category = 'TAM_HOA' ORDER BY number LIMIT 2)`)
+	mustq(t, v.row, `INSERT INTO sims VALUES ('07000000001','TAM_HOA',1500000,'C',10),('07000000002','TAM_HOA',1500000,'C',3)`)
+	steps("carrier C changed")
 	// the dimension: rename a carrier, switch one off
 	mustq(t, v.row, `UPDATE carriers SET name = 'C2' WHERE tel = 'C'`)
 	rep := v.cmp("dimension renamed", hyQuery(1, true))
@@ -550,5 +571,49 @@ func TestHybridWaitAppliedPatient(t *testing.T) {
 	t0 = time.Now()
 	if h.waitApplied(f, lsn+1000, 500*time.Millisecond) || time.Since(t0) > 50*time.Millisecond {
 		t.Fatalf("second wait did not fall back at once (%v)", time.Since(t0))
+	}
+}
+
+// -hybrid-rank: EXPLAIN says whether the rank order serves the statement and, if not, why; a seed other than the
+// canonical one gives the same rows as the row executor through the scan operator.
+func TestHybridRankExplainSaysWhy(t *testing.T) {
+	oldSync := proj.SegRankSync
+	proj.SegRankSync = true
+	t.Cleanup(func() { proj.SegRankSync = oldSync })
+	v := newHyEnv(t, 20000)
+	out := func(q string) string {
+		r := mustq(t, v.hy, q)
+		var ls []string
+		for _, row := range r.Rows {
+			ls = append(ls, row[0].S)
+		}
+		return strings.Join(ls, "\n")
+	}
+	if ex := out("EXPLAIN " + hyQuery(1, false)); !strings.Contains(ex, "Rank order: off (staskd -hybrid-rank not set)") {
+		t.Fatalf("switch off, EXPLAIN lacks the reason:\n%s", ex)
+	}
+	v.h.Rank = true
+	if ex := out("EXPLAIN " + hyQuery(1, false)); !strings.Contains(ex, "Rank order: eligible") {
+		t.Fatalf("EXPLAIN lacks the eligibility line:\n%s", ex)
+	}
+	if an := out("EXPLAIN ANALYZE " + hyQuery(1, false)); !strings.Contains(an, "Rank order: USED") || !strings.Contains(an, "bitmap words read") {
+		t.Fatalf("EXPLAIN ANALYZE lacks the rank counters:\n%s", an)
+	}
+	q7 := strings.ReplaceAll(hyQuery(2, false), "'42'", "'7'")
+	rep := v.cmp("seed 7", q7)
+	if rep.stats.RankUsed || !strings.Contains(rep.rankWhy, `seed "7" is not the canonical seed "42"`) {
+		t.Fatalf("seed 7: used=%v why=%q", rep.stats.RankUsed, rep.rankWhy)
+	}
+	if an := out("EXPLAIN ANALYZE " + q7); !strings.Contains(an, "Rank order: not used: tie-break seed") {
+		t.Fatalf("EXPLAIN ANALYZE of seed 7 lacks the reason:\n%s", an)
+	}
+	// a tail above the limit: the scan operator answers, with the reason
+	old := proj.SegRankTailMax
+	proj.SegRankTailMax = 5
+	t.Cleanup(func() { proj.SegRankTailMax = old })
+	mustq(t, v.row, `UPDATE sims SET store_rate = 10 WHERE number IN ('09000000000','09000000005','09000000010','09000000015','09000000020','09000000025','09000000030','09000000035')`)
+	rep = v.cmp("big tail", hyQuery(1, false))
+	if rep.stats.RankUsed || !strings.Contains(rep.rankWhy, "more than the rank path merges per query") {
+		t.Fatalf("big tail: used=%v why=%q", rep.stats.RankUsed, rep.rankWhy)
 	}
 }

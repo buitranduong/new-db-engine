@@ -99,6 +99,9 @@ type SegR2 struct {
 	LoEx, HiEx   bool
 	Workers      int
 	Interrupted  func() bool
+	// Rank: the caller asked for the rank-ordered access path (planner: canonical tie-break seed only, staskd -hybrid-rank).
+	// When the path cannot be used the scan operator answers and SegR2Stats.RankWhy says why.
+	Rank bool
 }
 
 type SegHit struct {
@@ -119,6 +122,12 @@ type SegR2Stats struct {
 	Md5Evals                           int64
 	Workers                            int
 	Nothing                            string
+	// rank path (colrank.go)
+	RankUsed     bool
+	RankWhy      string
+	RankWords    int64 // 64-row words of the filter bitmaps read
+	RankVerified int64 // rows read from the columns to verify them
+	RankBytes    int64 // resident size of the rank sidecar
 }
 
 type cflt struct {
@@ -509,6 +518,14 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 		st.Nothing = "no row can pass the filters"
 		return nil, st, nil
 	}
+	if q.Rank {
+		if hits, why, err := t.topRank(q, fs, rc, caps, gidx, gmin, intGroup, scoreSign, keyOK, rowBytes, &st); why == "" {
+			st.Md5Evals = md5Evals.Load()
+			return hits, st, err
+		} else {
+			st.RankWhy = why
+		}
+	}
 	var next atomic.Int64
 	var mu sync.Mutex
 	var all [][]*r2heap
@@ -605,52 +622,17 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 		return nil, st, ErrSegInterrupted
 	}
 	// tail: single thread, small by construction (merged in the background)
-	tl := &t.Tail
-	if tl.n > 0 {
-		th := make([]*r2heap, G)
-		for g := range th {
-			th[g] = &r2heap{c: rc, cap: caps[g]}
-		}
-		sel := filterRange(fs, tl.text, tl.ints, 0, tl.n, make([]int32, 0, min(tl.n, SegChunkRows)))
-		st.ColBytes += int64(tl.n) * int64(rowBytes)
-		scoreCol := tl.ints[q.Score]
-		var groupCol []uint16
-		var groupInt []int32
-		if intGroup {
-			groupInt = tl.ints[q.Group]
-		} else {
-			groupCol = tl.text[q.Group]
-		}
-		for _, i := range sel {
-			if tl.tomb[i] || t.TailDead.Get(int(i)) {
-				st.TailDead++
-				continue
-			}
-			st.TailPassed++
-			var gi int8
-			if intGroup {
-				gi = gIntIdx(gidx, groupInt[i], gmin)
-			} else {
-				gi = gidx[groupCol[i]]
-			}
-			if gi < 0 || !keyOK(uint32(b.n+int(i))) {
-				continue
-			}
-			sc := scoreCol[i]
-			if sc == segNullInt {
-				nullScore.Store(true)
-				continue
-			}
-			th[gi].offer(scoreSign*int64(sc), uint32(b.n+int(i)))
-		}
+	if th, ns := t.tailHeaps(q, fs, rc, caps, gidx, gmin, intGroup, scoreSign, keyOK, rowBytes, &st); th != nil {
 		all = append(all, th)
+		if ns {
+			nullScore.Store(true)
+		}
 	}
 	if nullScore.Load() {
 		return nil, st, ErrSegNullScore
 	}
-	// merge the candidates of each group, rank them, keep the asked ranges
-	var out []r2entry
-	var ranks []int
+	// merge the candidates of each group, rank them
+	cands := make([][]r2entry, G)
 	for g := 0; g < G; g++ {
 		var cand []r2entry
 		for _, hs := range all {
@@ -661,6 +643,19 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 			cand[i].g = uint8(g)
 		}
 		sortEntries(rc, cand)
+		cands[g] = cand
+	}
+	hits := t.emit(q, rc, cands)
+	st.Md5Evals = md5Evals.Load()
+	return hits, st, nil
+}
+
+// emit keeps the asked rank ranges of each group's sorted candidates and returns them in overall order.
+func (t *SegTbl) emit(q *SegR2, rc *r2ctx, cands [][]r2entry) []SegHit {
+	b, tl := t.Base, &t.Tail
+	var out []r2entry
+	var ranks []int
+	for g, cand := range cands {
 		for i := range cand {
 			r := i + 1
 			for _, rg := range q.Groups[g].Ranges {
@@ -688,8 +683,53 @@ func (t *SegTbl) TopNPerGroup(q *SegR2) ([]SegHit, SegR2Stats, error) {
 		}
 		hits = append(hits, SegHit{Key: string(rc.key(e.id)), Group: q.Groups[e.g].Value, Rank: ranks[i], Score: sc})
 	}
-	st.Md5Evals = md5Evals.Load()
-	return hits, st, nil
+	return hits
+}
+
+// tailHeaps offers the live tail rows that pass the filters to one bounded heap per group. nil when the tail is empty.
+func (t *SegTbl) tailHeaps(q *SegR2, fs []cflt, rc *r2ctx, caps []int, gidx []int8, gmin int64, intGroup bool, scoreSign int64, keyOK func(uint32) bool, rowBytes int, st *SegR2Stats) (th []*r2heap, nullScore bool) {
+	b, tl := t.Base, &t.Tail
+	if tl.n == 0 {
+		return nil, false
+	}
+	G := len(caps)
+	th = make([]*r2heap, G)
+	for g := range th {
+		th[g] = &r2heap{c: rc, cap: caps[g]}
+	}
+	sel := filterRange(fs, tl.text, tl.ints, 0, tl.n, make([]int32, 0, min(tl.n, SegChunkRows)))
+	st.ColBytes += int64(tl.n) * int64(rowBytes)
+	scoreCol := tl.ints[q.Score]
+	var groupCol []uint16
+	var groupInt []int32
+	if intGroup {
+		groupInt = tl.ints[q.Group]
+	} else {
+		groupCol = tl.text[q.Group]
+	}
+	for _, i := range sel {
+		if tl.tomb[i] || t.TailDead.Get(int(i)) {
+			st.TailDead++
+			continue
+		}
+		st.TailPassed++
+		var gi int8
+		if intGroup {
+			gi = gIntIdx(gidx, groupInt[i], gmin)
+		} else {
+			gi = gidx[groupCol[i]]
+		}
+		if gi < 0 || !keyOK(uint32(b.n+int(i))) {
+			continue
+		}
+		sc := scoreCol[i]
+		if sc == segNullInt {
+			nullScore = true
+			continue
+		}
+		th[gi].offer(scoreSign*int64(sc), uint32(b.n+int(i)))
+	}
+	return th, nullScore
 }
 
 func cmpEntries(c *r2ctx, a, b *r2entry) int {

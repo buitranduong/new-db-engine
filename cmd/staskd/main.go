@@ -122,6 +122,7 @@ func main() {
 	pgTLSCert := flag.String("pg-tls-cert", "", "PEM certificate for PostgreSQL TLS (with -pg-tls-key; empty = SSLRequest answered 'N')")
 	pgTLSKey := flag.String("pg-tls-key", "", "PEM private key for PostgreSQL TLS")
 	pgTLSRequire := flag.Bool("pg-tls-require", false, "refuse unencrypted PostgreSQL connections (SQLSTATE 28000, like hostssl-only pg_hba.conf)")
+	hybridRank := flag.Bool("hybrid-rank", false, "with -hybrid: answer the canonical R2 (tie-break md5(number || '42')) from a rank-ordered, bitmap-filtered access path of the base segment, built in the background, instead of scanning the base (docs/34 H2); any other seed or ORDER BY shape, a large tail or an index not ready yet uses the scan operator and EXPLAIN says why. Default off")
 	hybrid := flag.Bool("hybrid", false, "hybrid R2 path (docs/30, docs/31): keep a segment copy of the columnar tables in RAM (base + tail + directory, rebuilt from the data at start) and answer the paginated quota query (row_number() OVER (PARTITION BY ...)) from it; EXPLAIN says why a statement did not take it. Default off: nothing changes")
 	pprofAddr := flag.String("pprof", "", "serve Go profiling endpoints on this address (empty = off; loopback only unless -pprof-insecure)")
 	pprofInsecure := flag.Bool("pprof-insecure", false, "allow -pprof on a non-loopback address")
@@ -510,6 +511,7 @@ func main() {
 	var hy *sql.Hybrid
 	if *hybrid {
 		hy = sql.NewHybrid(e)
+		hy.Rank = *hybridRank
 		hsrv.HybridStatus = hy.Status
 	}
 	var pg *pgwire.Server

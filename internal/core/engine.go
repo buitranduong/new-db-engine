@@ -260,7 +260,8 @@ func (t *TableState) head(key string) *Version {
 func (t *TableState) LiveRows() int64 { return t.live.Load() }
 
 type Engine struct {
-	allocFail atomic.Pointer[string] // writes refused: no room for a log segment (diskfull.go)
+	allocFirst, allocLast atomic.Int64           // unix ns of the first/last failure of the current streak (diskfull.go)
+	allocFail             atomic.Pointer[string] // writes refused: no room for a log segment (diskfull.go)
 	// disk secondary index persistence counters (secpersist.go)
 	SidxCkpts, SidxAdopted, SidxRebuilt, SidxAsync, SidxDeadScans atomic.Int64
 	SecArenaCompactions, SecArenaReclaimed                        atomic.Int64

@@ -88,6 +88,7 @@ func main() {
 	raftJoin := flag.Bool("raft-join", false, "with -raft-id: this node is new to a running cluster; -raft-peers lists the cluster and this node. It does not vote until the leader has added it (staskctl cluster add)")
 	raftListen := flag.String("raft-listen", "", "address for Raft connections (default: this node's address in -raft-peers)")
 	raftTick := flag.Duration("raft-tick", 50*time.Millisecond, "Raft tick; the election timeout is -raft-election-ticks to twice that many ticks")
+	raftAllocGrace := flag.Duration("raft-alloc-fail-grace", 3*time.Second, "a Raft leader whose log cannot get a new segment (disk full) for this long stops, so that the others elect a leader that can write; negative = never")
 	raftElection := flag.Int("raft-election-ticks", 20, "ticks without a leader before a node asks for votes (at least 4)")
 	raftCompact := flag.Int("raft-compact-entries", 20000, "compact the Raft log when it holds more entries than this")
 	raftKeep := flag.Int("raft-compact-keep", 2000, "entries kept behind the applied one when compacting (followers further behind fetch a snapshot)")
@@ -403,7 +404,7 @@ func main() {
 		opts.GC = false
 		cl, err = cluster.Prepare(cluster.Config{ID: *raftID, Peers: peers, HTTP: httpAddrs, Listen: *raftListen, Dir: *dir,
 			SegMax: opts.SegmentSize, Settings: replSettings, Insecure: *raftInsecure, TickInterval: *raftTick,
-			ElectionTicks: *raftElection, CompactEntries: *raftCompact, CompactKeep: *raftKeep, Logf: log.Printf, Join: *raftJoin})
+			ElectionTicks: *raftElection, CompactEntries: *raftCompact, CompactKeep: *raftKeep, Logf: log.Printf, Join: *raftJoin, AllocFailGrace: *raftAllocGrace})
 		if err != nil {
 			log.Fatalf("raft: %v", err)
 		}

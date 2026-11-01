@@ -121,3 +121,11 @@ func (e *Engine) LogSegmentTS(skip int) int64 {
 	}
 	return 0
 }
+
+// LogFromStart reports that the log still holds its first segment, so no
+// segment was ever reclaimed and every version ever committed is in it. The
+// history store uses it to know that a bucket re-read from the log is whole.
+func (e *Engine) LogFromStart() bool {
+	segs := e.log.Segments()
+	return len(segs) > 0 && segs[0] == 0
+}

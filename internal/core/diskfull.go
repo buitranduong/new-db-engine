@@ -2,7 +2,12 @@ package core
 
 import (
 	"syscall"
+	"time"
 )
+
+// allocStreakGap: allocation failures further apart than this are separate
+// episodes (a client that stopped retrying, space that came back).
+const allocStreakGap = 10 * time.Second
 
 // Writes refused for lack of disk space (finding F7). When the commit loop
 // cannot allocate the next log segment it fails the commit with a clean
@@ -27,6 +32,26 @@ var DiskFreeFunc = func(dir string) (int64, error) {
 func (e *Engine) NoteSegmentAllocFailure(err error) {
 	s := "writes are refused: " + err.Error()
 	e.allocFail.Store(&s)
+	now := time.Now().UnixNano()
+	if last := e.allocLast.Swap(now); last == 0 || time.Duration(now-last) > allocStreakGap {
+		e.allocFirst.Store(now)
+	}
+}
+
+// AllocFailStreak is how long the commit path has been failing to allocate
+// a log segment without a success in between (0 when it is not failing now:
+// the last failure is older than 10 s, or a later roll succeeded). A Raft
+// leader that stays in this state blocks the cluster (F5).
+func (e *Engine) AllocFailStreak() time.Duration {
+	last := e.allocLast.Load()
+	if last == 0 || e.allocFail.Load() == nil {
+		return 0
+	}
+	now := time.Now().UnixNano()
+	if time.Duration(now-last) > allocStreakGap {
+		return 0
+	}
+	return time.Duration(now - e.allocFirst.Load())
 }
 
 // WritesBlocked is "" when writes are accepted, else why they are refused

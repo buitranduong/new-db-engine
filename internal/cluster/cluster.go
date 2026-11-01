@@ -80,6 +80,15 @@ type Config struct {
 	// Restart is called when the node must restart itself (deposed leader,
 	// installed snapshot). The default executes the same binary in place.
 	Restart func(reason string)
+	// AllocFailGrace: a leader whose engine cannot allocate the next log
+	// segment (no disk space) for this long stops (Fatal) instead of staying
+	// leader and refusing every write while its heartbeats keep the healthy
+	// majority from electing another (F5). Default 3 s; negative disables.
+	AllocFailGrace time.Duration
+	// Fatal is called for that stop. The default logs and exits the process
+	// (status 74) after syncing the applied record, like the fail-stop of a
+	// Raft storage failure: the node stays down until an operator frees space.
+	Fatal func(reason string)
 }
 
 type Cluster struct {
@@ -140,6 +149,9 @@ func (c *Config) defaults() {
 	}
 	if c.CompactKeep == 0 {
 		c.CompactKeep = 2000
+	}
+	if c.AllocFailGrace == 0 {
+		c.AllocFailGrace = 3 * time.Second
 	}
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
@@ -466,6 +478,15 @@ func (c *Cluster) monitor() {
 		case <-t.C:
 		}
 		info := c.g.Info()
+		if c.writable.Load() && c.cfg.AllocFailGrace > 0 {
+			// F5: a leader that cannot place bytes in its own log cannot
+			// serve; fail-stop (CockroachDB, etcd, PostgreSQL PANIC on WAL
+			// failure) so that the others elect a leader that can
+			if d := c.e.AllocFailStreak(); d >= c.cfg.AllocFailGrace {
+				c.fatal("the leader cannot allocate a log segment for " + d.Round(time.Millisecond).String() + " (" + c.e.WritesBlocked() + ")")
+				return
+			}
+		}
 		if c.writable.Load() {
 			if info.Role != raft.Leader || info.Term != c.leaderTerm.Load() {
 				c.restart(fmt.Sprintf("deposed (now %s in term %d)", info.Role, info.Term))
@@ -557,6 +578,19 @@ func (c *Cluster) termOf(i uint64) uint64 {
 		return e.Term
 	}
 	return 0
+}
+
+// fatal stops the node for good (see Config.Fatal).
+func (c *Cluster) fatal(reason string) {
+	c.cfg.Logf("cluster: node %d stops (storage failure, the leader cannot continue): %s", c.cfg.ID, reason)
+	if c.cfg.Fatal != nil {
+		c.cfg.Fatal(reason)
+		return
+	}
+	if a := c.cur.Load(); a != nil {
+		c.app.write(*a, true)
+	}
+	os.Exit(74)
 }
 
 // restart ends the process image in place (or calls Config.Restart).

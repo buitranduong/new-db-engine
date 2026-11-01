@@ -132,7 +132,7 @@ func (c *Consumer) Bootstrap(e *core.Engine, snap uint64) error {
 		}
 		from = c.dirFrom
 	}
-	return c.St.UpdateCover(func(cv *Cover) {
+	if err := c.St.UpdateCover(func(cv *Cover) {
 		if !cv.Known || from < cv.From {
 			cv.From = from
 		}
@@ -140,7 +140,15 @@ func (c *Consumer) Bootstrap(e *core.Engine, snap uint64) error {
 			cv.Gaps = append(cv.Gaps, *gap)
 		}
 		cv.Known, cv.BaseComplete = true, true
-	})
+	}); err != nil {
+		return err
+	}
+	// F2b: the bucket whose open file was damaged has been re-read; what the
+	// log no longer holds stays a gap
+	if e.LogFromStart() {
+		from = 0
+	}
+	return c.St.HealDamageGap(from)
 }
 
 // BackfillDir adds the history in the log segments of a copy of a data

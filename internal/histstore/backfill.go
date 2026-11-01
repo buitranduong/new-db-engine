@@ -10,6 +10,7 @@ import (
 // BackfillResult says what a Backfill did.
 type BackfillResult struct {
 	Added, Skipped int64 // entries written / entries left out (their bucket is sealed, live or unwanted)
+	Repaired       int64 // entries re-read into a bucket whose open file was damaged (F2b), included in Added
 	Buckets        int
 	MinTS          int64
 }
@@ -23,6 +24,15 @@ type BackfillResult struct {
 // the retention. Call it before the consumer starts following, or from
 // Bootstrap. Nothing here can overwrite or lose existing data: it only
 // appends frames to open files and adds files for buckets that had none.
+//
+// One exception to "the bucket being written is left alone" (F2b): when Open
+// found damage in the middle of that bucket's open file and cut the bytes
+// after it, the bucket is incomplete. The entries of the feed that belong
+// to it are then compared with what the file still holds (by LSN, table,
+// key and kind) and the missing ones are appended to it, so that history
+// the log still has comes back; the caller (Consumer.Bootstrap) then shrinks
+// the gap that Open recorded to what the log no longer holds. A repair
+// happens once, in the process that found the damage.
 func (s *Store) Backfill(feed func(add func(Entry) error) error) (BackfillResult, error) {
 	var res BackfillResult
 	res.MinTS = 1<<63 - 1
@@ -40,7 +50,9 @@ func (s *Store) Backfill(feed func(add func(Entry) error) error) (BackfillResult
 		return false
 	}
 	haveActive, abucket := s.haveActive, s.abucket
+	repair := haveActive && s.damagedFrom != 0 && !s.repaired && s.damagedB == abucket
 	s.mu.RUnlock()
+	var repairBuf []Entry // bounded by one bucket of the log
 
 	const spillBytes = 64 << 20
 	bufs := map[int64][]Entry{}
@@ -85,6 +97,11 @@ func (s *Store) Backfill(feed func(add func(Entry) error) error) (BackfillResult
 			return nil
 		}
 		b := s.bucketOf(e.TS)
+		if repair && b == abucket {
+			e.Val = append([]byte(nil), e.Val...)
+			repairBuf = append(repairBuf, e)
+			return nil
+		}
 		if covered(b) || haveActive && b >= abucket {
 			res.Skipped++
 			return nil
@@ -120,6 +137,18 @@ func (s *Store) Backfill(feed func(add func(Entry) error) error) (BackfillResult
 		if err := flushBucket(b); err != nil {
 			return res, err
 		}
+	}
+	if repair {
+		n, err := s.repairActive(repairBuf)
+		if err != nil {
+			return res, err
+		}
+		res.Repaired, res.Added = n, res.Added+n
+		res.Skipped += int64(len(repairBuf)) - n
+		s.mu.Lock()
+		s.repaired = true
+		s.mu.Unlock()
+		s.opt.Logf("histstore: re-read the damaged bucket from the log: %d versions were missing, %d already held", n, int64(len(repairBuf))-n)
 	}
 	if len(written) == 0 {
 		if res.Added == 0 {
@@ -170,4 +199,89 @@ func (s *Store) Backfill(feed func(add func(Entry) error) error) (BackfillResult
 // String for logs.
 func (r BackfillResult) String() string {
 	return fmt.Sprintf("added %d skipped %d buckets %d", r.Added, r.Skipped, r.Buckets)
+}
+
+// repairActive appends to the open file those of es that it does not hold
+// yet. It returns how many it added.
+func (s *Store) repairActive(es []Entry) (int64, error) {
+	s.amu.Lock()
+	defer s.amu.Unlock()
+	if s.af == nil {
+		return 0, nil
+	}
+	if err := s.aw.Flush(); err != nil {
+		return 0, err
+	}
+	type id struct {
+		lsn   uint64
+		table uint32
+		key   string
+		del   bool
+	}
+	have := map[id]int{}
+	if _, err := scanOpen(filepath.Join(s.opt.Dir, openName(s.abucket)), func(h []Entry) {
+		for i := range h {
+			have[id{h[i].LSN, h[i].Table, h[i].Key, h[i].Del}]++
+		}
+	}); err != nil {
+		return 0, err
+	}
+	var miss []Entry
+	for _, e := range es {
+		k := id{e.LSN, e.Table, e.Key, e.Del}
+		if have[k] > 0 {
+			have[k]--
+			continue
+		}
+		miss = append(miss, e)
+	}
+	var frame []byte
+	for i := 0; i < len(miss); i += 4096 {
+		frame = appendFrame(frame[:0], miss[i:min(i+4096, len(miss))])
+		if _, err := s.aw.Write(frame); err != nil {
+			s.breakLocked(err)
+			return 0, err
+		}
+		s.dirty = true
+	}
+	for _, e := range miss {
+		s.lastLSN = max(s.lastLSN, e.LSN)
+	}
+	if err := s.syncActiveLocked(); err != nil {
+		s.breakLocked(err)
+		return 0, err
+	}
+	return int64(len(miss)), nil
+}
+
+// DamageRepaired says whether Open found damage in the open file and a
+// Backfill has since re-read that bucket from the log; from is the commit
+// time of the last intact record before the damage.
+func (s *Store) DamageRepaired() (from int64, repaired bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.damagedFrom, s.damagedFrom != 0 && s.repaired
+}
+
+// HealDamageGap shrinks the gap that Open recorded for the damage to the
+// span the log could not give back: logFrom is the commit time from which
+// the log is complete (not after the damage: the gap goes away).
+func (s *Store) HealDamageGap(logFrom int64) error {
+	from, ok := s.DamageRepaired()
+	if !ok {
+		return nil
+	}
+	return s.UpdateCover(func(cv *Cover) {
+		for i := range cv.Gaps {
+			if cv.Gaps[i].From != from {
+				continue
+			}
+			if logFrom <= from {
+				cv.Gaps = append(cv.Gaps[:i], cv.Gaps[i+1:]...)
+			} else {
+				cv.Gaps[i].To = min(cv.Gaps[i].To, logFrom)
+			}
+			return
+		}
+	})
 }

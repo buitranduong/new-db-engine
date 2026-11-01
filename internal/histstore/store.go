@@ -102,6 +102,8 @@ type Store struct {
 	curOK       bool
 	haveActive  bool  // an active open file exists (under mu)
 	damagedFrom int64 // commit time of the last intact record before damage found at Open (0: none)
+	damagedB    int64 // bucket of the open file that was damaged (valid while damagedFrom != 0 and not repaired)
+	repaired    bool  // Backfill re-read the damaged bucket from the log (F2b)
 
 	amu     sync.Mutex // the active open file (writes, flush, fsync, scans)
 	af      *os.File
@@ -341,6 +343,7 @@ func (s *Store) openActive(b int64) error {
 	if st, err := f.Stat(); err == nil && st.Size() > good {
 		if intactFrameAfter(p, good, st.Size()) {
 			s.noteDamage(p, f, good, st.Size(), lastTS)
+			s.damagedB = b
 		}
 		if err := f.Truncate(good); err != nil {
 			f.Close()

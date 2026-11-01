@@ -1,0 +1,1 @@
+{"applied_lsn": 90439, "durable_lsn": 90439, "fallbacks": 0, "lag_ms": 0, "merges": 0, "ring_bases": 1, "ring_idle_trims": 1, "ring_states": 1, "state_ready": true, "used": 110}

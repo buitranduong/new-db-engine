@@ -1,0 +1,4269 @@
+{
+  "barrier": null,
+  "classes": {
+    "import": {
+      "count": 9,
+      "ok": 9,
+      "per_sec": 0.07289431219604019,
+      "p50_ms": 9027.824,
+      "p95_ms": 11837.676,
+      "p99_ms": 11837.676,
+      "max_ms": 11837.676,
+      "window_s": 123.466423221
+    },
+    "r1_keyset": {
+      "count": 46249,
+      "ok": 46249,
+      "per_sec": 374.58767163940695,
+      "p50_ms": 3.185,
+      "p95_ms": 7.859,
+      "p99_ms": 11.244,
+      "max_ms": 28.555,
+      "window_s": 123.466423221
+    },
+    "r1_point": {
+      "count": 46757,
+      "ok": 46757,
+      "per_sec": 378.70215059447236,
+      "p50_ms": 1.337,
+      "p95_ms": 4.7,
+      "p99_ms": 6.831,
+      "max_ms": 17.119,
+      "window_s": 123.466423221
+    },
+    "r2_page": {
+      "count": 120,
+      "ok": 24,
+      "errors": {
+        "53100": 96
+      },
+      "per_sec": 0.19438483252277383,
+      "p50_ms": 7809.44,
+      "p95_ms": 9084.557,
+      "p99_ms": 9789.613,
+      "max_ms": 9789.613,
+      "window_s": 123.466423221,
+      "error_samples": [
+        {
+          "code": "53100",
+          "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.570257630\" to 12615680 bytes: No space left on device (SQLSTATE 53100)",
+          "first_s": 37.298552662,
+          "count": 1
+        },
+        {
+          "code": "53100",
+          "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.3860281854\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+          "first_s": 44.312240576,
+          "count": 1
+        },
+        {
+          "code": "53100",
+          "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.1968102716\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+          "first_s": 44.406872494,
+          "count": 1
+        }
+      ]
+    },
+    "r_join": {
+      "count": 16,
+      "ok": 8,
+      "errors": {
+        "53100": 8
+      },
+      "per_sec": 0.06479494417425795,
+      "p50_ms": 2578.483,
+      "p95_ms": 21497.516,
+      "p99_ms": 21497.516,
+      "max_ms": 21497.516,
+      "window_s": 123.466423221,
+      "error_samples": [
+        {
+          "code": "53100",
+          "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.1492079826\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+          "first_s": 44.969340815,
+          "count": 1
+        },
+        {
+          "code": "53100",
+          "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.378848986\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+          "first_s": 46.104735428,
+          "count": 1
+        },
+        {
+          "code": "53100",
+          "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.1529516226\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+          "first_s": 84.851009838,
+          "count": 1
+        }
+      ]
+    },
+    "t_cancel": {
+      "count": 4792,
+      "ok": 4792,
+      "per_sec": 38.81217156038051,
+      "p50_ms": 10.053,
+      "p95_ms": 17.894,
+      "p99_ms": 23.812,
+      "max_ms": 62.32,
+      "window_s": 123.466423221
+    },
+    "t_order": {
+      "count": 9739,
+      "ok": 9739,
+      "per_sec": 78.87974516413726,
+      "p50_ms": 11.501,
+      "p95_ms": 20.702,
+      "p99_ms": 27.572,
+      "max_ms": 9403.482,
+      "window_s": 123.466423221
+    },
+    "t_pay": {
+      "count": 4947,
+      "ok": 4947,
+      "per_sec": 40.067573603756756,
+      "p50_ms": 9.994,
+      "p95_ms": 18.24,
+      "p99_ms": 23.25,
+      "max_ms": 59.707,
+      "window_s": 123.466423221
+    },
+    "tear_tx": {
+      "count": 4,
+      "ok": 4,
+      "per_sec": 0.032397472087128974,
+      "p50_ms": 18621.017,
+      "p95_ms": 19657.389,
+      "p99_ms": 19657.389,
+      "max_ms": 19657.389,
+      "window_s": 123.466423221
+    }
+  },
+  "classes_by_phase": {
+    "import": {
+      "import": {
+        "count": 9,
+        "ok": 9,
+        "per_sec": 0.07289431219604019,
+        "p50_ms": 9027.824,
+        "p95_ms": 11837.676,
+        "p99_ms": 11837.676,
+        "max_ms": 11837.676,
+        "window_s": 123.466423221
+      }
+    },
+    "r1_keyset": {
+      "import": {
+        "count": 46249,
+        "ok": 46249,
+        "per_sec": 374.58767163940695,
+        "p50_ms": 3.185,
+        "p95_ms": 7.859,
+        "p99_ms": 11.244,
+        "max_ms": 28.555,
+        "window_s": 123.466423221
+      }
+    },
+    "r1_point": {
+      "import": {
+        "count": 46757,
+        "ok": 46757,
+        "per_sec": 378.70215059447236,
+        "p50_ms": 1.337,
+        "p95_ms": 4.7,
+        "p99_ms": 6.831,
+        "max_ms": 17.119,
+        "window_s": 123.466423221
+      }
+    },
+    "r2_page": {
+      "import": {
+        "count": 120,
+        "ok": 24,
+        "errors": {
+          "53100": 96
+        },
+        "per_sec": 0.19438483252277383,
+        "p50_ms": 7809.44,
+        "p95_ms": 9084.557,
+        "p99_ms": 9789.613,
+        "max_ms": 9789.613,
+        "window_s": 123.466423221,
+        "error_samples": [
+          {
+            "code": "53100",
+            "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.570257630\" to 12615680 bytes: No space left on device (SQLSTATE 53100)",
+            "first_s": 37.298552662,
+            "count": 1
+          },
+          {
+            "code": "53100",
+            "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.3860281854\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+            "first_s": 44.312240576,
+            "count": 1
+          },
+          {
+            "code": "53100",
+            "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.1968102716\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+            "first_s": 44.406872494,
+            "count": 1
+          }
+        ]
+      }
+    },
+    "r_join": {
+      "import": {
+        "count": 16,
+        "ok": 8,
+        "errors": {
+          "53100": 8
+        },
+        "per_sec": 0.06479494417425795,
+        "p50_ms": 2578.483,
+        "p95_ms": 21497.516,
+        "p99_ms": 21497.516,
+        "max_ms": 21497.516,
+        "window_s": 123.466423221,
+        "error_samples": [
+          {
+            "code": "53100",
+            "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.1492079826\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+            "first_s": 44.969340815,
+            "count": 1
+          },
+          {
+            "code": "53100",
+            "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.378848986\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+            "first_s": 46.104735428,
+            "count": 1
+          },
+          {
+            "code": "53100",
+            "msg": "ERROR: could not resize shared memory segment \"/PostgreSQL.1529516226\" to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+            "first_s": 84.851009838,
+            "count": 1
+          }
+        ]
+      }
+    },
+    "t_cancel": {
+      "import": {
+        "count": 4792,
+        "ok": 4792,
+        "per_sec": 38.81217156038051,
+        "p50_ms": 10.053,
+        "p95_ms": 17.894,
+        "p99_ms": 23.812,
+        "max_ms": 62.32,
+        "window_s": 123.466423221
+      }
+    },
+    "t_order": {
+      "import": {
+        "count": 9739,
+        "ok": 9739,
+        "per_sec": 78.87974516413726,
+        "p50_ms": 11.501,
+        "p95_ms": 20.702,
+        "p99_ms": 27.572,
+        "max_ms": 9403.482,
+        "window_s": 123.466423221
+      }
+    },
+    "t_pay": {
+      "import": {
+        "count": 4947,
+        "ok": 4947,
+        "per_sec": 40.067573603756756,
+        "p50_ms": 9.994,
+        "p95_ms": 18.24,
+        "p99_ms": 23.25,
+        "max_ms": 59.707,
+        "window_s": 123.466423221
+      }
+    },
+    "tear_tx": {
+      "import": {
+        "count": 4,
+        "ok": 4,
+        "per_sec": 0.032397472087128974,
+        "p50_ms": 18621.017,
+        "p95_ms": 19657.389,
+        "p99_ms": 19657.389,
+        "max_ms": 19657.389,
+        "window_s": 123.466423221
+      }
+    }
+  },
+  "counters": {
+    "import_batches": 9,
+    "import_retries": 0,
+    "import_rows": 810000,
+    "oracle_passes": 18,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.1056528580\" to 8388608 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.1613280838\" to 8388608 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.1768436276\" to 2097152 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.2064854610\" to 4194304 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.2093834274\" to 1048576 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.2105122858\" to 4194304 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.2222317958\" to 8388608 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.2526737516\" to 4194304 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.267929764\" to 8388608 bytes: No": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.3269856430\" to 2105344 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.3292256260\" to 8388608 bytes: N": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.457705562\" to 4194304 bytes: No": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.647435288\" to 4194304 bytes: No": 1,
+    "oracle_query_err:no_orphan_order_items: ERROR: could not resize shared memory segment \"/PostgreSQL.865490332\" to 2097152 bytes: No": 1,
+    "oracle_query_errors": 15,
+    "t_attempt_err_40P01": 1,
+    "t_noop_cancel": 2135,
+    "t_noop_order": 5658,
+    "t_noop_pay": 2024,
+    "t_retries": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.103635154\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1072438458\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1075440756\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1118719280\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1130391400\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.117096406\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1203234558\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1283963514\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1418186408\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1438471350\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1460236384\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1477198278\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1538111456\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1540645152\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1683832856\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1696159688\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1789887448\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.180264452\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.187702498\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1888745186\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1897839438\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1918299668\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1960226282\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1981664912\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.199184716\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.1999373496\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2044395844\" to 2097152 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2052214132\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2058002952\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2160282328\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2216707690\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2237763998\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2243328528\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2313710146\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2340841616\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2461839208\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2473032716\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2504620134\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2509187786\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2561332242\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2592657878\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2602651952\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2630484718\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2653432252\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2691283736\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2794663840\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2852440954\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.2942777162\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3037716364\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3066341454\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3079847044\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3101399856\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.312428008\" to 2097152 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3239234990\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3255866724\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3277164662\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3304693730\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3369644420\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3525771134\" to 12615680 bytes: ": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3598272234\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3637053590\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3663757150\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3677558152\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.369555316\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3720521174\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3742087696\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3805208082\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3816969586\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.3830093338\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.4101854904\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.411371148\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.417646360\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.4216401050\" to 4194304 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.427446242\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.485917016\" to 12615680 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.488901516\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.534682754\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.601142380\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.683871758\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.752544324\" to 12615680 bytes: N": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.768927956\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.799331386\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.846582432\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.877126192\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.970233480\" to 4194304 bytes: No": 1,
+    "tear_query_err: ERROR: could not resize shared memory segment \"/PostgreSQL.998305918\" to 4194304 bytes: No": 1,
+    "tear_query_errors": 86,
+    "tear_snapshots": 5
+  },
+  "crash": null,
+  "date": "2026-11-01T05:52:05Z",
+  "harness_commit": "6afb539",
+  "journal_txns": 26742,
+  "label": "pg16",
+  "load": {
+    "P": 4,
+    "R": 2,
+    "T": 4,
+    "duration_s": 120,
+    "elapsed_s": 123.466423221,
+    "exec_mode": "simple",
+    "hot": 200,
+    "hot_frac": 0.3,
+    "import_batch": 0,
+    "import_batch_pause_ms": 20,
+    "import_every_s": 5,
+    "import_mode": "always",
+    "import_shape": "single (1% in ONE transaction, worst case)",
+    "isolation": "",
+    "warmup_s": 30
+  },
+  "load_not_applied": [
+    "r2_page: 24 successes, minimum 30 (-r 2, -min-r2)"
+  ],
+  "machine": {
+    "cpus": 8,
+    "load1_at_start": 1,
+    "load1_max": 12.87,
+    "load1_end": 11.78,
+    "dirty": false,
+    "disk_free_gb_end": 4.679663616
+  },
+  "note": "all numbers are measurements of this run at the stated scale and load; no performance claim",
+  "oracles": [
+    {
+      "name": "acked_txns_present_final",
+      "checks": 1,
+      "violations": 0
+    },
+    {
+      "name": "history_match_journal_final",
+      "checks": 1,
+      "violations": 0
+    },
+    {
+      "name": "import_history_match_journal_final",
+      "checks": 1,
+      "violations": 0
+    },
+    {
+      "name": "journal_seq_gapless_final",
+      "checks": 1,
+      "violations": 0
+    },
+    {
+      "name": "no_order_without_items",
+      "checks": 19,
+      "violations": 0
+    },
+    {
+      "name": "no_orphan_order_items",
+      "checks": 5,
+      "violations": 0
+    },
+    {
+      "name": "order_items_match_journal_final",
+      "checks": 1,
+      "violations": 0
+    },
+    {
+      "name": "order_total_equals_items",
+      "checks": 19,
+      "violations": 0
+    },
+    {
+      "name": "orders_match_journal_final",
+      "checks": 1,
+      "violations": 0
+    },
+    {
+      "name": "r2_pages_disjoint_frozen",
+      "checks": 17,
+      "violations": 0
+    },
+    {
+      "name": "r2_pages_prefix_consistent_frozen",
+      "checks": 17,
+      "violations": 0
+    },
+    {
+      "name": "reserved_stock_equals_open_items",
+      "checks": 19,
+      "violations": 0
+    },
+    {
+      "name": "stock_invariant_q13",
+      "checks": 19,
+      "violations": 0
+    },
+    {
+      "name": "tear_no_order_without_items",
+      "checks": 6,
+      "violations": 0
+    },
+    {
+      "name": "tear_no_orphan_items",
+      "checks": 6,
+      "violations": 0
+    },
+    {
+      "name": "tear_order_total_equals_items",
+      "checks": 6,
+      "violations": 0
+    },
+    {
+      "name": "tear_q13_at_one_snapshot",
+      "checks": 8,
+      "violations": 0
+    },
+    {
+      "name": "tear_r2_page_repeatable_in_snapshot",
+      "checks": 5,
+      "violations": 0
+    },
+    {
+      "name": "tear_reserved_equals_open_items",
+      "checks": 6,
+      "violations": 0
+    }
+  ],
+  "phases": [
+    {
+      "name": "import",
+      "start_s": 0,
+      "end_s": 120
+    }
+  ],
+  "priority_probe": {
+    "r1_keyset": {
+      "n_import": 46249,
+      "n_noimport": 0,
+      "p99_import_ms": 11.244,
+      "p99_noimport_ms": 0
+    },
+    "r1_point": {
+      "n_import": 46757,
+      "n_noimport": 0,
+      "p99_import_ms": 6.831,
+      "p99_noimport_ms": 0
+    },
+    "r2_page": {
+      "n_import": 24,
+      "n_noimport": 0,
+      "p99_import_ms": 9789.613,
+      "p99_noimport_ms": 0
+    }
+  },
+  "replay": null,
+  "scale": {
+    "rows_total": 43000200,
+    "seed": "stask1",
+    "sims": 10000000
+  },
+  "series_per_s": {
+    "import": [
+      [
+        10,
+        1,
+        9999.77,
+        9999.77
+      ],
+      [
+        23,
+        1,
+        8715.65,
+        8715.65
+      ],
+      [
+        38,
+        1,
+        9556.51,
+        9556.51
+      ],
+      [
+        52,
+        1,
+        8880.71,
+        8880.71
+      ],
+      [
+        66,
+        1,
+        9027.82,
+        9027.82
+      ],
+      [
+        78,
+        1,
+        7596.39,
+        7596.39
+      ],
+      [
+        92,
+        1,
+        9107.83,
+        9107.83
+      ],
+      [
+        109,
+        1,
+        11837.68,
+        11837.68
+      ],
+      [
+        123,
+        1,
+        8676.47,
+        8676.47
+      ]
+    ],
+    "r1_keyset": [
+      [
+        0,
+        354,
+        4.01,
+        12.21
+      ],
+      [
+        1,
+        338,
+        3.47,
+        11.66
+      ],
+      [
+        2,
+        347,
+        3.3,
+        9.95
+      ],
+      [
+        3,
+        352,
+        3.7,
+        12.85
+      ],
+      [
+        4,
+        360,
+        3.33,
+        12.51
+      ],
+      [
+        5,
+        382,
+        3.2,
+        12.56
+      ],
+      [
+        6,
+        370,
+        3.32,
+        14.37
+      ],
+      [
+        7,
+        411,
+        2.81,
+        8.11
+      ],
+      [
+        8,
+        404,
+        2.93,
+        7.63
+      ],
+      [
+        9,
+        419,
+        2.65,
+        8.69
+      ],
+      [
+        10,
+        347,
+        3.66,
+        11.31
+      ],
+      [
+        11,
+        392,
+        3.66,
+        10.7
+      ],
+      [
+        12,
+        364,
+        3.48,
+        11.03
+      ],
+      [
+        13,
+        363,
+        3.59,
+        9.79
+      ],
+      [
+        14,
+        344,
+        4.07,
+        15.28
+      ],
+      [
+        15,
+        366,
+        3.76,
+        12.75
+      ],
+      [
+        16,
+        435,
+        2.67,
+        8.15
+      ],
+      [
+        17,
+        485,
+        2.3,
+        7.53
+      ],
+      [
+        18,
+        396,
+        2.75,
+        9.76
+      ],
+      [
+        19,
+        409,
+        2.51,
+        8.64
+      ],
+      [
+        20,
+        392,
+        2.84,
+        14.21
+      ],
+      [
+        21,
+        388,
+        3.03,
+        10.74
+      ],
+      [
+        22,
+        412,
+        2.61,
+        8.51
+      ],
+      [
+        23,
+        398,
+        2.89,
+        9.09
+      ],
+      [
+        24,
+        345,
+        3.96,
+        12.35
+      ],
+      [
+        25,
+        379,
+        4,
+        11.95
+      ],
+      [
+        26,
+        475,
+        2.63,
+        8.9
+      ],
+      [
+        27,
+        413,
+        2.94,
+        8.64
+      ],
+      [
+        28,
+        364,
+        3.49,
+        11.85
+      ],
+      [
+        29,
+        328,
+        4.46,
+        18.89
+      ],
+      [
+        30,
+        338,
+        4.35,
+        15.54
+      ],
+      [
+        31,
+        335,
+        4.29,
+        17.8
+      ],
+      [
+        32,
+        343,
+        3.7,
+        12.99
+      ],
+      [
+        33,
+        374,
+        3.82,
+        13.72
+      ],
+      [
+        34,
+        361,
+        3.48,
+        12.84
+      ],
+      [
+        35,
+        422,
+        2.64,
+        9.08
+      ],
+      [
+        36,
+        487,
+        2.15,
+        5.8
+      ],
+      [
+        37,
+        420,
+        2.45,
+        8.76
+      ],
+      [
+        38,
+        372,
+        3.21,
+        9.98
+      ],
+      [
+        39,
+        374,
+        3.52,
+        11.9
+      ],
+      [
+        40,
+        376,
+        3.33,
+        12.15
+      ],
+      [
+        41,
+        374,
+        3.6,
+        10.93
+      ],
+      [
+        42,
+        383,
+        3.43,
+        9.87
+      ],
+      [
+        43,
+        381,
+        3.42,
+        8.94
+      ],
+      [
+        44,
+        376,
+        3.19,
+        12.23
+      ],
+      [
+        45,
+        382,
+        3.21,
+        10.3
+      ],
+      [
+        46,
+        367,
+        3.36,
+        10.57
+      ],
+      [
+        47,
+        372,
+        3.35,
+        9.99
+      ],
+      [
+        48,
+        359,
+        3.31,
+        15.5
+      ],
+      [
+        49,
+        378,
+        3.24,
+        10.08
+      ],
+      [
+        50,
+        392,
+        3.37,
+        11.67
+      ],
+      [
+        51,
+        424,
+        3.01,
+        7.72
+      ],
+      [
+        52,
+        393,
+        3.38,
+        11.01
+      ],
+      [
+        53,
+        382,
+        3.41,
+        9.57
+      ],
+      [
+        54,
+        408,
+        2.85,
+        9.24
+      ],
+      [
+        55,
+        397,
+        3.31,
+        9.72
+      ],
+      [
+        56,
+        373,
+        3.23,
+        10.72
+      ],
+      [
+        57,
+        373,
+        3.24,
+        12.15
+      ],
+      [
+        58,
+        393,
+        3.14,
+        10.06
+      ],
+      [
+        59,
+        392,
+        3.07,
+        10.77
+      ],
+      [
+        60,
+        383,
+        3.33,
+        9.98
+      ],
+      [
+        61,
+        393,
+        3.27,
+        10.59
+      ],
+      [
+        62,
+        378,
+        3.38,
+        11.84
+      ],
+      [
+        63,
+        357,
+        3.47,
+        12.74
+      ],
+      [
+        64,
+        358,
+        3.2,
+        11.64
+      ],
+      [
+        65,
+        373,
+        3.09,
+        8.96
+      ],
+      [
+        66,
+        427,
+        2.87,
+        8.86
+      ],
+      [
+        67,
+        457,
+        2.46,
+        7.88
+      ],
+      [
+        68,
+        434,
+        2.85,
+        8.61
+      ],
+      [
+        69,
+        386,
+        3.23,
+        14.06
+      ],
+      [
+        70,
+        420,
+        3.07,
+        10.1
+      ],
+      [
+        71,
+        408,
+        2.93,
+        11.28
+      ],
+      [
+        72,
+        416,
+        2.7,
+        9.58
+      ],
+      [
+        73,
+        391,
+        3.07,
+        10.53
+      ],
+      [
+        74,
+        397,
+        3.03,
+        9.53
+      ],
+      [
+        75,
+        390,
+        3.01,
+        9.48
+      ],
+      [
+        76,
+        409,
+        2.47,
+        7.96
+      ],
+      [
+        77,
+        431,
+        2.62,
+        8.69
+      ],
+      [
+        78,
+        443,
+        2.35,
+        7.75
+      ],
+      [
+        79,
+        476,
+        2.27,
+        8.25
+      ],
+      [
+        80,
+        424,
+        2.69,
+        8.97
+      ],
+      [
+        81,
+        395,
+        3.27,
+        9.5
+      ],
+      [
+        82,
+        390,
+        3.07,
+        10.11
+      ],
+      [
+        83,
+        395,
+        3.25,
+        9.25
+      ],
+      [
+        84,
+        352,
+        3.64,
+        12.93
+      ],
+      [
+        85,
+        402,
+        2.84,
+        10.81
+      ],
+      [
+        86,
+        417,
+        3.04,
+        8.68
+      ],
+      [
+        87,
+        355,
+        3.11,
+        10.9
+      ],
+      [
+        88,
+        385,
+        3.19,
+        10.88
+      ],
+      [
+        89,
+        400,
+        3.04,
+        13.38
+      ],
+      [
+        90,
+        389,
+        2.54,
+        10.28
+      ],
+      [
+        91,
+        409,
+        3.06,
+        11.45
+      ],
+      [
+        92,
+        421,
+        2.65,
+        11.24
+      ],
+      [
+        93,
+        401,
+        3.1,
+        8.94
+      ],
+      [
+        94,
+        339,
+        3.86,
+        14.46
+      ],
+      [
+        95,
+        336,
+        3.97,
+        12.31
+      ],
+      [
+        96,
+        370,
+        3.74,
+        10.95
+      ],
+      [
+        97,
+        381,
+        3.53,
+        11.11
+      ],
+      [
+        98,
+        343,
+        4.48,
+        12.87
+      ],
+      [
+        99,
+        338,
+        4.55,
+        13.37
+      ],
+      [
+        100,
+        318,
+        4.13,
+        12.76
+      ],
+      [
+        101,
+        358,
+        3.99,
+        13.89
+      ],
+      [
+        102,
+        379,
+        3.69,
+        10.83
+      ],
+      [
+        103,
+        371,
+        3.69,
+        10.4
+      ],
+      [
+        104,
+        361,
+        3.71,
+        16.44
+      ],
+      [
+        105,
+        375,
+        3.92,
+        11.44
+      ],
+      [
+        106,
+        381,
+        3.65,
+        11.27
+      ],
+      [
+        107,
+        365,
+        3.38,
+        11.48
+      ],
+      [
+        108,
+        378,
+        3.43,
+        10.38
+      ],
+      [
+        109,
+        401,
+        3.28,
+        11.13
+      ],
+      [
+        110,
+        379,
+        3.62,
+        11.62
+      ],
+      [
+        111,
+        368,
+        4.05,
+        11.83
+      ],
+      [
+        112,
+        365,
+        3.13,
+        11.51
+      ],
+      [
+        113,
+        398,
+        3.38,
+        9.31
+      ],
+      [
+        114,
+        421,
+        2.92,
+        9.22
+      ],
+      [
+        115,
+        352,
+        3.99,
+        13.79
+      ],
+      [
+        116,
+        356,
+        3.67,
+        10.63
+      ],
+      [
+        117,
+        361,
+        3.89,
+        11.25
+      ],
+      [
+        118,
+        369,
+        3.55,
+        11.97
+      ],
+      [
+        119,
+        391,
+        3.25,
+        11.55
+      ]
+    ],
+    "r1_point": [
+      [
+        0,
+        342,
+        1.65,
+        7.1
+      ],
+      [
+        1,
+        417,
+        1.67,
+        6.93
+      ],
+      [
+        2,
+        405,
+        1.74,
+        6.57
+      ],
+      [
+        3,
+        365,
+        1.48,
+        8.23
+      ],
+      [
+        4,
+        358,
+        1.62,
+        7.81
+      ],
+      [
+        5,
+        351,
+        1.53,
+        6.66
+      ],
+      [
+        6,
+        375,
+        1.39,
+        8.16
+      ],
+      [
+        7,
+        435,
+        1.25,
+        5.66
+      ],
+      [
+        8,
+        441,
+        1.24,
+        6.19
+      ],
+      [
+        9,
+        411,
+        1.14,
+        5.46
+      ],
+      [
+        10,
+        382,
+        1.69,
+        9.98
+      ],
+      [
+        11,
+        340,
+        1.66,
+        7.63
+      ],
+      [
+        12,
+        377,
+        1.66,
+        7.12
+      ],
+      [
+        13,
+        363,
+        1.62,
+        7.78
+      ],
+      [
+        14,
+        362,
+        1.73,
+        7.05
+      ],
+      [
+        15,
+        343,
+        1.57,
+        9.11
+      ],
+      [
+        16,
+        433,
+        1.04,
+        4.39
+      ],
+      [
+        17,
+        438,
+        0.9,
+        3.96
+      ],
+      [
+        18,
+        397,
+        1.02,
+        6.7
+      ],
+      [
+        19,
+        406,
+        0.86,
+        6.74
+      ],
+      [
+        20,
+        394,
+        0.82,
+        6.52
+      ],
+      [
+        21,
+        383,
+        0.83,
+        7.29
+      ],
+      [
+        22,
+        407,
+        0.74,
+        5.92
+      ],
+      [
+        23,
+        399,
+        1,
+        6.57
+      ],
+      [
+        24,
+        376,
+        1.76,
+        7.48
+      ],
+      [
+        25,
+        350,
+        1.69,
+        6.63
+      ],
+      [
+        26,
+        414,
+        1.12,
+        4.45
+      ],
+      [
+        27,
+        439,
+        1.29,
+        4.53
+      ],
+      [
+        28,
+        392,
+        1.59,
+        6.42
+      ],
+      [
+        29,
+        330,
+        1.78,
+        9.96
+      ],
+      [
+        30,
+        349,
+        1.83,
+        7.19
+      ],
+      [
+        31,
+        311,
+        1.96,
+        10.34
+      ],
+      [
+        32,
+        377,
+        1.65,
+        7.6
+      ],
+      [
+        33,
+        363,
+        1.57,
+        7.09
+      ],
+      [
+        34,
+        388,
+        1.47,
+        7.66
+      ],
+      [
+        35,
+        422,
+        1.03,
+        4.62
+      ],
+      [
+        36,
+        463,
+        0.81,
+        3.58
+      ],
+      [
+        37,
+        446,
+        0.79,
+        5.34
+      ],
+      [
+        38,
+        393,
+        1.41,
+        9.01
+      ],
+      [
+        39,
+        365,
+        1.65,
+        6.97
+      ],
+      [
+        40,
+        378,
+        1.49,
+        7.66
+      ],
+      [
+        41,
+        371,
+        1.63,
+        6.81
+      ],
+      [
+        42,
+        380,
+        1.64,
+        6.76
+      ],
+      [
+        43,
+        397,
+        1.49,
+        6.31
+      ],
+      [
+        44,
+        417,
+        1.4,
+        5.76
+      ],
+      [
+        45,
+        422,
+        1.3,
+        6.41
+      ],
+      [
+        46,
+        402,
+        1.31,
+        6.46
+      ],
+      [
+        47,
+        406,
+        1.3,
+        7.15
+      ],
+      [
+        48,
+        384,
+        1.43,
+        7.52
+      ],
+      [
+        49,
+        391,
+        1.34,
+        7.95
+      ],
+      [
+        50,
+        383,
+        1.52,
+        5.39
+      ],
+      [
+        51,
+        411,
+        1.11,
+        4.75
+      ],
+      [
+        52,
+        371,
+        1.36,
+        5.79
+      ],
+      [
+        53,
+        389,
+        1.58,
+        6.77
+      ],
+      [
+        54,
+        428,
+        1.37,
+        5.58
+      ],
+      [
+        55,
+        396,
+        1.46,
+        5.81
+      ],
+      [
+        56,
+        407,
+        1.51,
+        6.94
+      ],
+      [
+        57,
+        398,
+        1.5,
+        6.7
+      ],
+      [
+        58,
+        405,
+        1.47,
+        6.03
+      ],
+      [
+        59,
+        434,
+        1.25,
+        6.13
+      ],
+      [
+        60,
+        395,
+        1.48,
+        6.55
+      ],
+      [
+        61,
+        392,
+        1.38,
+        5.42
+      ],
+      [
+        62,
+        366,
+        1.39,
+        7.77
+      ],
+      [
+        63,
+        388,
+        1.46,
+        7.71
+      ],
+      [
+        64,
+        407,
+        1.07,
+        7.51
+      ],
+      [
+        65,
+        407,
+        1.43,
+        6.99
+      ],
+      [
+        66,
+        383,
+        1.27,
+        6.72
+      ],
+      [
+        67,
+        482,
+        0.95,
+        5
+      ],
+      [
+        68,
+        425,
+        1.18,
+        4.69
+      ],
+      [
+        69,
+        377,
+        1.48,
+        7.41
+      ],
+      [
+        70,
+        402,
+        1.31,
+        6.01
+      ],
+      [
+        71,
+        399,
+        1.27,
+        5.34
+      ],
+      [
+        72,
+        431,
+        1.12,
+        5.86
+      ],
+      [
+        73,
+        417,
+        1.23,
+        5.72
+      ],
+      [
+        74,
+        417,
+        1.07,
+        5.94
+      ],
+      [
+        75,
+        404,
+        1.25,
+        5.99
+      ],
+      [
+        76,
+        443,
+        0.9,
+        5.87
+      ],
+      [
+        77,
+        373,
+        1.05,
+        5.34
+      ],
+      [
+        78,
+        457,
+        0.85,
+        5.11
+      ],
+      [
+        79,
+        488,
+        0.94,
+        4.15
+      ],
+      [
+        80,
+        416,
+        1.26,
+        6.48
+      ],
+      [
+        81,
+        409,
+        1.35,
+        5.61
+      ],
+      [
+        82,
+        394,
+        1.39,
+        7.53
+      ],
+      [
+        83,
+        386,
+        1.49,
+        7.71
+      ],
+      [
+        84,
+        365,
+        1.63,
+        8.72
+      ],
+      [
+        85,
+        426,
+        1.38,
+        5.24
+      ],
+      [
+        86,
+        412,
+        1.23,
+        5.7
+      ],
+      [
+        87,
+        421,
+        1.4,
+        8.33
+      ],
+      [
+        88,
+        385,
+        1.17,
+        7.56
+      ],
+      [
+        89,
+        355,
+        0.82,
+        6.51
+      ],
+      [
+        90,
+        412,
+        1.07,
+        6.53
+      ],
+      [
+        91,
+        377,
+        0.85,
+        6.8
+      ],
+      [
+        92,
+        406,
+        0.94,
+        4.65
+      ],
+      [
+        93,
+        400,
+        1.38,
+        5.17
+      ],
+      [
+        94,
+        346,
+        1.88,
+        8.66
+      ],
+      [
+        95,
+        363,
+        1.92,
+        9.46
+      ],
+      [
+        96,
+        384,
+        1.55,
+        6.59
+      ],
+      [
+        97,
+        381,
+        1.58,
+        7.41
+      ],
+      [
+        98,
+        344,
+        1.65,
+        7.99
+      ],
+      [
+        99,
+        334,
+        1.75,
+        7.82
+      ],
+      [
+        100,
+        389,
+        1.57,
+        7.62
+      ],
+      [
+        101,
+        337,
+        1.7,
+        9.47
+      ],
+      [
+        102,
+        349,
+        1.61,
+        6.58
+      ],
+      [
+        103,
+        385,
+        1.53,
+        6.58
+      ],
+      [
+        104,
+        371,
+        1.41,
+        8.86
+      ],
+      [
+        105,
+        330,
+        1.34,
+        7.15
+      ],
+      [
+        106,
+        356,
+        1.54,
+        6.38
+      ],
+      [
+        107,
+        376,
+        1.23,
+        7.64
+      ],
+      [
+        108,
+        387,
+        1.33,
+        7.31
+      ],
+      [
+        109,
+        351,
+        1.37,
+        5.48
+      ],
+      [
+        110,
+        351,
+        1.74,
+        6.44
+      ],
+      [
+        111,
+        344,
+        1.72,
+        6.54
+      ],
+      [
+        112,
+        414,
+        1.6,
+        7.15
+      ],
+      [
+        113,
+        383,
+        1.49,
+        6.66
+      ],
+      [
+        114,
+        418,
+        1.19,
+        5.03
+      ],
+      [
+        115,
+        324,
+        1.92,
+        7.91
+      ],
+      [
+        116,
+        394,
+        1.38,
+        7.87
+      ],
+      [
+        117,
+        345,
+        1.64,
+        7.54
+      ],
+      [
+        118,
+        350,
+        1.51,
+        7.31
+      ],
+      [
+        119,
+        362,
+        1.28,
+        8.39
+      ]
+    ],
+    "r2_page": [
+      [
+        1,
+        1,
+        7951.91,
+        7951.91
+      ],
+      [
+        4,
+        1,
+        8178.18,
+        8178.18
+      ],
+      [
+        9,
+        1,
+        8539.11,
+        8539.11
+      ],
+      [
+        11,
+        1,
+        7400.5,
+        7400.5
+      ],
+      [
+        18,
+        1,
+        8375.21,
+        8375.21
+      ],
+      [
+        20,
+        1,
+        8097.9,
+        8097.9
+      ],
+      [
+        28,
+        1,
+        7971.94,
+        7971.94
+      ],
+      [
+        37,
+        1,
+        9084.56,
+        9084.56
+      ],
+      [
+        47,
+        1,
+        7952.74,
+        7952.74
+      ],
+      [
+        55,
+        1,
+        7580.53,
+        7580.53
+      ],
+      [
+        59,
+        1,
+        7619.06,
+        7619.06
+      ],
+      [
+        67,
+        1,
+        8028.54,
+        8028.54
+      ],
+      [
+        70,
+        1,
+        7525.34,
+        7525.34
+      ],
+      [
+        74,
+        1,
+        7083.96,
+        7083.96
+      ],
+      [
+        77,
+        1,
+        6861.31,
+        6861.31
+      ],
+      [
+        81,
+        1,
+        6484.64,
+        6484.64
+      ],
+      [
+        86,
+        1,
+        8525.92,
+        8525.92
+      ],
+      [
+        93,
+        1,
+        7809.44,
+        7809.44
+      ],
+      [
+        97,
+        1,
+        9789.61,
+        9789.61
+      ],
+      [
+        102,
+        1,
+        8129.91,
+        8129.91
+      ],
+      [
+        105,
+        1,
+        7648.68,
+        7648.68
+      ],
+      [
+        109,
+        1,
+        7360.09,
+        7360.09
+      ],
+      [
+        112,
+        1,
+        7561.45,
+        7561.45
+      ],
+      [
+        116,
+        1,
+        7074.22,
+        7074.22
+      ]
+    ],
+    "r_join": [
+      [
+        39,
+        1,
+        21497.52,
+        21497.52
+      ],
+      [
+        44,
+        1,
+        6907.34,
+        6907.34
+      ],
+      [
+        49,
+        1,
+        3033.97,
+        3033.97
+      ],
+      [
+        51,
+        1,
+        1708.35,
+        1708.35
+      ],
+      [
+        59,
+        1,
+        4.96,
+        4.96
+      ],
+      [
+        84,
+        1,
+        2777.27,
+        2777.27
+      ],
+      [
+        87,
+        1,
+        2107.23,
+        2107.23
+      ],
+      [
+        115,
+        1,
+        2578.48,
+        2578.48
+      ]
+    ],
+    "t_cancel": [
+      [
+        0,
+        56,
+        11.35,
+        31.95
+      ],
+      [
+        1,
+        48,
+        10.64,
+        24.85
+      ],
+      [
+        2,
+        48,
+        12.15,
+        27.91
+      ],
+      [
+        3,
+        41,
+        9.82,
+        26.52
+      ],
+      [
+        4,
+        31,
+        10.06,
+        29.82
+      ],
+      [
+        5,
+        26,
+        11.05,
+        21.41
+      ],
+      [
+        6,
+        32,
+        9.26,
+        22.65
+      ],
+      [
+        7,
+        46,
+        9.46,
+        16.28
+      ],
+      [
+        8,
+        28,
+        8.45,
+        15
+      ],
+      [
+        9,
+        13,
+        8.02,
+        10.76
+      ],
+      [
+        10,
+        54,
+        12.89,
+        23.52
+      ],
+      [
+        11,
+        60,
+        10.19,
+        22.79
+      ],
+      [
+        12,
+        73,
+        9.4,
+        19.04
+      ],
+      [
+        13,
+        70,
+        10.52,
+        21.55
+      ],
+      [
+        14,
+        63,
+        10.77,
+        28.75
+      ],
+      [
+        15,
+        50,
+        10.29,
+        16.24
+      ],
+      [
+        16,
+        37,
+        10.3,
+        21.74
+      ],
+      [
+        17,
+        19,
+        9.29,
+        13.68
+      ],
+      [
+        23,
+        18,
+        10.96,
+        16.72
+      ],
+      [
+        24,
+        63,
+        9.09,
+        22
+      ],
+      [
+        25,
+        58,
+        11.02,
+        27.3
+      ],
+      [
+        26,
+        58,
+        9.98,
+        16.56
+      ],
+      [
+        27,
+        55,
+        11.35,
+        20.43
+      ],
+      [
+        28,
+        57,
+        10.14,
+        25.22
+      ],
+      [
+        29,
+        56,
+        10.09,
+        20.67
+      ],
+      [
+        30,
+        58,
+        8.21,
+        25.64
+      ],
+      [
+        31,
+        42,
+        10.11,
+        18.36
+      ],
+      [
+        32,
+        48,
+        8.02,
+        24.02
+      ],
+      [
+        33,
+        30,
+        8.67,
+        15.66
+      ],
+      [
+        34,
+        24,
+        9.08,
+        14.52
+      ],
+      [
+        35,
+        13,
+        8.69,
+        12.69
+      ],
+      [
+        38,
+        25,
+        15.5,
+        28.99
+      ],
+      [
+        39,
+        47,
+        13.19,
+        20.62
+      ],
+      [
+        40,
+        47,
+        10.01,
+        23.44
+      ],
+      [
+        41,
+        60,
+        11.24,
+        24.57
+      ],
+      [
+        42,
+        53,
+        10.31,
+        19.05
+      ],
+      [
+        43,
+        66,
+        10.1,
+        24.79
+      ],
+      [
+        44,
+        57,
+        10.98,
+        21.26
+      ],
+      [
+        45,
+        34,
+        10.74,
+        32.43
+      ],
+      [
+        46,
+        41,
+        10.05,
+        18.16
+      ],
+      [
+        47,
+        34,
+        8.55,
+        24.43
+      ],
+      [
+        48,
+        38,
+        10.4,
+        29.26
+      ],
+      [
+        49,
+        40,
+        10.69,
+        19.24
+      ],
+      [
+        50,
+        39,
+        9.92,
+        15.89
+      ],
+      [
+        51,
+        41,
+        9.7,
+        14.58
+      ],
+      [
+        52,
+        50,
+        9.48,
+        23.37
+      ],
+      [
+        53,
+        63,
+        9.39,
+        18.87
+      ],
+      [
+        54,
+        64,
+        9.33,
+        24.36
+      ],
+      [
+        55,
+        62,
+        9.84,
+        20.69
+      ],
+      [
+        56,
+        51,
+        10.47,
+        35.02
+      ],
+      [
+        57,
+        61,
+        10.92,
+        23.86
+      ],
+      [
+        58,
+        56,
+        10.87,
+        23.18
+      ],
+      [
+        59,
+        45,
+        11.32,
+        22.78
+      ],
+      [
+        60,
+        44,
+        9.08,
+        19.24
+      ],
+      [
+        61,
+        37,
+        9.03,
+        18.08
+      ],
+      [
+        62,
+        15,
+        9.18,
+        23.58
+      ],
+      [
+        63,
+        19,
+        8.4,
+        13.59
+      ],
+      [
+        64,
+        18,
+        8.19,
+        14.07
+      ],
+      [
+        65,
+        15,
+        11.06,
+        62.32
+      ],
+      [
+        66,
+        45,
+        9.65,
+        16.75
+      ],
+      [
+        67,
+        63,
+        8.41,
+        19.61
+      ],
+      [
+        68,
+        74,
+        9.34,
+        20.96
+      ],
+      [
+        69,
+        52,
+        12.41,
+        32.88
+      ],
+      [
+        70,
+        60,
+        10.03,
+        26.41
+      ],
+      [
+        71,
+        50,
+        9.84,
+        26.24
+      ],
+      [
+        72,
+        44,
+        10.33,
+        26.82
+      ],
+      [
+        73,
+        35,
+        10.68,
+        18.84
+      ],
+      [
+        74,
+        22,
+        11.2,
+        15.19
+      ],
+      [
+        75,
+        16,
+        9.22,
+        14.61
+      ],
+      [
+        76,
+        5,
+        8.36,
+        11.4
+      ],
+      [
+        78,
+        8,
+        8.52,
+        17.69
+      ],
+      [
+        79,
+        78,
+        7.75,
+        16.98
+      ],
+      [
+        80,
+        64,
+        9.17,
+        19.5
+      ],
+      [
+        81,
+        62,
+        10.53,
+        21.67
+      ],
+      [
+        82,
+        60,
+        9.8,
+        17.9
+      ],
+      [
+        83,
+        54,
+        10.88,
+        23.02
+      ],
+      [
+        84,
+        56,
+        10.68,
+        19.59
+      ],
+      [
+        85,
+        58,
+        10.73,
+        24.45
+      ],
+      [
+        86,
+        55,
+        10.38,
+        25.4
+      ],
+      [
+        87,
+        24,
+        8.96,
+        20.18
+      ],
+      [
+        88,
+        15,
+        7.33,
+        15.55
+      ],
+      [
+        93,
+        61,
+        10.68,
+        19.9
+      ],
+      [
+        94,
+        53,
+        12.34,
+        24.3
+      ],
+      [
+        95,
+        61,
+        10.42,
+        21.84
+      ],
+      [
+        96,
+        54,
+        9.39,
+        18
+      ],
+      [
+        97,
+        60,
+        9.53,
+        28.18
+      ],
+      [
+        98,
+        59,
+        10.75,
+        23.67
+      ],
+      [
+        99,
+        65,
+        10.76,
+        27.43
+      ],
+      [
+        100,
+        43,
+        11.67,
+        21.53
+      ],
+      [
+        101,
+        43,
+        11.5,
+        22.82
+      ],
+      [
+        102,
+        49,
+        11.91,
+        28.51
+      ],
+      [
+        103,
+        39,
+        9.35,
+        16.08
+      ],
+      [
+        104,
+        29,
+        9.17,
+        26.15
+      ],
+      [
+        105,
+        27,
+        9.46,
+        18.01
+      ],
+      [
+        106,
+        20,
+        8.15,
+        13.57
+      ],
+      [
+        107,
+        19,
+        7.26,
+        11.61
+      ],
+      [
+        108,
+        15,
+        8.65,
+        12.07
+      ],
+      [
+        109,
+        25,
+        8.71,
+        27.9
+      ],
+      [
+        110,
+        60,
+        9.96,
+        22.33
+      ],
+      [
+        111,
+        65,
+        10.24,
+        23.7
+      ],
+      [
+        112,
+        66,
+        10.99,
+        20.79
+      ],
+      [
+        113,
+        63,
+        9.72,
+        24.36
+      ],
+      [
+        114,
+        61,
+        10.04,
+        15.73
+      ],
+      [
+        115,
+        51,
+        9.72,
+        20.32
+      ],
+      [
+        116,
+        36,
+        9.56,
+        16.92
+      ],
+      [
+        117,
+        35,
+        8.34,
+        26.4
+      ],
+      [
+        118,
+        26,
+        8.27,
+        24.69
+      ],
+      [
+        119,
+        10,
+        7.79,
+        17.07
+      ]
+    ],
+    "t_order": [
+      [
+        0,
+        94,
+        14.02,
+        39.81
+      ],
+      [
+        1,
+        113,
+        13.49,
+        28.13
+      ],
+      [
+        2,
+        95,
+        12.92,
+        26.4
+      ],
+      [
+        3,
+        84,
+        11.29,
+        26.71
+      ],
+      [
+        4,
+        63,
+        11.62,
+        27.92
+      ],
+      [
+        5,
+        64,
+        10.8,
+        26.39
+      ],
+      [
+        6,
+        68,
+        11.29,
+        19.95
+      ],
+      [
+        7,
+        76,
+        9.22,
+        26.32
+      ],
+      [
+        8,
+        53,
+        10.49,
+        23.2
+      ],
+      [
+        9,
+        32,
+        8.39,
+        19.48
+      ],
+      [
+        10,
+        112,
+        13.32,
+        6355.54
+      ],
+      [
+        11,
+        120,
+        11.85,
+        25.45
+      ],
+      [
+        12,
+        123,
+        10.97,
+        20.57
+      ],
+      [
+        13,
+        124,
+        11.54,
+        22.36
+      ],
+      [
+        14,
+        119,
+        12.36,
+        23.79
+      ],
+      [
+        15,
+        112,
+        12.36,
+        28.42
+      ],
+      [
+        16,
+        59,
+        11.74,
+        21.48
+      ],
+      [
+        17,
+        39,
+        10.46,
+        20.49
+      ],
+      [
+        23,
+        25,
+        10.96,
+        7887.46
+      ],
+      [
+        24,
+        119,
+        11.22,
+        22.32
+      ],
+      [
+        25,
+        131,
+        11.05,
+        22.86
+      ],
+      [
+        26,
+        131,
+        11.04,
+        23.86
+      ],
+      [
+        27,
+        119,
+        12.25,
+        33.05
+      ],
+      [
+        28,
+        119,
+        12,
+        25.71
+      ],
+      [
+        29,
+        105,
+        11.53,
+        29.43
+      ],
+      [
+        30,
+        110,
+        10.04,
+        26.12
+      ],
+      [
+        31,
+        97,
+        12.32,
+        39.72
+      ],
+      [
+        32,
+        78,
+        9.41,
+        23.36
+      ],
+      [
+        33,
+        67,
+        11.06,
+        22.09
+      ],
+      [
+        34,
+        70,
+        10.96,
+        18.92
+      ],
+      [
+        35,
+        32,
+        11.3,
+        20.07
+      ],
+      [
+        38,
+        62,
+        14.31,
+        8688.52
+      ],
+      [
+        39,
+        107,
+        12.96,
+        30.48
+      ],
+      [
+        40,
+        117,
+        11.8,
+        24.81
+      ],
+      [
+        41,
+        123,
+        11.13,
+        25.28
+      ],
+      [
+        42,
+        115,
+        12.12,
+        23.32
+      ],
+      [
+        43,
+        117,
+        12.18,
+        24.37
+      ],
+      [
+        44,
+        117,
+        12.51,
+        25.48
+      ],
+      [
+        45,
+        74,
+        13.19,
+        32.51
+      ],
+      [
+        46,
+        63,
+        13.5,
+        25.03
+      ],
+      [
+        47,
+        67,
+        10.8,
+        19.66
+      ],
+      [
+        48,
+        61,
+        11.36,
+        33.99
+      ],
+      [
+        49,
+        70,
+        11.4,
+        24.48
+      ],
+      [
+        50,
+        78,
+        10.46,
+        16.96
+      ],
+      [
+        51,
+        65,
+        10.12,
+        20.78
+      ],
+      [
+        52,
+        112,
+        10.61,
+        6839.43
+      ],
+      [
+        53,
+        126,
+        11.24,
+        23.23
+      ],
+      [
+        54,
+        118,
+        10.61,
+        24.43
+      ],
+      [
+        55,
+        116,
+        10.99,
+        20.92
+      ],
+      [
+        56,
+        107,
+        11.61,
+        44.1
+      ],
+      [
+        57,
+        117,
+        12.36,
+        23.62
+      ],
+      [
+        58,
+        113,
+        12.05,
+        23.48
+      ],
+      [
+        59,
+        105,
+        12.61,
+        25.89
+      ],
+      [
+        60,
+        93,
+        11.37,
+        31.62
+      ],
+      [
+        61,
+        69,
+        10.56,
+        28.14
+      ],
+      [
+        62,
+        47,
+        11.83,
+        33.68
+      ],
+      [
+        63,
+        34,
+        10.26,
+        25.39
+      ],
+      [
+        64,
+        39,
+        8.98,
+        23.6
+      ],
+      [
+        65,
+        33,
+        9.5,
+        18.46
+      ],
+      [
+        66,
+        104,
+        10.98,
+        5148.63
+      ],
+      [
+        67,
+        138,
+        9.37,
+        19.07
+      ],
+      [
+        68,
+        137,
+        10.31,
+        23.28
+      ],
+      [
+        69,
+        120,
+        11.78,
+        27.68
+      ],
+      [
+        70,
+        123,
+        11.08,
+        21.1
+      ],
+      [
+        71,
+        111,
+        11.47,
+        26.18
+      ],
+      [
+        72,
+        83,
+        12.37,
+        30.52
+      ],
+      [
+        73,
+        84,
+        11.93,
+        26.98
+      ],
+      [
+        74,
+        43,
+        11.07,
+        21.15
+      ],
+      [
+        75,
+        34,
+        10.94,
+        19.17
+      ],
+      [
+        76,
+        15,
+        9.97,
+        16.43
+      ],
+      [
+        78,
+        20,
+        11.96,
+        7045.57
+      ],
+      [
+        79,
+        149,
+        8.69,
+        21.36
+      ],
+      [
+        80,
+        134,
+        10.52,
+        23.24
+      ],
+      [
+        81,
+        116,
+        11.17,
+        23.03
+      ],
+      [
+        82,
+        122,
+        11.08,
+        23.62
+      ],
+      [
+        83,
+        126,
+        12.09,
+        24.12
+      ],
+      [
+        84,
+        112,
+        13.39,
+        25.29
+      ],
+      [
+        85,
+        116,
+        11.79,
+        25.91
+      ],
+      [
+        86,
+        110,
+        10.88,
+        18.81
+      ],
+      [
+        87,
+        51,
+        10.1,
+        26.71
+      ],
+      [
+        88,
+        28,
+        8.89,
+        15.66
+      ],
+      [
+        92,
+        7,
+        4265.62,
+        6012.97
+      ],
+      [
+        93,
+        118,
+        11.7,
+        25.26
+      ],
+      [
+        94,
+        103,
+        13.55,
+        23.15
+      ],
+      [
+        95,
+        129,
+        10.68,
+        22.2
+      ],
+      [
+        96,
+        129,
+        10.83,
+        22.52
+      ],
+      [
+        97,
+        126,
+        11.3,
+        23.06
+      ],
+      [
+        98,
+        122,
+        12.83,
+        25.89
+      ],
+      [
+        99,
+        121,
+        12.24,
+        27.4
+      ],
+      [
+        100,
+        87,
+        13.72,
+        27.73
+      ],
+      [
+        101,
+        89,
+        13.49,
+        29.71
+      ],
+      [
+        102,
+        89,
+        12.77,
+        24.94
+      ],
+      [
+        103,
+        90,
+        11.38,
+        32.62
+      ],
+      [
+        104,
+        72,
+        12.88,
+        22.6
+      ],
+      [
+        105,
+        63,
+        11.45,
+        28.07
+      ],
+      [
+        106,
+        37,
+        9.63,
+        17.43
+      ],
+      [
+        107,
+        41,
+        8.61,
+        23.92
+      ],
+      [
+        108,
+        41,
+        8.91,
+        20.46
+      ],
+      [
+        109,
+        63,
+        9.44,
+        9403.48
+      ],
+      [
+        110,
+        112,
+        11.3,
+        23.11
+      ],
+      [
+        111,
+        129,
+        12.92,
+        29.85
+      ],
+      [
+        112,
+        130,
+        11.89,
+        20.94
+      ],
+      [
+        113,
+        116,
+        13.21,
+        25.08
+      ],
+      [
+        114,
+        124,
+        11.45,
+        21.79
+      ],
+      [
+        115,
+        93,
+        11.76,
+        33.23
+      ],
+      [
+        116,
+        68,
+        10.52,
+        21.67
+      ],
+      [
+        117,
+        66,
+        10.21,
+        26.65
+      ],
+      [
+        118,
+        60,
+        10.63,
+        24.44
+      ],
+      [
+        119,
+        16,
+        8.64,
+        14.76
+      ],
+      [
+        123,
+        4,
+        4776.09,
+        7959.77
+      ]
+    ],
+    "t_pay": [
+      [
+        0,
+        42,
+        11.77,
+        25.91
+      ],
+      [
+        1,
+        60,
+        10.7,
+        26.63
+      ],
+      [
+        2,
+        48,
+        10.66,
+        23.82
+      ],
+      [
+        3,
+        40,
+        10.06,
+        23.31
+      ],
+      [
+        4,
+        32,
+        9.46,
+        18.87
+      ],
+      [
+        5,
+        40,
+        10.46,
+        20.14
+      ],
+      [
+        6,
+        34,
+        9.41,
+        17.4
+      ],
+      [
+        7,
+        33,
+        8.14,
+        15.53
+      ],
+      [
+        8,
+        30,
+        8.68,
+        18.86
+      ],
+      [
+        9,
+        17,
+        8.24,
+        13.83
+      ],
+      [
+        10,
+        49,
+        11.85,
+        24.68
+      ],
+      [
+        11,
+        66,
+        11.04,
+        22.34
+      ],
+      [
+        12,
+        55,
+        9.14,
+        19.5
+      ],
+      [
+        13,
+        50,
+        9.91,
+        19.72
+      ],
+      [
+        14,
+        57,
+        9.63,
+        21.38
+      ],
+      [
+        15,
+        56,
+        11.63,
+        21.7
+      ],
+      [
+        16,
+        28,
+        10.51,
+        18.5
+      ],
+      [
+        17,
+        16,
+        8.93,
+        16.5
+      ],
+      [
+        23,
+        13,
+        9.79,
+        20.97
+      ],
+      [
+        24,
+        56,
+        10.07,
+        19.88
+      ],
+      [
+        25,
+        69,
+        9.44,
+        22.58
+      ],
+      [
+        26,
+        74,
+        10.11,
+        24.05
+      ],
+      [
+        27,
+        59,
+        10.45,
+        23.53
+      ],
+      [
+        28,
+        67,
+        11.37,
+        25.49
+      ],
+      [
+        29,
+        51,
+        10.19,
+        20.42
+      ],
+      [
+        30,
+        43,
+        9.17,
+        27.82
+      ],
+      [
+        31,
+        52,
+        9.34,
+        19.43
+      ],
+      [
+        32,
+        37,
+        9.92,
+        23.25
+      ],
+      [
+        33,
+        41,
+        8.56,
+        20.93
+      ],
+      [
+        34,
+        42,
+        8.59,
+        22.01
+      ],
+      [
+        35,
+        25,
+        7.72,
+        11.75
+      ],
+      [
+        38,
+        35,
+        11.8,
+        59.71
+      ],
+      [
+        39,
+        58,
+        12.06,
+        21.28
+      ],
+      [
+        40,
+        72,
+        10.76,
+        23.05
+      ],
+      [
+        41,
+        64,
+        10.64,
+        23.56
+      ],
+      [
+        42,
+        55,
+        10.08,
+        22.45
+      ],
+      [
+        43,
+        58,
+        11.05,
+        21.27
+      ],
+      [
+        44,
+        59,
+        9.96,
+        25.28
+      ],
+      [
+        45,
+        34,
+        9.99,
+        20.33
+      ],
+      [
+        46,
+        24,
+        9.38,
+        18.62
+      ],
+      [
+        47,
+        32,
+        9.93,
+        23.23
+      ],
+      [
+        48,
+        28,
+        9.23,
+        20.28
+      ],
+      [
+        49,
+        25,
+        8.84,
+        18.98
+      ],
+      [
+        50,
+        33,
+        9.29,
+        16.55
+      ],
+      [
+        51,
+        31,
+        8.83,
+        16.85
+      ],
+      [
+        52,
+        65,
+        9.02,
+        23.94
+      ],
+      [
+        53,
+        61,
+        9.09,
+        29.58
+      ],
+      [
+        54,
+        57,
+        9.07,
+        19.85
+      ],
+      [
+        55,
+        54,
+        10.31,
+        24.39
+      ],
+      [
+        56,
+        55,
+        10.98,
+        53.5
+      ],
+      [
+        57,
+        57,
+        10.21,
+        17.58
+      ],
+      [
+        58,
+        57,
+        11.91,
+        20.89
+      ],
+      [
+        59,
+        60,
+        10.42,
+        20.82
+      ],
+      [
+        60,
+        45,
+        9.99,
+        25.48
+      ],
+      [
+        61,
+        38,
+        8.26,
+        23.01
+      ],
+      [
+        62,
+        30,
+        10.46,
+        18.36
+      ],
+      [
+        63,
+        17,
+        10.17,
+        16.95
+      ],
+      [
+        64,
+        17,
+        8.12,
+        20.21
+      ],
+      [
+        65,
+        22,
+        7.64,
+        15.85
+      ],
+      [
+        66,
+        59,
+        9.22,
+        28.79
+      ],
+      [
+        67,
+        72,
+        9.34,
+        21.83
+      ],
+      [
+        68,
+        60,
+        9.33,
+        21.93
+      ],
+      [
+        69,
+        68,
+        10.76,
+        28.54
+      ],
+      [
+        70,
+        67,
+        9.81,
+        19.13
+      ],
+      [
+        71,
+        60,
+        9.66,
+        24.42
+      ],
+      [
+        72,
+        42,
+        9.99,
+        22.13
+      ],
+      [
+        73,
+        40,
+        10.27,
+        24.05
+      ],
+      [
+        74,
+        24,
+        10.55,
+        18.95
+      ],
+      [
+        75,
+        24,
+        8.01,
+        19.72
+      ],
+      [
+        76,
+        9,
+        9.95,
+        12.75
+      ],
+      [
+        78,
+        13,
+        9.09,
+        17.25
+      ],
+      [
+        79,
+        70,
+        7.78,
+        16.32
+      ],
+      [
+        80,
+        61,
+        9.27,
+        19.01
+      ],
+      [
+        81,
+        60,
+        10.14,
+        24.59
+      ],
+      [
+        82,
+        65,
+        9.37,
+        20.98
+      ],
+      [
+        83,
+        67,
+        9.7,
+        17.67
+      ],
+      [
+        84,
+        60,
+        10.83,
+        23.93
+      ],
+      [
+        85,
+        60,
+        10.78,
+        21.86
+      ],
+      [
+        86,
+        53,
+        10.38,
+        29.52
+      ],
+      [
+        87,
+        25,
+        7.82,
+        15.39
+      ],
+      [
+        88,
+        17,
+        7.5,
+        12.06
+      ],
+      [
+        92,
+        3,
+        16.62,
+        18.25
+      ],
+      [
+        93,
+        57,
+        9.97,
+        24.48
+      ],
+      [
+        94,
+        53,
+        11.38,
+        25.33
+      ],
+      [
+        95,
+        66,
+        9.8,
+        23.83
+      ],
+      [
+        96,
+        74,
+        9.89,
+        23.31
+      ],
+      [
+        97,
+        67,
+        10.6,
+        20.96
+      ],
+      [
+        98,
+        59,
+        10.89,
+        19.38
+      ],
+      [
+        99,
+        58,
+        10.25,
+        24.83
+      ],
+      [
+        100,
+        48,
+        12.76,
+        22.03
+      ],
+      [
+        101,
+        38,
+        11.83,
+        22.81
+      ],
+      [
+        102,
+        44,
+        10.68,
+        29.18
+      ],
+      [
+        103,
+        53,
+        11.87,
+        22.23
+      ],
+      [
+        104,
+        46,
+        9.05,
+        16.94
+      ],
+      [
+        105,
+        33,
+        11.8,
+        20.05
+      ],
+      [
+        106,
+        20,
+        7.33,
+        27.17
+      ],
+      [
+        107,
+        21,
+        6.3,
+        16.65
+      ],
+      [
+        108,
+        25,
+        8.16,
+        15.52
+      ],
+      [
+        109,
+        35,
+        8.38,
+        21.09
+      ],
+      [
+        110,
+        56,
+        11.06,
+        27.56
+      ],
+      [
+        111,
+        53,
+        10.03,
+        27.59
+      ],
+      [
+        112,
+        63,
+        11.04,
+        22.22
+      ],
+      [
+        113,
+        63,
+        11.98,
+        21.17
+      ],
+      [
+        114,
+        58,
+        9.5,
+        19.13
+      ],
+      [
+        115,
+        50,
+        9.67,
+        26.2
+      ],
+      [
+        116,
+        31,
+        9.36,
+        17.31
+      ],
+      [
+        117,
+        32,
+        9.38,
+        27.1
+      ],
+      [
+        118,
+        34,
+        8.05,
+        20.59
+      ],
+      [
+        119,
+        6,
+        6.56,
+        12.84
+      ]
+    ],
+    "tear_tx": [
+      [
+        9,
+        1,
+        19657.39,
+        19657.39
+      ],
+      [
+        28,
+        1,
+        19176.24,
+        19176.24
+      ],
+      [
+        99,
+        1,
+        18579.97,
+        18579.97
+      ],
+      [
+        118,
+        1,
+        18621.02,
+        18621.02
+      ]
+    ]
+  },
+  "valid": false,
+  "window_start_utc": "2026-11-01T05:49:57.769503897Z"
+}

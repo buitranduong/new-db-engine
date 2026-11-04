@@ -3,19 +3,16 @@ package gateway
 import "testing"
 
 func TestTranslate(t *testing.T) {
-	tables := map[string]bool{"sims": true, "orders": true, "order_items": true}
 	for _, c := range []struct{ in, want string }{
-		{"SELECT count(*) FROM sims", "SELECT count(*) FROM sims_at(w = 7) AS sims"},
-		{"SELECT s.number FROM sims s WHERE s.price > 1", "SELECT s.number FROM sims_at(w = 7) s WHERE s.price > 1"},
-		{"SELECT count(o.id) AS orders FROM orders o JOIN order_items i ON i.order_id = o.id",
-			"SELECT count(o.id) AS orders FROM orders_at(w = 7) o JOIN order_items_at(w = 7) i ON i.order_id = o.id"},
+		{"SELECT count(*) FROM sims", "SELECT count(*) FROM sims"},
+		{"SELECT \"number\" FROM sims s WHERE s.price > 1", "SELECT `number` FROM sims s WHERE s.price > 1"},
 		{"SELECT sims.number FROM sims ORDER BY md5(number || '42')",
-			"SELECT sims.number FROM sims_at(w = 7) AS sims ORDER BY lower(hex(MD5(number || '42')))"},
+			"SELECT sims.number FROM sims ORDER BY lower(hex(MD5(number || '42')))"},
 		{"SELECT count(*) FROM orders WHERE created_at >= timestamptz '2026-10-01 00:00:00+00'",
-			"SELECT count(*) FROM orders_at(w = 7) AS orders WHERE created_at >= parseDateTime64BestEffort('2026-10-01 00:00:00+00', 6, 'UTC')"},
-		{"SELECT 'sims' FROM sims WHERE number LIKE '09%'", "SELECT 'sims' FROM sims_at(w = 7) AS sims WHERE number LIKE '09%'"},
+			"SELECT count(*) FROM orders WHERE created_at >= parseDateTime64BestEffort('2026-10-01 00:00:00+00', 6, 'UTC')"},
+		{"SELECT 'sims' FROM sims WHERE number LIKE '09%'", "SELECT 'sims' FROM sims WHERE number LIKE '09%'"},
 	} {
-		got, err := Translate(c.in, tables, 7)
+		got, err := Translate(c.in)
 		if err != nil || got != c.want {
 			t.Errorf("Translate(%q)\n got %q, %v\nwant %q", c.in, got, err, c.want)
 		}

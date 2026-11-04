@@ -7,7 +7,8 @@
 #   gateway + chsync GW_CPUS (6), the application (stask-m2) APP_CPUS (7).
 # Runs (RUNS, default "gw pg"), each on m1_run, a fresh copy of the loaded database postgres (the pristine data; never
 # written by a run) made with CREATE DATABASE .. TEMPLATE (file copy): one extra copy on disk, not two:
-#   gw: through the gateway (chsync snapshot into a fresh ClickHouse first; afterwards, source quiet: chsync verify + shapes)
+#   gw: through the gateway (it snapshots the tables into a fresh ClickHouse first and keeps them in step itself;
+#       afterwards, source quiet: chsync verify + shapes)
 #   pg: the same load straight to PostgreSQL (the baseline: what the application has without the gateway)
 # Env: N=30000000 DURATION=120 WARMUP=60 HARNESS_FLAGS OUT=/tmp/m1/N-<stamp> KEEP=1 (keep the loaded volume for the next run)
 set -u
@@ -17,7 +18,7 @@ if [ -z "${M1_LOCKED:-}" ]; then
 fi
 export PATH=$PATH:/usr/local/go/bin
 export G3_LOCKED=1 # stask-m2 takes the big-data lock above 2M rows unless its caller holds it (we do)
-N=${N:-30000000}; DURATION=${DURATION:-120}; WARMUP=${WARMUP:-60}; KEEP=${KEEP:-1}; RUNS=${RUNS:-"gw pg"}
+N=${N:-30000000}; DURATION=${DURATION:-120}; WARMUP=${WARMUP:-300}; KEEP=${KEEP:-1}; RUNS=${RUNS:-"gw pg"}
 PG_CPUS=${PG_CPUS:-0-2}; PG_MEM=${PG_MEM:-12g}; CH_CPUS=${CH_CPUS:-3-5}; CH_MEM=${CH_MEM:-10g}; GW_CPUS=${GW_CPUS:-6}; APP_CPUS=${APP_CPUS:-7}
 HARNESS_FLAGS=${HARNESS_FLAGS:--t 4 -p 4 -r 2}
 PG_CONF=${PG_CONF:-"shared_buffers=6GB effective_cache_size=9GB work_mem=64MB maintenance_work_mem=1GB max_wal_size=8GB checkpoint_timeout=15min random_page_cost=1.1 max_parallel_workers_per_gather=2 wal_level=logical max_wal_senders=10 max_replication_slots=10"}
@@ -32,7 +33,7 @@ BIN=$OUT/bin; mkdir -p "$BIN"
 log() { echo "m1: $(date +%T) $*" | tee -a "$OUT/m1.log"; }
 psqlc() { docker exec -i "$PGNAME" psql -U postgres -v ON_ERROR_STOP=1 -At "$@"; }
 stop_tools() {
-  for f in "$OUT/gw.pid" "$OUT/chsync.pid" "$OUT/lag.pid"; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+  for f in "$OUT/gw.pid" "$OUT/lag.pid"; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
 }
 cleanup() {
   stop_tools
@@ -89,13 +90,11 @@ for run in $RUNS; do
     docker run -d --name "$CHNAME" --cpuset-cpus="$CH_CPUS" --memory="$CH_MEM" -e CLICKHOUSE_SKIP_USER_SETUP=1 \
       -p 127.0.0.1:$CHPORT:8123 -v "$CHVOL":/var/lib/clickhouse "$CH_IMAGE" >/dev/null || exit 2
     t0=$(date +%s)
-    nohup taskset -c "$GW_CPUS" "$BIN/chsync" run -source "$SRC" -ch "$CH" -tables "$TABLES" -reset >"$OUT/chsync.log" 2>&1 < /dev/null &
-    echo $! >"$OUT/chsync.pid"
-    for _ in $(seq 10800); do grep -q "snapshot done" "$OUT/chsync.log" && break
-      kill -0 "$(cat "$OUT/chsync.pid")" 2>/dev/null || { log "chsync died"; tail -5 "$OUT/chsync.log"; exit 2; }; sleep 1; done
-    log "chsync snapshot in $(( $(date +%s) - t0 )) s"
-    nohup taskset -c "$GW_CPUS" "$BIN/staskgw" -listen 127.0.0.1:$GWPORT -http 127.0.0.1:$GWHTTP -pg "$SRC" -ch "$CH" -tables "$TABLES" \
+    nohup taskset -c "$GW_CPUS" "$BIN/staskgw" -reset -listen 127.0.0.1:$GWPORT -http 127.0.0.1:$GWHTTP -pg "$SRC" -ch "$CH" -tables "$TABLES" \
       >"$OUT/gw.log" 2>&1 < /dev/null & echo $! >"$OUT/gw.pid"
+    for _ in $(seq 10800); do grep -q "snapshot done" "$OUT/gw.log" && break
+      kill -0 "$(cat "$OUT/gw.pid")" 2>/dev/null && ! grep -q "chsync stopped" "$OUT/gw.log" || { log "gateway sync died"; tail -5 "$OUT/gw.log"; exit 2; }; sleep 1; done
+    log "snapshot into ClickHouse in $(( $(date +%s) - t0 )) s"
     sleep 2
     ( while :; do echo "$(date +%s.%N) $("$BIN/chsync" status -source "$SRC" -ch "$CH" 2>/dev/null)"; sleep 1; done ) >"$OUT/lag.log" 2>&1 &
     echo $! >"$OUT/lag.pid"

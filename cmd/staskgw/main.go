@@ -1,5 +1,6 @@
 // staskgw: the single PostgreSQL-protocol endpoint over PostgreSQL and
-// ClickHouse (docs/35 sections 5 and 6). Run chsync for the same tables.
+// ClickHouse (docs/35 sections 5 to 7). It runs chsync for the tables
+// itself: the first start (or -reset) snapshots them into ClickHouse.
 //
 //	staskgw -listen 127.0.0.1:6432 -pg URL -ch URL -tables a,b,c [-http 127.0.0.1:6480]
 //	curl http://127.0.0.1:6480/shapes   # every query shape, where it runs and why
@@ -31,14 +32,15 @@ func main() {
 	flag.StringVar(&cfg.Listen, "listen", "127.0.0.1:6432", "address clients connect to (PostgreSQL protocol)")
 	flag.StringVar(&cfg.PGURL, "pg", env("CHSYNC_SOURCE", "postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"), "PostgreSQL URL; client sessions run as this user")
 	flag.StringVar(&cfg.CHURL, "ch", env("CHSYNC_CH", "http://127.0.0.1:8123"), "ClickHouse HTTP URL")
-	tables := flag.String("tables", env("CHSYNC_TABLES", ""), "comma-separated tables kept in ClickHouse by chsync")
+	tables := flag.String("tables", env("CHSYNC_TABLES", ""), "comma-separated tables kept in ClickHouse")
 	flag.StringVar(&cfg.Slot, "slot", "chsync", "chsync slot (key of the watermark)")
 	flag.Float64Var(&cfg.CostThreshold, "cost", 20000, "PostgreSQL estimated cost from which a read is a ClickHouse candidate")
 	flag.IntVar(&cfg.VerifyRuns, "verify-runs", 3, "identical comparisons with PostgreSQL before a query shape is answered by ClickHouse")
 	flag.Float64Var(&cfg.Resample, "resample", 0.01, "fraction of ClickHouse answers compared with PostgreSQL again")
 	flag.DurationVar(&cfg.MaxStale, "max-stale", 3*time.Second, "watermark older than this: answer from PostgreSQL")
 	flag.DurationVar(&cfg.WaitOwnWrite, "wait-own-write", 500*time.Millisecond, "how long a read waits for ClickHouse to include the session's own writes before it goes to PostgreSQL")
-	flag.DurationVar(&cfg.PollEvery, "poll", 20*time.Millisecond, "how often the watermark is read")
+	flag.DurationVar(&cfg.PollEvery, "poll", 2*time.Millisecond, "how often a read waiting for its own writes looks at the watermark again")
+	flag.BoolVar(&cfg.Reset, "reset", false, "drop the replication slot and the ClickHouse tables, snapshot again")
 	httpAddr := flag.String("http", "127.0.0.1:6480", "status endpoint (/shapes); empty = off")
 	flag.Parse()
 	for _, t := range strings.Split(*tables, ",") {

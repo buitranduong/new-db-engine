@@ -158,11 +158,6 @@ func nextWord(toks []token, i int) string {
 	return ""
 }
 
-// words after a table name that are not an alias
-var notAlias = map[string]bool{"where": true, "join": true, "inner": true, "left": true, "right": true, "full": true, "cross": true,
-	"on": true, "using": true, "group": true, "order": true, "limit": true, "offset": true, "having": true, "window": true,
-	"union": true, "intersect": true, "except": true, "natural": true, "fetch": true, "for": true, "lateral": true}
-
 // typedLiteral maps PostgreSQL typed literals (type 'text') to ClickHouse.
 var typedLiteral = map[string]string{
 	"timestamptz": "parseDateTime64BestEffort(%s, 6, 'UTC')",
@@ -170,25 +165,19 @@ var typedLiteral = map[string]string{
 	"date":        "toDate32(%s)",
 }
 
-// Translate rewrites a PostgreSQL SELECT for ClickHouse: every synced table
-// becomes its snapshot view at w (keeping the name as alias), and the
-// PostgreSQL functions with another spelling are mapped. It returns an
-// error for what it knows it cannot translate; the rest is caught by the
-// result comparison before a shape is ever answered from ClickHouse.
-func Translate(sql string, tables map[string]bool, w uint64) (string, error) {
+// Translate rewrites a PostgreSQL SELECT for ClickHouse: the tables keep
+// their names (read with FINAL through the setting final = 1, under the
+// gate of docs/35 section 7) and the PostgreSQL functions and literals
+// with another spelling are mapped. It returns an error for what it knows
+// it cannot translate; the rest is caught by the result comparison before
+// a shape is ever answered from ClickHouse.
+func Translate(sql string) (string, error) {
 	toks := lex(sql)
 	var b strings.Builder
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
-		prev, next := prevTok(toks, i), nextTok(toks, i)
+		next := nextTok(toks, i)
 		switch {
-		case t.kind == tWord && tables[strings.ToLower(t.s)] && prev.s != "." && !strings.EqualFold(prev.s, "as") && next.s != "." && next.s != "(":
-			name := strings.ToLower(t.s)
-			b.WriteString(fmt.Sprintf("%s_at(w = %d)", name, w))
-			nw := nextWord(toks, i)
-			if !(next.s != "" && next.kind == tWord && (nw == "as" || !notAlias[nw])) {
-				b.WriteString(" AS " + name)
-			}
 		case t.kind == tWord && strings.EqualFold(t.s, "md5") && next.s == "(":
 			b.WriteString("lower(hex(MD5")
 			j := skipTo(toks, i, "(")
@@ -196,7 +185,7 @@ func Translate(sql string, tables map[string]bool, w uint64) (string, error) {
 			if end < 0 {
 				return "", fmt.Errorf("unbalanced parentheses")
 			}
-			inner, err := Translate(join(toks[j:end+1]), tables, w)
+			inner, err := Translate(join(toks[j : end+1]))
 			if err != nil {
 				return "", err
 			}
@@ -217,15 +206,6 @@ func Translate(sql string, tables map[string]bool, w uint64) (string, error) {
 		}
 	}
 	return b.String(), nil
-}
-
-func prevTok(toks []token, i int) token {
-	for j := i - 1; j >= 0; j-- {
-		if toks[j].kind != tSpace {
-			return toks[j]
-		}
-	}
-	return token{}
 }
 
 func nextTok(toks []token, i int) token {

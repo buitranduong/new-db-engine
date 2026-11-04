@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -40,15 +41,17 @@ type shape struct {
 	chRuns   atomic.Int64
 }
 
-// Router holds what all sessions share: the shapes, the watermark and the
-// connections used to verify shapes.
+// Router holds what all sessions share: the shapes, the sync it runs
+// (chsync, in process: docs/35 section 7) and the connections used to
+// verify shapes.
 type Router struct {
 	cfg    Config
 	ch     *chsync.CH
-	tables map[string]bool
-	shapes sync.Map // shape text -> *shape
-	w      atomic.Uint64
-	wAt    atomic.Int64 // unix nanos of the last W read
+	shapes sync.Map      // shape text -> *shape
+	gate   sync.RWMutex  // held for writing by chsync while it applies a batch
+	pin    atomic.Uint64 // chsync stops before the first transaction after it (comparisons)
+	pinMu  sync.Mutex    // one pinned comparison at a time
+	sync   chsync.Stats
 	verify chan *pgconn.PgConn
 	Stats  Stats
 }
@@ -62,31 +65,40 @@ func (r *Router) shapeOf(s string) *shape {
 	return v.(*shape)
 }
 
-// pollW keeps the watermark of chsync current (every PollEvery).
-func (r *Router) pollW(ctx context.Context) {
-	for ctx.Err() == nil {
-		if w, ok, err := chsync.ReadW(ctx, r.ch, r.cfg.Slot); err == nil && ok {
-			r.w.Store(w)
-			r.wAt.Store(time.Now().UnixNano())
+// runSync keeps ClickHouse in step with PostgreSQL for as long as the
+// gateway runs (reconnecting after errors, stopping on a fatal one).
+func (r *Router) runSync(ctx context.Context) {
+	cfg := chsync.Config{SourceURL: r.cfg.PGURL, CHURL: r.cfg.CHURL, Tables: r.cfg.Tables, Slot: r.cfg.Slot, Reset: r.cfg.Reset,
+		Gate: &r.gate, Pin: &r.pin, Stats: &r.sync, Logf: func(f string, a ...any) { r.cfg.Logf("chsync: "+f, a...) }}
+	for backoff := time.Second; ctx.Err() == nil; {
+		err := chsync.Run(ctx, cfg)
+		if ctx.Err() != nil {
+			return
 		}
+		if chsync.IsFatal(err) {
+			r.cfg.Logf("chsync stopped: %v (every read now goes to PostgreSQL)", err)
+			return
+		}
+		cfg.Reset = false
+		r.cfg.Logf("chsync: %v; again in %s", err, backoff)
 		select {
 		case <-ctx.Done():
-		case <-time.After(r.cfg.PollEvery):
+		case <-time.After(backoff):
 		}
+		backoff = min(2*backoff, 30*time.Second)
 	}
 }
 
-// fresh: the watermark is known and recent (chsync advances it at least once
-// a second even when the source is idle).
+// fresh: chsync was caught up with the source recently.
 func (r *Router) fresh() bool {
-	at := r.wAt.Load()
+	at := r.sync.CaughtUp.Load()
 	return at != 0 && time.Since(time.Unix(0, at)) < r.cfg.MaxStale
 }
 
 // waitW waits until W >= lsn, at most d.
 func (r *Router) waitW(lsn uint64, d time.Duration) bool {
 	end := time.Now().Add(d)
-	for r.w.Load() < lsn {
+	for r.sync.W.Load() < lsn {
 		if time.Now().After(end) {
 			return false
 		}
@@ -109,7 +121,7 @@ func (r *Router) classify(ctx context.Context, sess *session, sh *shape, sql str
 	if sh.state != shapeNew {
 		return
 	}
-	if _, err := Translate(sql, r.tables, 0); err != nil {
+	if _, err := Translate(sql); err != nil {
 		sh.state, sh.reason = shapePG, "translate: "+err.Error()
 		return
 	}
@@ -132,7 +144,8 @@ func (r *Router) classify(ctx context.Context, sess *session, sh *shape, sql str
 }
 
 // startVerify compares one execution in the background: PostgreSQL in a
-// REPEATABLE READ snapshot at LSN L, ClickHouse at w = L once W >= L.
+// REPEATABLE READ snapshot at LSN L, ClickHouse with exactly the
+// transactions committed up to L applied (chsync pinned at L).
 func (r *Router) startVerify(sh *shape, sql string) {
 	sh.mu.Lock()
 	if sh.checking {
@@ -176,30 +189,42 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 		return false, "retry"
 	}
 	defer func() { r.verify <- c }()
-	res, err := c.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_current_wal_lsn()::text; "+sql+"; COMMIT").ReadAll()
-	if err != nil || len(res) < 3 {
-		c.Exec(ctx, "ROLLBACK").ReadAll()
-		return false, fmt.Sprintf("PostgreSQL: %v", err)
+	defer func() { c.Exec(context.Background(), "ROLLBACK").ReadAll() }()
+	// The snapshot is taken by the first statement, which also reads L; the
+	// query itself runs on that snapshot after ClickHouse answered, so chsync
+	// is held only for the ClickHouse query.
+	res, err := c.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_current_wal_lsn()::text").ReadAll()
+	if err != nil || len(res) < 2 {
+		return false, "retry" // PostgreSQL could not answer: no verdict on ClickHouse
 	}
-	lsn, _ := pglogrepl.ParseLSN(string(res[1].Rows[0][0]))
-	pgRes := res[2]
+	l, _ := pglogrepl.ParseLSN(string(res[1].Rows[0][0]))
+	lsn := uint64(l)
 	sh.mu.Lock()
-	if sh.fields == nil {
-		for _, f := range pgRes.FieldDescriptions {
-			sh.fields = append(sh.fields, pgproto3.FieldDescription{Name: []byte(f.Name), TableOID: f.TableOID,
+	fields := sh.fields
+	sh.mu.Unlock()
+	if fields == nil { // the description of the result, from PostgreSQL itself
+		d, err := c.Prepare(ctx, "", sql, nil)
+		if err != nil {
+			return false, "retry"
+		}
+		for _, f := range d.Fields {
+			fields = append(fields, pgproto3.FieldDescription{Name: []byte(f.Name), TableOID: f.TableOID,
 				TableAttributeNumber: f.TableAttributeNumber, DataTypeOID: f.DataTypeOID, DataTypeSize: f.DataTypeSize,
 				TypeModifier: f.TypeModifier, Format: 0})
 		}
+		sh.mu.Lock()
+		sh.fields = fields
+		sh.mu.Unlock()
 	}
-	fields := sh.fields
-	sh.mu.Unlock()
-	if !r.waitW(uint64(lsn), 30*time.Second) {
+	chRows, why := r.chAt(ctx, sql, lsn, fields)
+	if why != "" {
+		return false, why
+	}
+	res, err = c.Exec(ctx, sql).ReadAll()
+	if err != nil || len(res) < 1 {
 		return false, "retry"
 	}
-	chRows, err := r.runCH(ctx, sql, uint64(lsn), fields)
-	if err != nil {
-		return false, "ClickHouse: " + clip(err.Error())
-	}
+	pgRes := res[0]
 	a, b := pgRes.Rows, chRows
 	if !orderedQuery(sql) {
 		a, b = sortRows(a), sortRows(b)
@@ -217,10 +242,48 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	return true, ""
 }
 
-func (r *Router) runCH(ctx context.Context, sql string, w uint64, fields []pgproto3.FieldDescription) ([][][]byte, error) {
-	q, err := Translate(sql, r.tables, w)
+// chAt runs sql on ClickHouse holding exactly the transactions committed up
+// to lsn: chsync is pinned at lsn, applies what comes before it and stops;
+// "retry" when that state cannot be had (chsync was already past lsn).
+func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgproto3.FieldDescription) ([][][]byte, string) {
+	r.pinMu.Lock()
+	defer r.pinMu.Unlock()
+	r.pin.Store(lsn)
+	defer r.pin.Store(0)
+	for end := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
+		if r.sync.Applied.Load() > lsn || time.Now().After(end) {
+			return nil, "retry"
+		}
+		if r.sync.W.Load() >= lsn || r.sync.Held.Load() > lsn {
+			break
+		}
+	}
+	rows, err := r.runCH(ctx, sql, fields, func() bool {
+		return r.sync.Applied.Load() <= lsn && (r.sync.W.Load() >= lsn || r.sync.Held.Load() > lsn)
+	})
+	if err == errMoved {
+		return nil, "retry"
+	}
+	if err != nil {
+		return nil, "ClickHouse: " + clip(err.Error())
+	}
+	return rows, ""
+}
+
+var errMoved = errors.New("ClickHouse moved past the snapshot")
+
+// runCH answers sql from ClickHouse while holding the gate for reading:
+// no batch is half applied while it runs. ok, if given, must still hold
+// once the gate is held (else errMoved).
+func (r *Router) runCH(ctx context.Context, sql string, fields []pgproto3.FieldDescription, ok func() bool) ([][][]byte, error) {
+	q, err := Translate(sql)
 	if err != nil {
 		return nil, err
+	}
+	r.gate.RLock()
+	defer r.gate.RUnlock()
+	if ok != nil && !ok() {
+		return nil, errMoved
 	}
 	rc, err := r.ch.Stream(ctx, q+" "+chSettings+" FORMAT TabSeparated")
 	if err != nil {

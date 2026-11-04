@@ -33,7 +33,8 @@ type Config struct {
 	Resample      float64       // fraction of ClickHouse answers compared again
 	MaxStale      time.Duration // W older than this: PostgreSQL
 	WaitOwnWrite  time.Duration // how long a read waits for ClickHouse to include the session's writes
-	PollEvery     time.Duration
+	PollEvery     time.Duration // how often a waiting read looks at W again
+	Reset         bool          // chsync: snapshot the tables again
 	Logf          func(string, ...any)
 }
 
@@ -41,10 +42,7 @@ func New(ctx context.Context, cfg Config) (*Router, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	r := &Router{cfg: cfg, ch: chsync.NewCH(cfg.CHURL), tables: map[string]bool{}, verify: make(chan *pgconn.PgConn, 2)}
-	for _, t := range cfg.Tables {
-		r.tables[strings.ToLower(t)] = true
-	}
+	r := &Router{cfg: cfg, ch: chsync.NewCH(cfg.CHURL), verify: make(chan *pgconn.PgConn, 2)}
 	for i := 0; i < cap(r.verify); i++ {
 		c, err := pgconn.Connect(ctx, cfg.PGURL)
 		if err != nil {
@@ -52,7 +50,7 @@ func New(ctx context.Context, cfg Config) (*Router, error) {
 		}
 		r.verify <- c
 	}
-	go r.pollW(ctx)
+	go r.runSync(ctx)
 	return r, nil
 }
 
@@ -214,8 +212,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 		r.Stats.Stale.Add(1)
 		return false, nil
 	}
-	w := r.w.Load()
-	rows, err := r.runCH(ctx, q, w, fields)
+	rows, err := r.runCH(ctx, q, fields, nil)
 	if err != nil {
 		sh.mu.Lock()
 		sh.state, sh.reason = shapePG, "ClickHouse error: "+clip(err.Error())
@@ -360,7 +357,7 @@ func (s *session) backendExec(sql string) error { _, err := s.backendQuery(sql);
 
 // Report lists the shapes and where they run (for the metrics endpoint).
 func (r *Router) Report(w io.Writer) {
-	fmt.Fprintf(w, "W=%s fresh=%v pg=%d ch=%d stale_to_pg=%d verify_ok=%d verify_diff=%d\n", pglogrepl.LSN(r.w.Load()), r.fresh(),
+	fmt.Fprintf(w, "W=%s fresh=%v pg=%d ch=%d stale_to_pg=%d verify_ok=%d verify_diff=%d\n", pglogrepl.LSN(r.sync.W.Load()), r.fresh(),
 		r.Stats.PG.Load(), r.Stats.CH.Load(), r.Stats.Stale.Load(), r.Stats.VerifyOK.Load(), r.Stats.VerifyDiff.Load())
 	r.shapes.Range(func(k, v any) bool {
 		sh := v.(*shape)

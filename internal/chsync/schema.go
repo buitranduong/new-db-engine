@@ -99,52 +99,9 @@ func tableDDL(t *shadow.Table) (string, error) {
 		qc(t.Name), strings.Join(cols, ", "), strings.Join(keyNames(t), ", ")), nil
 }
 
-// lsnIndex lets a reader find the versions above its watermark by
-// reading only the newest parts.
+// lsnIndex lets a reader find the newest versions by reading only the
+// newest parts.
 const lsnIndex = "INDEX _lsn_idx _lsn TYPE minmax GRANULARITY 1"
-
-// ViewName is the snapshot view of a table: t_at(w = W) is the table as of
-// watermark W.
-func ViewName(table string) string { return table + "_at" }
-
-// viewDDL: the table as of watermark w. FINAL cannot give it alone: its
-// WHERE applies after the versions are merged (docs/35 section 1), and an
-// argMax over every column of every key is ten times slower than FINAL
-// (docs/14 CHSYNC2). So: the keys with a version above w (the batch being
-// applied, if any; found through the minmax index on _lsn) take their
-// newest version <= w by argMax, unless it is a delete; every other key is
-// read with FINAL, which drops deleted keys. The columns of argMax go
-// through one tuple because argMax skips NULL arguments.
-func viewDDL(t *shadow.Table) string {
-	keys := keyNames(t)
-	kt := "(" + strings.Join(keys, ", ") + ")"
-	above := fmt.Sprintf("SELECT %s FROM %s WHERE _lsn > {w:UInt64}", strings.Join(keys, ", "), qc(t.Name))
-	var all, rest []string
-	for i, c := range t.Cols {
-		all = append(all, qc(c.Name))
-		if !inKey(t, i) {
-			rest = append(rest, qc(c.Name))
-		}
-	}
-	inner := strings.Join(keys, ", ") + ", argMax(_del, _lsn) AS _d"
-	if len(rest) > 0 {
-		inner += ", argMax(tuple(" + strings.Join(rest, ", ") + "), _lsn) AS _v"
-	}
-	var out []string
-	j := 0
-	for i, c := range t.Cols {
-		if inKey(t, i) {
-			out = append(out, qc(c.Name))
-		} else {
-			j++
-			out = append(out, fmt.Sprintf("_v.%d AS %s", j, qc(c.Name)))
-		}
-	}
-	return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS SELECT %s FROM %s FINAL WHERE %s NOT IN (%s) "+
-		"UNION ALL SELECT %s FROM (SELECT %s FROM %s WHERE _lsn <= {w:UInt64} AND %s IN (%s) GROUP BY %s) WHERE _d = 0",
-		qc(ViewName(t.Name)), strings.Join(all, ", "), qc(t.Name), kt, above,
-		strings.Join(out, ", "), inner, qc(t.Name), kt, above, strings.Join(keys, ", "))
-}
 
 // tsvEscape writes v in TabSeparated escaping (the escaping of PostgreSQL
 // COPY text format as well).

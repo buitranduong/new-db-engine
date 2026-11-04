@@ -14,7 +14,7 @@ import (
 // keep their scale. (aggregate_functions_null_for_empty is not set: it
 // makes the argMax of the snapshot views Nullable(Tuple), which ClickHouse
 // rejects; a sum over no rows that differs is caught by the comparison.)
-var chSettings = "SETTINGS join_use_nulls = 1, union_default_mode = 'DISTINCT', output_format_decimal_trailing_zeros = 1"
+var chSettings = "SETTINGS final = 1, join_use_nulls = 1, union_default_mode = 'DISTINCT', output_format_decimal_trailing_zeros = 1"
 
 // pgText turns one ClickHouse TabSeparated value into the PostgreSQL text
 // output of a column of type oid (nil = NULL).

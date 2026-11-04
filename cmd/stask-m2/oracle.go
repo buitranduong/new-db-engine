@@ -74,7 +74,7 @@ type Config struct {
 	GateLog, DiskPath                               string
 	MinFreeGB                                       float64
 	LoadMode, Exec, Iso, RefName                    string
-	Columnar                                        bool
+	Columnar, R2Ranked, R2Equiv, PrintR2            bool
 	Tear                                            int
 	ProbeWorkers                                    int
 	ProbeGap                                        time.Duration

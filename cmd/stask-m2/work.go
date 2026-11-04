@@ -382,14 +382,49 @@ func R2Query(page, mult int, frozenLo string) string {
 	if frozenLo != "" {
 		extra = " AND number >= '" + frozenLo + "'"
 	}
+	if R2Ranked {
+		return r2Ranked(page, mult, extra)
+	}
 	lo := func(q int) string { return fmt.Sprintf("t.rn BETWEEN %d AND %d", (page-1)*q*mult+1, page*q*mult) }
 	return fmt.Sprintf(`SELECT t.number, c.code, st.name, t.price, t.store_rate FROM (
   SELECT number, carrier_id, store_id, price, store_rate,
          row_number() OVER (PARTITION BY carrier_id ORDER BY store_rate DESC, md5(number || '42'), number) AS rn
-  FROM sims WHERE category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000 AND status = 'available' AND carrier_id IN (1,2,3)%s) t
+  FROM sims WHERE %s AND status = 'available' AND carrier_id IN (1,2,3)%s) t
 JOIN carriers c ON c.id = t.carrier_id JOIN stores st ON st.id = t.store_id
 WHERE (t.carrier_id = 1 AND %s) OR (t.carrier_id = 2 AND %s) OR (t.carrier_id = 3 AND %s)
-ORDER BY t.store_rate DESC, md5(t.number || '42'), t.number`, extra, lo(30), lo(50), lo(20))
+ORDER BY t.store_rate DESC, md5(t.number || '42'), t.number`, r2Filter, extra, lo(30), lo(50), lo(20))
+}
+
+// R2Ranked selects the form of R2 for PostgreSQL with the ranked schema
+// (RankedSchema): the same rows in the same order as the window form, but
+// each carrier is one ORDER BY .. LIMIT that walks the partial index, so
+// the cost is the page, not the whole filtered set (docs/14 PGRANK).
+var R2Ranked bool
+
+// r2Filter is the shop filter of R2 (the category and price band the user chose).
+var r2Filter = "category = 'TAM_HOA' AND price BETWEEN 1000000 AND 3000000"
+
+// RankedSchema is the schema change of the ranked form: the tie-break of
+// R2 stored with the row (PostgreSQL keeps it current on every write) and
+// a partial index on the order of R2 among the SIMs for sale.
+var RankedSchema = []string{
+	"ALTER TABLE sims ADD COLUMN rk text GENERATED ALWAYS AS (md5(number || '42')) STORED",
+	"CREATE INDEX sims_r2 ON sims (category, carrier_id, store_rate DESC, rk, number) INCLUDE (price, store_id) WHERE status = 'available'",
+	"ANALYZE sims",
+}
+
+func r2Ranked(page, mult int, extra string) string {
+	branch := func(carrier, q int) string {
+		return fmt.Sprintf(`(SELECT number, carrier_id, store_id, price, store_rate, rk FROM sims
+   WHERE %s AND carrier_id = %d AND status = 'available'%s
+   ORDER BY store_rate DESC, rk, number OFFSET %d LIMIT %d)`, r2Filter, carrier, extra, (page-1)*q*mult, q*mult)
+	}
+	return fmt.Sprintf(`SELECT t.number, c.code, st.name, t.price, t.store_rate FROM (
+  %s
+  UNION ALL %s
+  UNION ALL %s) t
+JOIN carriers c ON c.id = t.carrier_id JOIN stores st ON st.id = t.store_id
+ORDER BY t.store_rate DESC, t.rk, t.number`, branch(1, 30), branch(2, 50), branch(3, 20))
 }
 
 func (r *Run) workerR(ctx context.Context, id int) {

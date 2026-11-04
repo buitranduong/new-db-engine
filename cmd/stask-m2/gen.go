@@ -270,6 +270,15 @@ func Load(ctx context.Context, dsn string, g *Gen, schemaFile, mode string, logf
 		logf("%s in %.1fs", ix, time.Since(t0).Seconds())
 	}
 	c.Exec(ctx, "ANALYZE") // best effort
+	if R2Ranked {
+		for _, s := range RankedSchema {
+			t0 := time.Now()
+			if _, err := c.Exec(ctx, s); err != nil {
+				return fmt.Errorf("ranked schema: %q: %w", s, err)
+			}
+			logf("%s in %.1fs", s, time.Since(t0).Seconds())
+		}
+	}
 	return nil
 }
 

@@ -68,6 +68,9 @@ func parseFlags() *Config {
 	flag.Float64Var(&c.MinFreeGB, "min-free-gb", 3, "")
 	flag.StringVar(&c.LoadMode, "load-mode", "auto", "copy | insert | auto")
 	flag.StringVar(&c.Exec, "exec-mode", "simple", "simple | extended")
+	flag.BoolVar(&c.R2Ranked, "r2-ranked", false, "PostgreSQL with the ranked schema (docs/14 PGRANK): the load adds the stored rank column and the partial index, and R2 runs in its ranked form (same rows, same order)")
+	flag.BoolVar(&c.R2Equiv, "r2-equiv", false, "after the load (or with -skip-load): compare the window and the ranked form of R2 on the SUT for every category, three price bands and pages 1-5, then exit (needs the ranked schema)")
+	flag.BoolVar(&c.PrintR2, "print-r2", false, "print R2 page 1 in the form selected by -r2-ranked and exit (for EXPLAIN)")
 	flag.BoolVar(&c.Columnar, "columnar", false, "create sims WITH (columnar = on) in the SUT (needed for staskd -hybrid)")
 	flag.IntVar(&c.Tear, "tear", 1, "tear-test readers: REPEATABLE READ transactions reading an R2 page and the multi-table invariants at one snapshot")
 	flag.IntVar(&c.ProbeWorkers, "probe-workers", 1, "read-your-writes probe workers (each owns a disjoint share of the probe sims)")
@@ -149,6 +152,11 @@ var cleanup = func() {}
 
 func main() {
 	cfg := parseFlags()
+	if cfg.PrintR2 {
+		R2Ranked = cfg.R2Ranked
+		fmt.Println(R2Query(1, 1, ""))
+		return
+	}
 	if cfg.Exec == "extended" {
 		execMode = pgx.QueryExecModeExec
 	}
@@ -191,6 +199,7 @@ func main() {
 	mach.Load1Max = mach.Load1At0
 
 	ColumnarSims = cfg.Columnar
+	R2Ranked = cfg.R2Ranked
 	// reference
 	if !cfg.NoRef && cfg.RefDocker {
 		port := "28791"
@@ -267,6 +276,15 @@ func main() {
 			cleanup()
 			os.Exit(2)
 		}
+	}
+	if cfg.R2Equiv {
+		if err := r2Equiv(ctx, cfg.SUT); err != nil {
+			logf("R2_EQUIV FAIL: %v", err)
+			cleanup()
+			os.Exit(1)
+		}
+		cleanup()
+		return
 	}
 	if cfg.LoadOnly {
 		return

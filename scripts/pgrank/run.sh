@@ -7,6 +7,8 @@
 # returns the rows of the window form in the same order (every category, three price bands, pages 1-5); (4) the matrix
 # {window, ranked} x {import none, batched} with stask-m2 -skip-load under perf-run.sh, each run on a fresh copy of its snapshot.
 # Env (defaults): N=10000000 DURATION=120 WARMUP=30 CONFIGS="window-none window-batched ranked-none ranked-batched"
+#   IN_PLACE=1: one ranked run on the loaded volume itself, no snapshot copies (for N too large for three copies on disk);
+#   CONFIGS must then be one ranked-* configuration.
 #   HARNESS_FLAGS="-t 4 -p 4 -r 2" OUT=/tmp/pgrank/N-<stamp> KEEP_SNAP=0 SKIP_BUILD=0
 #   PG_CONF: server settings for every run; the default follows "the database owns ~80% of a dedicated machine" on this
 #   31 GB VM. The window and ranked runs use the same settings.
@@ -68,7 +70,7 @@ log "base snapshot: $(vol_mb "$BASE") MB on disk"
 if docker volume inspect "$RANKED" >/dev/null 2>&1 && [ -f "/tmp/pgrank/$RANKED.ok" ]; then
   log "reuse ranked snapshot $RANKED"
 else
-  vol_copy "$BASE" "$RANKED" || exit 2
+  if [ "${IN_PLACE:-0}" = 1 ]; then RANKED=$BASE; else vol_copy "$BASE" "$RANKED" || exit 2; fi
   pg_start "$RANKED" || exit 2
   t0=$(date +%s)
   psqlc <<'EOF' >"$OUT/ranked-schema.log" 2>&1 || { log "ranked schema failed"; cat "$OUT/ranked-schema.log"; pg_stop; exit 2; }
@@ -95,7 +97,7 @@ for cfg in $CONFIGS; do
   snap=$BASE; extra=(); [ "$schema" = ranked ] && { snap=$RANKED; extra=(-r2-ranked); }
   mode=always; [ "$imp" = none ] && mode=never
   log "== $cfg: restore $snap"
-  vol_copy "$snap" "$WORK" || exit 2
+  if [ "${IN_PLACE:-0}" = 1 ]; then WORK=$BASE; else vol_copy "$snap" "$WORK" || exit 2; fi
   pg_start "$WORK" || exit 2
   # the plan of R2 page 1 as this run sees it
   if [ "$schema" = ranked ]; then q=$(cd "$ROOT" && "$BIN" -print-r2 -r2-ranked 2>/dev/null); else q=$(cd "$ROOT" && "$BIN" -print-r2 2>/dev/null); fi

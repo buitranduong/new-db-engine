@@ -153,3 +153,9 @@ Một phiên Claude mới tiếp quản vai điều phối theo `docs/27`; quy t
 - Đóng G1 A0 bằng catalog lịch sử của bộ giải mã CDC (docs/14 CDCHIST). Thay đổi định dạng cộng thêm: `SlotInfo.Catalog` (omitempty) trong `slots/<tên>.json` và trong dòng phản chiếu `slot:<tên>` của `__stask_cdc`. Bản cũ đọc slot mới thì bỏ qua trường này và quay về hành vi cũ (giải mã theo catalog hiện tại).
 - Tạo slot thêm một lần ghi hàng rào vào `__stask_cdc` (khoá `fence`, xoá một khoá không có); không giao cho consumer (bảng hệ thống).
 - ID bảng của engine mới bắt đầu từ 1 (docs/14 ZEROID): 0 là "không có" trong `Replaces`/`RelID`. Không đổi định dạng; log cũ có bảng 0 được phát lại đúng nhờ `truncatedZero`.
+
+## D38: Đợt so sánh có luật dừng; phương án A thắng ở 1M và 10M (2026-11-04)
+
+- Người dùng chỉ đặt đích; các quyết định là của điều phối. Đích: R2 dưới 1–2 s ở 30–50M khi đang nhập, kết quả đúng, đơn hàng không chậm đi. Luật dừng (đặt TRƯỚC khi đo): nếu PostgreSQL một mình (A) hoặc PG + extension cột (B) đạt đích, khuyên dùng phương án đó và dừng đầu tư vào STASK.
+- Kết quả (docs/14 PGRANK, PGRANK 10M): A đạt ở 1M và 10M (R2 p99 9,1 và 11,6 ms khi đang nhập; 0 dòng lệch với câu gốc; mọi oracle giữ); chi phí ghi của index đo được (đặt đơn p50 +13% và +31%, nhập +36% và +42%). STASK hybrid ở 10M kém A ở R2 (p99 235 ms), đặt đơn (p99 479 ms, thông lượng 36/s so với 122/s) và có lỗi hết bộ nhớ ở join.
+- Việc tiếp: xác nhận A ở 30M (`IN_PLACE=1`). Nếu đạt: đóng băng phát triển STASK (chỉ giữ repo); bàn giao A (schema, index, câu R2, cách đo). Khoảng còn hở của A là các join báo cáo (`r_join` p95 khoảng 16 s ở 10M): đó là việc kế tiếp, bằng index, bảng tổng hợp hoặc phương án B, không phải bằng STASK.

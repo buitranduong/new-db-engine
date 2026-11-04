@@ -166,6 +166,9 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.Reset = false
 	}
 	for _, t := range tables {
+		if err := ch.Exec(ctx, "ALTER TABLE "+qc(t.Name)+" ADD "+strings.Replace(lsnIndex, "INDEX", "INDEX IF NOT EXISTS", 1)); err != nil {
+			return fatalf("index on _lsn of %s: %v", t.Name, err)
+		}
 		if err := ch.Exec(ctx, viewDDL(t)); err != nil {
 			return fatalf("snapshot view of %s: %v", t.Name, err)
 		}

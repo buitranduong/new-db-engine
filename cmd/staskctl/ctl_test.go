@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,9 +25,28 @@ func buildStaskd(t *testing.T) string {
 	return bin
 }
 
+// testPort is a free port that no earlier call in this test binary got:
+// freePort closes its listener, so two calls in a row can return the same
+// port (TestEncryptedBackup once ran its replication listener and its HTTP
+// API on one port: "bind: address already in use").
+func testPort(t *testing.T) int {
+	t.Helper()
+	for {
+		p, err := freePort()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, dup := usedPorts.LoadOrStore(p, true); !dup {
+			return p
+		}
+	}
+}
+
+var usedPorts sync.Map
+
 func startNode(t *testing.T, bin, dir string, extra ...string) (httpAddr string, stop func()) {
 	t.Helper()
-	p1, _ := freePort()
+	p1 := testPort(t)
 	httpAddr = fmt.Sprintf("127.0.0.1:%d", p1)
 	args := append([]string{"-dir", dir, "-addr", httpAddr, "-pg-addr", "", "-segment-mb", "8", "-prezero=false", "-gc=false"}, extra...)
 	cmd := exec.Command(bin, args...)
@@ -86,7 +106,7 @@ func TestBackupVerifyRestore(t *testing.T) {
 		t.Skip("process test")
 	}
 	bin := buildStaskd(t)
-	rp, _ := freePort()
+	rp := testPort(t)
 	replAddr := fmt.Sprintf("127.0.0.1:%d", rp)
 	src := t.TempDir()
 	addr, stop := startNode(t, bin, src, "-repl-addr", replAddr)
@@ -168,7 +188,7 @@ func TestBackupLoopMetrics(t *testing.T) {
 		t.Skip("process test")
 	}
 	bin := buildStaskd(t)
-	rp, _ := freePort()
+	rp := testPort(t)
 	replAddr := fmt.Sprintf("127.0.0.1:%d", rp)
 	addr, _ := startNode(t, bin, t.TempDir(), "-repl-addr", replAddr)
 	httpJSON(t, "POST", "http://"+addr+"/v1/tables", `{"name":"t","columns":[{"name":"id","type":"string"}],"key":"id"}`)

@@ -28,14 +28,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// freePort is a free port that no earlier call in this test binary got:
+// the listener is closed on return, so two calls in a row can otherwise
+// return the same port (cmd/staskctl TestEncryptedBackup did).
 func freePort(t *testing.T) int {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		if _, dup := usedPorts.LoadOrStore(p, true); !dup {
+			return p
+		}
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
 }
+
+var usedPorts sync.Map
 
 func TestKillStress(t *testing.T) {
 	bin := os.Getenv("STASKD_BIN")

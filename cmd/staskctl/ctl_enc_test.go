@@ -22,7 +22,7 @@ func TestEncryptedBackup(t *testing.T) {
 		t.Skip("process test")
 	}
 	bin := buildStaskd(t)
-	rp, _ := freePort()
+	rp := testPort(t)
 	replAddr := fmt.Sprintf("127.0.0.1:%d", rp)
 	addr, stop := startNode(t, bin, t.TempDir(), "-repl-addr", replAddr)
 	httpJSON(t, "POST", "http://"+addr+"/v1/tables", `{"name":"t","columns":[{"name":"id","type":"string"},{"name":"v","type":"string"}],"key":"id"}`)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +48,9 @@ type SlotInfo struct {
 	Created int64  `json:"created"`
 	// Invalid is set when the slot fell too far behind and lost its log.
 	Invalid string `json:"invalid,omitempty"`
+	// Catalog: the CDC catalog as of the position (cdchist.go); nil in
+	// slots saved before it existed
+	Catalog *HistCatalog `json:"catalog,omitempty"`
 }
 
 // Pos is the slot's log position.
@@ -173,13 +177,16 @@ func (e *Engine) CreateSlot(name, plugin string) (SlotInfo, error) {
 	if _, ok := e.slots[name]; ok {
 		return SlotInfo{}, ErrSlotExists
 	}
-	lsn, pos := e.pinDurable()
+	lsn, pos, cat, err := e.slotStart()
+	if err != nil {
+		return SlotInfo{}, err
+	}
 	ship, err := e.NewShipper(pos)
 	if err != nil {
 		e.unpin(lsn)
 		return SlotInfo{}, err
 	}
-	info := SlotInfo{Name: name, Plugin: plugin, Seg: pos.Seg, Off: pos.Off, LSN: lsn, Created: time.Now().UnixNano()}
+	info := SlotInfo{Name: name, Plugin: plugin, Seg: pos.Seg, Off: pos.Off, LSN: lsn, Created: time.Now().UnixNano(), Catalog: cat}
 	if err := e.saveSlot(info); err != nil {
 		ship.Close()
 		e.unpin(lsn)
@@ -191,6 +198,65 @@ func (e *Engine) CreateSlot(name, plugin string) (SlotInfo, error) {
 		e.logf("cdc: slot %s not mirrored to the log: %v", name, err)
 	}
 	return info, nil
+}
+
+// slotStart pins the durable point a new slot starts at and takes the
+// catalog as of it; e.slotMu is held, so publications do not change. A
+// table DDL is visible in memory from the moment the committer gives it
+// its LSN, before it is durable, so the catalog may hold one past the
+// point: a fence write (every LSN given before it is durable when it
+// returns) bounds them, and the start is taken again while the log has a
+// DDL between the point and the fence. PostgreSQL similarly waits for
+// running transactions before a new slot's snapshot is consistent.
+func (e *Engine) slotStart() (uint64, wal.Pos, *HistCatalog, error) {
+	if err := e.cdcTable(); err != nil {
+		return 0, wal.Pos{}, nil, err
+	}
+	for try := 0; ; try++ {
+		lsn, pos := e.pinDurable()
+		cat := e.histNow()
+		fence, err := e.Write([]WriteOp{{Table: cdcTableName, Key: "fence"}})
+		if err == nil {
+			var ddl bool
+			if ddl, err = e.ddlBetween(pos, fence); err == nil && !ddl {
+				return lsn, pos, cat, nil
+			}
+		}
+		e.unpin(lsn)
+		if err != nil {
+			return 0, wal.Pos{}, nil, err
+		}
+		if try == 9 {
+			return 0, wal.Pos{}, nil, errors.New("replication slot not created: DDL kept running while its start point was taken; retry")
+		}
+	}
+}
+
+// ddlBetween reports whether the log has a DDL record after pos with an
+// LSN up to lsn.
+func (e *Engine) ddlBetween(pos wal.Pos, lsn uint64) (bool, error) {
+	_, dpos, _ := e.DurablePoint()
+	found := false
+	for seg := pos.Seg; seg <= dpos.Seg && !found; seg++ {
+		off := int64(0)
+		if seg == pos.Seg {
+			off = pos.Off
+		}
+		_, _, err := e.log.Scan(seg, off, -1, func(r *wal.Record) error {
+			if r.LSN > lsn {
+				return io.EOF
+			}
+			if r.Kind == wal.KindDDL {
+				found = true
+				return io.EOF
+			}
+			return nil
+		})
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, err
+		}
+	}
+	return found, nil
 }
 
 // DropSlot removes a slot and releases what it kept. Lock order
@@ -317,9 +383,14 @@ type Change struct {
 	// commit frame: where a consumer that has applied the transaction
 	// confirms to. CommitPos (Begin) is where the commit frame starts.
 	Pos, End, CommitPos wal.Pos
-	Table               *schema.Table
-	Key                 string
-	Row                 schema.Row // Insert, Update: the new row
+	// Table: the table under its name when the change was written
+	// (cdchist.go); Pubs and IdentityFull (row changes and TRUNCATE): the
+	// publications and REPLICA IDENTITY of that time
+	Table        *schema.Table
+	Pubs         []Publication
+	IdentityFull bool
+	Key          string
+	Row          schema.Row // Insert, Update: the new row
 	// OldRow (Update, Delete of a table with REPLICA IDENTITY FULL): the
 	// row before the change; nil if it could not be read (OldUnknown)
 	OldRow schema.Row
@@ -379,6 +450,11 @@ func (e *Engine) SlotChanges(name string, o ChangeOpts, fn func(*Change) error) 
 	}
 	pos := info.Pos()
 	done, doneLSN := pos, info.LSN // after the last whole transaction delivered
+	// the catalog as of pos, followed along the log; doneCat: as of done
+	// when it changed since the slot's (nil: unchanged)
+	h, doneCat := e.slotCatalog(s, info)
+	changed := false
+	cache := map[*schema.Table]*schema.Table{}
 	n := 0
 	var chain []*wal.Record
 	stop := false
@@ -413,7 +489,11 @@ func (e *Engine) SlotChanges(name string, o ChangeOpts, fn func(*Change) error) 
 					chain = append(chain, cloneRecord(r))
 					continue
 				case wal.KindTx:
-					m, err := e.emitTx(append(chain, r), end, fn)
+					frames := append(chain, r)
+					m, err := e.emitTx(frames, end, h, cache, fn)
+					for _, f := range frames {
+						changed = e.histApply(h, f) || changed
+					}
 					chain = nil
 					if errors.Is(err, errStopDecoding) {
 						stop = true
@@ -422,12 +502,16 @@ func (e *Engine) SlotChanges(name string, o ChangeOpts, fn func(*Change) error) 
 					}
 					n += m
 					done, doneLSN = end, r.LSN
+					if changed {
+						doneCat, changed = h.clone(), false
+					}
 					if o.MaxChanges > 0 && n >= o.MaxChanges {
 						stop = true
 					}
 				case wal.KindDDL:
 					// only TRUNCATE is delivered (as in PostgreSQL)
-					m, err := e.emitTruncate(r, end, fn)
+					m, err := e.emitTruncate(r, end, h, cache, fn)
+					changed = e.histApply(h, r) || changed
 					if errors.Is(err, errStopDecoding) {
 						stop = true
 					} else if err != nil {
@@ -435,6 +519,9 @@ func (e *Engine) SlotChanges(name string, o ChangeOpts, fn func(*Change) error) 
 					}
 					n += m
 					done, doneLSN = end, r.LSN
+					if changed {
+						doneCat, changed = h.clone(), false
+					}
 				default: // Move: nothing to deliver
 					if len(chain) == 0 {
 						done, doneLSN = end, r.LSN
@@ -449,7 +536,7 @@ func (e *Engine) SlotChanges(name string, o ChangeOpts, fn func(*Change) error) 
 		return n, err
 	}
 	if o.Consume && done != info.Pos() {
-		if err := e.advanceSlot(s, done, doneLSN); err != nil {
+		if err := e.advanceSlot(s, done, doneLSN, doneCat); err != nil {
 			return n, err
 		}
 	}
@@ -470,6 +557,8 @@ func (e *Engine) ConfirmSlot(name string, upto wal.Pos) (wal.Pos, error) {
 	if !ok {
 		return wal.Pos{}, ErrNoSlot
 	}
+	h, doneCat := e.slotCatalog(s, info)
+	changed := false
 	if info.Invalid != "" {
 		return wal.Pos{}, fmt.Errorf("%w: %s", ErrSlotInvalid, info.Invalid)
 	}
@@ -495,7 +584,11 @@ func (e *Engine) ConfirmSlot(name string, upto wal.Pos) (wal.Pos, error) {
 				inChain = true
 			case r.Kind == wal.KindTx || !inChain:
 				inChain = false
+				changed = e.histApply(h, r) || changed
 				done, doneLSN = wal.Pos{Seg: seg, Off: r.Pos.Off + int64(r.Size)}, r.LSN
+				if changed {
+					doneCat, changed = h.clone(), false
+				}
 			}
 			return nil
 		})
@@ -506,16 +599,30 @@ func (e *Engine) ConfirmSlot(name string, upto wal.Pos) (wal.Pos, error) {
 	if done == info.Pos() {
 		return done, nil
 	}
-	return done, e.advanceSlot(s, done, doneLSN)
+	return done, e.advanceSlot(s, done, doneLSN, doneCat)
 }
 
 // ErrStopDecoding, returned by a SlotChanges callback at a Commit, ends
 // decoding after that transaction (it still counts as delivered).
 var ErrStopDecoding = errStopDecoding
 
-// advanceSlot persists the slot at pos and moves its pins there (never
-// backwards).
-func (e *Engine) advanceSlot(s *slot, pos wal.Pos, lsn uint64) error {
+// slotCatalog is a copy of the catalog as of the slot's position, and what
+// to save with the slot's next position if nothing changes before it: nil
+// when the slot has its catalog, else the catalog now (a slot saved before
+// catalogs were kept starts from it).
+func (e *Engine) slotCatalog(s *slot, info SlotInfo) (h, save *HistCatalog) {
+	if info.Catalog != nil {
+		return info.Catalog.clone(), nil
+	}
+	e.slotMu.Lock()
+	h = e.histNow()
+	e.slotMu.Unlock()
+	return h, h.clone()
+}
+
+// advanceSlot persists the slot at pos, with the catalog as of pos when
+// it changed (cat), and moves its pins there (never backwards).
+func (e *Engine) advanceSlot(s *slot, pos wal.Pos, lsn uint64, cat *HistCatalog) error {
 	s.adv.Lock()
 	defer s.adv.Unlock()
 	e.slotMu.Lock()
@@ -528,6 +635,9 @@ func (e *Engine) advanceSlot(s *slot, pos wal.Pos, lsn uint64) error {
 		return nil
 	}
 	info.Seg, info.Off, info.LSN = pos.Seg, pos.Off, lsn
+	if cat != nil {
+		info.Catalog = cat
+	}
 	if err := e.saveSlot(info); err != nil {
 		return err
 	}
@@ -561,7 +671,7 @@ func (e *Engine) advanceSlot(s *slot, pos wal.Pos, lsn uint64) error {
 }
 
 // emitTx delivers one transaction (its frames, the last one KindTx).
-func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) error) (int, error) {
+func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, h *HistCatalog, cache map[*schema.Table]*schema.Table, fn func(*Change) error) (int, error) {
 	last := frames[len(frames)-1]
 	// transactions of system tables only (sequences) are not delivered
 	user := false
@@ -601,7 +711,8 @@ func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) erro
 			if t.Schema().System {
 				continue
 			}
-			c := &Change{LSN: last.LSN, TS: last.TS, Pos: r.Pos, Table: t.Schema(), Key: string(op.Key)}
+			c := &Change{LSN: last.LSN, TS: last.TS, Pos: r.Pos, Table: h.named(t.Schema(), cache), Key: string(op.Key),
+				Pubs: h.publications(), IdentityFull: h.identityFull(t.Schema())}
 			live, known := true, true
 			tk := txKey{op.Table, string(op.Key)}
 			earlier, inTx := seen[tk]
@@ -614,7 +725,7 @@ func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) erro
 				live = false
 			}
 			c.OldUnknown = !known
-			if live && known && e.ReplicaIdentityFull(t.Schema().Name) {
+			if live && known && c.IdentityFull {
 				if inTx {
 					c.OldRow = earlier.row
 				} else {
@@ -654,7 +765,7 @@ func (e *Engine) emitTx(frames []*wal.Record, end wal.Pos, fn func(*Change) erro
 
 // emitTruncate delivers a TRUNCATE (a DDL record of a table replacing
 // another) as a transaction of one change on the replaced table.
-func (e *Engine) emitTruncate(r *wal.Record, end wal.Pos, fn func(*Change) error) (int, error) {
+func (e *Engine) emitTruncate(r *wal.Record, end wal.Pos, h *HistCatalog, cache map[*schema.Table]*schema.Table, fn func(*Change) error) (int, error) {
 	var t schema.Table
 	if err := json.Unmarshal(r.DDL, &t); err != nil {
 		return 0, err
@@ -669,7 +780,8 @@ func (e *Engine) emitTruncate(r *wal.Record, end wal.Pos, fn func(*Change) error
 	if err := fn(&Change{Kind: ChangeBegin, LSN: r.LSN, TS: r.TS, Pos: r.Pos, End: end, CommitPos: r.Pos}); err != nil {
 		return 0, err
 	}
-	if err := fn(&Change{Kind: ChangeTruncate, LSN: r.LSN, TS: r.TS, Pos: r.Pos, Table: old.Schema()}); err != nil {
+	if err := fn(&Change{Kind: ChangeTruncate, LSN: r.LSN, TS: r.TS, Pos: r.Pos, Table: h.named(old.Schema(), cache),
+		Pubs: h.publications(), IdentityFull: h.identityFull(old.Schema())}); err != nil {
 		return 0, err
 	}
 	return 1, fn(&Change{Kind: ChangeCommit, LSN: r.LSN, TS: r.TS, Pos: r.Pos, End: end})

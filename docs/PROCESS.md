@@ -141,3 +141,9 @@ D35 THAY THẾ cách đọc nhiều tiêu chí rời rạc: bảy tiêu chí D34
 - Ngân sách thời gian cho G1-G3 nằm trong ~300 giờ kiểm nghiệm; gợi ý chia G1 ~100 giờ, G2 ~100 giờ, G3 ~100 giờ (người dùng có thể đổi). Hết ngân sách của một cổng mà chưa đạt: báo người dùng quyết định, không tự kéo dài.
 - Mỗi lần có kết quả cuối của một cổng mới cho phép điều chỉnh thiết kế (D34); trong lúc chưa có thì không đổi hướng.
 
+
+## D37 — Catalog lịch sử cho CDC, ID bảng bắt đầu từ 1 (2026-11-04)
+
+- Đóng G1 A0 bằng catalog lịch sử của bộ giải mã CDC (docs/14 CDCHIST). Thay đổi định dạng cộng thêm: `SlotInfo.Catalog` (omitempty) trong `slots/<tên>.json` và trong dòng phản chiếu `slot:<tên>` của `__stask_cdc`. Bản cũ đọc slot mới thì bỏ qua trường này và quay về hành vi cũ (giải mã theo catalog hiện tại).
+- Tạo slot thêm một lần ghi hàng rào vào `__stask_cdc` (khoá `fence`, xoá một khoá không có); không giao cho consumer (bảng hệ thống).
+- ID bảng của engine mới bắt đầu từ 1 (docs/14 ZEROID): 0 là "không có" trong `Replaces`/`RelID`. Không đổi định dạng; log cũ có bảng 0 được phát lại đúng nhờ `truncatedZero`.

@@ -1551,6 +1551,14 @@ func (e *Engine) DropTable(name string) error {
 // taken before keep reading the old rows. Writes to the table placed
 // after the truncate but prepared before it fail with ErrConflict, so an
 // autocommit statement is retried on the new table.
+// firstTableID is the ID of the first table of a new engine. Zero means
+// "none" in Replaces and RelID (omitempty in the DDL record), so a table
+// with ID 0 could not be truncated: the record of its TRUNCATE read as a
+// CREATE, and after a restart the truncated table was back next to the
+// new one (docs/14 ZEROID). PostgreSQL likewise never gives a relation
+// OID 0 (InvalidOid). A variable for the test of logs written before.
+var firstTableID uint32 = 1
+
 func (e *Engine) TruncateTable(name string) error {
 	t, err := e.Table(name)
 	if err != nil {
@@ -1648,7 +1656,7 @@ func (e *Engine) committer() {
 	open, syncing := newCommitBatch(0), (*commitBatch)(nil)
 	var inflight []*commitBatch // handed off and not yet installed, oldest first
 	var recent []*commitBatch   // last installed batches, oldest first
-	ddlNext := uint32(0)
+	ddlNext := firstTableID
 	expect := 0 // requests expected for the next batch: queued + just answered
 	// Adaptive wait for clients answered by the previous sync: they are
 	// typically one network round trip from committing again, and joining

@@ -11,6 +11,8 @@ func TestTranslate(t *testing.T) {
 			"SELECT count(o.id) AS orders FROM orders_at(w = 7) o JOIN order_items_at(w = 7) i ON i.order_id = o.id"},
 		{"SELECT sims.number FROM sims ORDER BY md5(number || '42')",
 			"SELECT sims.number FROM sims_at(w = 7) AS sims ORDER BY lower(hex(MD5(number || '42')))"},
+		{"SELECT count(*) FROM orders WHERE created_at >= timestamptz '2026-10-01 00:00:00+00'",
+			"SELECT count(*) FROM orders_at(w = 7) AS orders WHERE created_at >= parseDateTime64BestEffort('2026-10-01 00:00:00+00', 6, 'UTC')"},
 		{"SELECT 'sims' FROM sims WHERE number LIKE '09%'", "SELECT 'sims' FROM sims_at(w = 7) AS sims WHERE number LIKE '09%'"},
 	} {
 		got, err := Translate(c.in, tables, 7)

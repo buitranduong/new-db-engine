@@ -8,7 +8,7 @@ import (
 
 // token kinds of the small lexer used for shapes and translation
 const (
-	tWord = iota
+	tWord   = iota
 	tQuoted // "identifier"
 	tString // 'literal' (also E'..')
 	tNumber
@@ -163,6 +163,13 @@ var notAlias = map[string]bool{"where": true, "join": true, "inner": true, "left
 	"on": true, "using": true, "group": true, "order": true, "limit": true, "offset": true, "having": true, "window": true,
 	"union": true, "intersect": true, "except": true, "natural": true, "fetch": true, "for": true, "lateral": true}
 
+// typedLiteral maps PostgreSQL typed literals (type 'text') to ClickHouse.
+var typedLiteral = map[string]string{
+	"timestamptz": "parseDateTime64BestEffort(%s, 6, 'UTC')",
+	"timestamp":   "parseDateTime64BestEffort(%s, 6)",
+	"date":        "toDate32(%s)",
+}
+
 // Translate rewrites a PostgreSQL SELECT for ClickHouse: every synced table
 // becomes its snapshot view at w (keeping the name as alias), and the
 // PostgreSQL functions with another spelling are mapped. It returns an
@@ -195,6 +202,10 @@ func Translate(sql string, tables map[string]bool, w uint64) (string, error) {
 			}
 			b.WriteString(inner + "))")
 			i = end
+		case t.kind == tWord && typedLiteral[strings.ToLower(t.s)] != "" && next.kind == tString && next.s[0] == '\'':
+			// timestamptz '2026-10-01 00:00:00+00' and the like
+			b.WriteString(fmt.Sprintf(typedLiteral[strings.ToLower(t.s)], next.s))
+			i = skipTo(toks, i+1, next.s)
 		case t.kind == tQuoted:
 			b.WriteString("`" + strings.ReplaceAll(t.s[1:len(t.s)-1], `""`, `"`) + "`")
 		case t.kind == tString && (t.s[0] == 'E' || t.s[0] == 'e'):

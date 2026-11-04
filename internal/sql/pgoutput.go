@@ -103,9 +103,10 @@ func parseBool(s string) (bool, bool) {
 	return false, false
 }
 
-// published reports whether the publications send this change.
+// published reports whether the publications send this change: those of
+// the time it was written (core.Change.Pubs), not of decode time.
 func (o *PgOutput) published(c *core.Change) bool {
-	for _, p := range o.e.Publications() {
+	for _, p := range c.Pubs {
 		if !slices.Contains(o.pubs, p.Name) || !p.Has(c.Table.Name) {
 			continue
 		}
@@ -168,7 +169,7 @@ func (o *PgOutput) Encode(c *core.Change, emit func(at uint64, msg []byte) error
 	oid := relOIDBase + t.OID()
 	// a Relation message before the first change of a table, and again
 	// when its replica identity or its schema (ALTER TABLE) changed
-	if rs := (relSent{o.identity(t), t}); o.sent[t.ID] != rs {
+	if rs := (relSent{identity(c), t}); o.sent[t.ID] != rs {
 		if err := emit(at, o.relation(t, rs.ident)); err != nil {
 			return err
 		}
@@ -209,8 +210,10 @@ func (o *PgOutput) Encode(c *core.Change, emit func(at uint64, msg []byte) error
 	return emit(at, b)
 }
 
-func (o *PgOutput) identity(t *schema.Table) byte {
-	if o.e.ReplicaIdentityFull(t.Name) {
+// identity is the REPLICA IDENTITY of the change's table when it was
+// written.
+func identity(c *core.Change) byte {
+	if c.IdentityFull {
 		return 'f'
 	}
 	return 'd'

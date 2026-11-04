@@ -147,3 +147,9 @@ D35 THAY THẾ cách đọc nhiều tiêu chí rời rạc: bảy tiêu chí D34
 Một phiên Claude mới tiếp quản vai điều phối theo `docs/27`; quy tắc và hàng việc giữ nguyên. Lúc tiếp quản, `main` f8b0acd chưa đẩy (đi trước `origin` 10 commit) và gate `int22` đỏ. Quyết định:
 - Không đẩy `main` khi gate đỏ. Sửa lỗi gốc trước (nhánh `rofirst`, docs/14), rồi chạy MỘT gate `RACE=1` trên nhánh tích hợp, đẩy, xem CI.
 - Bỏ phần dở của worktree `sharded-locks`: (a) chưa commit, không có dòng docs/14 hay số đo; (b) viết trên bản `locks.go` cũ nên **xoá mất bản sửa 40P01 giả** (`wkey`/`wmode`, commit a4ab7c6) và span; (c) H6 đã đo nút thắt còn lại là cửa sổ commit của lô (52-100 ms), không phải mutex bảng khoá sau khi `releaseAll` thành O(n); tối ưu theo suy đoán trái D35. Bản vá lưu ngoài repo ở `~/wt-archive/sharded-locks.patch` để tham khảo.
+
+## D37 — Catalog lịch sử cho CDC, ID bảng bắt đầu từ 1 (2026-11-04)
+
+- Đóng G1 A0 bằng catalog lịch sử của bộ giải mã CDC (docs/14 CDCHIST). Thay đổi định dạng cộng thêm: `SlotInfo.Catalog` (omitempty) trong `slots/<tên>.json` và trong dòng phản chiếu `slot:<tên>` của `__stask_cdc`. Bản cũ đọc slot mới thì bỏ qua trường này và quay về hành vi cũ (giải mã theo catalog hiện tại).
+- Tạo slot thêm một lần ghi hàng rào vào `__stask_cdc` (khoá `fence`, xoá một khoá không có); không giao cho consumer (bảng hệ thống).
+- ID bảng của engine mới bắt đầu từ 1 (docs/14 ZEROID): 0 là "không có" trong `Replaces`/`RelID`. Không đổi định dạng; log cũ có bảng 0 được phát lại đúng nhờ `truncatedZero`.

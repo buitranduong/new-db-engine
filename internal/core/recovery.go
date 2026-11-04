@@ -233,6 +233,22 @@ func (e *Engine) segmentEmpty(seg uint32) bool {
 	return empty
 }
 
+// truncatedZero is the table of ID 0 that the DDL record of a new table t
+// truncates, in a log written before table IDs started at 1
+// (firstTableID): the record names no replaced table, but a table cannot
+// be created with the name of a live one, so a new table with the name of
+// the live table 0 can only be its TRUNCATE.
+func (e *Engine) truncatedZero(t *schema.Table) *TableState {
+	if t.ID == 0 || t.System {
+		return nil
+	}
+	old, err := e.Table(t.Name)
+	if err != nil || old.Schema().ID != 0 || old.Schema().System {
+		return nil
+	}
+	return old
+}
+
 func (e *Engine) replay(r *wal.Record) error {
 	if r.Kind == wal.KindDDL {
 		var t schema.Table
@@ -252,10 +268,12 @@ func (e *Engine) replay(r *wal.Record) error {
 				}
 			}
 		} else {
-			if t.Replaces != 0 { // TRUNCATE
-				if old := e.TableByID(t.Replaces); old != nil && old.droppedLSN.Load() == 0 {
-					e.dropTable(old, r.LSN)
-				}
+			old := e.TableByID(t.Replaces) // TRUNCATE
+			if t.Replaces == 0 {
+				old = e.truncatedZero(&t)
+			}
+			if old != nil && old.droppedLSN.Load() == 0 {
+				e.dropTable(old, r.LSN)
 			}
 			if _, err := e.addTable(&t); err != nil {
 				return err

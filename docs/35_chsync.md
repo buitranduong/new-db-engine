@@ -26,3 +26,13 @@ Mục đích: PostgreSQL giữ giao dịch và là nguồn ghi; ClickHouse phụ
 ## 4. Tiêu chí mốc 1 (D39)
 
 30M, tải của docs/14 PGRANK: báo cáo join < 1–2 s, R2 < 1 s, ClickHouse nhỏ hơn PostgreSQL ít nhất 50%, 0 dòng lệch, 0 lần lộ nửa giao dịch (oracle tear của harness), trễ đồng bộ < vài giây.
+
+## 5. Một điểm kết nối duy nhất (cổng định tuyến)
+
+Người dùng (2026-11-04): "thay vì kết nối đến PG hay CH thì chỉ cần kết nối đến engine phân tải, phân route, phân luồng cho đúng với vai trò". Ứng dụng nối tới MỘT địa chỉ nói giao thức PostgreSQL; không đổi code ứng dụng.
+
+- Trong giao dịch tường minh, mọi câu ghi, và mọi câu sau một lần ghi của phiên cho tới khi ClickHouse có `W` >= LSN commit đó: PostgreSQL (phiên gắn với một kết nối PG).
+- Câu chỉ đọc mà bộ dịch hiểu chắc (R2, tìm số, tổng hợp, báo cáo join): ClickHouse với `W` của lúc bắt đầu câu; mọi bảng trong câu cùng một `W`.
+- Câu nào bộ dịch không chắc: PostgreSQL. Sai thì không bao giờ; chậm thì có thể. Mỗi lần chuyển về đều được đếm và ghi lý do, để mở rộng bộ dịch theo số liệu.
+- Dùng lại: máy chủ giao thức (`internal/pgwire`) và parser (`internal/sql`) của STASK để phân loại và dịch; chuyển tiếp nguyên gói tin tới PostgreSQL.
+- Thứ tự làm: `chsync` (dữ liệu đúng bên ClickHouse) trước, rồi cổng định tuyến, rồi đo mốc 1 qua cổng.

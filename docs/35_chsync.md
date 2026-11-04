@@ -36,3 +36,11 @@ Người dùng (2026-11-04): "thay vì kết nối đến PG hay CH thì chỉ c
 - Câu nào bộ dịch không chắc: PostgreSQL. Sai thì không bao giờ; chậm thì có thể. Mỗi lần chuyển về đều được đếm và ghi lý do, để mở rộng bộ dịch theo số liệu.
 - Dùng lại: máy chủ giao thức (`internal/pgwire`) và parser (`internal/sql`) của STASK để phân loại và dịch; chuyển tiếp nguyên gói tin tới PostgreSQL.
 - Thứ tự làm: `chsync` (dữ liệu đúng bên ClickHouse) trước, rồi cổng định tuyến, rồi đo mốc 1 qua cổng.
+
+## 6. Luật định tuyến (thứ tự áp dụng)
+
+Đo (100k, 2026-11-04): xem chi tiết một dòng theo khoá: PostgreSQL 0,2 ms; ClickHouse qua `sims_at(w)` 15–17 ms (điều kiện khoá đẩy vào view, đọc 6/20 khối). ClickHouse đọc theo khối cột nên tra một dòng đủ cột chậm hơn khoảng 50–80 lần; quét và tổng hợp thì ngược lại.
+
+1. **Đúng đắn**: trong giao dịch, câu ghi, và câu đọc của một phiên còn có LSN commit > W: PostgreSQL.
+2. **Chi phí do chính PostgreSQL ước lượng**: `EXPLAIN` (không chạy) cho chi phí và số dòng ước lượng; dưới ngưỡng (tra theo khoá hoặc index, ít dòng: chi tiết một SIM, một đơn): PostgreSQL; trên ngưỡng (quét, tổng hợp, sắp xếp lớn, join báo cáo, R2, tìm theo mẫu): ClickHouse. Quyết định nhớ theo dạng câu đã bỏ tham số. Ngưỡng chỉnh theo đo, không đoán.
+3. **Không chắc thì PostgreSQL**: câu bộ dịch không dịch chắc sang ClickHouse chạy ở PostgreSQL; đếm và ghi lý do.

@@ -218,6 +218,12 @@ func keyString(k any) (string, error) {
 }
 
 func (s *Server) toOps(req *writeReq) ([]core.WriteOp, error) {
+	// a follower refuses before decoding rows by its own schemas: it may not
+	// know the table yet (a lagging or refilling member), and 404 would read
+	// as a final failure instead of "try the leader" (core.Engine.Write)
+	if s.P.E.ReadOnly() {
+		return nil, core.ErrReadOnly
+	}
 	ops := make([]core.WriteOp, 0, len(req.Ops))
 	for _, o := range req.Ops {
 		t, err := s.P.E.UserTable(o.Table)

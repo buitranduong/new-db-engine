@@ -141,3 +141,9 @@ D35 THAY THẾ cách đọc nhiều tiêu chí rời rạc: bảy tiêu chí D34
 - Ngân sách thời gian cho G1-G3 nằm trong ~300 giờ kiểm nghiệm; gợi ý chia G1 ~100 giờ, G2 ~100 giờ, G3 ~100 giờ (người dùng có thể đổi). Hết ngân sách của một cổng mà chưa đạt: báo người dùng quyết định, không tự kéo dài.
 - Mỗi lần có kết quả cuối của một cổng mới cho phép điều chỉnh thiết kế (D34); trong lúc chưa có thì không đổi hướng.
 
+
+## D36 — Tiếp quản điều phối (2026-11-04)
+
+Một phiên Claude mới tiếp quản vai điều phối theo `docs/27`; quy tắc và hàng việc giữ nguyên. Lúc tiếp quản, `main` f8b0acd chưa đẩy (đi trước `origin` 10 commit) và gate `int22` đỏ. Quyết định:
+- Không đẩy `main` khi gate đỏ. Sửa lỗi gốc trước (nhánh `rofirst`, docs/14), rồi chạy MỘT gate `RACE=1` trên nhánh tích hợp, đẩy, xem CI.
+- Bỏ phần dở của worktree `sharded-locks`: (a) chưa commit, không có dòng docs/14 hay số đo; (b) viết trên bản `locks.go` cũ nên **xoá mất bản sửa 40P01 giả** (`wkey`/`wmode`, commit a4ab7c6) và span; (c) H6 đã đo nút thắt còn lại là cửa sổ commit của lô (52-100 ms), không phải mutex bảng khoá sau khi `releaseAll` thành O(n); tối ưu theo suy đoán trái D35. Bản vá lưu ngoài repo ở `~/wt-archive/sharded-locks.patch` để tham khảo.

@@ -323,3 +323,18 @@ func TestSameKeyProperty(t *testing.T) {
 		})
 	}
 }
+
+// A replica that does not know a table yet (it lags, or a member refills an
+// empty directory) refuses a write to it as read-only, so clients and the
+// router try the leader, and not as "no such table" (cluster TestClusterHistoryStore).
+func TestReplicaWriteUnknownTableIsReadOnly(t *testing.T) {
+	r, err := Open(Options{Dir: t.TempDir(), SegmentSize: 1 << 20, Replica: true, NoCheckpoint: true, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	_, err = r.Write([]WriteOp{{Table: "missing", Row: schema.Row{{S: "a"}}}})
+	if !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("write to an unknown table on a replica: %v, want ErrReadOnly", err)
+	}
+}

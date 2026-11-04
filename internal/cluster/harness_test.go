@@ -513,7 +513,7 @@ func (c *tcluster) writeTo(i int, key string, v int) outcome {
 		return unknown
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	b, _ := io.ReadAll(resp.Body)
 	switch {
 	case resp.StatusCode == 200:
 		return acked
@@ -522,6 +522,7 @@ func (c *tcluster) writeTo(i int, key string, v int) outcome {
 	case resp.StatusCode == 503:
 		return unknown
 	}
+	c.t.Logf("write %s=%d on node %d rejected: %d %s", key, v, c.snap()[i].id, resp.StatusCode, bytes.TrimSpace(b))
 	return rejected
 }
 

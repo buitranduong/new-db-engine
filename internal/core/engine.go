@@ -1473,6 +1473,13 @@ func (e *Engine) submit(r *commitReq) error {
 // Write commits ops atomically as one autocommit transaction (no
 // snapshot check: last writer wins, except IfAbsent ops). Returns the LSN.
 func (e *Engine) Write(ops []WriteOp) (uint64, error) {
+	// a replica or follower refuses before looking at its own catalog: it may
+	// lag (or be a member refilling an empty directory) and not know the
+	// table yet, and "no such table" would tell the client the write failed
+	// for good instead of "try the leader" (submit checks again)
+	if e.ro.Load() {
+		return 0, ErrReadOnly
+	}
 	p, err := e.toPending(ops)
 	if err != nil {
 		return 0, err

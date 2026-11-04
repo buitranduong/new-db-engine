@@ -126,6 +126,10 @@ func TestClusterHistoryStore(t *testing.T) {
 	c.start(c.nodes[vi])
 	for i := 71; i <= 80; i++ {
 		if o := c.write("a", i, 30*time.Second); o != acked {
+			for _, nd := range c.nodes {
+				st, ok := c.status(nd)
+				t.Logf("node %d (wiped=%v): %+v ok=%v", nd.id, nd == c.nodes[vi], st, ok)
+			}
 			t.Fatalf("write %d: %v", i, o)
 		}
 	}

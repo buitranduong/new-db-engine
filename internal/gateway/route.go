@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -23,7 +24,7 @@ import (
 // state of a query shape (docs/35 section 6)
 const (
 	shapeNew       = iota
-	shapeVerifying // cost says ClickHouse; answered by PostgreSQL while results are compared
+	shapeVerifying // cost says ClickHouse; answered by ClickHouse while comparisons run in the background
 	shapeCH        // every comparison identical: answered by ClickHouse
 	shapePG        // cheap, untranslatable, or once different: PostgreSQL for good
 )
@@ -51,10 +52,7 @@ type shape struct {
 type Router struct {
 	cfg    Config
 	ch     *chsync.CH
-	shapes sync.Map      // shape text -> *shape
-	gate   chsync.Gate   // held for writing by chsync while it applies a batch
-	pin    atomic.Uint64 // chsync stops before the first transaction after it (comparisons)
-	pinMu  sync.Mutex    // one pinned comparison at a time
+	shapes sync.Map // shape text -> *shape
 	sync   chsync.Stats
 	verify chan *pgconn.PgConn
 	Stats  Stats
@@ -74,7 +72,7 @@ func (r *Router) shapeOf(s string) *shape {
 func (r *Router) runSync(ctx context.Context) {
 	cfg := chsync.Config{SourceURL: r.cfg.PGURL, CHURL: r.cfg.CHURL, Tables: r.cfg.Tables, Slot: r.cfg.Slot, Reset: r.cfg.Reset,
 		Layout: r.cfg.Layout, Partitions: r.cfg.Partitions, DeltaRows: r.cfg.DeltaRows, CopyStreams: r.cfg.CopyStreams,
-		Gate: &r.gate, Pin: &r.pin, Stats: &r.sync, Logf: func(f string, a ...any) { r.cfg.Logf("chsync: "+f, a...) }}
+		Stats: &r.sync, Logf: func(f string, a ...any) { r.cfg.Logf("chsync: "+f, a...) }}
 	liveSync.Store(&r.sync)
 	for backoff := time.Second; ctx.Err() == nil; {
 		err := chsync.Run(ctx, cfg)
@@ -158,6 +156,11 @@ func (r *Router) classify(ctx context.Context, sess *session, sh *shape, sql str
 		sh.state, sh.reason = shapePG, fmt.Sprintf("cheap on PostgreSQL (cost %.0f)", sh.cost)
 		return
 	}
+	// ClickHouse answers from now on, described as PostgreSQL describes it
+	if sh.fields, err = sess.backendDescribe(sql); err != nil {
+		sh.state, sh.reason = shapePG, fmt.Sprintf("describe: %v", err)
+		return
+	}
 	sh.state, sh.reason = shapeVerifying, fmt.Sprintf("cost %.0f", sh.cost)
 }
 
@@ -167,8 +170,7 @@ func (r *Router) classify(ctx context.Context, sess *session, sh *shape, sql str
 const maxChecks = 2
 
 // startVerify compares one execution in the background: PostgreSQL in a
-// REPEATABLE READ snapshot at LSN L, ClickHouse with exactly the
-// transactions committed up to L applied (chsync pinned at L).
+// REPEATABLE READ snapshot at LSN L, ClickHouse read as of L.
 func (r *Router) startVerify(sh *shape, sql string) {
 	sh.mu.Lock()
 	if sh.checking >= maxChecks {
@@ -216,8 +218,7 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	defer func() { r.verify <- c }()
 	defer func() { c.Exec(context.Background(), "ROLLBACK").ReadAll() }()
 	// The snapshot is taken by the first statement, which also reads L; the
-	// query itself runs on that snapshot after ClickHouse answered, so chsync
-	// is held only for the ClickHouse query.
+	// query itself runs on that snapshot after ClickHouse answered.
 	res, err := c.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_current_wal_lsn()::text").ReadAll()
 	if err != nil || len(res) < 2 {
 		return false, "retry: PostgreSQL snapshot: " + clip(fmt.Sprint(err)) // PostgreSQL could not answer: no verdict on ClickHouse
@@ -273,25 +274,14 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	return true, ""
 }
 
-// chAt runs sql on ClickHouse holding exactly the transactions committed up
-// to lsn: chsync is pinned at lsn, applies what comes before it and stops;
-// "retry: .." when that state cannot be had (chsync was already past lsn).
+// chAt runs sql on ClickHouse as of lsn: every transaction committed up to
+// it, none after (chsync keeps applying meanwhile); "retry: .." when that
+// state cannot be had.
 func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgproto3.FieldDescription) ([][][]byte, string) {
-	r.pinMu.Lock()
-	defer r.pinMu.Unlock()
-	r.pin.Store(lsn)
-	defer r.pin.Store(0)
-	for end := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
-		if r.sync.Applied.Load() > lsn || time.Now().After(end) {
-			return nil, "retry: chsync already past the snapshot"
-		}
-		if r.sync.W.Load() >= lsn || r.sync.Held.Load() > lsn {
-			break
-		}
+	if !r.waitW(lsn, 30*time.Second) {
+		return nil, "retry: chsync did not reach the snapshot"
 	}
-	rows, err := r.runCH(ctx, sql, fields, func() bool {
-		return r.sync.Applied.Load() <= lsn && (r.sync.W.Load() >= lsn || r.sync.Held.Load() > lsn)
-	})
+	rows, err := r.runCH(ctx, sql, fields, lsn, prioCheck)
 	if err == errMoved {
 		return nil, "retry: ClickHouse moved past the snapshot"
 	}
@@ -303,20 +293,38 @@ func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgpr
 
 var errMoved = errors.New("ClickHouse moved past the snapshot")
 
-// runCH answers sql from ClickHouse while holding the gate for reading:
-// no batch is half applied while it runs. ok, if given, must still hold
-// once the gate is held (else errMoved).
-func (r *Router) runCH(ctx context.Context, sql string, fields []pgproto3.FieldDescription, ok func() bool) ([][][]byte, error) {
+// ClickHouse priorities (the setting priority: while a query runs, the
+// threads of queries of a higher number pause): pages first, then
+// reports, then the comparisons, which nobody waits for.
+const (
+	prioPage   = 1
+	prioReport = 2
+	prioCheck  = 3
+)
+
+var pageEnd = regexp.MustCompile(`(?is)\blimit\s+[^\s;()]+(\s+offset\s+[^\s;()]+)?\s*;?\s*$`)
+
+// priorityOf: a query that ends in LIMIT is a page someone waits for.
+func priorityOf(sql string) int {
+	if pageEnd.MatchString(sql) {
+		return prioPage
+	}
+	return prioReport
+}
+
+// runCH answers sql from ClickHouse as of at (an LSN every transaction up
+// to which is applied): whole transactions, whatever chsync applies
+// meanwhile (errMoved if consolidation already went past at).
+func (r *Router) runCH(ctx context.Context, sql string, fields []pgproto3.FieldDescription, at uint64, prio int) ([][][]byte, error) {
 	q, err := Translate(sql)
 	if err != nil {
 		return nil, err
 	}
-	r.gate.RLock()
-	defer r.gate.RUnlock()
-	if ok != nil && !ok() {
+	if !r.sync.Readers.Acquire(at) {
 		return nil, errMoved
 	}
-	rc, err := r.ch.Stream(ctx, q+" "+chSettings+" FORMAT TabSeparated")
+	defer r.sync.Readers.Release(at)
+	rc, err := r.ch.Stream(ctx, fmt.Sprintf("%s %s, %s, priority = %d FORMAT TabSeparated", q, chSettings, chsync.At(at), prio))
 	if err != nil {
 		return nil, err
 	}

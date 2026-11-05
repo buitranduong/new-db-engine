@@ -29,9 +29,12 @@ var chSettings = url.Values{
 	"async_insert":           {"0"},
 }
 
-func (c *CH) do(ctx context.Context, query string, body io.Reader) (io.ReadCloser, error) {
+func (c *CH) do(ctx context.Context, query string, body io.Reader, set url.Values) (io.ReadCloser, error) {
 	v := url.Values{}
 	for k, s := range chSettings {
+		v[k] = s
+	}
+	for k, s := range set {
 		v[k] = s
 	}
 	if body != nil {
@@ -56,8 +59,11 @@ func (c *CH) do(ctx context.Context, query string, body io.Reader) (io.ReadClose
 }
 
 // Exec runs one statement and discards its output.
-func (c *CH) Exec(ctx context.Context, sql string) error {
-	rc, err := c.do(ctx, sql, nil)
+func (c *CH) Exec(ctx context.Context, sql string) error { return c.ExecSet(ctx, sql, nil) }
+
+// ExecSet is Exec with settings of its own for this statement.
+func (c *CH) ExecSet(ctx context.Context, sql string, set url.Values) error {
+	rc, err := c.do(ctx, sql, nil, set)
 	if err != nil {
 		return fmt.Errorf("%w\n  statement: %s", err, clip(sql))
 	}
@@ -67,7 +73,7 @@ func (c *CH) Exec(ctx context.Context, sql string) error {
 
 // Query runs one statement and returns its whole output (TSV by default).
 func (c *CH) Query(ctx context.Context, sql string) (string, error) {
-	rc, err := c.do(ctx, sql, nil)
+	rc, err := c.do(ctx, sql, nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -78,14 +84,14 @@ func (c *CH) Query(ctx context.Context, sql string) (string, error) {
 
 // Stream runs one statement and returns its output as a stream.
 func (c *CH) Stream(ctx context.Context, sql string) (io.ReadCloser, error) {
-	return c.do(ctx, sql, nil)
+	return c.do(ctx, sql, nil, nil)
 }
 
 // Insert sends body (TSV rows) as the data of insert, e.g.
 // "INSERT INTO t (a, b) FORMAT TabSeparated". One INSERT of at most
 // max_insert_block_size rows is one part: all or nothing.
 func (c *CH) Insert(ctx context.Context, insert string, body io.Reader) error {
-	rc, err := c.do(ctx, insert, body)
+	rc, err := c.do(ctx, insert, body, nil)
 	if err != nil {
 		return err
 	}

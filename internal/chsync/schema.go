@@ -1,7 +1,9 @@
 package chsync
 
 import (
+	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -84,10 +86,14 @@ func inKey(t *shadow.Table, i int) bool {
 //   - t_base: every key once, as of some LSN; a plain MergeTree, so it is
 //     read without FINAL and may be sorted by the columns queries filter
 //     on (Layout) before the key;
-//   - t_delta: the versions applied since (ReplacingMergeTree(_lsn, _del),
-//     sorted by the key), kept small by consolidation;
-//   - t: the view readers use, every key once as of W: the base rows of
-//     keys without a newer version, and the newest version of the others.
+//   - t_delta: the versions applied since, kept small by consolidation; a
+//     plain MergeTree sorted by the key and _lsn, as a merge must not drop
+//     a version that a reader at an older LSN still needs;
+//   - t: the view readers use, every key once as of the LSN R a reader
+//     passes as the setting ReadAt: the newest delta version <= R of the
+//     keys that have one, the base rows of the others. A batch being
+//     applied has versions above R only, so readers never wait for chsync
+//     and chsync never waits for readers (Readers bounds consolidation).
 //
 // Both tables are partitioned by a hash of the key, so consolidation
 // replaces one partition at a time.
@@ -151,7 +157,7 @@ func deltaDDL(t *shadow.Table, lay Layout) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("CREATE TABLE %s (%s, %s) ENGINE = ReplacingMergeTree(_lsn, _del) PARTITION BY %s ORDER BY (%s)",
+	return fmt.Sprintf("CREATE TABLE %s (%s, %s) ENGINE = MergeTree PARTITION BY %s ORDER BY (%s, _lsn)",
 		qc(deltaName(t.Name)), strings.Join(cols, ", "), lsnIndex, partitionBy(t, lay), strings.Join(keyNames(t), ", ")), nil
 }
 
@@ -159,10 +165,17 @@ func deltaDDL(t *shadow.Table, lay Layout) (string, error) {
 // only the newest parts.
 const lsnIndex = "INDEX _lsn_idx _lsn TYPE minmax GRANULARITY 1"
 
-// viewDDL is t as readers see it. Under the gate no version above W is in
-// the delta, so FINAL of the delta is the delta as of W; it drops the keys
-// whose newest version is a delete, and their base rows are excluded with
-// every other key of the delta.
+// ReadAt is the setting that names the LSN a query reads the views at
+// (user-defined settings need the SQL_ prefix); a query without it fails.
+const ReadAt = "SQL_chsync_r"
+
+// At is the SETTINGS item to read the views as of lsn.
+func At(lsn uint64) string { return fmt.Sprintf("%s = %d", ReadAt, lsn) }
+
+// viewDDL is t as readers see it as of ReadAt: the newest delta version
+// <= R per key (dropped when it is a delete), and the base rows of the keys
+// without one. The view is created with ReadAt set, as ClickHouse checks
+// the setting exists.
 func viewDDL(t *shadow.Table) string {
 	var cols []string
 	for _, c := range t.Cols {
@@ -170,8 +183,16 @@ func viewDDL(t *shadow.Table) string {
 	}
 	keys := strings.Join(keyNames(t), ", ")
 	c := strings.Join(cols, ", ")
-	return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS SELECT %s FROM %s WHERE (%s) NOT IN (SELECT %s FROM %s) UNION ALL SELECT %s FROM %s FINAL",
-		qc(t.Name), c, qc(baseName(t.Name)), keys, keys, qc(deltaName(t.Name)), c, qc(deltaName(t.Name)))
+	r := fmt.Sprintf("_lsn <= getSetting('%s')", ReadAt)
+	d := qc(deltaName(t.Name))
+	return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS SELECT %s FROM %s WHERE (%s) NOT IN (SELECT %s FROM %s WHERE %s)"+
+		" UNION ALL SELECT %s FROM (SELECT %s, _del FROM %s WHERE %s ORDER BY %s, _lsn DESC LIMIT 1 BY %s) WHERE _del = 0",
+		qc(t.Name), c, qc(baseName(t.Name)), keys, keys, d, r, c, c, d, r, keys, keys)
+}
+
+// createView creates or replaces the view of t.
+func createView(ctx context.Context, ch *CH, t *shadow.Table) error {
+	return ch.ExecSet(ctx, viewDDL(t), url.Values{ReadAt: {"0"}})
 }
 
 // LiveBase is SQL for the base rows of a table the view takes from the

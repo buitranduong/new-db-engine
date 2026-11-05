@@ -13,18 +13,20 @@ import (
 // consolidate keeps every delta small (docs/35 section 8): readers exclude
 // each delta key from the base, so their cost grows with the delta. When a
 // delta holds DeltaRows versions, the versions up to X (an LSN every
-// version up to which is applied) move into the base:
+// version up to which is applied, and no later than any LSN being read:
+// Readers) move into the base:
 //
 //  1. K = the keys with a delta version <= X. Base rows of keys in K are
 //     deleted (a lightweight delete written as patch parts, waited for),
 //     and the newest versions <= X of K that are not deletes are appended.
-//     Neither changes what readers see: every key of K is still in the
-//     delta, so the view still takes it from there.
-//  2. The delta loses its versions <= X. This needs no gate: batches
-//     applied meanwhile only add versions above X, and whichever versions
-//     <= X a reader still sees, each key reads the same: from the delta
-//     while it has a version there, else its newest version <= X from the
-//     base (absent for a delete).
+//     Neither changes what readers see: they read at an LSN >= X, and
+//     every key of K still has a version <= X in the delta, so the view
+//     still takes it from there.
+//  2. The delta loses its versions <= X. Batches applied meanwhile only
+//     add versions above X, and whichever versions <= X a reader still
+//     sees, each key reads the same: from the delta while it has a version
+//     there, else its newest version <= X from the base (absent for a
+//     delete).
 //
 // A crash between 1 and 2 leaves base rows of keys still in the delta: the
 // view ignores them and the next round deletes and appends them again. A
@@ -55,15 +57,19 @@ func consolidate(ctx context.Context, cfg *Config, ch *CH, tables []*shadow.Tabl
 
 func consolidateOne(ctx context.Context, cfg *Config, ch *CH, t *shadow.Table) (bool, error) {
 	base, delta := qc(baseName(t.Name)), qc(deltaName(t.Name))
-	out, err := ch.Query(ctx, "SELECT count() FROM "+delta)
+	x := cfg.Stats.Readers.floor(cfg.Stats.Applied.Load())
+	out, err := ch.Query(ctx, fmt.Sprintf("SELECT count(), countIf(_lsn <= %d) FROM %s", x, delta))
 	if err != nil {
 		return false, err
 	}
-	total, _ := strconv.Atoi(strings.TrimSpace(out))
-	if total < cfg.DeltaRows {
+	f := strings.Fields(out)
+	if len(f) != 2 {
+		return false, fmt.Errorf("delta count: %q", out)
+	}
+	total, _ := strconv.Atoi(f[0])
+	if n, _ := strconv.Atoi(f[1]); total < cfg.DeltaRows || n == 0 {
 		return false, nil
 	}
-	x := cfg.Stats.Applied.Load()
 	t0 := time.Now()
 	keys := strings.Join(keyNames(t), ", ")
 	var cols []string

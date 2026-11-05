@@ -35,16 +35,6 @@ type Config struct {
 	Reset       bool          // drop the slot and the ClickHouse tables, snapshot again
 	Logf        func(string, ...any)
 	Stats       *Stats
-	// Gate, when set, is held for writing while a batch is applied (and
-	// while the initial snapshot is taken), so that a reader holding it for
-	// reading sees ClickHouse exactly as of W: whole transactions, no
-	// version above W (docs/35 section 7).
-	Gate *Gate
-	// Pin, when non-zero, stops the stream before the first transaction
-	// committed after it (for at most HoldMax, default 5 s), so a reader can
-	// see ClickHouse exactly as of a PostgreSQL snapshot taken at Pin.
-	Pin     *atomic.Uint64
-	HoldMax time.Duration
 	// Layout: per table, the columns the base is sorted by before the key
 	// (docs/35 section 8); Partitions: hash partitions of tables of a
 	// million rows or more (default 16); DeltaRows: the delta size from
@@ -76,15 +66,6 @@ func (c *Config) defaults() {
 	if c.Stats == nil {
 		c.Stats = &Stats{}
 	}
-	if c.Gate == nil {
-		c.Gate = &Gate{}
-	}
-	if c.Pin == nil {
-		c.Pin = &atomic.Uint64{}
-	}
-	if c.HoldMax <= 0 {
-		c.HoldMax = 5 * time.Second
-	}
 	if c.Partitions <= 0 {
 		c.Partitions = 16
 	}
@@ -100,13 +81,13 @@ func (c *Config) defaults() {
 type Stats struct {
 	W, Received    atomic.Uint64 // watermark; end of the last transaction received
 	Applied        atomic.Uint64 // commit LSN of the last transaction applied
-	Held           atomic.Uint64 // commit LSN of the transaction the stream waits before (Pin); 0 = not waiting
 	CaughtUp       atomic.Int64  // unix nanos when everything received was last known applied
 	Txs, Versions  atomic.Int64
 	Consolidations atomic.Int64
 	Live           atomic.Pointer[map[string]string] // table -> LiveBase SQL
 	Flushes        atomic.Int64
 	FlushNanos     atomic.Int64
+	Readers        Readers // the LSNs ClickHouse is read at
 }
 
 // FatalError stops the tool: running again would fail the same way.
@@ -213,16 +194,14 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if cfg.Reset || !ok {
-		cfg.Gate.Lock() // readers wait for the snapshot (no W yet means none read anyway)
-		w, err = initialize(ctx, &cfg, src, ch, tables)
-		cfg.Gate.Unlock()
+		w, err = initialize(ctx, &cfg, src, ch, tables) // no W yet: nobody reads
 		if err != nil {
 			return err
 		}
 		cfg.Reset = false
 	}
 	for _, t := range tables {
-		if err := ch.Exec(ctx, viewDDL(t)); err != nil {
+		if err := createView(ctx, ch, t); err != nil {
 			return fatalf("view %s: %v", t.Name, err)
 		}
 	}
@@ -293,7 +272,7 @@ func initialize(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, ta
 				return 0, err
 			}
 		}
-		for _, ddl := range []string{b, d, viewDDL(t)} {
+		for _, ddl := range []string{b, d} { // the view is made by Run
 			if err := ch.Exec(ctx, ddl); err != nil {
 				return 0, fatalf("create %s in ClickHouse: %v", t.Name, err)
 			}
@@ -510,8 +489,6 @@ func (cfg *Config) flush(ctx context.Context, ch *CH, b *batch) error {
 		return nil
 	}
 	t0 := time.Now()
-	cfg.Gate.Lock()
-	defer cfg.Gate.Unlock()
 	for t, m := range b.rows {
 		var ups, dels strings.Builder
 		for _, v := range m {
@@ -545,7 +522,7 @@ func (cfg *Config) flush(ctx context.Context, ch *CH, b *batch) error {
 			}
 		}
 	}
-	// only now may readers see the batch: every table of every transaction up to b.end is in
+	// only now may readers read at b.end: every table of every transaction up to it is in
 	if err := writeW(ctx, ch, cfg.Slot, b.end); err != nil {
 		return err
 	}
@@ -657,13 +634,11 @@ func stream(ctx context.Context, cfg *Config, ch *CH, tables []*shadow.Table, w 
 			// ServerWALEnd: with nothing pending, W may advance to it, so an
 			// idle source does not look stale (persisted at most once a second).
 			if !inTx && b.n == 0 && uint64(k.ServerWALEnd) > cfg.Stats.W.Load() && time.Since(lastIdleW) >= time.Second {
-				cfg.Gate.Lock()
 				err := writeW(ctx, ch, cfg.Slot, uint64(k.ServerWALEnd))
 				if err == nil {
 					cfg.Stats.W.Store(uint64(k.ServerWALEnd))
 					cfg.Stats.CaughtUp.Store(time.Now().UnixNano())
 				}
-				cfg.Gate.Unlock()
 				if err != nil {
 					return err
 				}
@@ -703,20 +678,6 @@ func stream(ctx context.Context, cfg *Config, ch *CH, tables []*shadow.Table, w 
 			case *pglogrepl.BeginMessage:
 				inTx, txLSN = true, uint64(m.FinalLSN)
 				skip = txLSN < cfg.Stats.W.Load() // applied before a restart
-				if pin := cfg.Pin.Load(); !skip && pin != 0 && txLSN > pin {
-					// a reader wants ClickHouse as of pin: apply what is before it, then wait
-					if err := flush(); err != nil {
-						return err
-					}
-					cfg.Stats.Held.Store(txLSN)
-					for end := time.Now().Add(cfg.HoldMax); ctx.Err() == nil && time.Now().Before(end); {
-						if p := cfg.Pin.Load(); p == 0 || p >= txLSN {
-							break
-						}
-						time.Sleep(time.Millisecond)
-					}
-					cfg.Stats.Held.Store(0)
-				}
 				if !skip && b.n == 0 {
 					b.start = time.Now()
 				}

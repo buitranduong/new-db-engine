@@ -118,7 +118,7 @@ func verifyTable(ctx context.Context, srcURL string, ch *CH, t *shadow.Table, w 
 		pw.CloseWithError(err)
 	}()
 	defer pr.Close()
-	cr, err := ch.Stream(ctx, fmt.Sprintf("SELECT %s FROM %s ORDER BY %s SETTINGS max_bytes_before_external_sort = 2000000000 FORMAT TabSeparated", strings.Join(chCols, ", "), qc(t.Name), strings.Join(chOrder, ", ")))
+	cr, err := ch.Stream(ctx, fmt.Sprintf("SELECT %s FROM %s ORDER BY %s SETTINGS max_bytes_before_external_sort = 2000000000, %s FORMAT TabSeparated", strings.Join(chCols, ", "), qc(t.Name), strings.Join(chOrder, ", "), At(w)))
 	if err != nil {
 		return tc, err
 	}

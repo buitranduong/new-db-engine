@@ -199,16 +199,19 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 	sh.mu.Unlock()
 	// How long ClickHouse may be waited for: a shape PostgreSQL answers
 	// slowly is better waited for than sent there, up to as long as
-	// PostgreSQL took for it (at most MaxWait).
-	wait := r.cfg.WaitOwnWrite
-	if d := time.Duration(pgMs * float64(time.Millisecond)); d > wait {
-		wait = min(d, r.cfg.MaxWait)
+	// PostgreSQL took for it (at most MaxWait; MaxWait until measured: the
+	// cost said it is slow there).
+	wait := r.cfg.MaxWait
+	if pgMs > 0 {
+		wait = max(r.cfg.WaitOwnWrite, min(time.Duration(pgMs*float64(time.Millisecond)), r.cfg.MaxWait))
 	}
 	switch state {
 	case shapePG:
 		return false, nil
 	case shapeVerifying:
-		r.startVerify(sh, q)
+		r.startVerify(sh, q) // a difference sends the shape to PostgreSQL
+	}
+	if fields == nil {
 		return false, nil
 	}
 	if !r.waitFresh(wait - r.cfg.WaitOwnWrite) {
@@ -228,7 +231,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 		return false, nil
 	}
 	t0 := time.Now()
-	rows, err := r.runCH(ctx, q, fields, nil)
+	rows, err := r.runCH(ctx, q, fields, r.sync.W.Load(), priorityOf(q))
 	ms := float64(time.Since(t0).Microseconds()) / 1000
 	if err != nil {
 		sh.mu.Lock()
@@ -250,7 +253,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 	}
 	s.cli.Send(&pgproto3.CommandComplete{CommandTag: []byte("SELECT " + strconv.Itoa(len(rows)))})
 	s.cli.Send(&pgproto3.ReadyForQuery{TxStatus: 'I'})
-	if r.sample() {
+	if state == shapeCH && r.sample() {
 		r.startVerify(sh, q)
 	}
 	return true, s.cli.Flush()
@@ -376,6 +379,43 @@ func (s *session) backendQuery(sql string) ([][][]byte, error) {
 }
 
 func (s *session) backendExec(sql string) error { _, err := s.backendQuery(sql); return err }
+
+// backendDescribe is PostgreSQL's description of the result of sql (a
+// statement of the gateway's own name, closed again; nothing runs).
+func (s *session) backendDescribe(sql string) ([]pgproto3.FieldDescription, error) {
+	const name = "_stask_describe"
+	s.be.Send(&pgproto3.Parse{Name: name, Query: sql})
+	s.be.Send(&pgproto3.Describe{ObjectType: 'S', Name: name})
+	s.be.Send(&pgproto3.Close{ObjectType: 'S', Name: name})
+	s.be.Send(&pgproto3.Sync{})
+	if err := s.be.Flush(); err != nil {
+		return nil, err
+	}
+	var fields []pgproto3.FieldDescription
+	var qerr error
+	for {
+		m, err := s.be.Receive()
+		if err != nil {
+			return nil, err
+		}
+		switch m := m.(type) {
+		case *pgproto3.RowDescription:
+			for _, f := range m.Fields {
+				f.Name = append([]byte{}, f.Name...)
+				f.Format = 0
+				fields = append(fields, f)
+			}
+		case *pgproto3.ErrorResponse:
+			qerr = errors.New(m.Message)
+		case *pgproto3.ReadyForQuery:
+			s.tx = m.TxStatus
+			if qerr == nil && fields == nil {
+				qerr = errors.New("no result")
+			}
+			return fields, qerr
+		}
+	}
+}
 
 // Report lists the shapes and where they run (for the metrics endpoint).
 func (r *Router) Report(w io.Writer) {

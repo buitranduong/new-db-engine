@@ -172,6 +172,9 @@ var typedLiteral = map[string]string{
 // it cannot translate; the rest is caught by the result comparison before
 // a shape is ever answered from ClickHouse.
 func Translate(sql string) (string, error) {
+	if r, ok := rewriteTopN(sql); ok {
+		sql = r
+	}
 	toks := lex(sql)
 	var b strings.Builder
 	for i := 0; i < len(toks); i++ {

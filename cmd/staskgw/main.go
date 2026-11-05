@@ -10,6 +10,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,12 +44,23 @@ func main() {
 	flag.DurationVar(&cfg.WaitOwnWrite, "wait-own-write", 500*time.Millisecond, "how long a read waits for ClickHouse to include the session's own writes before it goes to PostgreSQL")
 	flag.DurationVar(&cfg.PollEvery, "poll", 2*time.Millisecond, "how often a read waiting for its own writes looks at the watermark again")
 	flag.BoolVar(&cfg.Reset, "reset", false, "drop the replication slot and the ClickHouse tables, snapshot again")
+	translate := flag.Bool("translate", false, "print the ClickHouse form of the SQL read from stdin and exit")
 	httpAddr := flag.String("http", "127.0.0.1:6480", "status endpoint (/shapes); empty = off")
 	flag.Parse()
 	for _, t := range strings.Split(*tables, ",") {
 		if t = strings.TrimSpace(t); t != "" {
 			cfg.Tables = append(cfg.Tables, t)
 		}
+	}
+	if *translate {
+		in, _ := io.ReadAll(os.Stdin)
+		q, err := gateway.Translate(string(in))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(q)
+		return
 	}
 	cfg.Logf = func(f string, a ...any) {
 		fmt.Fprintf(os.Stderr, time.Now().Format("15:04:05.000 ")+"staskgw: "+f+"\n", a...)

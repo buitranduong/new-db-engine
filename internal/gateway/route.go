@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +42,7 @@ type shape struct {
 	retries   int // comparisons without a verdict, and the last reason
 	lastRetry string
 	chMs      []float64 // gateway-side time of ClickHouse answers (ms), the last 10000
+	minMs     float64   // the fastest of them
 	pgMs      float64   // the slowest PostgreSQL answer seen in a comparison (ms)
 }
 
@@ -195,13 +195,11 @@ func (r *Router) startVerify(sh *shape, sql string) {
 		case strings.HasPrefix(why, "retry"):
 			sh.retries++
 			sh.lastRetry = why
-		default:
+		default: // both sides read the same LSN: any difference is the translation's
 			r.Stats.VerifyDiff.Add(1)
 			sh.fails++
-			if sh.fails >= 2 || sh.state == shapeCH { // one retry for the race between snapshot and LSN
-				sh.state, sh.reason = shapePG, "result differs: "+why
-				r.cfg.Logf("shape -> PostgreSQL (%s): %s", why, clip(Shape(sql)))
-			}
+			sh.state, sh.reason = shapePG, "result differs: "+why
+			r.cfg.Logf("shape -> PostgreSQL (%s): %s", why, clip(Shape(sql)))
 		}
 	}()
 }
@@ -281,9 +279,12 @@ func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgpr
 	if !r.waitW(lsn, 30*time.Second) {
 		return nil, "retry: chsync did not reach the snapshot"
 	}
-	rows, err := r.runCH(ctx, sql, fields, lsn, prioCheck)
+	rows, err := r.runCH(ctx, sql, fields, lsn, prioReport)
 	if err == errMoved {
 		return nil, "retry: ClickHouse moved past the snapshot"
+	}
+	if err != nil && ctx.Err() != nil {
+		return nil, "retry: ClickHouse did not answer in time"
 	}
 	if err != nil {
 		return nil, "ClickHouse: " + clip(err.Error())
@@ -294,19 +295,19 @@ func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgpr
 var errMoved = errors.New("ClickHouse moved past the snapshot")
 
 // ClickHouse priorities (the setting priority: while a query runs, the
-// threads of queries of a higher number pause): pages first, then
-// reports, then the comparisons, which nobody waits for.
+// threads of queries of a higher number pause). A shape ClickHouse has
+// answered within interactiveMs at least once can serve a page someone
+// waits for: it goes before the reports and the comparisons.
 const (
 	prioPage   = 1
 	prioReport = 2
-	prioCheck  = 3
+
+	interactiveMs = 1000
 )
 
-var pageEnd = regexp.MustCompile(`(?is)\blimit\s+[^\s;()]+(\s+offset\s+[^\s;()]+)?\s*;?\s*$`)
-
-// priorityOf: a query that ends in LIMIT is a page someone waits for.
-func priorityOf(sql string) int {
-	if pageEnd.MatchString(sql) {
+// priority of the shape's next ClickHouse query (sh.mu held).
+func (sh *shape) priority() int {
+	if sh.minMs > 0 && sh.minMs <= interactiveMs {
 		return prioPage
 	}
 	return prioReport

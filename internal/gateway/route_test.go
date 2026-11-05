@@ -2,16 +2,14 @@ package gateway
 
 import "testing"
 
-func TestPriorityOf(t *testing.T) {
-	for sql, want := range map[string]int{
-		"SELECT * FROM sims ORDER BY price LIMIT 100 OFFSET 200": prioPage,
-		"select * from sims order by price limit 100;":           prioPage,
-		"SELECT count(*) FROM sims WHERE status = 'x'":           prioReport,
-		"SELECT * FROM (SELECT * FROM sims LIMIT 10) s":          prioReport,
-		"SELECT region, count(*) FROM orders GROUP BY region":    prioReport,
-	} {
-		if got := priorityOf(sql); got != want {
-			t.Errorf("%s: priority %d, want %d", sql, got, want)
+func TestShapePriority(t *testing.T) {
+	for _, c := range []struct {
+		minMs float64
+		want  int
+	}{{0, prioReport}, {300, prioPage}, {1000, prioPage}, {1001, prioReport}, {42000, prioReport}} {
+		sh := &shape{minMs: c.minMs}
+		if got := sh.priority(); got != c.want {
+			t.Errorf("fastest %.0f ms: priority %d, want %d", c.minMs, got, c.want)
 		}
 	}
 }

@@ -195,7 +195,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 	sh.runs.Add(1)
 	r.classify(ctx, s, sh, q) // no-op unless the shape is new
 	sh.mu.Lock()
-	state, fields, pgMs := sh.state, sh.fields, sh.pgMs
+	state, fields, pgMs, prio := sh.state, sh.fields, sh.pgMs, sh.priority()
 	sh.mu.Unlock()
 	// How long ClickHouse may be waited for: a shape PostgreSQL answers
 	// slowly is better waited for than sent there, up to as long as
@@ -231,7 +231,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 		return false, nil
 	}
 	t0 := time.Now()
-	rows, err := r.runCH(ctx, q, fields, r.sync.W.Load(), priorityOf(q))
+	rows, err := r.runCH(ctx, q, fields, r.sync.W.Load(), prio)
 	ms := float64(time.Since(t0).Microseconds()) / 1000
 	if err != nil {
 		sh.mu.Lock()
@@ -243,6 +243,9 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 	r.Stats.CH.Add(1)
 	sh.chRuns.Add(1)
 	sh.mu.Lock()
+	if sh.minMs == 0 || ms < sh.minMs {
+		sh.minMs = ms
+	}
 	if sh.chMs = append(sh.chMs, ms); len(sh.chMs) > 10000 {
 		sh.chMs = sh.chMs[1:]
 	}

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,6 +51,9 @@ type Config struct {
 	Layout     map[string][]string
 	Partitions int
 	DeltaRows  int
+	// CopyStreams: connections that copy the initial snapshot, each a
+	// range of pages of a table, all in the exported snapshot (default 4).
+	CopyStreams int
 }
 
 func (c *Config) defaults() {
@@ -85,6 +89,9 @@ func (c *Config) defaults() {
 	}
 	if c.DeltaRows <= 0 {
 		c.DeltaRows = 20000
+	}
+	if c.CopyStreams <= 0 {
+		c.CopyStreams = 4
 	}
 }
 
@@ -284,31 +291,7 @@ func initialize(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, ta
 		}
 		cfg.Logf("%s: base sorted by %v before the key, %d partitions, LowCardinality %v", t.Name, lay.Order, lay.Partitions, keysOf(lay.LowCard))
 	}
-	cc, err := connect(ctx, cfg.SourceURL, false)
-	if err != nil {
-		return 0, err
-	}
-	defer cc.Close(context.Background())
-	// the exported snapshot lives while rc is open and idle
-	if err := pgExec(ctx, cc, "BEGIN ISOLATION LEVEL REPEATABLE READ; SET TRANSACTION SNAPSHOT '"+res.SnapshotName+"'"); err != nil {
-		return 0, fmt.Errorf("import snapshot: %w", err)
-	}
-	for _, t := range tables {
-		t0 := time.Now()
-		pr, pw := io.Pipe()
-		var n int64
-		go func() {
-			tag, err := cc.CopyTo(ctx, pw, copySelect(t, uint64(cp)))
-			n = tag.RowsAffected()
-			pw.CloseWithError(err)
-		}()
-		if err := ch.Insert(ctx, insertAll(baseName(t.Name), t), pr); err != nil {
-			pr.CloseWithError(err)
-			return 0, fmt.Errorf("copy %s: %w", t.Name, err)
-		}
-		cfg.Logf("copied %s: %d rows in %.1fs", t.Name, n, time.Since(t0).Seconds())
-	}
-	if err := pgExec(ctx, cc, "COMMIT"); err != nil {
+	if err := copySnapshot(ctx, cfg, src, ch, tables, res.SnapshotName, uint64(cp)); err != nil {
 		return 0, err
 	}
 	if err := writeW(ctx, ch, cfg.Slot, uint64(cp)); err != nil {
@@ -316,6 +299,97 @@ func initialize(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, ta
 	}
 	cfg.Logf("snapshot done at %s", cp)
 	return uint64(cp), nil
+}
+
+// copySnapshot copies the tables in CopyStreams connections that all
+// import the exported snapshot (it lives while the replication connection
+// is open and idle). Each table is cut into ranges of pages, read by a TID
+// range scan; the last range is open so no page is missed.
+func copySnapshot(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, tables []*shadow.Table, snapshot string, cp uint64) error {
+	type chunk struct {
+		t     *shadow.Table
+		where string
+	}
+	var chunks []chunk
+	for _, t := range tables {
+		v, _, err := pgOne(ctx, src, "SELECT (pg_relation_size(c.oid) / current_setting('block_size')::int)::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = $1", t.Name)
+		if err != nil {
+			return err
+		}
+		pages, _ := strconv.ParseInt(v, 10, 64)
+		per := max(pages/int64(4*cfg.CopyStreams), 1024) // 4 ranges per stream, so the streams end together
+		if pages <= per {
+			chunks = append(chunks, chunk{t, ""})
+			continue
+		}
+		for lo := int64(0); lo < pages; lo += per {
+			w := fmt.Sprintf(" WHERE ctid >= '(%d,0)'", lo)
+			if lo+per < pages {
+				w += fmt.Sprintf(" AND ctid < '(%d,0)'", lo+per)
+			}
+			chunks = append(chunks, chunk{t, w})
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	t0 := time.Now()
+	next := make(chan chunk, len(chunks))
+	for _, c := range chunks {
+		next <- c
+	}
+	close(next)
+	var mu sync.Mutex
+	rows := map[string]int64{}
+	errs := make(chan error, cfg.CopyStreams)
+	for range cfg.CopyStreams {
+		go func() {
+			errs <- func() error {
+				cc, err := connect(ctx, cfg.SourceURL, false)
+				if err != nil {
+					return err
+				}
+				defer cc.Close(context.Background())
+				if err := pgExec(ctx, cc, "BEGIN ISOLATION LEVEL REPEATABLE READ; SET TRANSACTION SNAPSHOT '"+snapshot+"'"); err != nil {
+					return fmt.Errorf("import snapshot: %w", err)
+				}
+				for c := range next {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					pr, pw := io.Pipe()
+					var n int64
+					go func() {
+						tag, err := cc.CopyTo(ctx, pw, copySelect(c.t, cp, c.where))
+						n = tag.RowsAffected()
+						pw.CloseWithError(err)
+					}()
+					if err := ch.Insert(ctx, insertAll(baseName(c.t.Name), c.t), pr); err != nil {
+						pr.CloseWithError(err)
+						return fmt.Errorf("copy %s: %w", c.t.Name, err)
+					}
+					mu.Lock()
+					rows[c.t.Name] += n
+					mu.Unlock()
+				}
+				return pgExec(ctx, cc, "COMMIT")
+			}()
+		}()
+	}
+	var first error
+	for range cfg.CopyStreams {
+		if err := <-errs; err != nil && first == nil {
+			first = err
+			cancel()
+		}
+	}
+	if first != nil {
+		return first
+	}
+	for _, t := range tables {
+		cfg.Logf("copied %s: %d rows", t.Name, rows[t.Name])
+	}
+	cfg.Logf("copied %d tables in %d ranges over %d streams in %.1fs", len(tables), len(chunks), cfg.CopyStreams, time.Since(t0).Seconds())
+	return nil
 }
 
 // layoutOf: the configured sort columns; LowCardinality for the text

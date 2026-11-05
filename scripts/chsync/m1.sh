@@ -10,7 +10,7 @@
 #   gw: through the gateway (it snapshots the tables into a fresh ClickHouse first and keeps them in step itself;
 #       afterwards, source quiet: chsync verify + shapes)
 #   pg: the same load straight to PostgreSQL (the baseline: what the application has without the gateway)
-# Env: N=30000000 DURATION=120 WARMUP=60 HARNESS_FLAGS OUT=/tmp/m1/N-<stamp> KEEP=1 (keep the loaded volume for the next run)
+# Env: HOLD=1 (stop after the snapshot, leave everything up) N=30000000 DURATION=120 WARMUP=60 HARNESS_FLAGS OUT=/tmp/m1/N-<stamp> KEEP=1 (keep the loaded volume for the next run)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"
 if [ -z "${M1_LOCKED:-}" ]; then
@@ -97,6 +97,9 @@ for run in $RUNS; do
     for _ in $(seq 10800); do grep -q "snapshot done" "$OUT/gw.log" && break
       kill -0 "$(cat "$OUT/gw.pid")" 2>/dev/null && ! grep -q "chsync stopped" "$OUT/gw.log" || { log "gateway sync died"; tail -5 "$OUT/gw.log"; exit 2; }; sleep 1; done
     log "snapshot into ClickHouse in $(( $(date +%s) - t0 )) s"
+    if [ "${HOLD:-0}" = 1 ]; then # keep PostgreSQL, ClickHouse and the gateway up for tuning; stop them by hand
+      trap - EXIT; log "holding: gateway pid $(cat "$OUT/gw.pid"), containers $PGNAME $CHNAME"; exit 0
+    fi
     sleep 2
     ( while :; do echo "$(date +%s.%N) $("$BIN/chsync" status -source "$SRC" -ch "$CH" 2>/dev/null)"; sleep 1; done ) >"$OUT/lag.log" 2>&1 &
     echo $! >"$OUT/lag.pid"

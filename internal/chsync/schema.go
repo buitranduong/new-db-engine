@@ -213,7 +213,7 @@ func tsvValue(b *strings.Builder, c *shadow.Column, v []byte, null bool) {
 // copySelect is the SELECT of the initial snapshot of t, its output in
 // COPY text format already being TabSeparated; lsn and 0 fill _lsn and
 // _del. Booleans are spelled out (COPY writes t/f).
-func copySelect(t *shadow.Table, lsn uint64) string {
+func copySelect(t *shadow.Table, lsn uint64, where string) string {
 	var cols []string
 	for _, c := range t.Cols {
 		q := `"` + strings.ReplaceAll(c.Name, `"`, `""`) + `"`
@@ -222,7 +222,7 @@ func copySelect(t *shadow.Table, lsn uint64) string {
 		}
 		cols = append(cols, q)
 	}
-	return fmt.Sprintf(`COPY (SELECT %s, %d, 0 FROM "%s") TO STDOUT`, strings.Join(cols, ", "), lsn, strings.ReplaceAll(t.Name, `"`, `""`))
+	return fmt.Sprintf(`COPY (SELECT %s, %d, 0 FROM "%s"%s) TO STDOUT`, strings.Join(cols, ", "), lsn, strings.ReplaceAll(t.Name, `"`, `""`), where)
 }
 
 func insertAll(table string, t *shadow.Table) string {

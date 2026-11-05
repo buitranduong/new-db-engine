@@ -30,6 +30,7 @@ type Config struct {
 	Slot          string        // chsync slot (key of the watermark)
 	CostThreshold float64       // PostgreSQL estimated cost from which a read is a ClickHouse candidate
 	VerifyRuns    int           // identical comparisons before a shape is answered by ClickHouse
+	VerifyConns   int           // PostgreSQL connections for comparisons (at most this many at once)
 	Resample      float64       // fraction of ClickHouse answers compared again
 	MaxStale      time.Duration // W older than this: PostgreSQL
 	WaitOwnWrite  time.Duration // how long a read waits for ClickHouse to include the session's writes
@@ -42,7 +43,7 @@ func New(ctx context.Context, cfg Config) (*Router, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	r := &Router{cfg: cfg, ch: chsync.NewCH(cfg.CHURL), verify: make(chan *pgconn.PgConn, 2)}
+	r := &Router{cfg: cfg, ch: chsync.NewCH(cfg.CHURL), verify: make(chan *pgconn.PgConn, max(cfg.VerifyConns, 1))}
 	for i := 0; i < cap(r.verify); i++ {
 		c, err := pgconn.Connect(ctx, cfg.PGURL)
 		if err != nil {

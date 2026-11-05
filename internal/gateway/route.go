@@ -35,7 +35,7 @@ type shape struct {
 	cost     float64
 	matches  int
 	fails    int
-	checking bool
+	checking int                         // comparisons running (at most maxChecks)
 	fields   []pgproto3.FieldDescription // PostgreSQL's description of the result
 	runs     atomic.Int64
 	chRuns   atomic.Int64
@@ -48,7 +48,7 @@ type Router struct {
 	cfg    Config
 	ch     *chsync.CH
 	shapes sync.Map      // shape text -> *shape
-	gate   sync.RWMutex  // held for writing by chsync while it applies a batch
+	gate   chsync.Gate   // held for writing by chsync while it applies a batch
 	pin    atomic.Uint64 // chsync stops before the first transaction after it (comparisons)
 	pinMu  sync.Mutex    // one pinned comparison at a time
 	sync   chsync.Stats
@@ -143,22 +143,27 @@ func (r *Router) classify(ctx context.Context, sess *session, sh *shape, sql str
 	sh.state, sh.reason = shapeVerifying, fmt.Sprintf("cost %.0f", sh.cost)
 }
 
+// maxChecks comparisons of one shape may run at once: an expensive shape
+// needs VerifyRuns of them before ClickHouse may answer it, each running the
+// query on PostgreSQL.
+const maxChecks = 2
+
 // startVerify compares one execution in the background: PostgreSQL in a
 // REPEATABLE READ snapshot at LSN L, ClickHouse with exactly the
 // transactions committed up to L applied (chsync pinned at L).
 func (r *Router) startVerify(sh *shape, sql string) {
 	sh.mu.Lock()
-	if sh.checking {
+	if sh.checking >= maxChecks {
 		sh.mu.Unlock()
 		return
 	}
-	sh.checking = true
+	sh.checking++
 	sh.mu.Unlock()
 	go func() {
 		same, why := r.compare(sh, sql)
 		sh.mu.Lock()
 		defer sh.mu.Unlock()
-		sh.checking = false
+		sh.checking--
 		switch {
 		case same:
 			r.Stats.VerifyOK.Add(1)

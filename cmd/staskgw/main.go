@@ -36,6 +36,7 @@ func main() {
 	flag.StringVar(&cfg.Slot, "slot", "chsync", "chsync slot (key of the watermark)")
 	flag.Float64Var(&cfg.CostThreshold, "cost", 20000, "PostgreSQL estimated cost from which a read is a ClickHouse candidate")
 	flag.IntVar(&cfg.VerifyRuns, "verify-runs", 3, "identical comparisons with PostgreSQL before a query shape is answered by ClickHouse")
+	flag.IntVar(&cfg.VerifyConns, "verify-conns", 4, "PostgreSQL connections used to compare results (comparisons running at once)")
 	flag.Float64Var(&cfg.Resample, "resample", 0.01, "fraction of ClickHouse answers compared with PostgreSQL again")
 	flag.DurationVar(&cfg.MaxStale, "max-stale", 3*time.Second, "watermark older than this: answer from PostgreSQL")
 	flag.DurationVar(&cfg.WaitOwnWrite, "wait-own-write", 500*time.Millisecond, "how long a read waits for ClickHouse to include the session's own writes before it goes to PostgreSQL")

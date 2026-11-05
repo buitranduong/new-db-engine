@@ -101,6 +101,12 @@ for run in $RUNS; do
     harness gw "$GW"
     kill "$(cat "$OUT/lag.pid")" 2>/dev/null; rm -f "$OUT/lag.pid"
     curl -s "127.0.0.1:$GWHTTP/shapes" >"$OUT/shapes.txt"
+    # time inside ClickHouse of what the gateway sent (the harness times include the gateway and the gate)
+    curl -s "$CH/" --data-binary "SYSTEM FLUSH LOGS" >/dev/null
+    curl -s "$CH/" --data-binary "SELECT substring(replaceRegexpAll(normalizeQuery(query), '\\s+', ' '), 1, 70) AS q, count() AS n,
+        round(quantile(0.5)(query_duration_ms)) AS p50_ms, round(quantile(0.99)(query_duration_ms)) AS p99_ms, max(query_duration_ms) AS max_ms
+      FROM system.query_log WHERE type = 'QueryFinish' AND query LIKE '%SETTINGS final = 1%' AND query NOT LIKE '%query_log%'
+      GROUP BY q ORDER BY n DESC FORMAT PrettyCompactMonoBlock" | tee "$OUT/ch_times.txt" >>"$OUT/m1.log"
     "$BIN/chsync" verify -source "$SRC" -ch "$CH" -tables "$TABLES" -wait 10m >"$OUT/verify.txt" 2>&1; log "verify exit $?"
     tail -3 "$OUT/verify.txt" | tee -a "$OUT/m1.log"
     awk '{for(i=1;i<=NF;i++) if($i ~ /^lag_bytes=/){split($i,a,"="); print a[2]}}' "$OUT/lag.log" | sort -n |

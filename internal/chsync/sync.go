@@ -11,7 +11,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,7 +36,7 @@ type Config struct {
 	// while the initial snapshot is taken), so that a reader holding it for
 	// reading sees ClickHouse exactly as of W: whole transactions, no
 	// version above W (docs/35 section 7).
-	Gate *sync.RWMutex
+	Gate *Gate
 	// Pin, when non-zero, stops the stream before the first transaction
 	// committed after it (for at most HoldMax, default 5 s), so a reader can
 	// see ClickHouse exactly as of a PostgreSQL snapshot taken at Pin.
@@ -65,7 +64,7 @@ func (c *Config) defaults() {
 		c.Stats = &Stats{}
 	}
 	if c.Gate == nil {
-		c.Gate = &sync.RWMutex{}
+		c.Gate = &Gate{}
 	}
 	if c.Pin == nil {
 		c.Pin = &atomic.Uint64{}

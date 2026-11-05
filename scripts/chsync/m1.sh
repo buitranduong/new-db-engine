@@ -21,6 +21,7 @@ export G3_LOCKED=1 # stask-m2 takes the big-data lock above 2M rows unless its c
 N=${N:-30000000}; DURATION=${DURATION:-120}; WARMUP=${WARMUP:-900}; KEEP=${KEEP:-1}; RUNS=${RUNS:-"gw pg"}
 PG_CPUS=${PG_CPUS:-0-2}; PG_MEM=${PG_MEM:-12g}; CH_CPUS=${CH_CPUS:-3-5}; CH_MEM=${CH_MEM:-10g}; GW_CPUS=${GW_CPUS:-6}; APP_CPUS=${APP_CPUS:-7}
 HARNESS_FLAGS=${HARNESS_FLAGS:--t 4 -p 4 -r 2}
+LAYOUT=${LAYOUT-"sims=category,status,carrier_id,store_rate"} # base sort columns (docs/35 section 8)
 PG_CONF=${PG_CONF:-"shared_buffers=6GB effective_cache_size=9GB work_mem=64MB maintenance_work_mem=1GB max_wal_size=8GB checkpoint_timeout=15min random_page_cost=1.1 max_parallel_workers_per_gather=2 wal_level=logical max_wal_senders=10 max_replication_slots=10"}
 CH_IMAGE=clickhouse/clickhouse-server@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77 # 25.8.33.6
 STAMP=$(date +%Y%m%d-%H%M%S); OUT=${OUT:-/tmp/m1/$N-$STAMP}; mkdir -p "$OUT"
@@ -44,6 +45,7 @@ cleanup() {
 trap cleanup EXIT
 
 log "N=$N RUNS=$RUNS DURATION=$DURATION WARMUP=$WARMUP HARNESS_FLAGS=$HARNESS_FLAGS commit=$(git -C "$ROOT" rev-parse --short HEAD)"
+log "ClickHouse layout: $LAYOUT"
 log "layout: PostgreSQL cpus $PG_CPUS mem $PG_MEM | ClickHouse cpus $CH_CPUS mem $CH_MEM | gateway+chsync cpus $GW_CPUS | application cpus $APP_CPUS"
 (cd "$ROOT" && go build -o "$BIN/" ./cmd/stask-m2 ./cmd/chsync ./cmd/staskgw) || { log "build failed"; exit 2; }
 
@@ -90,7 +92,7 @@ for run in $RUNS; do
     docker run -d --name "$CHNAME" --cpuset-cpus="$CH_CPUS" --memory="$CH_MEM" -e CLICKHOUSE_SKIP_USER_SETUP=1 \
       -p 127.0.0.1:$CHPORT:8123 -v "$CHVOL":/var/lib/clickhouse "$CH_IMAGE" >/dev/null || exit 2
     t0=$(date +%s)
-    nohup taskset -c "$GW_CPUS" "$BIN/staskgw" -reset -listen 127.0.0.1:$GWPORT -http 127.0.0.1:$GWHTTP -pg "$SRC" -ch "$CH" -tables "$TABLES" \
+    nohup taskset -c "$GW_CPUS" "$BIN/staskgw" -reset -layout "$LAYOUT" -listen 127.0.0.1:$GWPORT -http 127.0.0.1:$GWHTTP -pg "$SRC" -ch "$CH" -tables "$TABLES" \
       >"$OUT/gw.log" 2>&1 < /dev/null & echo $! >"$OUT/gw.pid"
     for _ in $(seq 10800); do grep -q "snapshot done" "$OUT/gw.log" && break
       kill -0 "$(cat "$OUT/gw.pid")" 2>/dev/null && ! grep -q "chsync stopped" "$OUT/gw.log" || { log "gateway sync died"; tail -5 "$OUT/gw.log"; exit 2; }; sleep 1; done
@@ -105,7 +107,7 @@ for run in $RUNS; do
     curl -s "$CH/" --data-binary "SYSTEM FLUSH LOGS" >/dev/null
     curl -s "$CH/" --data-binary "SELECT substring(replaceRegexpAll(normalizeQuery(query), '\\s+', ' '), 1, 70) AS q, count() AS n,
         round(quantile(0.5)(query_duration_ms)) AS p50_ms, round(quantile(0.99)(query_duration_ms)) AS p99_ms, max(query_duration_ms) AS max_ms
-      FROM system.query_log WHERE type = 'QueryFinish' AND query LIKE '%SETTINGS final = 1%' AND query NOT LIKE '%query_log%'
+      FROM system.query_log WHERE type = 'QueryFinish' AND query LIKE '%join_use_nulls = 1%' AND query NOT LIKE '%query_log%'
       GROUP BY q ORDER BY n DESC FORMAT PrettyCompactMonoBlock" | tee "$OUT/ch_times.txt" >>"$OUT/m1.log"
     "$BIN/chsync" verify -source "$SRC" -ch "$CH" -tables "$TABLES" -wait 10m >"$OUT/verify.txt" 2>&1; log "verify exit $?"
     tail -3 "$OUT/verify.txt" | tee -a "$OUT/m1.log"

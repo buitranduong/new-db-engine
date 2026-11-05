@@ -45,11 +45,20 @@ func main() {
 	flag.DurationVar(&cfg.PollEvery, "poll", 2*time.Millisecond, "how often a read waiting for its own writes looks at the watermark again")
 	flag.BoolVar(&cfg.Reset, "reset", false, "drop the replication slot and the ClickHouse tables, snapshot again")
 	translate := flag.Bool("translate", false, "print the ClickHouse form of the SQL read from stdin and exit")
+	layout := flag.String("layout", "", "base sort columns per table before the key, e.g. sims=category,status,carrier_id,store_rate;orders=status")
+	flag.IntVar(&cfg.Partitions, "partitions", 16, "hash partitions of tables of a million rows or more (set at snapshot)")
+	flag.IntVar(&cfg.DeltaRows, "delta-rows", 20000, "delta versions from which a table is consolidated into its base")
 	httpAddr := flag.String("http", "127.0.0.1:6480", "status endpoint (/shapes); empty = off")
 	flag.Parse()
 	for _, t := range strings.Split(*tables, ",") {
 		if t = strings.TrimSpace(t); t != "" {
 			cfg.Tables = append(cfg.Tables, t)
+		}
+	}
+	cfg.Layout = map[string][]string{}
+	for _, spec := range strings.Split(*layout, ";") {
+		if name, cols, ok := strings.Cut(strings.TrimSpace(spec), "="); ok {
+			cfg.Layout[strings.TrimSpace(name)] = strings.Split(strings.ReplaceAll(cols, " ", ""), ",")
 		}
 	}
 	if *translate {

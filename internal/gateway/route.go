@@ -72,6 +72,7 @@ func (r *Router) shapeOf(s string) *shape {
 // gateway runs (reconnecting after errors, stopping on a fatal one).
 func (r *Router) runSync(ctx context.Context) {
 	cfg := chsync.Config{SourceURL: r.cfg.PGURL, CHURL: r.cfg.CHURL, Tables: r.cfg.Tables, Slot: r.cfg.Slot, Reset: r.cfg.Reset,
+		Layout: r.cfg.Layout, Partitions: r.cfg.Partitions, DeltaRows: r.cfg.DeltaRows,
 		Gate: &r.gate, Pin: &r.pin, Stats: &r.sync, Logf: func(f string, a ...any) { r.cfg.Logf("chsync: "+f, a...) }}
 	for backoff := time.Second; ctx.Err() == nil; {
 		err := chsync.Run(ctx, cfg)

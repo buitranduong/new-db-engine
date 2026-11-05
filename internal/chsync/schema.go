@@ -3,6 +3,7 @@ package chsync
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"stask/internal/shadow"
@@ -79,29 +80,99 @@ func inKey(t *shadow.Table, i int) bool {
 	return false
 }
 
-// tableDDL is the versioned table: every change is a row version stamped
-// with the commit LSN of its source transaction (_lsn); a DELETE is a
-// version with _del = 1.
-func tableDDL(t *shadow.Table) (string, error) {
+// The tables of one source table t in ClickHouse (docs/35 section 8):
+//   - t_base: every key once, as of some LSN; a plain MergeTree, so it is
+//     read without FINAL and may be sorted by the columns queries filter
+//     on (Layout) before the key;
+//   - t_delta: the versions applied since (ReplacingMergeTree(_lsn, _del),
+//     sorted by the key), kept small by consolidation;
+//   - t: the view readers use, every key once as of W: the base rows of
+//     keys without a newer version, and the newest version of the others.
+//
+// Both tables are partitioned by a hash of the key, so consolidation
+// replaces one partition at a time.
+func baseName(t string) string  { return t + "_base" }
+func deltaName(t string) string { return t + "_delta" }
+func stageName(t string) string { return t + "_stage" } // a base partition being rebuilt
+func dtmpName(t string) string  { return t + "_dtmp" }  // what a delta partition keeps
+
+// Layout is how one table is stored: Order, the base sort columns before
+// the key; LowCard, the text columns stored as LowCardinality (chosen from
+// the source statistics); Partitions, the hash partitions.
+type Layout struct {
+	Order      []string
+	LowCard    map[string]bool
+	Partitions int
+}
+
+func colDefs(t *shadow.Table, lay Layout) ([]string, error) {
 	if len(t.PK) == 0 {
-		return "", fmt.Errorf("table %s has no primary key (needed to version its rows)", t.Name)
+		return nil, fmt.Errorf("table %s has no primary key (needed to version its rows)", t.Name)
 	}
 	var cols []string
 	for i, c := range t.Cols {
 		ty, err := chType(c, inKey(t, i))
 		if err != nil {
-			return "", fmt.Errorf("table %s: %w", t.Name, err)
+			return nil, fmt.Errorf("table %s: %w", t.Name, err)
+		}
+		if lay.LowCard[c.Name] && strings.Contains(ty, "String") {
+			ty = "LowCardinality(" + ty + ")"
 		}
 		cols = append(cols, qc(c.Name)+" "+ty)
 	}
-	cols = append(cols, "`_lsn` UInt64", "`_del` UInt8", lsnIndex)
-	return fmt.Sprintf("CREATE TABLE %s (%s) ENGINE = ReplacingMergeTree(_lsn, _del) ORDER BY (%s)",
-		qc(t.Name), strings.Join(cols, ", "), strings.Join(keyNames(t), ", ")), nil
+	return append(cols, "`_lsn` UInt64", "`_del` UInt8"), nil
 }
 
-// lsnIndex lets a reader find the newest versions by reading only the
-// newest parts.
+func partitionBy(t *shadow.Table, lay Layout) string {
+	return fmt.Sprintf("cityHash64(%s) %% %d", strings.Join(keyNames(t), ", "), max(lay.Partitions, 1))
+}
+
+func baseDDL(t *shadow.Table, lay Layout) (string, error) {
+	cols, err := colDefs(t, lay)
+	if err != nil {
+		return "", err
+	}
+	order, seen := []string{}, map[string]bool{}
+	for _, name := range lay.Order {
+		i := slices.IndexFunc(t.Cols, func(c shadow.Column) bool { return c.Name == name })
+		if i < 0 {
+			return "", fmt.Errorf("table %s: layout column %s does not exist", t.Name, name)
+		}
+		if !inKey(t, i) && !seen[name] {
+			order, seen[name] = append(order, qc(name)), true
+		}
+	}
+	return fmt.Sprintf("CREATE TABLE %s (%s) ENGINE = MergeTree PARTITION BY %s ORDER BY (%s) SETTINGS allow_nullable_key = 1",
+		qc(baseName(t.Name)), strings.Join(cols, ", "), partitionBy(t, lay), strings.Join(append(order, keyNames(t)...), ", ")), nil
+}
+
+func deltaDDL(t *shadow.Table, lay Layout) (string, error) {
+	cols, err := colDefs(t, lay)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("CREATE TABLE %s (%s, %s) ENGINE = ReplacingMergeTree(_lsn, _del) PARTITION BY %s ORDER BY (%s)",
+		qc(deltaName(t.Name)), strings.Join(cols, ", "), lsnIndex, partitionBy(t, lay), strings.Join(keyNames(t), ", ")), nil
+}
+
+// lsnIndex lets consolidation find the versions above an LSN by reading
+// only the newest parts.
 const lsnIndex = "INDEX _lsn_idx _lsn TYPE minmax GRANULARITY 1"
+
+// viewDDL is t as readers see it. Under the gate no version above W is in
+// the delta, so FINAL of the delta is the delta as of W; it drops the keys
+// whose newest version is a delete, and their base rows are excluded with
+// every other key of the delta.
+func viewDDL(t *shadow.Table) string {
+	var cols []string
+	for _, c := range t.Cols {
+		cols = append(cols, qc(c.Name))
+	}
+	keys := strings.Join(keyNames(t), ", ")
+	c := strings.Join(cols, ", ")
+	return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS SELECT %s FROM %s WHERE (%s) NOT IN (SELECT %s FROM %s) UNION ALL SELECT %s FROM %s FINAL",
+		qc(t.Name), c, qc(baseName(t.Name)), keys, keys, qc(deltaName(t.Name)), c, qc(deltaName(t.Name)))
+}
 
 // tsvEscape writes v in TabSeparated escaping (the escaping of PostgreSQL
 // COPY text format as well).
@@ -154,14 +225,14 @@ func copySelect(t *shadow.Table, lsn uint64) string {
 	return fmt.Sprintf(`COPY (SELECT %s, %d, 0 FROM "%s") TO STDOUT`, strings.Join(cols, ", "), lsn, strings.ReplaceAll(t.Name, `"`, `""`))
 }
 
-func insertAll(t *shadow.Table) string {
+func insertAll(table string, t *shadow.Table) string {
 	var cols []string
 	for _, c := range t.Cols {
 		cols = append(cols, qc(c.Name))
 	}
-	return fmt.Sprintf("INSERT INTO %s (%s, _lsn, _del) FORMAT TabSeparated", qc(t.Name), strings.Join(cols, ", "))
+	return fmt.Sprintf("INSERT INTO %s (%s, _lsn, _del) FORMAT TabSeparated", qc(table), strings.Join(cols, ", "))
 }
 
-func insertDeletes(t *shadow.Table) string {
-	return fmt.Sprintf("INSERT INTO %s (%s, _lsn, _del) FORMAT TabSeparated", qc(t.Name), strings.Join(keyNames(t), ", "))
+func insertDeletes(table string, t *shadow.Table) string {
+	return fmt.Sprintf("INSERT INTO %s (%s, _lsn, _del) FORMAT TabSeparated", qc(table), strings.Join(keyNames(t), ", "))
 }

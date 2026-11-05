@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -42,6 +43,13 @@ type Config struct {
 	// see ClickHouse exactly as of a PostgreSQL snapshot taken at Pin.
 	Pin     *atomic.Uint64
 	HoldMax time.Duration
+	// Layout: per table, the columns the base is sorted by before the key
+	// (docs/35 section 8); Partitions: hash partitions of tables of a
+	// million rows or more (default 16); DeltaRows: the delta size from
+	// which a table is consolidated (default 20000).
+	Layout     map[string][]string
+	Partitions int
+	DeltaRows  int
 }
 
 func (c *Config) defaults() {
@@ -72,17 +80,24 @@ func (c *Config) defaults() {
 	if c.HoldMax <= 0 {
 		c.HoldMax = 5 * time.Second
 	}
+	if c.Partitions <= 0 {
+		c.Partitions = 16
+	}
+	if c.DeltaRows <= 0 {
+		c.DeltaRows = 20000
+	}
 }
 
 // Stats are read by the progress log (and later by the router).
 type Stats struct {
-	W, Received   atomic.Uint64 // watermark; end of the last transaction received
-	Applied       atomic.Uint64 // commit LSN of the last transaction applied
-	Held          atomic.Uint64 // commit LSN of the transaction the stream waits before (Pin); 0 = not waiting
-	CaughtUp      atomic.Int64  // unix nanos when everything received was last known applied
-	Txs, Versions atomic.Int64
-	Flushes       atomic.Int64
-	FlushNanos    atomic.Int64
+	W, Received    atomic.Uint64 // watermark; end of the last transaction received
+	Applied        atomic.Uint64 // commit LSN of the last transaction applied
+	Held           atomic.Uint64 // commit LSN of the transaction the stream waits before (Pin); 0 = not waiting
+	CaughtUp       atomic.Int64  // unix nanos when everything received was last known applied
+	Txs, Versions  atomic.Int64
+	Consolidations atomic.Int64
+	Flushes        atomic.Int64
+	FlushNanos     atomic.Int64
 }
 
 // FatalError stops the tool: running again would fail the same way.
@@ -166,7 +181,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fatalf("%v", err)
 	}
 	for _, t := range tables {
-		if _, err := tableDDL(t); err != nil {
+		if _, err := colDefs(t, Layout{}); err != nil {
 			return fatalf("%v", err)
 		}
 	}
@@ -191,15 +206,15 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.Reset = false
 	}
 	for _, t := range tables {
-		if err := ch.Exec(ctx, "ALTER TABLE "+qc(t.Name)+" ADD "+strings.Replace(lsnIndex, "INDEX", "INDEX IF NOT EXISTS", 1)); err != nil {
-			return fatalf("index on _lsn of %s: %v", t.Name, err)
-		}
-		if err := ch.Exec(ctx, "DROP VIEW IF EXISTS "+qc(t.Name+"_at")); err != nil { // the snapshot views of before docs/35 section 7
-			return err
+		if err := ch.Exec(ctx, viewDDL(t)); err != nil {
+			return fatalf("view %s: %v", t.Name, err)
 		}
 	}
 	cfg.Stats.W.Store(w)
 	cfg.Stats.Applied.Store(w)
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go consolidate(cctx, &cfg, ch, tables)
 	return stream(ctx, &cfg, ch, tables, w)
 }
 
@@ -248,13 +263,26 @@ func initialize(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, ta
 		return 0, err
 	}
 	for _, t := range tables {
-		ddl, _ := tableDDL(t)
-		if err := ch.Exec(ctx, "DROP TABLE IF EXISTS "+qc(t.Name)); err != nil {
+		lay, err := layoutOf(ctx, cfg, src, t)
+		if err != nil {
 			return 0, err
 		}
-		if err := ch.Exec(ctx, ddl); err != nil {
-			return 0, fatalf("create %s in ClickHouse: %v", t.Name, err)
+		b, err := baseDDL(t, lay)
+		if err != nil {
+			return 0, fatalf("%v", err)
 		}
+		d, _ := deltaDDL(t, lay)
+		for _, name := range []string{t.Name, t.Name + "_at", baseName(t.Name), deltaName(t.Name), stageName(t.Name), dtmpName(t.Name)} {
+			if err := ch.Exec(ctx, "DROP TABLE IF EXISTS "+qc(name)); err != nil {
+				return 0, err
+			}
+		}
+		for _, ddl := range []string{b, d, viewDDL(t)} {
+			if err := ch.Exec(ctx, ddl); err != nil {
+				return 0, fatalf("create %s in ClickHouse: %v", t.Name, err)
+			}
+		}
+		cfg.Logf("%s: base sorted by %v before the key, %d partitions, LowCardinality %v", t.Name, lay.Order, lay.Partitions, keysOf(lay.LowCard))
 	}
 	cc, err := connect(ctx, cfg.SourceURL, false)
 	if err != nil {
@@ -274,7 +302,7 @@ func initialize(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, ta
 			n = tag.RowsAffected()
 			pw.CloseWithError(err)
 		}()
-		if err := ch.Insert(ctx, insertAll(t), pr); err != nil {
+		if err := ch.Insert(ctx, insertAll(baseName(t.Name), t), pr); err != nil {
 			pr.CloseWithError(err)
 			return 0, fmt.Errorf("copy %s: %w", t.Name, err)
 		}
@@ -288,6 +316,47 @@ func initialize(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, ta
 	}
 	cfg.Logf("snapshot done at %s", cp)
 	return uint64(cp), nil
+}
+
+// layoutOf: the configured sort columns; LowCardinality for the text
+// columns with at most 10000 distinct values in the source statistics
+// (ClickHouse's guidance for LowCardinality); hash partitions for tables of
+// a million rows or more.
+func layoutOf(ctx context.Context, cfg *Config, src *pgconn.PgConn, t *shadow.Table) (Layout, error) {
+	lay := Layout{Order: cfg.Layout[t.Name], LowCard: map[string]bool{}, Partitions: 1}
+	res, err := src.Exec(ctx, "SELECT s.attname, s.n_distinct, c.reltuples FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "+
+		"LEFT JOIN pg_stats s ON s.schemaname = n.nspname AND s.tablename = c.relname WHERE n.nspname = 'public' AND c.relname = "+sqlString(t.Name)).ReadAll()
+	if err != nil {
+		return lay, err
+	}
+	for _, r := range res {
+		for _, row := range r.Rows {
+			tuples, _ := strconv.ParseFloat(string(row[2]), 64)
+			if tuples >= 1e6 {
+				lay.Partitions = cfg.Partitions
+			}
+			if row[0] == nil {
+				continue
+			}
+			nd, _ := strconv.ParseFloat(string(row[1]), 64)
+			if nd < 0 {
+				nd = -nd * tuples
+			}
+			if nd > 0 && nd <= 10000 {
+				lay.LowCard[string(row[0])] = true
+			}
+		}
+	}
+	return lay, nil
+}
+
+func keysOf(m map[string]bool) []string {
+	var k []string
+	for s := range m {
+		k = append(k, s)
+	}
+	slices.Sort(k)
+	return k
 }
 
 // version is the newest change of one key in the current batch (nil value
@@ -378,12 +447,12 @@ func (cfg *Config) flush(ctx context.Context, ch *CH, b *batch) error {
 			fmt.Fprintf(out, "\t%d\t%d\n", v.lsn, map[bool]int{false: 0, true: 1}[v.del])
 		}
 		if ups.Len() > 0 {
-			if err := ch.Insert(ctx, insertAll(t), strings.NewReader(ups.String())); err != nil {
+			if err := ch.Insert(ctx, insertAll(deltaName(t.Name), t), strings.NewReader(ups.String())); err != nil {
 				return fmt.Errorf("apply %s: %w", t.Name, err)
 			}
 		}
 		if dels.Len() > 0 {
-			if err := ch.Insert(ctx, insertDeletes(t), strings.NewReader(dels.String())); err != nil {
+			if err := ch.Insert(ctx, insertDeletes(deltaName(t.Name), t), strings.NewReader(dels.String())); err != nil {
 				return fmt.Errorf("apply deletes of %s: %w", t.Name, err)
 			}
 		}

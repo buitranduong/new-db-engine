@@ -166,8 +166,8 @@ var typedLiteral = map[string]string{
 }
 
 // Translate rewrites a PostgreSQL SELECT for ClickHouse: the tables keep
-// their names (read with FINAL through the setting final = 1, under the
-// gate of docs/35 section 7) and the PostgreSQL functions and literals
+// their names (the views of docs/35 section 8, read under the gate of
+// section 7) and the PostgreSQL functions and literals
 // with another spelling are mapped. It returns an error for what it knows
 // it cannot translate; the rest is caught by the result comparison before
 // a shape is ever answered from ClickHouse.

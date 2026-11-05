@@ -73,7 +73,7 @@ func Verify(ctx context.Context, cfg Config, wait time.Duration) (*VerifyReport,
 		if s, ok, _ := pgOne(ctx, src, "SELECT pg_total_relation_size($1::regclass)::text", `"`+t.Name+`"`); ok {
 			fmt.Sscan(s, &tc.PGBytes)
 		}
-		if s, err := ch.Query(ctx, "SELECT sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase() AND table = "+sqlString(t.Name)); err == nil {
+		if s, err := ch.Query(ctx, "SELECT sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase() AND table IN ("+sqlString(baseName(t.Name))+", "+sqlString(deltaName(t.Name))+")"); err == nil {
 			fmt.Sscan(strings.TrimSpace(s), &tc.CHBytes)
 		}
 		if tc.Missing+tc.Extra+tc.Differ > 0 {
@@ -118,7 +118,7 @@ func verifyTable(ctx context.Context, srcURL string, ch *CH, t *shadow.Table, w 
 		pw.CloseWithError(err)
 	}()
 	defer pr.Close()
-	cr, err := ch.Stream(ctx, fmt.Sprintf("SELECT %s FROM %s FINAL ORDER BY %s FORMAT TabSeparated", strings.Join(chCols, ", "), qc(t.Name), strings.Join(chOrder, ", ")))
+	cr, err := ch.Stream(ctx, fmt.Sprintf("SELECT %s FROM %s ORDER BY %s SETTINGS max_bytes_before_external_sort = 2000000000 FORMAT TabSeparated", strings.Join(chCols, ", "), qc(t.Name), strings.Join(chOrder, ", ")))
 	if err != nil {
 		return tc, err
 	}

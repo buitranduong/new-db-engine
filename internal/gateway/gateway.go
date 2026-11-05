@@ -27,17 +27,20 @@ type Config struct {
 	Listen        string
 	PGURL         string // PostgreSQL as the gateway's backend user; client sessions run as this user
 	CHURL         string
-	Tables        []string      // tables chsync keeps in ClickHouse
-	Slot          string        // chsync slot (key of the watermark)
-	CostThreshold float64       // PostgreSQL estimated cost from which a read is a ClickHouse candidate
-	VerifyRuns    int           // identical comparisons before a shape is answered by ClickHouse
-	VerifyConns   int           // PostgreSQL connections for comparisons (at most this many at once)
-	VerifyTimeout time.Duration // one comparison, PostgreSQL query included
-	Resample      float64       // fraction of ClickHouse answers compared again
-	MaxStale      time.Duration // W older than this: PostgreSQL
-	WaitOwnWrite  time.Duration // how long a read waits for ClickHouse to include the session's writes
-	PollEvery     time.Duration // how often a waiting read looks at W again
-	Reset         bool          // chsync: snapshot the tables again
+	Tables        []string            // tables chsync keeps in ClickHouse
+	Slot          string              // chsync slot (key of the watermark)
+	CostThreshold float64             // PostgreSQL estimated cost from which a read is a ClickHouse candidate
+	VerifyRuns    int                 // identical comparisons before a shape is answered by ClickHouse
+	VerifyConns   int                 // PostgreSQL connections for comparisons (at most this many at once)
+	VerifyTimeout time.Duration       // one comparison, PostgreSQL query included
+	Resample      float64             // fraction of ClickHouse answers compared again
+	MaxStale      time.Duration       // W older than this: PostgreSQL
+	WaitOwnWrite  time.Duration       // how long a read waits for ClickHouse to include the session's writes
+	PollEvery     time.Duration       // how often a waiting read looks at W again
+	Reset         bool                // chsync: snapshot the tables again
+	Layout        map[string][]string // chsync: base sort columns per table (docs/35 section 8)
+	Partitions    int
+	DeltaRows     int
 	Logf          func(string, ...any)
 }
 

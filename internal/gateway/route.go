@@ -29,16 +29,19 @@ const (
 )
 
 type shape struct {
-	mu       sync.Mutex
-	state    int
-	reason   string
-	cost     float64
-	matches  int
-	fails    int
-	checking int                         // comparisons running (at most maxChecks)
-	fields   []pgproto3.FieldDescription // PostgreSQL's description of the result
-	runs     atomic.Int64
-	chRuns   atomic.Int64
+	mu        sync.Mutex
+	state     int
+	reason    string
+	cost      float64
+	matches   int
+	fails     int
+	checking  int                         // comparisons running (at most maxChecks)
+	fields    []pgproto3.FieldDescription // PostgreSQL's description of the result
+	runs      atomic.Int64
+	chRuns    atomic.Int64
+	retries   int // comparisons without a verdict, and the last reason
+	lastRetry string
+	chMs      []float64 // gateway-side time of ClickHouse answers (ms), the last 10000
 }
 
 // Router holds what all sessions share: the shapes, the sync it runs
@@ -172,7 +175,9 @@ func (r *Router) startVerify(sh *shape, sql string) {
 				sh.state, sh.reason = shapeCH, fmt.Sprintf("%d identical comparisons (cost %.0f)", sh.matches, sh.cost)
 				r.cfg.Logf("shape -> ClickHouse: %s", clip(Shape(sql)))
 			}
-		case why == "retry":
+		case strings.HasPrefix(why, "retry"):
+			sh.retries++
+			sh.lastRetry = why
 		default:
 			r.Stats.VerifyDiff.Add(1)
 			sh.fails++
@@ -185,13 +190,13 @@ func (r *Router) startVerify(sh *shape, sql string) {
 }
 
 func (r *Router) compare(sh *shape, sql string) (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.VerifyTimeout)
 	defer cancel()
 	var c *pgconn.PgConn
 	select {
 	case c = <-r.verify:
 	case <-ctx.Done():
-		return false, "retry"
+		return false, "retry: no comparison connection free"
 	}
 	defer func() { r.verify <- c }()
 	defer func() { c.Exec(context.Background(), "ROLLBACK").ReadAll() }()
@@ -200,7 +205,7 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	// is held only for the ClickHouse query.
 	res, err := c.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT pg_current_wal_lsn()::text").ReadAll()
 	if err != nil || len(res) < 2 {
-		return false, "retry" // PostgreSQL could not answer: no verdict on ClickHouse
+		return false, "retry: PostgreSQL snapshot: " + clip(fmt.Sprint(err)) // PostgreSQL could not answer: no verdict on ClickHouse
 	}
 	l, _ := pglogrepl.ParseLSN(string(res[1].Rows[0][0]))
 	lsn := uint64(l)
@@ -210,7 +215,7 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	if fields == nil { // the description of the result, from PostgreSQL itself
 		d, err := c.Prepare(ctx, "", sql, nil)
 		if err != nil {
-			return false, "retry"
+			return false, "retry: PostgreSQL describe: " + clip(fmt.Sprint(err))
 		}
 		for _, f := range d.Fields {
 			fields = append(fields, pgproto3.FieldDescription{Name: []byte(f.Name), TableOID: f.TableOID,
@@ -227,7 +232,7 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	}
 	res, err = c.Exec(ctx, sql).ReadAll()
 	if err != nil || len(res) < 1 {
-		return false, "retry"
+		return false, "retry: PostgreSQL query: " + clip(fmt.Sprint(err))
 	}
 	pgRes := res[0]
 	a, b := pgRes.Rows, chRows
@@ -249,7 +254,7 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 
 // chAt runs sql on ClickHouse holding exactly the transactions committed up
 // to lsn: chsync is pinned at lsn, applies what comes before it and stops;
-// "retry" when that state cannot be had (chsync was already past lsn).
+// "retry: .." when that state cannot be had (chsync was already past lsn).
 func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgproto3.FieldDescription) ([][][]byte, string) {
 	r.pinMu.Lock()
 	defer r.pinMu.Unlock()
@@ -257,7 +262,7 @@ func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgpr
 	defer r.pin.Store(0)
 	for end := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
 		if r.sync.Applied.Load() > lsn || time.Now().After(end) {
-			return nil, "retry"
+			return nil, "retry: chsync already past the snapshot"
 		}
 		if r.sync.W.Load() >= lsn || r.sync.Held.Load() > lsn {
 			break
@@ -267,7 +272,7 @@ func (r *Router) chAt(ctx context.Context, sql string, lsn uint64, fields []pgpr
 		return r.sync.Applied.Load() <= lsn && (r.sync.W.Load() >= lsn || r.sync.Held.Load() > lsn)
 	})
 	if err == errMoved {
-		return nil, "retry"
+		return nil, "retry: ClickHouse moved past the snapshot"
 	}
 	if err != nil {
 		return nil, "ClickHouse: " + clip(err.Error())

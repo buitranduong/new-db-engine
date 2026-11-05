@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Config struct {
 	CostThreshold float64       // PostgreSQL estimated cost from which a read is a ClickHouse candidate
 	VerifyRuns    int           // identical comparisons before a shape is answered by ClickHouse
 	VerifyConns   int           // PostgreSQL connections for comparisons (at most this many at once)
+	VerifyTimeout time.Duration // one comparison, PostgreSQL query included
 	Resample      float64       // fraction of ClickHouse answers compared again
 	MaxStale      time.Duration // W older than this: PostgreSQL
 	WaitOwnWrite  time.Duration // how long a read waits for ClickHouse to include the session's writes
@@ -213,7 +215,9 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 		r.Stats.Stale.Add(1)
 		return false, nil
 	}
+	t0 := time.Now()
 	rows, err := r.runCH(ctx, q, fields, nil)
+	ms := float64(time.Since(t0).Microseconds()) / 1000
 	if err != nil {
 		sh.mu.Lock()
 		sh.state, sh.reason = shapePG, "ClickHouse error: "+clip(err.Error())
@@ -223,6 +227,11 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 	}
 	r.Stats.CH.Add(1)
 	sh.chRuns.Add(1)
+	sh.mu.Lock()
+	if sh.chMs = append(sh.chMs, ms); len(sh.chMs) > 10000 {
+		sh.chMs = sh.chMs[1:]
+	}
+	sh.mu.Unlock()
 	s.cli.Send(&pgproto3.RowDescription{Fields: fields})
 	for _, row := range rows {
 		s.cli.Send(&pgproto3.DataRow{Values: row})
@@ -364,7 +373,16 @@ func (r *Router) Report(w io.Writer) {
 		sh := v.(*shape)
 		sh.mu.Lock()
 		st := [...]string{"new", "verifying", "clickhouse", "postgresql"}[sh.state]
-		fmt.Fprintf(w, "%-11s runs=%d ch=%d %s | %s\n", st, sh.runs.Load(), sh.chRuns.Load(), sh.reason, clip(k.(string)))
+		times := ""
+		if n := len(sh.chMs); n > 0 {
+			v := slices.Sorted(slices.Values(sh.chMs))
+			times = fmt.Sprintf(" ch_ms p50=%.0f p99=%.0f max=%.0f", v[n/2], v[min(n-1, n*99/100)], v[n-1])
+		}
+		retry := ""
+		if sh.retries > 0 {
+			retry = fmt.Sprintf(" retries=%d (%s)", sh.retries, sh.lastRetry)
+		}
+		fmt.Fprintf(w, "%-11s runs=%d ch=%d%s %s%s | %s\n", st, sh.runs.Load(), sh.chRuns.Load(), times, sh.reason, retry, clip(k.(string)))
 		sh.mu.Unlock()
 		return true
 	})

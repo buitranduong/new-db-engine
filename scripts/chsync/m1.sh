@@ -18,7 +18,7 @@ if [ -z "${M1_LOCKED:-}" ]; then
 fi
 export PATH=$PATH:/usr/local/go/bin
 export G3_LOCKED=1 # stask-m2 takes the big-data lock above 2M rows unless its caller holds it (we do)
-N=${N:-30000000}; DURATION=${DURATION:-120}; WARMUP=${WARMUP:-300}; KEEP=${KEEP:-1}; RUNS=${RUNS:-"gw pg"}
+N=${N:-30000000}; DURATION=${DURATION:-120}; WARMUP=${WARMUP:-900}; KEEP=${KEEP:-1}; RUNS=${RUNS:-"gw pg"}
 PG_CPUS=${PG_CPUS:-0-2}; PG_MEM=${PG_MEM:-12g}; CH_CPUS=${CH_CPUS:-3-5}; CH_MEM=${CH_MEM:-10g}; GW_CPUS=${GW_CPUS:-6}; APP_CPUS=${APP_CPUS:-7}
 HARNESS_FLAGS=${HARNESS_FLAGS:--t 4 -p 4 -r 2}
 PG_CONF=${PG_CONF:-"shared_buffers=6GB effective_cache_size=9GB work_mem=64MB maintenance_work_mem=1GB max_wal_size=8GB checkpoint_timeout=15min random_page_cost=1.1 max_parallel_workers_per_gather=2 wal_level=logical max_wal_senders=10 max_replication_slots=10"}

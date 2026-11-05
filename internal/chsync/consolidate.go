@@ -16,7 +16,7 @@ import (
 // version up to which is applied) move into the base:
 //
 //  1. K = the keys with a delta version <= X. Base rows of keys in K are
-//     deleted (a lightweight delete, which only marks rows, waited for),
+//     deleted (a lightweight delete written as patch parts, waited for),
 //     and the newest versions <= X of K that are not deletes are appended.
 //     Neither changes what readers see: every key of K is still in the
 //     delta, so the view still takes it from there.
@@ -79,7 +79,9 @@ func consolidateOne(ctx context.Context, cfg *Config, ch *CH, t *shadow.Table) (
 	how := "appended"
 	if strings.TrimSpace(hit) != "0" {
 		how = "deleted and appended"
-		if err := ch.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE (%s) IN %s SETTINGS lightweight_deletes_sync = 2", base, keys, inK)); err != nil {
+		// as patch parts (the base keeps block numbers for that): the cost is
+		// the key scan, not a rewrite of every part the keys touch
+		if err := ch.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE (%s) IN %s SETTINGS lightweight_delete_mode = 'lightweight_update_force', lightweight_deletes_sync = 2", base, keys, inK)); err != nil {
 			return false, err
 		}
 	}

@@ -104,6 +104,7 @@ type Stats struct {
 	CaughtUp       atomic.Int64  // unix nanos when everything received was last known applied
 	Txs, Versions  atomic.Int64
 	Consolidations atomic.Int64
+	Live           atomic.Pointer[map[string]string] // table -> LiveBase SQL
 	Flushes        atomic.Int64
 	FlushNanos     atomic.Int64
 }
@@ -185,6 +186,13 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer src.Close(context.Background())
 	tables, err := shadow.LoadSourceTables(ctx, src, cfg.Tables)
+	if err == nil {
+		live := map[string]string{}
+		for _, t := range tables {
+			live[t.Name] = LiveBase(t)
+		}
+		cfg.Stats.Live.Store(&live)
+	}
 	if err != nil {
 		return fatalf("%v", err)
 	}

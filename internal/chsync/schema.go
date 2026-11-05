@@ -142,7 +142,7 @@ func baseDDL(t *shadow.Table, lay Layout) (string, error) {
 			order, seen[name] = append(order, qc(name)), true
 		}
 	}
-	return fmt.Sprintf("CREATE TABLE %s (%s) ENGINE = MergeTree PARTITION BY %s ORDER BY (%s) SETTINGS allow_nullable_key = 1",
+	return fmt.Sprintf("CREATE TABLE %s (%s) ENGINE = MergeTree PARTITION BY %s ORDER BY (%s) SETTINGS allow_nullable_key = 1, enable_block_number_column = 1, enable_block_offset_column = 1",
 		qc(baseName(t.Name)), strings.Join(cols, ", "), partitionBy(t, lay), strings.Join(append(order, keyNames(t)...), ", ")), nil
 }
 
@@ -172,6 +172,14 @@ func viewDDL(t *shadow.Table) string {
 	c := strings.Join(cols, ", ")
 	return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS SELECT %s FROM %s WHERE (%s) NOT IN (SELECT %s FROM %s) UNION ALL SELECT %s FROM %s FINAL",
 		qc(t.Name), c, qc(baseName(t.Name)), keys, keys, qc(deltaName(t.Name)), c, qc(deltaName(t.Name)))
+}
+
+// LiveBase is SQL for the base rows of a table the view takes from the
+// base (keys without a delta version): a subset of the view's rows that
+// ClickHouse reads in the base's sort order.
+func LiveBase(t *shadow.Table) string {
+	keys := strings.Join(keyNames(t), ", ")
+	return fmt.Sprintf("%s WHERE (%s) NOT IN (SELECT %s FROM %s)", qc(baseName(t.Name)), keys, keys, qc(deltaName(t.Name)))
 }
 
 // tsvEscape writes v in TabSeparated escaping (the escaping of PostgreSQL

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
+
+	"stask/internal/chsync"
 )
 
 // The "top n rows of each group" rewrite (docs/35 section 8). PostgreSQL
@@ -165,12 +168,87 @@ func rewriteTopN(sql string) (string, bool) {
 	if where >= 0 {
 		src = strings.TrimSpace(join(toks[from:where])) + " WHERE (" + strings.TrimSpace(join(toks[where+1:closeP])) + ") AND "
 	}
+	lead, cmp := leadColumn(ord)
+	// the bound is taken from the live base rows when the source is one
+	// table: a subset of the rows, so its value at position hi is at or
+	// after the true one (a looser bound, never a wrong one), found
+	// reading the base in its sort order instead of through the view
+	thr := src
+	if fi := nonSpace(toks, from+1); fi >= 0 && toks[fi].kind == tWord {
+		stop := closeP
+		if where >= 0 {
+			stop = where
+		}
+		if nonSpace(toks, fi+1) == stop || nonSpace(toks, fi+1) < 0 {
+			if lb, ok := liveBase(strings.ToLower(toks[fi].s)); ok {
+				thr = "FROM " + lb + " AND "
+				if where >= 0 {
+					thr += "(" + strings.TrimSpace(join(toks[where+1:closeP])) + ") AND "
+				}
+			}
+		}
+	}
 	var branches []string
 	for _, t := range terms {
-		branches = append(branches, fmt.Sprintf("SELECT *, row_number() OVER (ORDER BY %s) + %d AS %s FROM (SELECT %s %s%s = %s ORDER BY %s LIMIT %d OFFSET %d)",
-			ord, t.lo-1, rn, strings.TrimSpace(cols), src, key, t.val, ord, t.hi-t.lo+1, t.lo-1))
+		cut := ""
+		if lead != "" {
+			// The rows of the branch all sort at or before its last row, so
+			// they have lead at or before that row's lead value: the row at
+			// position hi in the order of lead alone, which ClickHouse finds
+			// reading the sort key in order. The rest of the order (an
+			// expression such as md5 that no key holds) is then computed for
+			// the rows passing that bound only. No such row (fewer rows) or
+			// a NULL there: no bound.
+			cut = fmt.Sprintf(" AND ifNull(%s %s (SELECT min(x) FROM (SELECT toNullable(%s) AS x %s%s = %s ORDER BY %s LIMIT 1 OFFSET %d)), 1)",
+				lead, cmp, lead, thr, key, t.val, strings.TrimSpace(strings.SplitN(ord, ",", 2)[0]), t.hi-1)
+		}
+		branches = append(branches, fmt.Sprintf("SELECT *, row_number() OVER (ORDER BY %s) + %d AS %s FROM (SELECT %s %s%s = %s%s ORDER BY %s LIMIT %d OFFSET %d)",
+			ord, t.lo-1, rn, strings.TrimSpace(cols), src, key, t.val, cut, ord, t.hi-t.lo+1, t.lo-1))
 	}
 	return join(toks[:open]) + "(" + strings.Join(branches, " UNION ALL ") + ")" + join(toks[closeP+1:]), true
+}
+
+// leadColumn: the first item of an ORDER BY when it is a plain column with
+// more items after it, and the comparison that keeps the rows sorting at or
+// before a value of it.
+func leadColumn(ord string) (string, string) {
+	first, rest, ok := strings.Cut(ord, ",")
+	if !ok || strings.TrimSpace(rest) == "" {
+		return "", ""
+	}
+	f := strings.Fields(first)
+	if len(f) == 0 || len(f) > 2 {
+		return "", ""
+	}
+	for _, r := range f[0] {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return "", ""
+		}
+	}
+	if len(f) == 1 || strings.EqualFold(f[1], "asc") {
+		return f[0], "<="
+	}
+	if strings.EqualFold(f[1], "desc") {
+		return f[0], ">="
+	}
+	return "", ""
+}
+
+// liveSync: the stats of the chsync run of the gateway, which name each
+// synced table's live base rows (chsync.LiveBase).
+var liveSync atomic.Pointer[chsync.Stats]
+
+func liveBase(table string) (string, bool) {
+	st := liveSync.Load()
+	if st == nil {
+		return "", false
+	}
+	m := st.Live.Load()
+	if m == nil {
+		return "", false
+	}
+	s, ok := (*m)[table]
+	return s, ok
 }
 
 type groupTerm struct {

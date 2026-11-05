@@ -48,6 +48,7 @@ func main() {
 	translate := flag.Bool("translate", false, "print the ClickHouse form of the SQL read from stdin and exit")
 	layout := flag.String("layout", "", "base sort columns per table before the key, e.g. sims=category,status,carrier_id,store_rate;orders=status")
 	flag.IntVar(&cfg.Partitions, "partitions", 16, "hash partitions of tables of a million rows or more (set at snapshot)")
+	flag.IntVar(&cfg.CopyStreams, "copy-streams", 4, "connections that copy the initial snapshot")
 	flag.IntVar(&cfg.DeltaRows, "delta-rows", 20000, "delta versions from which a table is consolidated into its base")
 	httpAddr := flag.String("http", "127.0.0.1:6480", "status endpoint (/shapes); empty = off")
 	flag.Parse()

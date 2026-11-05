@@ -42,6 +42,7 @@ type Config struct {
 	Layout        map[string][]string // chsync: base sort columns per table (docs/35 section 8)
 	Partitions    int
 	DeltaRows     int
+	CopyStreams   int
 	Logf          func(string, ...any)
 }
 

@@ -5,6 +5,7 @@
 package chsync
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -359,7 +360,12 @@ func copySnapshot(ctx context.Context, cfg *Config, src *pgconn.PgConn, ch *CH, 
 					pr, pw := io.Pipe()
 					var n int64
 					go func() {
-						tag, err := cc.CopyTo(ctx, pw, copySelect(c.t, cp, c.where))
+						// one row per Write: buffered, so ClickHouse gets large chunks
+						bw := bufio.NewWriterSize(pw, 1<<20)
+						tag, err := cc.CopyTo(ctx, bw, copySelect(c.t, cp, c.where))
+						if err == nil {
+							err = bw.Flush()
+						}
 						n = tag.RowsAffected()
 						pw.CloseWithError(err)
 					}()

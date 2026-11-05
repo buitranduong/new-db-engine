@@ -36,6 +36,7 @@ type Config struct {
 	Resample      float64             // fraction of ClickHouse answers compared again
 	MaxStale      time.Duration       // W older than this: PostgreSQL
 	WaitOwnWrite  time.Duration       // how long a read waits for ClickHouse to include the session's writes
+	MaxWait       time.Duration       // the longest wait for ClickHouse, for shapes slow on PostgreSQL
 	PollEvery     time.Duration       // how often a waiting read looks at W again
 	Reset         bool                // chsync: snapshot the tables again
 	Layout        map[string][]string // chsync: base sort columns per table (docs/35 section 8)
@@ -193,8 +194,15 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 	sh.runs.Add(1)
 	r.classify(ctx, s, sh, q) // no-op unless the shape is new
 	sh.mu.Lock()
-	state, fields := sh.state, sh.fields
+	state, fields, pgMs := sh.state, sh.fields, sh.pgMs
 	sh.mu.Unlock()
+	// How long ClickHouse may be waited for: a shape PostgreSQL answers
+	// slowly is better waited for than sent there, up to as long as
+	// PostgreSQL took for it (at most MaxWait).
+	wait := r.cfg.WaitOwnWrite
+	if d := time.Duration(pgMs * float64(time.Millisecond)); d > wait {
+		wait = min(d, r.cfg.MaxWait)
+	}
 	switch state {
 	case shapePG:
 		return false, nil
@@ -202,7 +210,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 		r.startVerify(sh, q)
 		return false, nil
 	}
-	if !r.fresh() {
+	if !r.waitFresh(wait - r.cfg.WaitOwnWrite) {
 		r.Stats.Stale.Add(1)
 		return false, nil
 	}
@@ -214,7 +222,7 @@ func (s *session) tryCH(ctx context.Context, sql string) (bool, error) {
 		l, _ := pglogrepl.ParseLSN(string(rows[0][0]))
 		s.ownLSN, s.dirty = uint64(l), false
 	}
-	if !r.waitW(s.ownLSN, r.cfg.WaitOwnWrite) {
+	if !r.waitW(s.ownLSN, wait) {
 		r.Stats.Stale.Add(1)
 		return false, nil
 	}

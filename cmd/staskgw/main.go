@@ -41,6 +41,7 @@ func main() {
 	flag.DurationVar(&cfg.VerifyTimeout, "verify-timeout", 10*time.Minute, "longest comparison (the PostgreSQL run of an expensive query included)")
 	flag.Float64Var(&cfg.Resample, "resample", 0.01, "fraction of ClickHouse answers compared with PostgreSQL again")
 	flag.DurationVar(&cfg.MaxStale, "max-stale", 3*time.Second, "watermark older than this: answer from PostgreSQL")
+	flag.DurationVar(&cfg.MaxWait, "max-wait", 30*time.Second, "the longest a shape slow on PostgreSQL waits for ClickHouse to be fresh (bounded by its PostgreSQL time)")
 	flag.DurationVar(&cfg.WaitOwnWrite, "wait-own-write", 500*time.Millisecond, "how long a read waits for ClickHouse to include the session's own writes before it goes to PostgreSQL")
 	flag.DurationVar(&cfg.PollEvery, "poll", 2*time.Millisecond, "how often a read waiting for its own writes looks at the watermark again")
 	flag.BoolVar(&cfg.Reset, "reset", false, "drop the replication slot and the ClickHouse tables, snapshot again")

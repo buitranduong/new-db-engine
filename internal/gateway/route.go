@@ -42,6 +42,7 @@ type shape struct {
 	retries   int // comparisons without a verdict, and the last reason
 	lastRetry string
 	chMs      []float64 // gateway-side time of ClickHouse answers (ms), the last 10000
+	pgMs      float64   // the slowest PostgreSQL answer seen in a comparison (ms)
 }
 
 // Router holds what all sessions share: the shapes, the sync it runs
@@ -97,6 +98,18 @@ func (r *Router) runSync(ctx context.Context) {
 func (r *Router) fresh() bool {
 	at := r.sync.CaughtUp.Load()
 	return at != 0 && time.Since(time.Unix(0, at)) < r.cfg.MaxStale
+}
+
+// waitFresh waits until fresh(), at most d.
+func (r *Router) waitFresh(d time.Duration) bool {
+	end := time.Now().Add(d)
+	for !r.fresh() {
+		if time.Now().After(end) {
+			return false
+		}
+		time.Sleep(r.cfg.PollEvery / 2)
+	}
+	return true
 }
 
 // waitW waits until W >= lsn, at most d.
@@ -231,7 +244,13 @@ func (r *Router) compare(sh *shape, sql string) (bool, string) {
 	if why != "" {
 		return false, why
 	}
+	t0 := time.Now()
 	res, err = c.Exec(ctx, sql).ReadAll()
+	if ms := float64(time.Since(t0).Microseconds()) / 1000; err == nil {
+		sh.mu.Lock()
+		sh.pgMs = max(sh.pgMs, ms)
+		sh.mu.Unlock()
+	}
 	if err != nil || len(res) < 1 {
 		return false, "retry: PostgreSQL query: " + clip(fmt.Sprint(err))
 	}
